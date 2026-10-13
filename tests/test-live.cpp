@@ -7307,38 +7307,78 @@ TEST_CASE("while the journal's own question about an order is open, its sweep al
   CHECK(rig.lines(runner::JournalOutcome::RESOLVED).empty());
 }
 
-TEST_CASE("an order this runner sent just before is never taken for the one whose outcome is unknown",
+TEST_CASE("the later search never takes an order this runner sent just before for the one it looks for",
           "[serialized][unfound]") {
   // Round 0 of the review: A is accepted and accounted for; B, of the same shape, is sent within the
-  // matching window and its request is lost. A's row was the only candidate for B, B was named A, and no
-  // holdings could ever account for it.
+  // matching window and its request is lost. A's row reaches the history after B's negative sweep, as
+  // the only candidate; named A, B could never be accounted for.
   using runner::JournalOutcome;
-  auto confirmed = serial_line("p-1", JournalOutcome::CONFIRMED, "A", "10");
   SerialRig rig({
     serial_line("p-1", JournalOutcome::PENDING),
     serial_line("p-1", JournalOutcome::ACCEPTED, "A"),
-    confirmed,
+    serial_line("p-1", JournalOutcome::CONFIRMED, "A", "10"),
     serial_line("p-2", JournalOutcome::PENDING, "", "10"),
     serial_line("p-2", JournalOutcome::INDETERMINATE, "", "10"),
   });
   REQUIRE(rig.owed() == runner::ObligationState::UNNAMED);
   rig.show(polled(0, "10", {}));
-  auto source = source_over(rig, page_of({market_row("A", at_hour(-1))}));
+  auto source = source_over(rig);
   rig.runner_instance.set_observed_at(at_hour(1));
 
-  // The first sweep: A's row is A's, so nothing is found for B.
+  // The first sweep finds nothing, and A's row then appears alone: it is A's.
   REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
   REQUIRE(source.last_reconcile().matches_.size() == 1);
   CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::NOT_PLACED);
-  CHECK(rig.owed() == runner::ObligationState::UNNAMED);
-  // The later search: the same.
+  rig.session.set_history(page_of({market_row("A", at_hour(-1))}));
   REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
   CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+  CHECK(rig.lines(JournalOutcome::RESOLVED).size() == 1);
   // B's own row beside A's is one candidate, not two.
   rig.session.set_history(page_of({market_row("A", at_hour(-1)), market_row("B", at_hour(-1))}));
   REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
   REQUIRE(rig.runner_instance.obligations().size() == 1);
   CHECK(rig.runner_instance.obligations().front().order_id_ == "B");
+}
+
+TEST_CASE("a listing that dates no row does not hide the dated history row of the same order", "[serialized][unfound]") {
+  // Round 1 of the review: KIS dates its history and no working-order row. A resting order the lists
+  // show at last is in both; merged by number, the undated listing row stood in for the history row
+  // and was then set aside, so nothing could name the order.
+  SerialRigOf<RangedWorkingOrders> rig(unfound_lines());
+  REQUIRE(rig.owed() == runner::ObligationState::UNNAMED);
+  WorkingOrder<FakeBroker> resting;
+  resting.order_ = market_row("B", at_hour(-1), "0", OrderStatus::PENDING);
+  resting.order_.ordered_at_.reset();
+  resting.ref_.primary_ = "B";
+  WorkingOrders<FakeBroker> listing;
+  listing.orders_.push_back(resting);
+  rig.session.set_working_orders(listing);
+  rig.session.set_history(page_of({market_row("B", at_hour(-1), "0", OrderStatus::PENDING)}));
+  live::SessionSource<FakeSession<RangedWorkingOrders>, SwitchableJournal> source(rig.session, {samsung()});
+  source.set_journal(rig.journal);
+  rig.runner_instance.set_observed_at(at_hour(1));
+  REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+  CHECK(rig.owed() == runner::ObligationState::NAMED);
+  REQUIRE(rig.lines(runner::JournalOutcome::RESOLVED).size() == 2);
+  CHECK(rig.lines(runner::JournalOutcome::RESOLVED).back().order_id_ == "B");
+}
+
+TEST_CASE("a name that turns the order into an operator's leaves the ledger marked", "[serialized][unfound]") {
+  // Round 1 of the review: naming rebuilds the runner's picture at once, and a listing row of that
+  // number reporting more filled than the order was for holds it for an operator, with a mark. The
+  // later search must not then lift it.
+  SerialRig rig(unfound_lines());
+  WorkingOrder<FakeBroker> overfilled;
+  overfilled.order_ = market_row("B", at_hour(-1), "20", OrderStatus::PARTIAL_FILLED);
+  overfilled.ref_.primary_ = "B";
+  WorkingOrders<FakeBroker> listing;
+  listing.orders_.push_back(overfilled);
+  auto source = source_over(rig, page_of({market_row("B", at_hour(-1), "20", OrderStatus::PARTIAL_FILLED)}));
+  rig.session.set_working_orders(listing);
+  rig.runner_instance.set_observed_at(at_hour(1));
+  REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+  CHECK(rig.owed() == runner::ObligationState::OPERATOR);
+  CHECK(rig.runner_instance.ledger().requires_reconcile(samsung()));
 }
 
 TEST_CASE("a runner that overlaps orders makes no later search", "[serialized][unfound]") {
@@ -7356,18 +7396,18 @@ TEST_CASE("a run stops placing for an order nobody has been able to account for"
   using runner::JournalOutcome;
   const InstrumentId hynix{Country::KR, Venue::COMBINED, "000660"};
   // What the strategy would do on another instrument at the first poll that feeds it.
-  const auto trade_elsewhere = [&](SerialRig& rig, QuietSource& source) {
+  const auto trade_elsewhere = [&](SerialRig& rig, QuietSource& source, int hour = 1) {
     auto reference = samsung_reference();
     reference.id_ = hynix;
     rig.runner_instance.context().set_instrument(reference);
     rig.runner_instance.context().set_last_price(hynix, Decimal64::parse("100000"));
     source.act_on_working_poll_ = 1;
-    source.act_ = [&rig, hynix] {
+    source.act_ = [&rig, hynix, hour] {
       auto other = target_of("5");
       other.instrument_ = hynix;
       // The loop installs the phase it derives, and this fixture has no calendar.
       rig.runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
-      rig.bar(1, {other});
+      rig.bar(hour, {other});
     };
   };
   const auto noted = [](const runner::LoopReport& report, const char* text) {
@@ -7488,6 +7528,127 @@ TEST_CASE("a run stops placing for an order nobody has been able to account for"
     const auto report = loop.run(stop, 30);
     REQUIRE(report.owed_stop_.has_value());
     CHECK(report.iterations_ == 11);
+  }
+
+  SECTION("the read that decides runs under the hold: what its handlers ask for is not sent") {
+    // Round 1 of the review: sent as the loop starts, limit 2.5 s, the list read every 10 s. A handler
+    // called inside the second read of the list submits on another instrument.
+    for (const bool limit_off : {false, true}) {
+      SerialRig rig;
+      rig.session.fail_place_with(reply_lost());
+      rig.bar(1, {target_of("10")});
+      rig.session.heal_place();
+      QuietSource source;
+      trade_elsewhere(rig, source, 2);
+      source.act_on_working_poll_ = 2;
+      runner::PollSchedule schedule;
+      schedule.bars_.reset();
+      schedule.holdings_ = std::chrono::seconds(1);
+      schedule.working_orders_ = std::chrono::seconds(10);
+      schedule.tick_ = std::chrono::seconds(1);
+      SerialLoop loop(rig.runner_instance, source, schedule, runner::ManualClock{at_hour(1)});
+      loop.allow_unbounded_portfolio_age();
+      loop.set_owed_order_limit(limit_off ? std::chrono::milliseconds(0) : std::chrono::milliseconds(2500));
+      runner::StopSource stop;
+      const auto report = loop.run(stop, 15);
+      // The placement whose reply was lost, and with the limit off the handler's order too.
+      CHECK(rig.session.placed().size() == (limit_off ? 2u : 1u));
+      CHECK(report.owed_stop_.has_value() == !limit_off);
+      if (!limit_off) {
+        CHECK(report.iterations_ == 11);
+      }
+    }
+  }
+
+  SECTION("a sweep that names the order in that read lifts the hold, and the run goes on") {
+    SerialRig rig;
+    rig.session.fail_place_with(reply_lost());
+    rig.bar(1, {target_of("10")});
+    rig.session.heal_place();
+    const auto line = rig.lines(JournalOutcome::PENDING).front().id_;
+    QuietSource source;
+    source.act_on_working_poll_ = 2;
+    source.act_ = [&rig, line] {
+      rig.runner_instance.resolve_indeterminate_placement(samsung(), OrderSide::BUY, std::string("B"), line);
+    };
+    runner::PollSchedule schedule;
+    schedule.bars_.reset();
+    schedule.holdings_ = std::chrono::seconds(1);
+    schedule.working_orders_ = std::chrono::seconds(10);
+    schedule.tick_ = std::chrono::seconds(1);
+    SerialLoop loop(rig.runner_instance, source, schedule, runner::ManualClock{at_hour(1)});
+    loop.allow_unbounded_portfolio_age();
+    loop.set_owed_order_limit(std::chrono::milliseconds(2500));
+    runner::StopSource stop;
+    // Held from the limit to the read...
+    CHECK_FALSE(loop.run(stop, 6).owed_stop_.has_value());
+    CHECK(rig.runner_instance.guard().halted(strategy::HaltReason::STOPPING));
+    CHECK_FALSE(stop.requested());
+    // ...and free again after the read that named it.
+    const auto report = loop.run(stop, 9);
+    CHECK_FALSE(report.owed_stop_.has_value());
+    CHECK_FALSE(report.stopped_by_.has_value());
+    CHECK(rig.owed() == runner::ObligationState::NAMED);
+    CHECK_FALSE(rig.runner_instance.guard().halted(strategy::HaltReason::STOPPING));
+  }
+
+  SECTION("a startup read that feeds is held too") {
+    // The source is a template parameter: its first read of the order list may call a handler.
+    struct FeedingStartup : QuietSource {
+      std::function<void()> on_read_;
+      runner::PollOutcome read_order_list(SerialRunner&) {
+        if (on_read_) {
+          on_read_();
+        }
+        return runner::PollOutcome::UPDATED;
+      }
+    };
+    for (const bool limit_off : {false, true}) {
+      SerialRig rig(unfound_lines());
+      FeedingStartup source;
+      trade_elsewhere(rig, source);
+      source.on_read_ = source.act_;
+      source.act_ = nullptr;
+      runner::PollSchedule schedule;
+      schedule.bars_.reset();
+      schedule.holdings_ = std::chrono::seconds(1);
+      schedule.working_orders_ = std::chrono::seconds(1);
+      schedule.tick_ = std::chrono::seconds(1);
+      runner::PollingLoop<SerialRunner, FeedingStartup, runner::ManualClock> loop(
+        rig.runner_instance, source, schedule, runner::ManualClock{at_hour(1)}
+      );
+      loop.allow_unbounded_portfolio_age();
+      if (limit_off) {
+        loop.set_owed_order_limit(std::chrono::nanoseconds::zero());
+      }
+      runner::StopSource stop;
+      const auto report = loop.run(stop, 3);
+      CHECK(rig.session.placed().size() == (limit_off ? 1u : 0u));
+      CHECK(report.owed_stop_.has_value() == !limit_off);
+    }
+  }
+
+  SECTION("a source that publishes no working orders stops at its startup read") {
+    // Round 1 of the review: such a source never refreshes a listing, and a restored order would never
+    // have stopped the run.
+    struct NoListing {
+      runner::PollOutcome poll(runner::PollKind, SerialRunner&) { return runner::PollOutcome::UNCHANGED; }
+      runner::PollOutcome read_order_list(SerialRunner&) { return runner::PollOutcome::UPDATED; }
+    };
+    SerialRig rig(unfound_lines());
+    NoListing source;
+    runner::PollSchedule schedule;
+    schedule.bars_.reset();
+    schedule.holdings_ = std::chrono::seconds(1);
+    schedule.tick_ = std::chrono::seconds(1);
+    runner::PollingLoop<SerialRunner, NoListing, runner::ManualClock> loop(
+      rig.runner_instance, source, schedule, runner::ManualClock{at_hour(1)}
+    );
+    loop.allow_unbounded_portfolio_age();
+    runner::StopSource stop;
+    const auto report = loop.run(stop, 3);
+    REQUIRE(report.owed_stop_.has_value());
+    CHECK(report.iterations_ == 1);
   }
 
   SECTION("a stop already asked for is carried out as it is") {
