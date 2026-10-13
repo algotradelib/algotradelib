@@ -812,7 +812,7 @@ publish says "every order accepted so far is listed".
   its instrument. From then on `SessionSource` looks for it again at every order-list read, in the order
   history of the days around its send, and names it on one dated row of the same shape inside the send's
   window, never on an undated row and never on a row that could be another of the journal's orders as
-  well (one of the same shape sent within about a minute of it: such an order stays unfound). A named
+  well (one of the same shape sent within half a minute of it: such an order stays unfound). A named
   order is accounted for as any other, by holdings or its own history. If no such row ever comes (the request
   did not reach the broker, or the row never appears), only `Runner::release_obligations` ends it, in
   this process and after a restart. The search costs one history read per order-list read while such an
