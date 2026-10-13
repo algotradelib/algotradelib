@@ -103,8 +103,12 @@ rewriting the file on purpose.
 
 **Rolling back across this release is not supported on a live journal.** An earlier release reads a
 checksummed line (it ignores `crc`) and appends checksum-less ones; this release then halts on them, as
-it should on a line it cannot vouch for. To roll back, or to roll forward again afterwards, first let
-every instruction resolve, then start the other release on a new journal file.
+it should on a line it cannot vouch for. To roll back, or to roll forward again afterwards, start the
+other release on a new journal file, and only once the old journal may be given up. A resolved
+instruction is not enough for that: a sweep that found nothing writes `resolved` while a serialized
+runner still owes the order, and one that found the order names it while it may still be working.
+Every order the journal tracks must have ended (filled in full, or cancelled with its history row
+saying so) and holdings must show its final fills, as for rotation under "What this does not do yet".
 
 ### Reading it under pressure
 
@@ -173,23 +177,27 @@ stops placing altogether once such an order has been owed for ten minutes
 procedure). A runner that overlaps orders forgets the placement at `not_placed`, which is why its
 window must be generous.
 
-**`not_placed` and `undecided` are the pair to get right.** The absence of a row is evidence of
-absence only *after* enough time has passed for the broker's listing to reflect a write it accepted.
-Read too early, absence means nothing at all. That is what the window is for, and it is three
-durations rather than one tolerance because it absorbs three unrelated things:
+**`not_placed` and `undecided` are the pair to get right.** The absence of a row says anything about
+the order only *after* enough time has passed for the broker's listing to reflect a write it accepted;
+read too early, it says nothing at all, and even then it is the finding described above and not proof.
+That is what the window is for, and it is three durations rather than one tolerance because it absorbs
+three unrelated things:
 
 - `clock_skew_` — the journal's stamp is your clock, `ordered_at_` is the broker's. Default 30s, and
   generous on purpose: too narrow does not fail loudly, it silently reports `not_placed` for an order
-  that exists, which is the worst outcome in this design.
+  that exists. For a runner that overlaps orders that is the worst outcome in this design, since it
+  forgets the placement; a serialized runner keeps the order owed whatever the finding.
 - `maximum_request_` — how long the bytes could have been in the air, for an instruction nobody
   answered. Default 60s. Where both lines exist the span is exact and this is unused.
 - `listing_delay_` — how long the broker's listing may lag a write it accepted. Default 30s.
 
-**Which clock says the window has closed.** The runner's decision instant -- the period end of the last
-bar fed -- once a bar has been fed. Before that, as at the startup read after a restart, the loop's own
-clock (the wall clock for a source driven without a loop), so a restart can resolve `not_placed` at its
-first read instead of waiting for a bar. On daily bars the decision instant is the previous session's
-end, so after the first bar a placement left in doubt stays `undecided` until the next bar.
+**Which clock says the window has closed.** The later of the runner's decision instant (the period end
+of the last bar fed, or a quote's time) and the loop's last reading of its own clock. So under a loop a
+restart can resolve `not_placed` at its first read instead of waiting for a bar, and on daily bars,
+where the decision instant is the previous session's end, a placement left in doubt is decided as the
+loop's clock passes the window, not at the next bar. A source driven without a loop has only the
+decision instant, and the wall clock stands in before anything was fed. Both have to be wall time on
+the journal's clock: one that runs ahead shortens the window.
 
 **`ambiguous` is a stop, not a retry.** Two rows that could both be your order stay ambiguous however
 many times you sweep; no heuristic turns them into one answer. Go and look, then clear the ledger entry

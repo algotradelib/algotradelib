@@ -330,7 +330,7 @@ refused flatten is reported once rather than twice.
 | `orders_unconfirmed_timed_out_` | an order this run sent was not confirmed by holdings, a listing or its history within the confirmation timeout, or, once its history settled it, a holdings read a timeout later did not show the fill. A serialized runner goes on owing it: its instrument waits for holdings or the order's history, or for you if no sweep ever named it. An overlapping runner withholds the instrument until you clear the ledger or the process restarts (below) |
 | `orders_guard_refused_` | `RiskGuard` refused it — **a hold as well as a limit**, since it checks the active holds first, so a halted run reports every order here. Nothing was sent |
 | `orders_binding_refused_` | the binding would not send it, or could not reach the broker (a DNS, connect or TLS failure; such an order is kept and retried, see the kept-instructions rules); no request went out |
-| `orders_broker_refused_` | the broker was asked and said no; a request was spent. At KIS, Toss and Kiwoom most refusals are counted in the next row instead (on the KIS and Kiwoom demo servers a sell with nothing to sell is counted here) |
+| `orders_broker_refused_` | the broker was asked and said no; a request was spent. At KIS, Toss and Kiwoom most refusals are counted in the next row instead (on the KIS and Kiwoom demo servers a sell with nothing to sell and an order sent after the market has closed are counted here) |
 | `orders_indeterminate_` | the outcome is unknown, so the order may or may not exist: the request failed in transit or was cancelled, the reply could not be read, the broker answered with an HTTP 5xx, or (at KIS, Toss and Kiwoom) its refusal arrived as `PROTOCOL` |
 | `cancels_rejected_` | a withdrawal refused outright — **by the broker or by the binding**; `RejectedCancel::by_broker_` distinguishes them and this figure does not. On the KIS and Kiwoom demo servers a withdrawal of an order that has already filled is counted here; on a real account it is still in `cancels_indeterminate_` |
 | `cancels_refused_` | a hold refused the withdrawal before anything was sent |
@@ -347,7 +347,7 @@ previous order's words behind. Empty when *this* run's polling saw no refusal, e
 may still hold one from an earlier run; and empty, with a non-zero count beside it, when the refusals
 themselves were silent. It is empty on a dry runner and in a replay, which have no broker to be refused by,
 and it misses the KIS, Toss and Kiwoom refusals counted as unknown outcomes (most business refusals;
-[Binding a broker](binding-a-broker.md) names the two demo-server refusals that are not).
+[Binding a broker](binding-a-broker.md) names the demo-server refusals that are not).
 
 **`last_unbuildable_` does the same for `orders_unbuildable_`**: the reconciliation's reason
 (`RejectReason`), the instrument and your tag, for the last instruction this run's polling could not
