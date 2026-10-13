@@ -247,8 +247,11 @@ the first is unresolved.
 ## What this does not do yet
 
 - **Compaction or rotation.** The file is append-only and grows. One trading day is small; a year is
-  not. Rotate it yourself between sessions, and note that recovery reads what it is given — a journal
-  rotated away is a journal that remembers nothing.
+  not. Rotate it yourself, and note that recovery reads what it is given — a journal rotated away is a
+  journal that remembers nothing. The end of a session is not enough: rotate only once every order the
+  journal tracks has ended (filled in full, or cancelled with its history row saying so) and holdings
+  show its final fills, or an order still working can be sent again
+  ([Running a strategy live](running-a-strategy-live.md), "An order nobody can account for stops the run").
 - **More than one writer, beyond one file.** A second writer on the same file is refused on POSIX:
   opening takes an exclusive `flock` and holds it while the journal is open, so the same program
   started twice, or a supervisor starting a new copy while the old one still runs, stops at the
