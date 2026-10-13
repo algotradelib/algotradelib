@@ -684,7 +684,7 @@ enum class ErrorCategory {
   RATE_LIMIT,
   /**
    * @brief The reply could not be read, or the broker declared a failure this client does not
-   *   classify further: at KIS a reply with `rt_cd` not `0` (such as insufficient balance), at Toss
+   *   classify further: at KIS an unrecognized reply with `rt_cd` not `0` (such as insufficient balance), at Toss
    *   any refusal but a rate limit, at Kiwoom a `return_code` outside its documented error list. For
    *   an order it means the outcome is unknown.
    */

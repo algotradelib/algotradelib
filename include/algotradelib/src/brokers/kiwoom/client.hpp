@@ -1230,9 +1230,9 @@ public:
    * The request is never resent. After an error for which `runner::outcome_of` returns
    * `INDETERMINATE` (`BrokerError::reached_broker_` set and a category of `TRANSPORT`, `CANCELLED`
    * or `PROTOCOL`, or `HTTP` with a status of 500 or more), the order may exist. That includes a
-   * reply without an order number and a failure code Kiwoom declares but does not document (both
-   * `PROTOCOL`). Read `async_open_orders` or `async_order_history` before placing again, since Kiwoom
-   * has no idempotency key.
+   * reply without an order number and an unrecognized failure code Kiwoom declares but does not
+   * document (both `PROTOCOL`). Read `async_open_orders` or `async_order_history` before placing
+   * again, since Kiwoom has no idempotency key.
    *
    * One refusal is recognized as one, on a demo account only: the demo server's `800033` (not enough
    * to sell) is `INVALID_ARGUMENT` with `reached_broker_` set, which `runner::outcome_of` reads as

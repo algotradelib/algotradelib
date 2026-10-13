@@ -346,8 +346,8 @@ one **that came with an error**, and a refusal that says nothing clears it rathe
 previous order's words behind. Empty when *this* run's polling saw no refusal, even though the runner
 may still hold one from an earlier run; and empty, with a non-zero count beside it, when the refusals
 themselves were silent. It is empty on a dry runner and in a replay, which have no broker to be refused by,
-and it misses the KIS, Toss and Kiwoom refusals counted as unknown outcomes (all of them but the two
-demo-server refusals [Binding a broker](binding-a-broker.md) names).
+and it misses the KIS, Toss and Kiwoom refusals counted as unknown outcomes (most business refusals;
+[Binding a broker](binding-a-broker.md) names the two demo-server refusals that are not).
 
 **`last_unbuildable_` does the same for `orders_unbuildable_`**: the reconciliation's reason
 (`RejectReason`), the instrument and your tag, for the last instruction this run's polling could not

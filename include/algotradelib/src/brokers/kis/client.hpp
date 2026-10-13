@@ -593,13 +593,13 @@ public:
    * The request is never resent. After an error for which `runner::outcome_of` returns
    * `INDETERMINATE` (`BrokerError::reached_broker_` set and a category of `TRANSPORT`, `CANCELLED`
    * or `PROTOCOL`, or `HTTP` with a status of 500 or more), the outcome is unknown. That includes a
-   * 200 reply KIS marks as failed (`rt_cd` not `0`, such as insufficient balance), which this client
-   * reports as `PROTOCOL`; a rate-limit code there is `RATE_LIMIT`, which `runner::Runner` keeps for
-   * a later pass. Read `async_open_orders` or `async_order_history` before placing again, since KIS
-   * has no idempotency key.
+   * 200 reply KIS marks as failed (`rt_cd` not `0`, such as insufficient balance) and this client
+   * does not recognize, which it reports as `PROTOCOL`; a rate-limit code there is `RATE_LIMIT`,
+   * which `runner::Runner` keeps for a later pass. Read `async_open_orders` or
+   * `async_order_history` before placing again, since KIS has no idempotency key.
    *
    * One refusal is recognized as one, on a demo account only: the demo server's `40240000` (nothing
-   * held to sell), in an HTTP 200 reply that names no order, is `INVALID_ARGUMENT` with
+   * held to sell), in an HTTP 200 reply that carries no acknowledgement, is `INVALID_ARGUMENT` with
    * `reached_broker_` set, which `runner::outcome_of` reads as `REJECTED`. The same reply from the
    * real server stays `PROTOCOL`.
    *
@@ -678,9 +678,9 @@ public:
    * After an error of unknown outcome (see `async_place_order`) the order may still rest.
    *
    * One refusal is recognized as one, on a demo account only: the demo server's `40330000` (nothing
-   * left to amend or cancel), in an HTTP 200 reply that names no order, is `INVALID_ARGUMENT` with
-   * `reached_broker_` set. It says the cancellation did nothing, not what became of the order: it may
-   * have filled. The same reply from the real server stays `PROTOCOL`.
+   * left to amend or cancel), in an HTTP 200 reply that carries no new acknowledgement, is
+   * `INVALID_ARGUMENT` with `reached_broker_` set. It says the cancellation did nothing, not what
+   * became of the order: it may have filled. The same reply from the real server stays `PROTOCOL`.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account The account.
@@ -3378,12 +3378,13 @@ private:
   // as one: a placement answered `40240000` (nothing held to sell) and a cancellation answered
   // `40330000` (nothing left to amend or cancel), as the demo server sends them. Such a reply is
   // `INVALID_ARGUMENT` with `reached_broker_` set, which a runner reads
-  // as a rejection; every other declared failure of an order stays `PROTOCOL`, an unknown outcome.
+  // as a rejection; any other declared failure of an order keeps the reading `kis_declared_error`
+  // gives it (`PROTOCOL`, an unknown outcome, unless it is a rate limit).
   //
   // Demo only: no real-account reply has been seen, and the same body from the real server is not
   // recognized. The reply must be HTTP 200 with `rt_cd` `"1"`, the code, a message, and none of
   // the fields an acknowledgement carries (`output` absent, or an object whose `ODNO`,
-  // `KRX_FWDG_ORD_ORGNO` and `ORD_TMD` are absent or empty): a reply naming an order is never read
+  // `KRX_FWDG_ORD_ORGNO` and `ORD_TMD` are absent or empty): a reply acknowledging an order is never read
   // as a refusal. A refused cancellation says only that the cancellation did nothing, not what
   // became of the order it named.
   static std::optional<BrokerError> kis_recognized_refusal(

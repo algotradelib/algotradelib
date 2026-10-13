@@ -324,7 +324,7 @@ So a failure is classified by whether the order might exist, and four categories
 | --- | --- |
 | `TRANSPORT` | the connection failed; did the bytes arrive? |
 | `CANCELLED` | a *local* deadline or a closing session says nothing about what was already sent |
-| `PROTOCOL` | the answer could not be parsed — it may have been an ack — or the broker declared a failure the client does not classify (at KIS a reply with `rt_cd` not `0`, such as insufficient balance; at Toss any refusal but a rate limit; at Kiwoom a `return_code` outside its documented error list) |
+| `PROTOCOL` | the answer could not be parsed — it may have been an ack — or the broker declared a failure the client does not classify (at KIS an unrecognized reply with `rt_cd` not `0`, such as insufficient balance; at Toss any refusal but a rate limit; at Kiwoom a `return_code` outside its documented error list) |
 | `HTTP` 5xx | the broker's own infrastructure failing, possibly after the engine took the order |
 
 An HTTP 4xx, an authentication failure, an invalid argument and a rate-limit refusal are *answers*:
@@ -334,9 +334,10 @@ as `PROTOCOL` instead, so they are treated as unknown and the instrument is reco
 Two refusals are recognized as answers, on the KIS and Kiwoom **demo** servers only: a cash sell
 refused because nothing is held to sell (KIS `40240000`, Kiwoom `800033`), and a cancellation refused
 because nothing is left to cancel (KIS `40330000`, Kiwoom `RC4033`), which is what a cancellation of an
-order that has just filled gets. The reply must be an HTTP 200 that states the code and names no order;
-it is then `INVALID_ARGUMENT` with `reached_broker_` set, and its message ends with
-`(recognized refusal: ...)`. The same reply from a real server is not recognized: no real-account
+order that has just filled gets. The reply must be an HTTP 200 that states the code and carries no new
+acknowledgement (the original order's number, echoed, is not one); it is then `INVALID_ARGUMENT` with
+`reached_broker_` set, and its message ends by naming the rule: `recognized refusal: KIS demo, cash
+cancellation, 40330000)`, for example. The same reply from a real server is not recognized: no real-account
 refusal has been seen, so there it is still an unknown outcome. A refused cancellation says that the
 cancellation did nothing, not what became of the order.
 
