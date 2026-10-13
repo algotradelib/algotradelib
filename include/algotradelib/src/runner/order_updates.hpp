@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <optional>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "../core/types.hpp"
@@ -158,6 +160,18 @@ private:
   ) {
     std::vector<Tracked> next;
     next.reserve(rows.size());
+    // Where each reference sits, in this listing (`next`) and in the previous one (`tracked_`), so a
+    // long listing is read once and not once per row. Both are looked up and never iterated: the
+    // order of `next`, and so of the updates, is the listing's. Built here from the vectors each
+    // time, so nothing has to be kept in step with `tracked_`; a reference maps to the first entry
+    // that has it, which is the one a scan would find.
+    std::unordered_map<OrderRef<Broker>, std::size_t> built;
+    built.reserve(rows.size());
+    std::unordered_map<OrderRef<Broker>, std::size_t> held_at;
+    held_at.reserve(tracked_.size());
+    for (std::size_t at = 0; at < tracked_.size(); ++at) {
+      held_at.emplace(tracked_[at].ref_, at);
+    }
 
     for (const auto& row : rows) {
       // This library's own arithmetic rather than something a broker stated, and the contract is
@@ -169,15 +183,16 @@ private:
         ++untracked_;
         continue;
       }
-      auto* already = seen(next, row.ref_);
-      if (already == nullptr) {
+      const auto [at, first] = built.try_emplace(row.ref_, next.size());
+      if (first) {
         next.push_back(Tracked{row.ref_, row.order_, false});
         continue;
       }
       // One reference, one entry: a duplicated row must not become two events (and two orders).
-      if (!order_update_detail::same_observable_state(already->last_, row.order_)) {
+      auto& already = next[at->second];
+      if (!order_update_detail::same_observable_state(already.last_, row.order_)) {
         // Two readings that disagree: report neither, and count it.
-        already->contradicted_ = true;
+        already.contradicted_ = true;
       }
     }
 
@@ -187,7 +202,8 @@ private:
         ++contradicted_;
         continue;
       }
-      const auto* held = find(entry.ref_);
+      const auto found = held_at.find(entry.ref_);
+      const Tracked* held = found == held_at.end() ? nullptr : &tracked_[found->second];
       const bool differs =
         held == nullptr || !order_update_detail::same_observable_state(held->last_, entry.last_);
       if (report && differs) {
@@ -207,26 +223,6 @@ private:
     );
     tracked_ = std::move(next);
     return updates;
-  }
-
-  // Returns the entry already built for `ref` in this listing, or `nullptr`.
-  static Tracked* seen(std::vector<Tracked>& built, const OrderRef<Broker>& ref) {
-    for (auto& entry : built) {
-      if (entry.ref_ == ref) {
-        return &entry;
-      }
-    }
-    return nullptr;
-  }
-
-  // Returns the tracked entry for `ref`, or `nullptr`.
-  const Tracked* find(const OrderRef<Broker>& ref) const {
-    for (const auto& entry : tracked_) {
-      if (entry.ref_ == ref) {
-        return &entry;
-      }
-    }
-    return nullptr;
   }
 
   std::vector<Tracked> tracked_;

@@ -4,10 +4,13 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace algotradelib;
@@ -2724,4 +2727,232 @@ TEST_CASE("a limit fill held at the bar's far extreme is counted as bounded", "[
   REQUIRE(sell.execution_);
   CHECK(sell.execution_->fill_.price_ == Decimal64::parse("71000"));
   CHECK(sell.bounded_);
+}
+
+// ---------------------------------------------------------------------------------------------
+// OrderUpdateWatch
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+
+using WatchRow = WorkingOrder<algotradelib::runner::DryTag>;
+
+/** A listed row: the reference's two parts, a status and a filled quantity. */
+WatchRow watch_row(
+  const std::string& primary, const std::string& secondary, OrderStatus status, const char* filled = "0"
+) {
+  WatchRow row;
+  row.ref_ = OrderRef<algotradelib::runner::DryTag>{primary, secondary};
+  row.order_.order_id_ = primary;
+  row.order_.status_ = status;
+  row.order_.quantity_ = Decimal64::parse("10");
+  row.order_.execution_.filled_quantity_ = Decimal64::parse(filled);
+  return row;
+}
+
+/** The order ids of a batch of updates, in the order reported. */
+std::vector<std::string> ids_of(const std::vector<OrderSnapshot>& updates) {
+  std::vector<std::string> ids;
+  for (const auto& update : updates) {
+    ids.push_back(update.order_id_);
+  }
+  return ids;
+}
+
+/**
+ * The watch's rule written the long way, one scan of the listing per row: what `OrderUpdateWatch`
+ * must report, whatever it keeps to find a reference quickly.
+ */
+class ScanningWatch {
+public:
+  std::vector<OrderSnapshot> changed(const std::vector<WatchRow>& rows) {
+    struct Entry {
+      OrderRef<algotradelib::runner::DryTag> ref_;
+      OrderSnapshot last_;
+      bool contradicted_{false};
+    };
+    std::vector<Entry> next;
+    for (const auto& row : rows) {
+      if (row.reserved_) {
+        continue;
+      }
+      if (row.ref_.primary_.empty() && row.ref_.secondary_.empty()) {
+        ++untracked_;
+        continue;
+      }
+      Entry* already = nullptr;
+      for (auto& entry : next) {
+        if (entry.ref_ == row.ref_) {
+          already = &entry;
+          break;
+        }
+      }
+      if (already == nullptr) {
+        next.push_back(Entry{row.ref_, row.order_, false});
+      } else if (!algotradelib::runner::order_update_detail::same_observable_state(already->last_, row.order_)) {
+        already->contradicted_ = true;
+      }
+    }
+    std::vector<OrderSnapshot> updates;
+    std::vector<std::pair<OrderRef<algotradelib::runner::DryTag>, OrderSnapshot>> kept;
+    for (const auto& entry : next) {
+      if (entry.contradicted_) {
+        ++contradicted_;
+        continue;
+      }
+      const OrderSnapshot* held = nullptr;
+      for (const auto& old : tracked_) {
+        if (old.first == entry.ref_) {
+          held = &old.second;
+          break;
+        }
+      }
+      if (held == nullptr || !algotradelib::runner::order_update_detail::same_observable_state(*held, entry.last_)) {
+        updates.push_back(entry.last_);
+      }
+      kept.emplace_back(entry.ref_, entry.last_);
+    }
+    tracked_ = std::move(kept);
+    return updates;
+  }
+
+  std::size_t tracked_orders() const noexcept { return tracked_.size(); }
+  std::size_t untracked_rows() const noexcept { return untracked_; }
+  std::size_t contradicted_rows() const noexcept { return contradicted_; }
+
+private:
+  std::vector<std::pair<OrderRef<algotradelib::runner::DryTag>, OrderSnapshot>> tracked_;
+  std::size_t untracked_{0};
+  std::size_t contradicted_{0};
+};
+
+} // namespace
+
+TEST_CASE("an order-update watch reports the rows that changed, in the listing's order", "[order-updates]") {
+  algotradelib::runner::OrderUpdateWatch<algotradelib::runner::DryTag> watch;
+
+  // New rows are reported in the order listed; a second part distinguishes two orders.
+  CHECK(
+    ids_of(watch.changed({
+      watch_row("c", "", OrderStatus::PENDING),
+      watch_row("a", "1", OrderStatus::PENDING),
+      watch_row("a", "2", OrderStatus::PENDING),
+    })) == std::vector<std::string>{"c", "a", "a"}
+  );
+  CHECK(watch.tracked_orders() == 3);
+
+  // Nothing moved; then one fills in part and one leaves.
+  CHECK(watch.changed({
+    watch_row("c", "", OrderStatus::PENDING),
+    watch_row("a", "1", OrderStatus::PENDING),
+    watch_row("a", "2", OrderStatus::PENDING),
+  }).empty());
+  const auto moved = watch.changed({
+    watch_row("a", "2", OrderStatus::PARTIAL_FILLED, "4"),
+    watch_row("c", "", OrderStatus::PENDING),
+  });
+  REQUIRE(moved.size() == 1);
+  CHECK(moved.front().status_ == OrderStatus::PARTIAL_FILLED);
+  CHECK(watch.tracked_orders() == 2);
+
+  // An order that left and returns is new again; a quantity written at another scale is no change.
+  auto rescaled = watch_row("c", "", OrderStatus::PENDING);
+  rescaled.order_.quantity_ = Decimal64(100, 1);
+  CHECK(
+    ids_of(watch.changed({
+      rescaled,
+      watch_row("a", "1", OrderStatus::PENDING),
+      watch_row("a", "2", OrderStatus::PARTIAL_FILLED, "4"),
+    })) == std::vector<std::string>{"a"}
+  );
+
+  // A baseline taken silently reports nothing, and is what the next listing is compared with.
+  algotradelib::runner::OrderUpdateWatch<algotradelib::runner::DryTag> adopted;
+  adopted.adopt({watch_row("x", "", OrderStatus::PENDING), watch_row("y", "", OrderStatus::PENDING)});
+  CHECK(adopted.tracked_orders() == 2);
+  CHECK(
+    ids_of(adopted.changed({
+      watch_row("x", "", OrderStatus::PENDING),
+      watch_row("y", "", OrderStatus::PARTIAL_FILLED, "1"),
+      watch_row("z", "", OrderStatus::PENDING),
+    })) == std::vector<std::string>{"y", "z"}
+  );
+}
+
+TEST_CASE("an order listed twice is one order, and two disagreeing readings are none", "[order-updates]") {
+  algotradelib::runner::OrderUpdateWatch<algotradelib::runner::DryTag> watch;
+  auto reserved = watch_row("r", "", OrderStatus::PENDING);
+  reserved.reserved_ = true;
+
+  // `b` is stated twice and disagrees, between two orders that are stated once; `d` twice and agrees.
+  const auto first = watch.changed({
+    watch_row("a", "", OrderStatus::PENDING),
+    watch_row("b", "", OrderStatus::PENDING),
+    watch_row("c", "", OrderStatus::PENDING),
+    watch_row("d", "", OrderStatus::PENDING),
+    watch_row("b", "", OrderStatus::PARTIAL_FILLED, "3"),
+    watch_row("d", "", OrderStatus::PENDING),
+    watch_row("", "", OrderStatus::PENDING),
+    reserved,
+  });
+  CHECK(ids_of(first) == std::vector<std::string>{"a", "c", "d"});
+  CHECK(watch.contradicted_rows() == 1);
+  CHECK(watch.untracked_rows() == 1);
+  CHECK(watch.tracked_orders() == 3);
+
+  // The contradicted order kept no baseline, so it is new once it is stated once; the orders listed
+  // after it are still compared with their own last reading, not with a neighbour's.
+  const auto second = watch.changed({
+    watch_row("a", "", OrderStatus::PENDING),
+    watch_row("b", "", OrderStatus::PENDING),
+    watch_row("c", "", OrderStatus::PENDING),
+    watch_row("d", "", OrderStatus::PARTIAL_FILLED, "2"),
+  });
+  CHECK(ids_of(second) == std::vector<std::string>{"b", "d"});
+  CHECK(watch.tracked_orders() == 4);
+  CHECK(watch.contradicted_rows() == 1);
+}
+
+TEST_CASE("an order-update watch reports what a row-by-row scan of the listings reports", "[order-updates]") {
+  // Listings drawn from a small pool of references, so orders repeat, leave, return and are stated
+  // twice. A fixed sequence: the same every run.
+  std::uint32_t state = 20261013;
+  const auto draw = [&state](std::uint32_t below) {
+    state = state * 1664525u + 1013904223u;
+    return (state >> 8) % below;
+  };
+  const std::array<OrderStatus, 3> statuses{OrderStatus::PENDING, OrderStatus::PARTIAL_FILLED, OrderStatus::UNKNOWN};
+  const std::array<const char*, 3> fills{"0", "3", "7"};
+
+  algotradelib::runner::OrderUpdateWatch<algotradelib::runner::DryTag> watch;
+  ScanningWatch scanning;
+  for (int listing = 0; listing < 400; ++listing) {
+    std::vector<WatchRow> rows;
+    const auto count = draw(40);
+    for (std::uint32_t at = 0; at < count; ++at) {
+      const auto primary = draw(25) == 0 ? std::string() : "o" + std::to_string(draw(12));
+      const auto secondary = draw(4) == 0 ? "s" + std::to_string(draw(2)) : std::string();
+      // Most rows keep the reading the reference had last; some move.
+      const bool moves = draw(5) == 0;
+      auto row = watch_row(
+        primary, secondary, moves ? statuses[draw(3)] : OrderStatus::PENDING, moves ? fills[draw(3)] : "0"
+      );
+      row.reserved_ = draw(20) == 0;
+      rows.push_back(row);
+    }
+    const auto expected = scanning.changed(rows);
+    const auto reported = watch.changed(rows);
+    INFO("listing " << listing << " of " << rows.size() << " rows");
+    REQUIRE(reported.size() == expected.size());
+    for (std::size_t at = 0; at < reported.size(); ++at) {
+      CHECK(reported[at].order_id_ == expected[at].order_id_);
+      CHECK(algotradelib::runner::order_update_detail::same_observable_state(reported[at], expected[at]));
+    }
+    REQUIRE(watch.tracked_orders() == scanning.tracked_orders());
+    REQUIRE(watch.untracked_rows() == scanning.untracked_rows());
+    REQUIRE(watch.contradicted_rows() == scanning.contradicted_rows());
+  }
+  // The sequence did exercise the rules it is there for.
+  CHECK(scanning.contradicted_rows() > 20);
+  CHECK(scanning.untracked_rows() > 20);
 }
