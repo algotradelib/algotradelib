@@ -3433,11 +3433,11 @@ private:
   }
 
   // Parses a KIS order-instruction response into its composite acknowledgement. `operation` and
-  // `demo` describe the request this reply answers.
+  // `demo` describe the request this reply answers; left out, no refusal is recognized.
   static Result<KisOrderAck> parse_order_ack(
     Result<network::HttpResponse> result,
-    OrderOperation operation,
-    bool demo
+    OrderOperation operation = OrderOperation::UNCLASSIFIED,
+    bool demo = false
   ) {
     if (!result) {
       return Result<KisOrderAck>(std::move(result.error()));

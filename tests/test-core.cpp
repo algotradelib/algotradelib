@@ -250,7 +250,7 @@ struct KisClientTestAccess {
   using Operation = KisClient::OrderOperation;
 
   static Result<KisOrderAck> parse_order_ack(Result<network::HttpResponse> response) {
-    return KisClient::parse_order_ack(std::move(response), Operation::UNCLASSIFIED, false);
+    return KisClient::parse_order_ack(std::move(response));
   }
 
   static Result<KisOrderAck> parse_order_ack(

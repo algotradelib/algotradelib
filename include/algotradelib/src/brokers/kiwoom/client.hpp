@@ -3201,12 +3201,13 @@ private:
   //
   // The symbol comes from the request rather than the response, because Kiwoom's order responses
   // carry `ord_no` and the venue and no `stk_cd` at all — and the reference needs the symbol to be
-  // usable for a later amendment.
+  // usable for a later amendment. `operation` and `demo` describe the request this reply answers;
+  // left out, no refusal is recognized.
   static Result<KiwoomOrderAck> parse_order_ack(
     const std::string& symbol,
     Result<network::HttpResponse> result,
-    KiwoomOrderOperation operation,
-    bool demo
+    KiwoomOrderOperation operation = KiwoomOrderOperation::UNCLASSIFIED,
+    bool demo = false
   ) {
     auto body = document(std::move(result), operation, demo);
     if (!body) {

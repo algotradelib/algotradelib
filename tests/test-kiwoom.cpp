@@ -75,7 +75,7 @@ struct KiwoomClientTestAccess {
     network::HttpResponse response
   ) {
     return KiwoomClient::parse_order_ack(
-      symbol, Result<network::HttpResponse>(std::move(response)), KiwoomOrderOperation::UNCLASSIFIED, false
+      symbol, Result<network::HttpResponse>(std::move(response))
     );
   }
 
