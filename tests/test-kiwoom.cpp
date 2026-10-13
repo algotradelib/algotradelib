@@ -1436,6 +1436,43 @@ TEST_CASE("a cancelled order's own history row ends once its cancellation names 
     CHECK(Access::history_row(other, date, false).type_ == OrderType::LIMIT);
     CHECK(Access::history_row(other, date, true).time_in_force_ == TimeInForce::DAY);
   }
+  SECTION("a cancellation's own row, now a limit row without a price, is nobody's placement") {
+    // The demo writes the cancellation's row with the same label and no price. With a shape it must not
+    // become a row a sweep could take for an order: not for a limit placement, not for a market one.
+    auto object = json::parse(cancel).as_object();
+    object["ord_uv"] = "0";
+    const auto cancelled = Access::history_row(object, date, true);
+    CHECK(cancelled.type_ == OrderType::LIMIT);
+    CHECK_FALSE(cancelled.price_.has_value());
+    REQUIRE(cancelled.ordered_at_);
+
+    runner::OpenInstruction limit;
+    limit.entry_.action_ = runner::JournalAction::PLACE;
+    limit.entry_.outcome_ = runner::JournalOutcome::PENDING;
+    limit.entry_.recorded_at_ = *cancelled.ordered_at_;
+    limit.entry_.instrument_ = cancelled.instrument_;
+    limit.entry_.side_ = OrderSide::BUY;
+    limit.entry_.type_ = OrderType::LIMIT;
+    limit.entry_.time_in_force_ = TimeInForce::DAY;
+    limit.entry_.session_ = OrderSession::REGULAR;
+    limit.entry_.venue_ = cancelled.venue_;
+    limit.entry_.quantity_ = Decimal64::parse("10");
+    limit.entry_.price_ = Decimal64::parse("221000");
+    limit.opened_at_ = limit.entry_.recorded_at_;
+    auto market = limit;
+    market.entry_.type_ = OrderType::MARKET;
+    market.entry_.price_.reset();
+    auto unrouted = limit;
+    unrouted.entry_.venue_.reset();
+    for (const auto& instruction : {limit, market, unrouted}) {
+      CHECK_FALSE(runner::row_corresponds(instruction, cancelled, runner::MatchWindow{}));
+      CHECK_FALSE(runner::row_might_correspond(instruction, cancelled, runner::MatchWindow{}));
+    }
+    // The order it cancels, a limit row with its price, is the limit placement's.
+    const auto placed = Access::history_row(json::parse(original).as_object(), date, true);
+    CHECK(runner::row_corresponds(limit, placed, runner::MatchWindow{}));
+    CHECK_FALSE(runner::row_corresponds(limit, Access::history_row(json::parse(original).as_object(), date, false), runner::MatchWindow{}));
+  }
   SECTION("a bare 취소 on a real account is not a completed cancellation") {
     const auto orders = Access::history_rows({original, cancel}, date, false);
     CHECK(orders[0].status_ == OrderStatus::UNKNOWN);

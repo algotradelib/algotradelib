@@ -507,7 +507,8 @@ inline std::string compact_text(const Date& date) {
  *   listings report, and the normalized shape.
  *
  * Working-order listings (`ka10075`, `ka10076`) and history (`kt00007`, `kt00009`) name some shapes
- * differently (`보통` vs `지정가`), hence two names.
+ * differently (`보통` vs `지정가`), hence two names. These are the documented names; a server may write
+ * another (the demo server's history says `보통가`, which `KiwoomClient` reads on the demo only).
  */
 struct KiwoomOrderShapeRow {
   /** @brief The numeric `trde_tp` a request carries, or null for a shape this library cannot send. */
