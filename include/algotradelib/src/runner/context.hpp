@@ -185,8 +185,9 @@ public:
   /**
    * @brief Returns an instrument's reference data without copying it.
    * @param id The instrument.
-   * @return A pointer to the reference data (valid while the context lives; `set_instrument` for
-   *   the same instrument replaces what it points at), or `nullptr` if the runner has not loaded it.
+   * @return A pointer to the reference data, or `nullptr` if the runner has not loaded it. The
+   *   pointer stays valid across later `set_instrument` calls (one for the same instrument replaces
+   *   what it points at) until the context is destroyed or assigned to.
    */
   const Instrument* find_instrument(const InstrumentId& id) const {
     const auto found = instruments_.find(id);
