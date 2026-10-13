@@ -3751,6 +3751,7 @@ using KisOperation = kis::KisClientTestAccess::Operation;
 
 constexpr const char* KIS_NOTHING_TO_CANCEL = "모의투자 정정/취소할 수량이 없습니다.";
 constexpr const char* KIS_NOTHING_HELD = "모의투자 잔고내역이 없습니다.";
+constexpr const char* KIS_MARKET_CLOSED = "모의투자 장종료 입니다.";
 
 /** A KIS failure envelope with the given code and message, and `extra` appended inside the object. */
 std::string kis_refusal_body(const std::string& code, const std::string& message, const std::string& extra = "") {
@@ -3798,6 +3799,22 @@ TEST_CASE("a KIS demo cash order refusal the client recognizes is a rejection", 
     CHECK(runner::outcome_of(result.error()) == runner::SendOutcome::REJECTED);
   }
 
+  SECTION("a placement after the market has closed") {
+    const auto result = kis::KisClientTestAccess::parse_order_ack(
+      json_response(kis_refusal_body("40580000", KIS_MARKET_CLOSED)), KisOperation::PLACE, true
+    );
+    REQUIRE_FALSE(result);
+    CHECK(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+    CHECK(result.error().reached_broker_);
+    CHECK(result.error().http_status_ == 200);
+    CHECK(result.error().broker_code_ == "40580000");
+    CHECK(
+      result.error().message_ ==
+      std::string(KIS_MARKET_CLOSED) + " (recognized refusal: KIS demo, cash placement, 40580000)"
+    );
+    CHECK(runner::outcome_of(result.error()) == runner::SendOutcome::REJECTED);
+  }
+
   SECTION("an empty acknowledgement beside it, or the original order echoed, changes nothing") {
     for (const char* extra : {
            R"(,"output":{})",
@@ -3823,8 +3840,14 @@ TEST_CASE("a KIS order refusal outside the recognized replies stays an unknown o
   };
   const std::string cancel = kis_refusal_body("40330000", KIS_NOTHING_TO_CANCEL);
   const std::string place = kis_refusal_body("40240000", KIS_NOTHING_HELD);
+  const std::string closed = kis_refusal_body("40580000", KIS_MARKET_CLOSED);
 
   SECTION("the real server, another operation, or no operation") {
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(closed), KisOperation::PLACE, false)));
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(closed), KisOperation::CANCEL, true)));
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(closed), KisOperation::AMEND, true)));
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(closed), KisOperation::UNCLASSIFIED, true)));
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(closed))));
     CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(cancel), KisOperation::CANCEL, false)));
     CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(place), KisOperation::PLACE, false)));
     CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(cancel), KisOperation::PLACE, true)));
@@ -3856,6 +3879,14 @@ TEST_CASE("a KIS order refusal outside the recognized replies stays an unknown o
       CHECK(unknown(
         kis::KisClientTestAccess::parse_order_ack(
           json_response(kis_refusal_body(code, KIS_NOTHING_TO_CANCEL)), KisOperation::CANCEL, true
+        )
+      ));
+    }
+    for (const char* code : {"40580001", "4058000", "405800000", " 40580000", "40580000 ", "40330000", ""}) {
+      CAPTURE(code);
+      CHECK(unknown(
+        kis::KisClientTestAccess::parse_order_ack(
+          json_response(kis_refusal_body(code, KIS_MARKET_CLOSED)), KisOperation::PLACE, true
         )
       ));
     }
@@ -3923,6 +3954,11 @@ TEST_CASE("a KIS order refusal outside the recognized replies stays an unknown o
       CHECK(unknown(
         kis::KisClientTestAccess::parse_order_ack(
           json_response(kis_refusal_body("40240000", KIS_NOTHING_HELD, extra)), KisOperation::PLACE, true
+        )
+      ));
+      CHECK(unknown(
+        kis::KisClientTestAccess::parse_order_ack(
+          json_response(kis_refusal_body("40580000", KIS_MARKET_CLOSED, extra)), KisOperation::PLACE, true
         )
       ));
     }

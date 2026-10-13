@@ -692,8 +692,9 @@ enum class ErrorCategory {
   /**
    * @brief The request was invalid, refused by the client before sending or by the broker.
    *
-   * By the broker: `reached_broker_` is set. That includes the two order refusals the KIS and Kiwoom
-   * clients recognize from their demo servers (nothing to sell, nothing left to cancel).
+   * By the broker: `reached_broker_` is set. That includes the order refusals the KIS and Kiwoom
+   * clients recognize from their demo servers (nothing to sell, the market closed, nothing left to
+   * cancel).
    */
   INVALID_ARGUMENT,
 };

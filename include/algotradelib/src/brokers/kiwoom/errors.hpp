@@ -177,11 +177,12 @@ inline std::string_view kiwoom_refusal_code(std::string_view message) noexcept {
 }
 
 /**
- * @brief Reads the refusal a demo cash-order reply states, for the two replies this client
- *   recognizes as one.
+ * @brief Reads the refusal a demo cash-order reply states, for the replies this client recognizes
+ *   as one.
  *
- * A placement answered `800033` (not enough to sell) and a cancellation answered `RC4033` (nothing
- * left to amend or cancel), as the demo server sends them. Such a reply is `INVALID_ARGUMENT` with
+ * A placement answered `800033` (not enough to sell) or `RC4058` (the market has closed), and a
+ * cancellation answered `RC4033` (nothing left to amend or cancel), as the demo server sends them.
+ * Such a reply is `INVALID_ARGUMENT` with
  * `reached_broker_` set, which a runner reads as a rejection; any other reply with `return_code` 20
  * stays `PROTOCOL`, an unknown outcome.
  *
@@ -198,7 +199,7 @@ inline std::string_view kiwoom_refusal_code(std::string_view message) noexcept {
  * @param operation The instruction the reply answers.
  * @param demo Whether the request went to the demo server.
  * @return The error (`broker_code_` the inner code, `message_` Kiwoom's `return_msg` followed by the
- *   outer code and the rule that matched), or `std::nullopt` if the reply is not one of the two.
+ *   outer code and the rule that matched), or `std::nullopt` if the reply is not one of them.
  */
 inline std::optional<BrokerError> kiwoom_recognized_refusal(
   int http_status,
@@ -206,16 +207,7 @@ inline std::optional<BrokerError> kiwoom_recognized_refusal(
   KiwoomOrderOperation operation,
   bool demo
 ) {
-  std::string_view expected;
-  const char* name = "";
-  if (operation == KiwoomOrderOperation::PLACE) {
-    expected = "800033";
-    name = "placement";
-  } else if (operation == KiwoomOrderOperation::CANCEL) {
-    expected = "RC4033";
-    name = "cancellation";
-  }
-  if (!demo || expected.empty() || http_status != 200) {
+  if (!demo || http_status != 200) {
     return std::nullopt;
   }
   const auto code = document.if_contains("return_code");
@@ -224,8 +216,16 @@ inline std::optional<BrokerError> kiwoom_recognized_refusal(
     (code->is_string() && code->as_string() == "20")
   );
   const auto message = document.if_contains("return_msg");
-  if (!generic || !message || !message->is_string() ||
-      kiwoom_refusal_code(std::string_view(message->as_string())) != expected) {
+  if (!generic || !message || !message->is_string()) {
+    return std::nullopt;
+  }
+  const std::string stated(kiwoom_refusal_code(std::string_view(message->as_string())));
+  const char* name = "";
+  if (operation == KiwoomOrderOperation::PLACE && (stated == "800033" || stated == "RC4058")) {
+    name = "placement";
+  } else if (operation == KiwoomOrderOperation::CANCEL && stated == "RC4033") {
+    name = "cancellation";
+  } else {
     return std::nullopt;
   }
   if (const auto number = document.if_contains("ord_no");
@@ -246,9 +246,9 @@ inline std::optional<BrokerError> kiwoom_recognized_refusal(
   error.category_ = ErrorCategory::INVALID_ARGUMENT;
   error.reached_broker_ = true;
   error.http_status_ = http_status;
-  error.broker_code_ = std::string(expected);
+  error.broker_code_ = stated;
   error.message_ = std::string(message->as_string()) + " (return_code 20; recognized refusal: Kiwoom demo, cash " +
-    name + ", " + std::string(expected) + ")";
+    name + ", " + stated + ")";
   return error;
 }
 

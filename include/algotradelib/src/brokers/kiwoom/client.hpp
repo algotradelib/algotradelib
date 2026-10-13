@@ -1234,9 +1234,10 @@ public:
    * document (both `PROTOCOL`). Read `async_open_orders` or `async_order_history` before placing
    * again, since Kiwoom has no idempotency key.
    *
-   * One refusal is recognized as one, on a demo account only: the demo server's `800033` (not enough
-   * to sell) is `INVALID_ARGUMENT` with `reached_broker_` set, which `runner::outcome_of` reads as
-   * `REJECTED` (`kiwoom_recognized_refusal`). The same reply from the real server stays `PROTOCOL`.
+   * Two refusals are recognized as refusals, on a demo account only: the demo server's `800033` (not
+   * enough to sell) and `RC4058` (the market has closed) are `INVALID_ARGUMENT` with `reached_broker_`
+   * set, which `runner::outcome_of` reads as `REJECTED` (`kiwoom_recognized_refusal`). The same reply
+   * from the real server stays `PROTOCOL`.
    *
    * Refused before sending, among others: an instrument that is not Korean or whose `venue_` is not
    * `COMBINED` (route with `OrderRequest::venue_`); no venue on the order; a client order id; a

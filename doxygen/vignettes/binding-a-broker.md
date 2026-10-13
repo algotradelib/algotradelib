@@ -331,10 +331,11 @@ An HTTP 4xx, an authentication failure, an invalid argument and a rate-limit ref
 the order does not exist, so nothing needs reconciling. At KIS, Toss and Kiwoom most refusals arrive
 as `PROTOCOL` instead, so they are treated as unknown and the instrument is reconciled.
 
-Two refusals are recognized as answers, on the KIS and Kiwoom **demo** servers only: a cash sell
-refused because nothing is held to sell (KIS `40240000`, Kiwoom `800033`), and a cancellation refused
-because nothing is left to cancel (KIS `40330000`, Kiwoom `RC4033`), which is what a cancellation of an
-order that has just filled gets. The reply must be an HTTP 200 that states the code and carries no new
+Three refusals are recognized as answers, on the KIS and Kiwoom **demo** servers only: a cash sell
+refused because nothing is held to sell (KIS `40240000`, Kiwoom `800033`), a cash order refused because
+the market has closed (KIS `40580000`, Kiwoom `RC4058`), and a cancellation refused because nothing is
+left to cancel (KIS `40330000`, Kiwoom `RC4033`), which is what a cancellation of an order that has
+just filled gets. The reply must be an HTTP 200 that states the code and carries no new
 acknowledgement (the original order's number, echoed, is not one); it is then `INVALID_ARGUMENT` with
 `reached_broker_` set, and its message ends by naming the rule: `recognized refusal: KIS demo, cash
 cancellation, 40330000)`, for example. The same reply from a real server is not recognized: no real-account
