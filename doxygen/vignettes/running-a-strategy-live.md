@@ -327,7 +327,7 @@ refused flatten is reported once rather than twice.
 | --- | --- |
 | `orders_unbuildable_` | reconciliation could not build the instruction: no reference data, no price, an unknown grid — **or a quantity that rounded to zero**, which is a deliberate drop rather than a fault, so a non-zero figure is not by itself a reason to go looking for missing data |
 | `orders_reconcile_withheld_` | the indeterminacy ledger is holding that instrument: until a listing settles an unknown outcome, or, after a confirmation timeout, until you clear it (or a restart, below). A serialized runner keeps the target and counts it again at each later holdings read |
-| `orders_unconfirmed_timed_out_` | an order this run sent was not confirmed by holdings, a listing or its history within the confirmation timeout, or, once its history settled it, a holdings read a timeout later did not show the fill; its instrument is now withheld until you clear it or the process restarts (below) |
+| `orders_unconfirmed_timed_out_` | an order this run sent was not confirmed by holdings, a listing or its history within the confirmation timeout, or, once its history settled it, a holdings read a timeout later did not show the fill. A serialized runner goes on owing it: its instrument waits for holdings or the order's history, or for you if no sweep ever named it. An overlapping runner withholds the instrument until you clear the ledger or the process restarts (below) |
 | `orders_guard_refused_` | `RiskGuard` refused it — **a hold as well as a limit**, since it checks the active holds first, so a halted run reports every order here. Nothing was sent |
 | `orders_binding_refused_` | the binding would not send it, or could not reach the broker (a DNS, connect or TLS failure; such an order is kept and retried, see the kept-instructions rules); no request went out |
 | `orders_broker_refused_` | the broker was asked and said no; a request was spent. At KIS, Toss and Kiwoom most refusals are counted in the next row instead (on the KIS and Kiwoom demo servers a sell with nothing to sell is counted here) |
@@ -769,16 +769,24 @@ explains yet: the order's quantity, less what holdings have moved since in its d
 listing still shows for it. It ends when holdings show the whole quantity. An order that left the
 listing, or that the runner withdrew, is looked up in the order history after the next listing
 (`SessionSource` reads it on demand), and its filled quantity becomes what holdings must show; one that
-ended with nothing filled is forgotten. On a loop with a market calendar, a DAY order's history row is
-taken as final once the session closed. An order whose quantity stays unexplained for ten minutes
-(`set_confirmation_timeout`) is looked up once more; if the history says what it filled, holdings get
-one more timeout (judged by a holdings read taken that much later) to show it. One still unexplained
-then **withholds its instrument in the ledger** until you clear it (or the process restarts: the ledger
-is in memory; and a sweep that resolves another open instruction on the same instrument lifts it too),
-counted as `LoopReport::orders_unconfirmed_timed_out_`: a timeout too short costs trading, never a
-second order. Either way the mark waits for a holdings read taken a full timeout after the quantity
-became unexplained (or after the history settled it), so a slow holdings cadence delays it, never makes
-it early.
+ended with nothing filled is forgotten. For a runner that overlaps orders, on a loop with a market
+calendar, a DAY order's history row is taken as final once the session closed. An order whose quantity
+stays unexplained for ten minutes (`set_confirmation_timeout`) is looked up once more; if the history
+says what it filled, holdings get one more timeout (judged by a holdings read taken that much later) to
+show it. One still unexplained then is counted as `LoopReport::orders_unconfirmed_timed_out_`, and what
+follows depends on the runner:
+
+- **A serialized runner** (`Runner::serialized`, the default for one that journals what it sends) goes
+  on owing the order. Its instrument stays withheld until holdings or the order's own history account
+  for it, in this process and after a restart, since the journal restores it. The ledger is marked only
+  for an order no sweep ever named.
+- **A runner that overlaps orders** withholds the instrument in the ledger until you clear it (or the
+  process restarts: the ledger is in memory; and a sweep that resolves another open instruction on the
+  same instrument lifts it too).
+
+A timeout too short costs trading, never a second order. Either way the count waits for a holdings read
+taken a full timeout after the quantity became unexplained (or after the history settled it), so a slow
+holdings cadence delays it, never makes it early.
 
 **An order whose reply was lost is counted the same way, from the send.** Its instrument is
 withheld in the ledger until a sweep of the broker's lists says what became of it, and meanwhile the
@@ -788,12 +796,61 @@ time out while the ledger holds the instrument. When the sweep finds it (`MATCHE
 counted on, by the number the sweep found, until holdings show it, and the ledger lets the instrument
 trade again once the sweep has decided everything open on it. (Otherwise a market order that had filled
 would be in no listing, holdings lagging the fill would not show it, and the next bar's target would buy
-it again.) When the sweep concludes it was never placed (`NOT_PLACED`),
-it is forgotten. `SessionSource` does this for every recorded resolution; a source of your own that
+it again.) `SessionSource` does this for every recorded resolution; a source of your own that
 calls `reconcile_against` should call `Runner::resolve_indeterminate_placement` the same way, and so
 must you after clearing the ledger by hand: an order nothing names once the ledger is clear shows as a
 reserved row with no broker reference (a resting one is then counted beside its own listed row), waits
 for holdings, and past the confirmation timeout withholds its instrument again, counted.
+
+**When the sweep finds no order (`NOT_PLACED`), the two kinds of runner part.** The finding is that no
+row of the order list or of the order history of its send matched within the window, and the journal
+line says that and no more: a list can lag an order the broker accepted, and nothing the brokers
+publish says "every order accepted so far is listed".
+
+- A runner that overlaps orders forgets the order.
+- A serialized runner keeps it owed, with no name (`ObligationState::UNNAMED`), and places nothing on
+  its instrument. From then on `SessionSource` looks for it again at every order-list read, in the order
+  history of the days around its send, and names it on one dated row of the same shape inside the send's
+  window, never on an undated row and never on a row the journal gives to another order. A named order
+  is accounted for as any other, by holdings or its own history. If no such row ever comes (the request
+  did not reach the broker, or the row never appears), only `Runner::release_obligations` ends it, in
+  this process and after a restart. The search costs one history read per order-list read while such an
+  order is owed.
+
+### An order nobody can account for stops the run
+
+One instrument held back does not hold back the rest of a strategy. A pair goes on trading its other
+leg against one that cannot move; a rotation buys the next name beside one it could not sell. Every
+order stays inside its own limits while the account holds what the strategy never asked for.
+`RiskLimits::max_gross_exposure_` bounds what such a run can buy on top; nothing in the library keeps
+two legs together.
+
+So a loop stops placing by itself. Once it has read the order list, if a serialized runner has owed an
+order for longer than ten minutes (`PollingLoop::set_owed_order_limit`) and that order has no name
+(`UNNAMED`) or is held for an operator (`OPERATOR`), the loop requests a `quiesce`: nothing more is
+placed on any instrument, nothing is cancelled or closed, and the order is still owed.
+`LoopReport::owed_stop_` names the order and a note says what to do; `example-live-program` exits 8.
+The check runs before anything is fed, so a start with such an order from an earlier day places
+nothing at all, on any instrument, and stops again at every start until the order is accounted for.
+
+What it does not do:
+
+- **It does not repair anything.** An order lost beside another sent in the same pass leaves the account
+  as that pass left it: one leg of two, or three names where two were meant. The stop keeps it from
+  getting worse.
+- **It does not say the order failed.** An order the broker accepted, whose reply was lost and whose row
+  no list showed within the limit, stops the run too.
+- **It does not watch an order the broker named.** Such an order waits for holdings or its history
+  however long that takes; `Runner::obligations` lists it with the time it was sent.
+
+To go on, read the broker's order list, order history and holdings for the instrument yourself and
+decide what the account should hold (cancel the order if it is resting). Then, in a program of your
+own: `Runner::release_obligations(instrument, reason)`, `ledger().resolve_after_reading_orders(instrument)`
+if the ledger still holds the instrument (a release leaves the ledger alone), `StopSource::clear` and
+`guard().resume(strategy::HaltReason::STOPPING)`; the next order on the instrument waits for a holdings
+read received after the release. `example-live-program` has no command for a release: once the account
+is reconciled by hand, move the journal aside, keeping it, and the next start begins a new one.
+`set_owed_order_limit(0)` turns the stop off, for a program that watches `Runner::obligations` itself.
 
 **A target never re-places what it only reserved.** A reserved row has often filled already,
 so when a target finds more working on its side than it wants, it still withdraws every row there, but
@@ -941,12 +998,13 @@ with `GuardReason::VALUE_NOT_KNOWN` until you register it.
 
 ## What this does not do yet
 
-- **Remember an unconfirmed order across a restart.** The in-process rule above
-  (`unconfirmed_orders`) lives in memory. A process started inside the lag of its predecessor's last
-  order does not know it, feeds the newest bar again, and a target can send the order twice.
-  The same holds for a predecessor's order whose acknowledgement was lost and that the new process's
-  sweep finds: in process such an order is counted (above), across a restart it is not. Until the
-  journal carries it, let a restarted daily strategy start after holdings have caught up: at the KIS demo both lags were below one second-paced poll.
+- **Remember an unconfirmed order across a restart, for a runner that overlaps orders.** A serialized
+  runner restores every order its journal leaves unaccounted for (`runner::recover_runner`). After
+  `Runner::allow_overlapping_orders`, or with no journal, the rule above lives in memory: a process
+  started inside the lag of its predecessor's last order does not know it, feeds the newest bar again,
+  and a target can send the order twice.
+- **Release an order nobody can find.** A serialized runner's order whose request never reached the
+  broker is owed until you release it (above); no rule ends it at the close of its session.
 - **Stream.** It polls; streaming would plug into the same source seam.
 - **Run more than one loop.** One loop, one thread.
 - **Tell you whether the sellable figure already excludes your resting orders.** Neither broker

@@ -26,11 +26,13 @@
  *  7. **Unattended, watch for orders that stay owed.** A serialized order keeps its instrument until
  *     holdings or its own history account for it, and the indeterminacy ledger need not say so: an order
  *     counted as timed out (`Runner::orders_unconfirmed_timed_out`) marks it only if it was never named,
- *     and one whose history reads keep failing is not counted at all. Watch how long each order has been
- *     owed (`Runner::obligations`, its `sent_at_`), an `OPERATOR` state (`Runner::obligation_state`) and
- *     a non-empty `Runner::ledger`. `PollingLoop::run` reports only when it returns and has no hook inside
- *     a run; calling it in short chunks is no substitute, since each call starts its failure budget and
- *     poll schedule afresh.
+ *     and one whose history reads keep failing is not counted at all. The loop stops placing by itself
+ *     for the two kinds nobody but you can end: an order no sweep has named and one held for an operator,
+ *     owed longer than `Settings::owed_order_limit_` (`Exit::OWED_ORDER`). An order the broker named is
+ *     not watched that way: watch how long each has been owed (`Runner::obligations`, its `sent_at_`)
+ *     and a non-empty `Runner::ledger`. `PollingLoop::run` reports only when it returns and has no hook
+ *     inside a run; calling it in short chunks is no substitute, since each call starts its failure
+ *     budget and poll schedule afresh.
  */
 
 #include <algotradelib/live>
@@ -397,7 +399,13 @@ Exit trade(
   }
   if (report.owed_stop_) {
     out << "OWED ORDER      : the run stopped placing by itself (see the note above). A supervisor must not\n"
-        << "                  restart it: the order is restored from the journal and the run stops again\n";
+        << "                  restart it: the order is restored from the journal and the run stops again.\n"
+        << "  1. read the broker's order list, order history and holdings for that instrument yourself;\n"
+        << "  2. decide what the account should hold (cancel the order if it is resting);\n"
+        << "  3. this program has no command to release an order: move the journal aside, keeping it:\n"
+        << "       mv " << settings.journal_path_ << ' ' << settings.journal_path_ << ".owed-$(date +%Y%m%d)\n"
+        << "     the next start then begins a new journal and sizes from the account as it is.\n"
+        << "  A program of your own calls Runner::release_obligations instead (see set_owed_order_limit).\n";
     return Exit::OWED_ORDER;
   }
   return Exit::CLEAN;

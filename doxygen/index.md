@@ -244,7 +244,9 @@ journal refuses to continue as a live one. The exit code tells the endings apart
 pass that did not get everything out, 2 journal refused, 3 recovery halted (the program prints the
 manual procedure), 4 reference data unreadable, 5 polling abandoned, 6 a local failure during the run
 (usually a journal write; read the broker's order list), 7 the account could not be settled (a Toss
-key reaching several accounts needs `--toss-account`), 64 a usage error, 70 an exception escaped (what
+key reaching several accounts needs `--toss-account`), 8 the run stopped placing by itself because an
+order has been owed too long with nobody able to account for it (do not restart it: read the broker's
+lists first), 64 a usage error, 70 an exception escaped (what
 was in flight may then be unknown). Within an iteration the loop polls the order
 list, then holdings, then bars, of whichever are due, so every bar reaches the strategy against an
 account already read (when that read succeeded; a failed one holds sending, not the bars). At start the

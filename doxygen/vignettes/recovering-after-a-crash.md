@@ -113,7 +113,7 @@ every instruction resolve, then start the other release on a new journal file.
 | `pending` then `accepted` | the order exists, and `order_id` names it |
 | `pending` then `rejected` | the instruction was refused — by the broker, by the binding or client before it sent, or by local machinery that failed. The order does not exist. Nothing owed |
 | `pending` then `indeterminate` | the outcome is unknown (a failure in transit, an unreadable reply, an HTTP 5xx, or a broker refusal reported as `PROTOCOL`, which is most of them; [Binding a broker](binding-a-broker.md) names the two demo-server refusals that are `rejected` instead). Still owed |
-| `pending` then `resolved` | a sweep read the broker's list and closed it. `order_id` says what it saw |
+| `pending` then `resolved` | a sweep read the broker's lists and closed the question. `order_id` says what it saw: a number, or nothing found. A second `resolved` line for the same id, with a number, is a later sweep finding the order |
 | `pending` alone, at the end of the file | the process died between the write and the answer |
 | a last line with no newline | the process died *during* the write |
 | the runner halted on an unreadable line | a line changed after it was written — its checksum or an unknown key says so — or a checksum-less line follows a checksummed one |
@@ -145,8 +145,8 @@ the source reads. `runner::match_verdict_name` prints these:
 
 | Verdict | What it means | What happens |
 | --- | --- | --- |
-| `matched` | exactly one row corresponds | resolved; the instrument trades again |
-| `not_placed` | no row, and the window has closed | resolved; the order does not exist |
+| `matched` | exactly one row corresponds | resolved; the ledger lets the instrument go, and the runner counts the order until holdings account for it |
+| `not_placed` | no row, and the window has closed | resolved: no order was found. A runner that overlaps orders forgets the placement; a serialized runner keeps it owed (below) |
 | `ambiguous` | more than one row could be it | **nothing is resolved**; you decide |
 | `undecided` | no row yet, window still open | wait for the next sweep |
 | `needs_operator` | the entry came from a damaged line | **only you can resolve it** |
@@ -161,6 +161,17 @@ gave to the instruction; a sweep learns something different — what the listing
 cancellation they can be opposites: a matched row means the target order is **still resting**, so
 `accepted` would claim a withdrawal that plainly has not happened. What was observed is in
 `order_id` (set when a row was found, empty when none was) and spelled out in `detail`.
+
+**`not_placed` is a finding, not the broker's word.** It says that no row of the lists read matched
+within the window. A list can lag an order it accepted, and no broker here publishes "every order
+accepted so far is listed". A serialized runner (`Runner::serialized`, the default for one that
+journals) therefore keeps a placement found `not_placed` owed, unnamed: the journal's question is
+closed, the instrument still places nothing, `live::SessionSource` looks for the order's dated row
+again at every order-list read, and failing that only `Runner::release_obligations` ends it. A loop
+stops placing altogether once such an order has been owed for ten minutes
+(`PollingLoop::set_owed_order_limit`; [running a strategy live](running-a-strategy-live.md) has the
+procedure). A runner that overlaps orders forgets the placement at `not_placed`, which is why its
+window must be generous.
 
 **`not_placed` and `undecided` are the pair to get right.** The absence of a row is evidence of
 absence only *after* enough time has passed for the broker's listing to reflect a write it accepted.
@@ -185,7 +196,9 @@ many times you sweep; no heuristic turns them into one answer. Go and look, then
 yourself with `ledger().resolve_after_reading_orders(instrument)` — named for what it requires, because
 calling it without having read that list defeats the entire mechanism. If the order was this run's own,
 you must also tell the runner what you found: `Runner::resolve_indeterminate_placement(instrument, side,
-order_id)` with the broker's number, or with no number if it was never placed. Otherwise the run keeps
+order_id)` with the broker's number, or with no number if it was never placed (a serialized runner
+takes a number only with the order's journal id, and ignores "never placed": use
+`Runner::release_obligations`). Otherwise the run keeps
 counting it as a reserved row with no reference until holdings show it (a resting order is then counted
 beside its own listed row, and a target may withdraw it), and if they never do, it withholds the
 instrument again once it is past the confirmation timeout from its send, at the next holdings read

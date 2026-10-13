@@ -844,7 +844,9 @@ public:
    *   instrument is free again. The read that accounted for it may size the next order, an older one may
    *   not; after a restart or an operator's release, only a read received later may;
    * - an order whose reply was lost is accounted for only once a sweep names it and a dated history row of
-   *   its send confirms the name. Holdings that move past what an order can explain, or a history row of
+   *   its send confirms the name. A sweep that finds no order leaves it owed and unnamed, and
+   *   `live::SessionSource` looks for its row again at every order-list read; only
+   *   `release_obligations` ends one that is never found. Holdings that move past what an order can explain, or a history row of
    *   its own reporting more filled than it was for, hold it for an operator (`JournalOutcome::HELD`);
    *   see `release_obligations`. A holdings read older than the one an order was decided against says
    *   nothing about it. A timeout is counted (`orders_unconfirmed_timed_out`) but releases nothing, and the

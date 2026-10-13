@@ -187,8 +187,9 @@ int main() {
     << (later.requires_reconcile(samsung()) ? "no" : "yes") << "\n\n";
 
   std::cout
-    << "Had the listing stayed empty past the window, the verdict would have been `not_placed`\n"
-    << "and the instrument would have cleared just the same -- the order does not exist. Had two\n"
+    << "Had the listing stayed empty past the window, the verdict would have been `not_placed`:\n"
+    << "no order found, and the ledger would have cleared just the same. A serialized runner goes\n"
+    << "on owing such an order all the same, since a list can lag an order it accepted. Had two\n"
     << "rows matched, it would have been `ambiguous`, nothing would clear, and an operator would\n"
     << "decide. The one thing that never happens is a guess.\n";
 
