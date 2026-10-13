@@ -93,8 +93,8 @@ struct KiwoomClientTestAccess {
     return KiwoomClient::parse_open_order(row);
   }
 
-  static OrderSnapshot history_row(const json::object& row, const Date& date) {
-    return KiwoomClient::parse_history_row(row, date);
+  static OrderSnapshot history_row(const json::object& row, const Date& date, bool demo = false) {
+    return KiwoomClient::parse_history_row(row, date, demo);
   }
 
   // A day's history as the completed listing returns it.
@@ -103,7 +103,7 @@ struct KiwoomClientTestAccess {
     std::vector<KiwoomClient::HistoryLink> links;
     for (const auto& row : rows) {
       const auto object = json::parse(row).as_object();
-      orders.push_back(KiwoomClient::parse_history_row(object, date));
+      orders.push_back(KiwoomClient::parse_history_row(object, date, demo));
       links.push_back(KiwoomClient::history_link(object, demo));
     }
     KiwoomClient::close_cancelled_originals(orders, links);
@@ -1415,6 +1415,26 @@ TEST_CASE("a cancelled order's own history row ends once its cancellation names 
     CHECK(orders[0].execution_.filled_quantity_.coefficient() == 0);
     // The cancellation row is not an order, and keeps what it read before.
     CHECK(orders[1].status_ == OrderStatus::UNKNOWN);
+  }
+  SECTION("the demo's label for an ordinary limit order gives the row its shape") {
+    // 보통가 is in neither column of Kiwoom's table (보통 in the working-order listing, 지정가 documented
+    // for this one). Without a shape a sweep cannot match the row to the order it is.
+    const auto orders = Access::history_rows({row("0013356", "0000000", "일반", "0", "10")}, date, true);
+    CHECK(orders[0].type_ == OrderType::LIMIT);
+    CHECK(orders[0].time_in_force_ == TimeInForce::DAY);
+    CHECK(orders[0].session_ == OrderSession::REGULAR);
+    // On a real account the label is not one this library has seen, and the row keeps no shape.
+    const auto real = Access::history_rows({row("0013356", "0000000", "일반", "0", "10")}, date, false);
+    CHECK(real[0].type_ == OrderType::UNKNOWN);
+    CHECK(real[0].time_in_force_ == TimeInForce::UNKNOWN);
+    CHECK(real[0].session_ == OrderSession::UNKNOWN);
+    // Only the whole label: a longer one is another shape the demo has not been seen to write.
+    auto other = json::parse(row("0013356", "0000000", "일반", "0", "10")).as_object();
+    other["trde_tp"] = "보통가(IOC)";
+    CHECK(Access::history_row(other, date, true).type_ == OrderType::UNKNOWN);
+    other["trde_tp"] = "지정가";
+    CHECK(Access::history_row(other, date, false).type_ == OrderType::LIMIT);
+    CHECK(Access::history_row(other, date, true).time_in_force_ == TimeInForce::DAY);
   }
   SECTION("a bare 취소 on a real account is not a completed cancellation") {
     const auto orders = Access::history_rows({original, cancel}, date, false);

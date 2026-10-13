@@ -3584,7 +3584,7 @@ private:
             throw std::runtime_error("order history row is not an object");
           }
           operation->page_.orders_.push_back(
-            parse_history_row(value.as_object(), operation->query_.date_)
+            parse_history_row(value.as_object(), operation->query_.date_, config_.is_demo_)
           );
           operation->links_.push_back(history_link(value.as_object(), config_.is_demo_));
         }
@@ -3677,7 +3677,7 @@ private:
   }
 
   // Normalizes one `kt00007` row.
-  static OrderSnapshot parse_history_row(const json::object& row, const Date& date) {
+  static OrderSnapshot parse_history_row(const json::object& row, const Date& date, bool demo = false) {
     OrderSnapshot order;
     order.order_id_ = detail::text_field(row, "ord_no");
     order.instrument_.country_ = Country::KR;
@@ -3690,8 +3690,11 @@ private:
     order.currency_ = Currency::krw();
     order.side_ = read_side(detail::text_field(row, "io_tp_nm"));
     // The label vocabulary here differs from `ka10075`'s -- 지정가 rather than 보통 -- and
-    // `shape_by_name` searches both columns so the two listings agree about one order.
-    apply_shape(detail::text_field(row, "trde_tp"), order);
+    // `shape_by_name` searches both columns so the two listings agree about one order. The demo
+    // server writes 보통가 for an ordinary limit order (observed 2026-10-06 and 2026-10-13); that
+    // spelling counts on the demo only, as its cancellation words do.
+    const auto label = detail::text_field(row, "trde_tp");
+    apply_shape(demo && label == "보통가" ? std::string_view("보통") : std::string_view(label), order);
     order.status_ = history_status(row);
     order.venue_ = normalized_venue(detail::text_field(row, "dmst_stex_tp"));
     order.quantity_ = detail::required_magnitude(row, "ord_qty");
