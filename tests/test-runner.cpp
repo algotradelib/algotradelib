@@ -839,3 +839,56 @@ TEST_CASE("every halt reason has a name, and the count matches the enumerators")
         "placement_held");
 }
 
+
+TEST_CASE("a context finds an instrument's reference data and last price by its whole id", "[runner][context]") {
+  runner::Context<runner::DryTag, strategy::NoCaps> ctx;
+  const InstrumentId combined{Country::KR, Venue::COMBINED, "005930"};
+  const InstrumentId krx{Country::KR, Venue::KRX, "005930"};
+  const InstrumentId abroad{Country::US, Venue::COMBINED, "005930"};
+
+  CHECK_FALSE(ctx.instrument(combined).has_value());
+  CHECK(ctx.find_instrument(combined) == nullptr);
+  CHECK_FALSE(ctx.last_price(combined).has_value());
+
+  // The same symbol at another venue or in another country is another instrument.
+  auto reference = samsung_reference();
+  ctx.set_instrument(reference);
+  ctx.set_last_price(combined, Decimal64::parse("70000"));
+  REQUIRE(ctx.instrument(combined).has_value());
+  CHECK(ctx.instrument(combined)->currency_ == Currency{"KRW"});
+  CHECK(ctx.find_instrument(krx) == nullptr);
+  CHECK(ctx.find_instrument(abroad) == nullptr);
+  CHECK_FALSE(ctx.last_price(krx).has_value());
+  CHECK_FALSE(ctx.last_price(abroad).has_value());
+
+  auto other = reference;
+  other.id_ = abroad;
+  other.currency_ = Currency{"USD"};
+  ctx.set_instrument(other);
+  ctx.set_last_price(abroad, Decimal64::parse("12.5"));
+  CHECK(ctx.instrument(combined)->currency_ == Currency{"KRW"});
+  CHECK(ctx.instrument(abroad)->currency_ == Currency{"USD"});
+  CHECK(*ctx.last_price(combined) == Decimal64::parse("70000"));
+  CHECK(*ctx.last_price(abroad) == Decimal64::parse("12.5"));
+
+  // The pointer is to the context's own copy: it outlives any number of later registrations, and a
+  // second registration of the same instrument replaces what it points at.
+  const Instrument* found = ctx.find_instrument(combined);
+  REQUIRE(found != nullptr);
+  for (int at = 0; at < 2000; ++at) {
+    auto more = reference;
+    more.id_ = InstrumentId{Country::KR, Venue::COMBINED, "S" + std::to_string(at)};
+    ctx.set_instrument(more);
+    ctx.set_last_price(more.id_, Decimal64(at, 0));
+  }
+  CHECK(ctx.find_instrument(combined) == found);
+  CHECK(found->lot_size_ == Decimal64::parse("1"));
+  reference.lot_size_ = Decimal64::parse("10");
+  ctx.set_instrument(reference);
+  CHECK(ctx.find_instrument(combined) == found);
+  CHECK(found->lot_size_ == Decimal64::parse("10"));
+  CHECK(ctx.instrument(combined)->lot_size_ == Decimal64::parse("10"));
+  CHECK(*ctx.last_price(InstrumentId{Country::KR, Venue::COMBINED, "S1999"}) == Decimal64(1999, 0));
+  ctx.set_last_price(combined, Decimal64::parse("71000"));
+  CHECK(*ctx.last_price(combined) == Decimal64::parse("71000"));
+}

@@ -15,6 +15,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -174,11 +175,22 @@ public:
    * @return The reference data, or `std::nullopt` if the runner has not loaded it.
    */
   std::optional<Instrument> instrument(const InstrumentId& id) const {
-    const auto found = instruments_.find(key_of(id));
-    if (found == instruments_.end()) {
+    const auto* found = find_instrument(id);
+    if (found == nullptr) {
       return std::nullopt;
     }
-    return found->second;
+    return *found;
+  }
+
+  /**
+   * @brief Returns an instrument's reference data without copying it.
+   * @param id The instrument.
+   * @return A pointer to the reference data (valid while the context lives; `set_instrument` for
+   *   the same instrument replaces what it points at), or `nullptr` if the runner has not loaded it.
+   */
+  const Instrument* find_instrument(const InstrumentId& id) const {
+    const auto found = instruments_.find(id);
+    return found == instruments_.end() ? nullptr : &found->second;
   }
 
   /**
@@ -187,7 +199,7 @@ public:
    * @return The price, or `std::nullopt` if none has been seen.
    */
   std::optional<Decimal64> last_price(const InstrumentId& id) const {
-    const auto found = prices_.find(key_of(id));
+    const auto found = prices_.find(id);
     if (found == prices_.end()) {
       return std::nullopt;
     }
@@ -299,8 +311,8 @@ public:
    * @param reference The reference data.
    */
   void set_instrument(Instrument reference) {
-    const auto key = key_of(reference.id_);
-    instruments_.insert_or_assign(key, std::move(reference));
+    auto key = reference.id_;
+    instruments_.insert_or_assign(std::move(key), std::move(reference));
   }
 
   /**
@@ -309,7 +321,7 @@ public:
    * @param price The price.
    */
   void set_last_price(const InstrumentId& id, Decimal64 price) {
-    prices_.insert_or_assign(key_of(id), std::move(price));
+    prices_.insert_or_assign(id, std::move(price));
   }
 
 #if defined(ATL_HAS_EIGEN)
@@ -330,16 +342,24 @@ public:
 #endif
 
 private:
-  // An instrument's map key.
-  static SeriesKey key_of(const InstrumentId& id) { return SeriesKey{id, BarInterval::ONE_DAY}; }
+  // Hashes an instrument id for the two per-instrument tables below. Both are looked up by id and
+  // never iterated, so their order is nobody's to observe.
+  struct InstrumentHash {
+    std::size_t operator()(const InstrumentId& id) const noexcept {
+      std::size_t seed = std::hash<std::string>{}(id.symbol_);
+      seed ^= static_cast<std::size_t>(id.country_) + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+      seed ^= static_cast<std::size_t>(id.venue_) + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+      return seed;
+    }
+  };
 
   std::size_t series_capacity_;
   std::chrono::system_clock::time_point now_{};
   MarketPhase phase_{MarketPhase::UNKNOWN};
   TradingCalendar calendar_;
   Portfolio<BrokerTag> portfolio_;
-  std::map<SeriesKey, Instrument> instruments_;
-  std::map<SeriesKey, Decimal64> prices_;
+  std::unordered_map<InstrumentId, Instrument, InstrumentHash> instruments_;
+  std::unordered_map<InstrumentId, Decimal64, InstrumentHash> prices_;
 #if defined(ATL_HAS_EIGEN)
   std::map<SeriesKey, analytics::SeriesBuffer> series_;
 #endif

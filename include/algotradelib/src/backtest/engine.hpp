@@ -1237,16 +1237,16 @@ private:
   }
 
   Currency currency_for(const InstrumentId& instrument) const {
-    const auto reference = runner_.context().instrument(instrument);
-    if (!reference) {
+    const auto* reference = runner_.context().find_instrument(instrument);
+    if (reference == nullptr) {
       return config_.currency_;
     }
     return reference->currency_;
   }
 
   PriceRule rule_for(const InstrumentId& instrument) const {
-    const auto reference = runner_.context().instrument(instrument);
-    if (!reference) {
+    const auto* reference = runner_.context().find_instrument(instrument);
+    if (reference == nullptr) {
       return PriceRule::unknown("no reference data supplied to the replay");
     }
     return reference->price_rule_;
