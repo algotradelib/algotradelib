@@ -7333,11 +7333,79 @@ TEST_CASE("the later search never takes an order this runner sent just before fo
   REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
   CHECK(rig.owed() == runner::ObligationState::UNNAMED);
   CHECK(rig.lines(JournalOutcome::RESOLVED).size() == 1);
-  // B's own row beside A's is one candidate, not two.
+  // B's own row beside it fits A's send as well as B's: neither is named by exclusion, and B stays for
+  // a person (the run stops for it).
   rig.session.set_history(page_of({market_row("A", at_hour(-1)), market_row("B", at_hour(-1))}));
+  REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+  CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+  CHECK(rig.lines(JournalOutcome::RESOLVED).size() == 1);
+}
+
+TEST_CASE("an order sent hours before, of the same shape, does not keep the later search from naming one",
+          "[serialized][unfound]") {
+  using runner::JournalOutcome;
+  auto earlier = [](JournalOutcome outcome, const char* order_id = "", const char* baseline = "0") {
+    auto line = serial_line("p-1", outcome, order_id, baseline);
+    line.recorded_at_ = at_hour(-4);
+    return line;
+  };
+  auto lines = std::vector<runner::JournalEntry>{
+    earlier(JournalOutcome::PENDING), earlier(JournalOutcome::ACCEPTED, "A"), earlier(JournalOutcome::CONFIRMED, "A", "10"),
+  };
+  for (const auto& line : unfound_lines("p-2", "10")) {
+    lines.push_back(line);
+  }
+  SerialRig rig(lines);
+  rig.show(polled(0, "10", {}));
+  auto source = source_over(rig, page_of({market_row("A", at_hour(-4)), market_row("B", at_hour(-1))}));
+  rig.runner_instance.set_observed_at(at_hour(1));
   REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
   REQUIRE(rig.runner_instance.obligations().size() == 1);
   CHECK(rig.runner_instance.obligations().front().order_id_ == "B");
+}
+
+TEST_CASE("a number a sweep once gave another order wrongly does not lend that order's row to the later search",
+          "[serialized][unfound]") {
+  // Round 2 of the review. X is accepted hours earlier. A, of the same shape, loses its reply; the first
+  // sweep, which has no such filter, names it X, and A's real fill lets holdings confirm that name. B
+  // loses its request a little after A. When A's dated row reaches the history at last it is the only
+  // candidate for B, and the journal's name for A does not say so.
+  using runner::JournalOutcome;
+  auto x = [](JournalOutcome outcome, const char* order_id = "", const char* baseline = "0") {
+    auto line = serial_line("p-1", outcome, order_id, baseline);
+    line.recorded_at_ = at_hour(-4);
+    return line;
+  };
+  const std::vector<runner::JournalEntry> lines{
+    x(JournalOutcome::PENDING), x(JournalOutcome::ACCEPTED, "X"), x(JournalOutcome::CONFIRMED, "X", "10"),
+    serial_line("p-2", JournalOutcome::PENDING, "", "10"),
+    serial_line("p-2", JournalOutcome::INDETERMINATE, "", "10"),
+    serial_line("p-2", JournalOutcome::RESOLVED, "X", "10"),
+    serial_line("p-2", JournalOutcome::CONFIRMED, "X", "20"),
+    serial_line("p-3", JournalOutcome::PENDING, "", "20"),
+    serial_line("p-3", JournalOutcome::INDETERMINATE, "", "20"),
+    serial_line("p-3", JournalOutcome::RESOLVED, "", "20"),
+  };
+
+  SECTION("A's own row, alone") {
+    SerialRig rig(lines);
+    rig.show(polled(0, "20", {}));
+    auto source = source_over(rig, page_of({market_row("X", at_hour(-4)), market_row("A", at_hour(-1))}));
+    rig.runner_instance.set_observed_at(at_hour(1));
+    REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+    CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+    CHECK(rig.lines(JournalOutcome::RESOLVED).size() == 2);
+  }
+
+  SECTION("A's and B's rows together") {
+    SerialRig rig(lines);
+    rig.show(polled(0, "20", {}));
+    auto source = source_over(rig, page_of({market_row("A", at_hour(-1)), market_row("B", at_hour(-1))}));
+    rig.runner_instance.set_observed_at(at_hour(1));
+    REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+    CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+    CHECK(rig.lines(JournalOutcome::RESOLVED).size() == 2);
+  }
 }
 
 TEST_CASE("a listing that dates no row does not hide the dated history row of the same order", "[serialized][unfound]") {
@@ -7672,6 +7740,101 @@ TEST_CASE("a run stops placing for an order nobody has been able to account for"
     const auto report = loop.run(stop, 3);
     REQUIRE(report.owed_stop_.has_value());
     CHECK(report.iterations_ == 1);
+  }
+
+  SECTION("a read that fails keeps the hold, at a start and when the run gives up, and a later run takes it up") {
+    // Round 2 of the review: the loop's hold for an unread list or for failing polls lets a withdrawal
+    // through, and replaced this one.
+    struct Failing : QuietSource {
+      bool list_fails_{true};
+      runner::PollOutcome read_order_list(SerialRunner&) {
+        return list_fails_ ? runner::PollOutcome::FAILED : runner::PollOutcome::UPDATED;
+      }
+    };
+    using FailingLoop = runner::PollingLoop<SerialRunner, Failing, runner::ManualClock>;
+    runner::PollSchedule schedule;
+    schedule.bars_.reset();
+    schedule.holdings_ = std::chrono::seconds(1);
+    schedule.working_orders_ = std::chrono::seconds(10);
+    schedule.tick_ = std::chrono::seconds(1);
+    const auto stopping = strategy::HaltReason::STOPPING;
+
+    // A start with an old order and a list that cannot be read.
+    SerialRig restored(unfound_lines());
+    Failing unreadable;
+    FailingLoop first(restored.runner_instance, unreadable, schedule, runner::ManualClock{at_hour(1)});
+    first.allow_unbounded_portfolio_age();
+    runner::StopSource stop;
+    auto report = first.run(stop, 2);
+    CHECK_FALSE(report.order_list_read_);
+    CHECK_FALSE(report.owed_stop_.has_value());
+    CHECK_FALSE(stop.requested());
+    REQUIRE(report.final_gate_.has_value());
+    CHECK(*report.final_gate_ == stopping);
+    CHECK(restored.runner_instance.guard().halted(stopping));
+    CHECK_FALSE(restored.runner_instance.guard().halted(strategy::HaltReason::ORDER_LIST_UNREAD));
+    // The list is read at last: the order is still nobody's, and the run stops.
+    unreadable.list_fails_ = false;
+    report = first.run(stop, 2);
+    CHECK(report.owed_stop_.has_value());
+
+    // Sent as the loop starts; holdings fail until the loop gives up, before any read could decide.
+    SerialRig rig;
+    rig.session.fail_place_with(reply_lost());
+    rig.bar(1, {target_of("10")});
+    rig.session.heal_place();
+    const auto line = rig.lines(JournalOutcome::PENDING).front().id_;
+    Failing source;
+    source.list_fails_ = false;
+    source.holdings_fail_ = true;
+    FailingLoop loop(rig.runner_instance, source, schedule, runner::ManualClock{at_hour(1)});
+    loop.allow_unbounded_portfolio_age();
+    loop.set_owed_order_limit(std::chrono::milliseconds(2500));
+    runner::StopSource untouched;
+    report = loop.run(untouched, 20);
+    REQUIRE(report.abandoned_);
+    CHECK_FALSE(report.owed_stop_.has_value());
+    CHECK_FALSE(untouched.requested());
+    REQUIRE(report.final_gate_.has_value());
+    CHECK(*report.final_gate_ == stopping);
+    CHECK(rig.runner_instance.guard().halted(stopping));
+    CHECK_FALSE(rig.runner_instance.guard().halted(strategy::HaltReason::POLL_FAILING));
+    // Recovery on the same loop: a read names the order, and the hold goes.
+    source.holdings_fail_ = false;
+    source.act_on_working_poll_ = source.working_polls_ + 1;
+    source.act_ = [&rig, line] {
+      rig.runner_instance.resolve_indeterminate_placement(samsung(), OrderSide::BUY, std::string("B"), line);
+    };
+    report = loop.run(untouched, 12);
+    CHECK_FALSE(report.owed_stop_.has_value());
+    CHECK_FALSE(report.abandoned_);
+    CHECK(rig.owed() == runner::ObligationState::NAMED);
+    CHECK_FALSE(rig.runner_instance.guard().halted(stopping));
+  }
+
+  SECTION("a call in flight when the limit passes is not interrupted; the next one is held") {
+    // Round 2 of the review, as the limit of the hold rather than a guarantee: the loop checks its holds
+    // before each poll, and a read that began before the limit and took three seconds feeds its handler.
+    SerialRig rig(unfound_lines());
+    QuietSource source;
+    trade_elsewhere(rig, source);
+    auto loop = loop_over(rig, source, 1);
+    loop.set_owed_order_limit(std::chrono::hours(2) + std::chrono::milliseconds(1500));
+    const auto feed = source.act_;
+    source.act_ = [&loop, feed] {
+      loop.clock().advance(std::chrono::seconds(3));
+      feed();
+    };
+    runner::StopSource stop;
+    auto report = loop.run(stop, 1);
+    CHECK(rig.session.placed().size() == 1);
+    CHECK_FALSE(report.owed_stop_.has_value());
+    REQUIRE(report.final_gate_.has_value());
+    CHECK(*report.final_gate_ == strategy::HaltReason::STOPPING);
+    // From the next check on nothing goes out, and the next read of the list decides.
+    report = loop.run(stop, 3);
+    CHECK(rig.session.placed().size() == 1);
+    CHECK(report.owed_stop_.has_value());
   }
 
   SECTION("a stop already asked for is carried out as it is") {
