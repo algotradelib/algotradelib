@@ -835,19 +835,22 @@ name (`UNNAMED`) or is held for an operator (`OPERATOR`):
 
 1. **Ten minutes after the order was sent** (`PollingLoop::set_owed_order_limit`), on the loop's clock,
    the loop holds every instrument (`final_gate_` reads `stopping`): nothing a strategy asks for goes
-   out, a withdrawal included. The loop takes the hold where it checks its holds, before every poll, so
-   a call already in flight when the ten minutes pass is not interrupted and the hold begins with the
-   next one. Every order-list read that begins after that runs under it, its handlers too, and it stays
-   through a failed read and through a run that gives up on failing polls.
-2. **At the next successful read of the order list**, whose sweep is the order's chance to be named: if
+   out, a withdrawal included. The loop takes the hold where it checks its holds, before every poll and
+   once after an iteration's polls, and everything up to its next check runs on the last one: a poll
+   already begun when the ten minutes pass is not interrupted, nor is the end of an iteration (the
+   phase handler, then the retry of kept targets). So an order can still go out after the ten minutes,
+   until that next check. Every order-list read that begins after it runs under the hold, its handlers
+   too, and the hold stays through a failed read and through a run that gives up on failing polls.
+2. **At the next successful read of the order list in an iteration that began after the ten minutes**,
+   whose sweep is the order's chance to be named: if
    the order is still not accounted for, the loop requests a `quiesce`. Nothing is cancelled or closed,
    and the order is still owed. `LoopReport::owed_stop_` names the order and a note says what to do;
    `example-live-program` exits 8. If that read names the order instead, the hold is lifted and the run
    goes on.
 
-So ten minutes (and the length of one call) bounds how long a run places beside such an order, not
-when it ends: a loop that reads the order list every fifteen minutes stops at that read, and later
-still while reads fail. The ages are
+So ten minutes, and whatever the loop was doing when they passed, bounds how long a run places beside
+such an order, not when it ends: a loop that reads the order list every fifteen minutes stops at that
+read, and later still while reads fail. The ages are
 measured on the loop's wall clock against the journal's stamps, as everything about a serialized order
 is; a clock set forward shortens them and one set back lengthens them. A start with such an order from
 an earlier day places nothing at all, on any instrument, and stops again at every start until the

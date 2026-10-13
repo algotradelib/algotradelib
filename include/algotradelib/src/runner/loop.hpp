@@ -1115,18 +1115,21 @@ public:
    * **The hold.** Once the limit has passed on the loop's clock, the loop holds
    * `strategy::HaltReason::STOPPING`: nothing a strategy asks for goes out, a withdrawal included. It
    * is taken where the loop checks its holds, before every poll and once more after an iteration's
-   * polls, and is not a deadline enforced at each send: a call already in flight when the limit passes
-   * (a slow read that then feeds a handler) is not interrupted, and what an iteration does after its
-   * last check (the phase handler, then the retry of kept targets) runs on that check. So the hold can
-   * begin later than the limit by the length of one such call. Every order-list read that begins after
-   * the limit runs under it, its handlers included, and the hold stays through a failed read, a start
-   * that cannot read the list, and a run abandoned for failing polls.
+   * polls, and is not a deadline enforced at each send: everything up to the next check runs on the
+   * last one. A poll already begun when the limit passes (a slow read that then feeds a handler) is
+   * not interrupted, and neither is the end of an iteration, where the phase handler and then the
+   * retry of kept targets both follow the last check. So an order can still go out after the limit,
+   * until the loop's next check. Every order-list read that begins after a check that found the limit
+   * passed runs under the hold, its handlers included, and the hold stays through a failed read, a
+   * start that cannot read the list, and a run abandoned for failing polls.
    *
-   * **The stop.** Once an order-list read that began after the limit has succeeded and still left the
-   * order so, the loop requests `StopIntent::QUIESCE` on the run's `StopSource`: nothing more is placed,
-   * nothing is cancelled or closed, and the order is still owed. `LoopReport::owed_stop_` names it. If
-   * that read's sweep names the order instead, the hold is lifted and the run goes on. So the stop
-   * comes later than the limit by up to the order list's cadence, or more while reads fail. The request
+   * **The stop.** Once an order-list read has succeeded in an iteration that began after the limit and
+   * has still left the order so, the loop requests `StopIntent::QUIESCE` on the run's `StopSource`:
+   * nothing more is placed, nothing is cancelled or closed, and the order is still owed.
+   * `LoopReport::owed_stop_` names it. If that read's sweep names the order instead, the hold is lifted
+   * and the run goes on. So the stop comes later than the limit by up to the order list's cadence (a
+   * read in an iteration that began before the limit does not decide, and the next one does), or more
+   * while reads fail. The request
    * stays on the `StopSource`, as a control-file word does, and stops any other loop sharing it. A
    * restart restores the order and stops again at its first order-list read, having placed nothing,
    * until a sweep names the order or it is released.
