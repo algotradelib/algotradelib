@@ -1034,6 +1034,7 @@ using kiwoom::KiwoomOrderOperation;
 
 constexpr const char* KIWOOM_NOTHING_TO_CANCEL = "[2000](RC4033:모의투자 정정/취소할 수량이 없습니다.)";
 constexpr const char* KIWOOM_NOTHING_TO_SELL = "[2000](800033:모의투자 매도가능수량이 부족합니다.)";
+constexpr const char* KIWOOM_MARKET_CLOSED = "[2000](RC4058:모의투자 장종료)";
 
 /** A Kiwoom failure envelope with outer code 20 and the given message, and `extra` appended inside the object. */
 std::string kiwoom_refusal_body(const std::string& message, const std::string& extra = "") {
@@ -1128,6 +1129,23 @@ TEST_CASE("a Kiwoom demo cash order refusal the client recognizes is a rejection
     CHECK(runner::outcome_of(result.error()) == runner::SendOutcome::REJECTED);
   }
 
+  SECTION("a placement after the market has closed") {
+    const auto result = kiwoom::KiwoomClientTestAccess::order_ack(
+      ok_body(kiwoom_refusal_body(KIWOOM_MARKET_CLOSED)), KiwoomOrderOperation::PLACE, true
+    );
+    REQUIRE_FALSE(result);
+    CHECK(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+    CHECK(result.error().reached_broker_);
+    CHECK(result.error().http_status_ == 200);
+    CHECK(result.error().broker_code_ == "RC4058");
+    CHECK(
+      result.error().message_ ==
+      std::string(KIWOOM_MARKET_CLOSED) +
+        " (return_code 20; recognized refusal: Kiwoom demo, cash placement, RC4058)"
+    );
+    CHECK(runner::outcome_of(result.error()) == runner::SendOutcome::REJECTED);
+  }
+
   SECTION("the outer code as the string 20, empty acknowledgement fields, or the original order echoed") {
     CHECK(kiwoom_recognized(
       kiwoom::KiwoomClientTestAccess::order_ack(
@@ -1158,9 +1176,15 @@ TEST_CASE("a Kiwoom demo cash order refusal the client recognizes is a rejection
 TEST_CASE("a Kiwoom order refusal outside the recognized replies stays an unknown outcome", "[kiwoom][orders]") {
   const std::string cancel = kiwoom_refusal_body(KIWOOM_NOTHING_TO_CANCEL);
   const std::string place = kiwoom_refusal_body(KIWOOM_NOTHING_TO_SELL);
+  const std::string closed = kiwoom_refusal_body(KIWOOM_MARKET_CLOSED);
   using Access = kiwoom::KiwoomClientTestAccess;
 
   SECTION("the real server, another operation, or no operation") {
+    CHECK(kiwoom_unknown(Access::order_ack(ok_body(closed), KiwoomOrderOperation::PLACE, false)));
+    CHECK(kiwoom_unknown(Access::order_ack(ok_body(closed), KiwoomOrderOperation::CANCEL, true)));
+    CHECK(kiwoom_unknown(Access::order_ack(ok_body(closed), KiwoomOrderOperation::AMEND, true)));
+    CHECK(kiwoom_unknown(Access::order_ack(ok_body(closed), KiwoomOrderOperation::UNCLASSIFIED, true)));
+    CHECK(kiwoom_unknown(Access::order_ack("005930", ok_body(closed))));
     CHECK(kiwoom_unknown(Access::order_ack(ok_body(cancel), KiwoomOrderOperation::CANCEL, false)));
     CHECK(kiwoom_unknown(Access::order_ack(ok_body(place), KiwoomOrderOperation::PLACE, false)));
     CHECK(kiwoom_unknown(Access::order_ack(ok_body(cancel), KiwoomOrderOperation::PLACE, true)));
@@ -1230,6 +1254,21 @@ TEST_CASE("a Kiwoom order refusal outside the recognized replies stays an unknow
         Access::order_ack(ok_body(kiwoom_refusal_body(message)), KiwoomOrderOperation::CANCEL, true)
       ));
     }
+    for (const char* message : {
+           "[2000](RC4059:모의투자 장종료)",
+           "[2000](RC40580:모의투자 장종료)",
+           "[2000](XRC4058:모의투자 장종료)",
+           "[2000](RC4033:모의투자 장종료)",
+           "[2001](RC4058:모의투자 장종료)",
+           "[2000](RC4058:모의투자 장종료) ",
+           "RC4058",
+           "모의투자 장종료",
+         }) {
+      CAPTURE(message);
+      CHECK(kiwoom_unknown(
+        Access::order_ack(ok_body(kiwoom_refusal_body(message)), KiwoomOrderOperation::PLACE, true)
+      ));
+    }
     for (const char* body : {
            R"({"return_code":20})",
            R"({"return_code":20,"return_msg":null})",
@@ -1264,6 +1303,11 @@ TEST_CASE("a Kiwoom order refusal outside the recognized replies stays an unknow
       CHECK(kiwoom_unknown(
         Access::order_ack(
           ok_body(kiwoom_refusal_body(KIWOOM_NOTHING_TO_SELL, extra)), KiwoomOrderOperation::PLACE, true
+        )
+      ));
+      CHECK(kiwoom_unknown(
+        Access::order_ack(
+          ok_body(kiwoom_refusal_body(KIWOOM_MARKET_CLOSED, extra)), KiwoomOrderOperation::PLACE, true
         )
       ));
     }

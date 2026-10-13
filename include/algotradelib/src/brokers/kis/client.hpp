@@ -598,10 +598,10 @@ public:
    * which `runner::Runner` keeps for a later pass. Read `async_open_orders` or
    * `async_order_history` before placing again, since KIS has no idempotency key.
    *
-   * One refusal is recognized as one, on a demo account only: the demo server's `40240000` (nothing
-   * held to sell), in an HTTP 200 reply that carries no acknowledgement, is `INVALID_ARGUMENT` with
-   * `reached_broker_` set, which `runner::outcome_of` reads as `REJECTED`. The same reply from the
-   * real server stays `PROTOCOL`.
+   * Two refusals are recognized as refusals, on a demo account only: the demo server's `40240000`
+   * (nothing held to sell) and `40580000` (the market has closed), in an HTTP 200 reply that carries
+   * no acknowledgement, are `INVALID_ARGUMENT` with `reached_broker_` set, which `runner::outcome_of`
+   * reads as `REJECTED`. The same reply from the real server stays `PROTOCOL`.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account The account.
@@ -3374,12 +3374,20 @@ private:
     return !value || (value->is_string() && value->as_string().empty());
   }
 
-  // Returns the refusal a demo cash-order reply states, for the two replies this client recognizes
-  // as one: a placement answered `40240000` (nothing held to sell) and a cancellation answered
-  // `40330000` (nothing left to amend or cancel), as the demo server sends them. Such a reply is
-  // `INVALID_ARGUMENT` with `reached_broker_` set, which a runner reads
-  // as a rejection; any other declared failure of an order keeps the reading `kis_declared_error`
-  // gives it (`PROTOCOL`, an unknown outcome, unless it is a rate limit).
+  // Tests whether `code` is a refusal this client recognizes for `operation` on the demo server.
+  static bool recognized_refusal_code(OrderOperation operation, std::string_view code) {
+    if (operation == OrderOperation::PLACE) {
+      return code == "40240000" || code == "40580000";
+    }
+    return operation == OrderOperation::CANCEL && code == "40330000";
+  }
+
+  // Returns the refusal a demo cash-order reply states, for the replies this client recognizes as
+  // one: a placement answered `40240000` (nothing held to sell) or `40580000` (the market has
+  // closed), and a cancellation answered `40330000` (nothing left to amend or cancel), as the demo
+  // server sends them. Such a reply is `INVALID_ARGUMENT` with `reached_broker_` set, which a runner
+  // reads as a rejection; any other declared failure of an order keeps the reading
+  // `kis_declared_error` gives it (`PROTOCOL`, an unknown outcome, unless it is a rate limit).
   //
   // Demo only: no real-account reply has been seen, and the same body from the real server is not
   // recognized. The reply must be HTTP 200 with `rt_cd` `"1"`, the code, a message, and none of
@@ -3393,26 +3401,19 @@ private:
     OrderOperation operation,
     bool demo
   ) {
-    std::string_view expected;
-    const char* name = "";
-    if (operation == OrderOperation::PLACE) {
-      expected = "40240000";
-      name = "placement";
-    } else if (operation == OrderOperation::CANCEL) {
-      expected = "40330000";
-      name = "cancellation";
-    }
-    if (!demo || expected.empty() || http_status != 200) {
+    if (!demo || http_status != 200) {
       return std::nullopt;
     }
     const auto status = document.if_contains("rt_cd");
     const auto code = document.if_contains("msg_cd");
     const auto message = document.if_contains("msg1");
     if (!status || !status->is_string() || status->as_string() != "1" || !code || !code->is_string() ||
-        std::string_view(code->as_string()) != expected || !message || !message->is_string() ||
-        message->as_string().empty()) {
+        !recognized_refusal_code(operation, std::string_view(code->as_string())) || !message ||
+        !message->is_string() || message->as_string().empty()) {
       return std::nullopt;
     }
+    const std::string stated(code->as_string());
+    const char* name = operation == OrderOperation::PLACE ? "placement" : "cancellation";
     if (const auto output = document.if_contains("output")) {
       if (!output->is_object()) {
         return std::nullopt;
@@ -3427,9 +3428,9 @@ private:
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
     error.reached_broker_ = true;
     error.http_status_ = http_status;
-    error.broker_code_ = std::string(expected);
+    error.broker_code_ = stated;
     error.message_ = std::string(message->as_string()) + " (recognized refusal: KIS demo, cash " + name +
-      ", " + std::string(expected) + ")";
+      ", " + stated + ")";
     return error;
   }
 
