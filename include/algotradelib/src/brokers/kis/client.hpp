@@ -3354,8 +3354,81 @@ private:
     return error;
   }
 
-  // Parses a KIS order-instruction response into its composite acknowledgement.
-  static Result<KisOrderAck> parse_order_ack(Result<network::HttpResponse> result) {
+  // Which order instruction a reply answers. Known where the request is built and carried to the
+  // parser with it; never recovered from the reply.
+  enum class OrderOperation { UNCLASSIFIED, PLACE, AMEND, CANCEL };
+
+  // Tests whether a field is absent or the empty string. Any other type or value is not "nothing".
+  static bool absent_or_empty(const json::object& object, std::string_view key) {
+    const auto value = object.if_contains(key);
+    return !value || (value->is_string() && value->as_string().empty());
+  }
+
+  // Returns the refusal a demo cash-order reply states, for the two replies this client recognizes
+  // as one: a placement answered `40240000` (nothing held to sell) and a cancellation answered
+  // `40330000` (nothing left to amend or cancel), as the demo server sent them on 2026-10-12 and
+  // 2026-10-13. Such a reply is `INVALID_ARGUMENT` with `reached_broker_` set, which a runner reads
+  // as a rejection; every other declared failure of an order stays `PROTOCOL`, an unknown outcome.
+  //
+  // Demo only: no real-account reply has been observed, and the same body from the real server is
+  // not recognized. The reply must be HTTP 200 with `rt_cd` `"1"`, the code, a message, and none of
+  // the fields an acknowledgement carries (`output` absent, or an object whose `ODNO`,
+  // `KRX_FWDG_ORD_ORGNO` and `ORD_TMD` are absent or empty): a reply naming an order is never read
+  // as a refusal. A refused cancellation says only that the cancellation did nothing, not what
+  // became of the order it named.
+  static std::optional<BrokerError> kis_recognized_refusal(
+    int http_status,
+    const json::object& document,
+    OrderOperation operation,
+    bool demo
+  ) {
+    std::string_view expected;
+    const char* name = "";
+    if (operation == OrderOperation::PLACE) {
+      expected = "40240000";
+      name = "placement";
+    } else if (operation == OrderOperation::CANCEL) {
+      expected = "40330000";
+      name = "cancellation";
+    }
+    if (!demo || expected.empty() || http_status != 200) {
+      return std::nullopt;
+    }
+    const auto status = document.if_contains("rt_cd");
+    const auto code = document.if_contains("msg_cd");
+    const auto message = document.if_contains("msg1");
+    if (!status || !status->is_string() || status->as_string() != "1" || !code || !code->is_string() ||
+        std::string_view(code->as_string()) != expected || !message || !message->is_string() ||
+        message->as_string().empty()) {
+      return std::nullopt;
+    }
+    if (const auto output = document.if_contains("output")) {
+      if (!output->is_object()) {
+        return std::nullopt;
+      }
+      for (const char* field : {"ODNO", "KRX_FWDG_ORD_ORGNO", "ORD_TMD"}) {
+        if (!absent_or_empty(output->as_object(), field)) {
+          return std::nullopt;
+        }
+      }
+    }
+    BrokerError error;
+    error.category_ = ErrorCategory::INVALID_ARGUMENT;
+    error.reached_broker_ = true;
+    error.http_status_ = http_status;
+    error.broker_code_ = std::string(expected);
+    error.message_ = std::string(message->as_string()) + " (recognized refusal: KIS demo, cash " + name +
+      ", " + std::string(expected) + ")";
+    return error;
+  }
+
+  // Parses a KIS order-instruction response into its composite acknowledgement. `operation` and
+  // `demo` describe the request this reply answers.
+  static Result<KisOrderAck> parse_order_ack(
+    Result<network::HttpResponse> result,
+    OrderOperation operation,
+    bool demo
+  ) {
     if (!result) {
       return Result<KisOrderAck>(std::move(result.error()));
     }
@@ -3368,6 +3441,9 @@ private:
       return Result<KisOrderAck>(std::move(parse_error));
     }
     try {
+      if (auto refused = kis_recognized_refusal(result.value().result_int(), *document, operation, demo)) {
+        return Result<KisOrderAck>(std::move(*refused));
+      }
       if (auto declared = kis_declared_error(*document)) {
         return Result<KisOrderAck>(std::move(*declared));
       }
@@ -3423,7 +3499,7 @@ private:
           auto request = make_place_order_request(
             account, self->config_, self->token_.access_token_, order, division
           );
-          self->request_order_ack(std::move(request), std::move(completion));
+          self->request_order_ack(std::move(request), OrderOperation::PLACE, std::move(completion));
         }
       )
     );
@@ -3475,23 +3551,32 @@ private:
           auto request = make_amend_order_request(
             account, self->config_, self->token_.access_token_, amendment, cancel, division
           );
-          self->request_order_ack(std::move(request), std::move(completion));
+          self->request_order_ack(
+            std::move(request), cancel ? OrderOperation::CANCEL : OrderOperation::AMEND, std::move(completion)
+          );
         }
       )
     );
   }
 
-  // Sends an order-writing request and dispatches its parsed acknowledgement.
-  void request_order_ack(network::HttpRequest request, OrderAckHandler completion) {
+  // Sends an order-writing request and dispatches its parsed acknowledgement. The operation and the
+  // environment are fixed here, with the request, and travel with its reply.
+  void request_order_ack(
+    network::HttpRequest request,
+    OrderOperation operation,
+    OrderAckHandler completion
+  ) {
     http_->async_request(
       std::move(request),
-      [self = shared_from_this(), completion = std::move(completion)](
+      [self = shared_from_this(), operation, demo = config_.is_demo_, completion = std::move(completion)](
         Result<network::HttpResponse> result
       ) mutable {
         net::post(
           self->strand_,
-          [self, completion = std::move(completion), result = std::move(result)]() mutable {
-            self->complete_order_ack(std::move(completion), parse_order_ack(std::move(result)));
+          [self, operation, demo, completion = std::move(completion), result = std::move(result)]() mutable {
+            self->complete_order_ack(
+              std::move(completion), parse_order_ack(std::move(result), operation, demo)
+            );
           }
         );
       }

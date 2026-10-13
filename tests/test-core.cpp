@@ -247,8 +247,18 @@ struct KisClientTestAccess {
     return KisClient::calendar_rows_consumed(calendar);
   }
 
+  using Operation = KisClient::OrderOperation;
+
   static Result<KisOrderAck> parse_order_ack(Result<network::HttpResponse> response) {
-    return KisClient::parse_order_ack(std::move(response));
+    return KisClient::parse_order_ack(std::move(response), Operation::UNCLASSIFIED, false);
+  }
+
+  static Result<KisOrderAck> parse_order_ack(
+    Result<network::HttpResponse> response,
+    Operation operation,
+    bool demo
+  ) {
+    return KisClient::parse_order_ack(std::move(response), operation, demo);
   }
 
   static Result<KisOpenOrderPage> parse_open_orders(
@@ -3731,6 +3741,226 @@ TEST_CASE(
   REQUIRE(completed);
   REQUIRE(server.requestCount("/drop-post") == 1);
   REQUIRE(server.connectionCount() == 1);
+}
+
+// The bodies below are constructed from KIS's documented reply envelope with the code and the message
+// the demo server sent (2026-10-12, 2026-10-13). No reply body was recorded.
+namespace {
+
+using KisOperation = kis::KisClientTestAccess::Operation;
+
+constexpr const char* KIS_NOTHING_TO_CANCEL = "모의투자 정정/취소할 수량이 없습니다.";
+constexpr const char* KIS_NOTHING_HELD = "모의투자 잔고내역이 없습니다.";
+
+/** A KIS failure envelope with the given code and message, and `extra` appended inside the object. */
+std::string kis_refusal_body(const std::string& code, const std::string& message, const std::string& extra = "") {
+  return R"({"rt_cd":"1","msg_cd":")" + code + R"(","msg1":")" + message + "\"" + extra + "}";
+}
+
+/** Whether an order reply is read as the recognized refusal `code`. */
+bool kis_recognized(const Result<kis::KisOrderAck>& result, const std::string& code) {
+  return !result && result.error().category_ == ErrorCategory::INVALID_ARGUMENT &&
+    result.error().reached_broker_ && result.error().broker_code_ == code;
+}
+
+} // namespace
+
+TEST_CASE("a KIS demo cash order refusal the client recognizes is a rejection", "[broker][kis][order]") {
+  SECTION("a cancellation with nothing left to cancel") {
+    const auto result = kis::KisClientTestAccess::parse_order_ack(
+      json_response(kis_refusal_body("40330000", KIS_NOTHING_TO_CANCEL)), KisOperation::CANCEL, true
+    );
+    REQUIRE_FALSE(result);
+    CHECK(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+    CHECK(result.error().reached_broker_);
+    CHECK(result.error().http_status_ == 200);
+    CHECK(result.error().broker_code_ == "40330000");
+    CHECK(
+      result.error().message_ ==
+      std::string(KIS_NOTHING_TO_CANCEL) + " (recognized refusal: KIS demo, cash cancellation, 40330000)"
+    );
+    CHECK(runner::outcome_of(result.error()) == runner::SendOutcome::REJECTED);
+  }
+
+  SECTION("a placement with nothing held to sell") {
+    const auto result = kis::KisClientTestAccess::parse_order_ack(
+      json_response(kis_refusal_body("40240000", KIS_NOTHING_HELD)), KisOperation::PLACE, true
+    );
+    REQUIRE_FALSE(result);
+    CHECK(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+    CHECK(result.error().reached_broker_);
+    CHECK(result.error().http_status_ == 200);
+    CHECK(result.error().broker_code_ == "40240000");
+    CHECK(
+      result.error().message_ ==
+      std::string(KIS_NOTHING_HELD) + " (recognized refusal: KIS demo, cash placement, 40240000)"
+    );
+    CHECK(runner::outcome_of(result.error()) == runner::SendOutcome::REJECTED);
+  }
+
+  SECTION("an empty acknowledgement beside it, or the original order echoed, changes nothing") {
+    for (const char* extra : {
+           R"(,"output":{})",
+           R"(,"output":{"KRX_FWDG_ORD_ORGNO":"","ODNO":"","ORD_TMD":""})",
+           R"(,"output":{"ORGN_ODNO":"0001569157"})",
+           R"(,"msg2":"an unrelated field")",
+         }) {
+      CAPTURE(extra);
+      CHECK(kis_recognized(
+        kis::KisClientTestAccess::parse_order_ack(
+          json_response(kis_refusal_body("40330000", KIS_NOTHING_TO_CANCEL, extra)), KisOperation::CANCEL, true
+        ),
+        "40330000"
+      ));
+    }
+  }
+}
+
+TEST_CASE("a KIS order refusal outside the recognized replies stays an unknown outcome", "[broker][kis][order]") {
+  const auto unknown = [](const Result<kis::KisOrderAck>& result) {
+    return !result && result.error().category_ == ErrorCategory::PROTOCOL &&
+      runner::outcome_of(result.error()) == runner::SendOutcome::INDETERMINATE;
+  };
+  const std::string cancel = kis_refusal_body("40330000", KIS_NOTHING_TO_CANCEL);
+  const std::string place = kis_refusal_body("40240000", KIS_NOTHING_HELD);
+
+  SECTION("the real server, another operation, or no operation") {
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(cancel), KisOperation::CANCEL, false)));
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(place), KisOperation::PLACE, false)));
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(cancel), KisOperation::PLACE, true)));
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(cancel), KisOperation::AMEND, true)));
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(place), KisOperation::CANCEL, true)));
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(place), KisOperation::AMEND, true)));
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(cancel), KisOperation::UNCLASSIFIED, true)));
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(cancel))));
+
+    // What the unrecognized reading carries: the broker's message alone, and no status.
+    const auto live = kis::KisClientTestAccess::parse_order_ack(json_response(cancel), KisOperation::CANCEL, false);
+    CHECK(live.error().message_ == KIS_NOTHING_TO_CANCEL);
+    CHECK(live.error().http_status_ == 0);
+    CHECK(live.error().broker_code_ == "40330000");
+  }
+
+  SECTION("a success status other than 200") {
+    CHECK(unknown(
+      kis::KisClientTestAccess::parse_order_ack(json_response(cancel, 201), KisOperation::CANCEL, true)
+    ));
+    CHECK(unknown(
+      kis::KisClientTestAccess::parse_order_ack(json_response(cancel, 202), KisOperation::CANCEL, true)
+    ));
+  }
+
+  SECTION("another code, or the code inside other text") {
+    for (const char* code : {"40330001", "4033000", "403300000", " 40330000", "40330000 ", "APBK0919", ""}) {
+      CAPTURE(code);
+      CHECK(unknown(
+        kis::KisClientTestAccess::parse_order_ack(
+          json_response(kis_refusal_body(code, KIS_NOTHING_TO_CANCEL)), KisOperation::CANCEL, true
+        )
+      ));
+    }
+    // The code in the message, under another code.
+    CHECK(unknown(
+      kis::KisClientTestAccess::parse_order_ack(
+        json_response(kis_refusal_body("APBK0919", "40330000")), KisOperation::CANCEL, true
+      )
+    ));
+    // A code that only begins with it: compared as the whole JSON string.
+    CHECK(unknown(
+      kis::KisClientTestAccess::parse_order_ack(
+        json_response(R"({"rt_cd":"1","msg_cd":"40330000\u0000X","msg1":"m"})"), KisOperation::CANCEL, true
+      )
+    ));
+  }
+
+  SECTION("a status, code or message of another value or type") {
+    for (const char* body : {
+           R"({"rt_cd":"7","msg_cd":"40330000","msg1":"m"})",
+           R"({"rt_cd":" 1","msg_cd":"40330000","msg1":"m"})",
+           R"({"rt_cd":"1","msg_cd":40330000,"msg1":"m"})",
+           R"({"rt_cd":"1","msg_cd":"40330000"})",
+           R"({"rt_cd":"1","msg_cd":"40330000","msg1":""})",
+           R"({"rt_cd":"1","msg_cd":"40330000","msg1":null})",
+           R"({"rt_cd":"1","msg_cd":"40330000","msg1":["m"]})",
+         }) {
+      CAPTURE(body);
+      CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(body), KisOperation::CANCEL, true)));
+    }
+    // A status that is not a string is not a reply this parser reads at all.
+    for (const char* body : {
+           R"({"rt_cd":1,"msg_cd":"40330000","msg1":"m"})",
+           R"({"msg_cd":"40330000","msg1":"m"})",
+         }) {
+      CAPTURE(body);
+      const auto result =
+        kis::KisClientTestAccess::parse_order_ack(json_response(body), KisOperation::CANCEL, true);
+      REQUIRE_FALSE(result);
+      CHECK(result.error().category_ == ErrorCategory::PROTOCOL);
+      CHECK(result.error().broker_code_ == "invalid_order_response");
+    }
+  }
+
+  SECTION("anything an acknowledgement carries, or an output that is not an object") {
+    for (const char* extra : {
+           R"(,"output":{"ODNO":"0001569157"})",
+           R"(,"output":{"ODNO":1569157})",
+           R"(,"output":{"ODNO":null})",
+           R"(,"output":{"ODNO":" "})",
+           R"(,"output":{"ODNO":"","ORD_TMD":"155211"})",
+           R"(,"output":{"KRX_FWDG_ORD_ORGNO":"06010"})",
+           R"(,"output":null)",
+           R"(,"output":[])",
+           R"(,"output":[{"ODNO":""}])",
+           R"(,"output":"")",
+           R"(,"output":0)",
+         }) {
+      CAPTURE(extra);
+      CHECK(unknown(
+        kis::KisClientTestAccess::parse_order_ack(
+          json_response(kis_refusal_body("40330000", KIS_NOTHING_TO_CANCEL, extra)), KisOperation::CANCEL, true
+        )
+      ));
+      CHECK(unknown(
+        kis::KisClientTestAccess::parse_order_ack(
+          json_response(kis_refusal_body("40240000", KIS_NOTHING_HELD, extra)), KisOperation::PLACE, true
+        )
+      ));
+    }
+  }
+
+  SECTION("an HTTP error with the same body keeps its own reading") {
+    const auto server = kis::KisClientTestAccess::parse_order_ack(json_response(cancel, 500), KisOperation::CANCEL, true);
+    REQUIRE_FALSE(server);
+    CHECK(server.error().category_ == ErrorCategory::HTTP);
+    CHECK(runner::outcome_of(server.error()) == runner::SendOutcome::INDETERMINATE);
+
+    const auto client = kis::KisClientTestAccess::parse_order_ack(json_response(cancel, 400), KisOperation::CANCEL, true);
+    REQUIRE_FALSE(client);
+    CHECK(client.error().category_ == ErrorCategory::HTTP);
+    CHECK(client.error().http_status_ == 400);
+    CHECK(client.error().message_.find("recognized refusal") == std::string::npos);
+  }
+
+  SECTION("a rate limit and an accepted order are read as before") {
+    const auto limited = kis::KisClientTestAccess::parse_order_ack(
+      json_response(R"({"rt_cd":"1","msg_cd":"EGW00201","msg1":"초당 거래건수를 초과하였습니다."})"),
+      KisOperation::CANCEL,
+      true
+    );
+    REQUIRE_FALSE(limited);
+    CHECK(limited.error().category_ == ErrorCategory::RATE_LIMIT);
+
+    const auto accepted = kis::KisClientTestAccess::parse_order_ack(
+      json_response(
+        R"({"rt_cd":"0","msg_cd":"40330000","msg1":"m",)"
+        R"("output":{"KRX_FWDG_ORD_ORGNO":"06010","ODNO":"0001569157","ORD_TMD":"155211"}})"
+      ),
+      KisOperation::CANCEL,
+      true
+    );
+    REQUIRE(accepted);
+    CHECK(accepted.value().order_.order_number_ == "0001569157");
+  }
 }
 
 TEST_CASE(
