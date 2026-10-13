@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -612,6 +613,9 @@ inline void drop_rows_of_other_placements(
     std::vector<std::string> names_;
   };
   std::vector<Owner> owners;
+  // Each journal id's owner and each order id's owners, so a long journal is read in one pass.
+  std::unordered_map<std::string, std::size_t> owner_of;
+  std::unordered_map<std::string, std::vector<std::size_t>> named;
   for (const auto& entry : replay.entries_) {
     if (entry.action_ != JournalAction::PLACE) {
       continue;
@@ -622,35 +626,35 @@ inline void drop_rows_of_other_placements(
     if (being_matched) {
       continue;
     }
-    auto owner = std::find_if(owners.begin(), owners.end(), [&](const Owner& known) {
-      return known.sent_.entry_.id_ == entry.id_;
-    });
-    if (owner == owners.end()) {
+    auto known = owner_of.find(entry.id_);
+    if (known == owner_of.end()) {
       Owner fresh;
       fresh.sent_.entry_ = entry;
       fresh.sent_.opened_at_ = entry.recorded_at_;
+      known = owner_of.emplace(entry.id_, owners.size()).first;
       owners.push_back(std::move(fresh));
-      owner = std::prev(owners.end());
     }
-    if (entry.outcome_ != JournalOutcome::PENDING && !owner->sent_.closed_at_) {
-      owner->sent_.closed_at_ = entry.recorded_at_;
+    auto& owner = owners[known->second];
+    if (entry.outcome_ != JournalOutcome::PENDING && !owner.sent_.closed_at_) {
+      owner.sent_.closed_at_ = entry.recorded_at_;
     }
     if (!entry.order_id_.empty() &&
-        std::find(owner->names_.begin(), owner->names_.end(), entry.order_id_) == owner->names_.end()) {
-      owner->names_.push_back(entry.order_id_);
+        std::find(owner.names_.begin(), owner.names_.end(), entry.order_id_) == owner.names_.end()) {
+      owner.names_.push_back(entry.order_id_);
+      named[entry.order_id_].push_back(known->second);
     }
   }
   rows.erase(
     std::remove_if(
       rows.begin(), rows.end(),
       [&](const OrderSnapshot& row) {
-        if (!row.ordered_at_) {
+        const auto holders = named.find(row.order_id_);
+        if (!row.ordered_at_ || holders == named.end()) {
           return false;
         }
-        return std::any_of(owners.begin(), owners.end(), [&](const Owner& owner) {
-          return owner.sent_.entry_.instrument_ == row.instrument_ &&
-            std::find(owner.names_.begin(), owner.names_.end(), row.order_id_) != owner.names_.end() &&
-            time_evidence(owner.sent_, row, window) == Evidence::CONFIRMS;
+        return std::any_of(holders->second.begin(), holders->second.end(), [&](std::size_t at) {
+          return owners[at].sent_.entry_.instrument_ == row.instrument_ &&
+            time_evidence(owners[at].sent_, row, window) == Evidence::CONFIRMS;
         });
       }
     ),
