@@ -93,8 +93,8 @@ struct KiwoomClientTestAccess {
     return KiwoomClient::parse_open_order(row);
   }
 
-  static OrderSnapshot history_row(const json::object& row, const Date& date) {
-    return KiwoomClient::parse_history_row(row, date);
+  static OrderSnapshot history_row(const json::object& row, const Date& date, bool demo = false) {
+    return KiwoomClient::parse_history_row(row, date, demo);
   }
 
   // A day's history as the completed listing returns it.
@@ -103,7 +103,7 @@ struct KiwoomClientTestAccess {
     std::vector<KiwoomClient::HistoryLink> links;
     for (const auto& row : rows) {
       const auto object = json::parse(row).as_object();
-      orders.push_back(KiwoomClient::parse_history_row(object, date));
+      orders.push_back(KiwoomClient::parse_history_row(object, date, demo));
       links.push_back(KiwoomClient::history_link(object, demo));
     }
     KiwoomClient::close_cancelled_originals(orders, links);
@@ -1415,6 +1415,63 @@ TEST_CASE("a cancelled order's own history row ends once its cancellation names 
     CHECK(orders[0].execution_.filled_quantity_.coefficient() == 0);
     // The cancellation row is not an order, and keeps what it read before.
     CHECK(orders[1].status_ == OrderStatus::UNKNOWN);
+  }
+  SECTION("the demo's label for an ordinary limit order gives the row its shape") {
+    // 보통가 is in neither column of Kiwoom's table (보통 in the working-order listing, 지정가 documented
+    // for this one). Without a shape a sweep cannot match the row to the order it is.
+    const auto orders = Access::history_rows({row("0013356", "0000000", "일반", "0", "10")}, date, true);
+    CHECK(orders[0].type_ == OrderType::LIMIT);
+    CHECK(orders[0].time_in_force_ == TimeInForce::DAY);
+    CHECK(orders[0].session_ == OrderSession::REGULAR);
+    // On a real account the label is not one this library has seen, and the row keeps no shape.
+    const auto real = Access::history_rows({row("0013356", "0000000", "일반", "0", "10")}, date, false);
+    CHECK(real[0].type_ == OrderType::UNKNOWN);
+    CHECK(real[0].time_in_force_ == TimeInForce::UNKNOWN);
+    CHECK(real[0].session_ == OrderSession::UNKNOWN);
+    // Only the whole label: a longer one is another shape the demo has not been seen to write.
+    auto other = json::parse(row("0013356", "0000000", "일반", "0", "10")).as_object();
+    other["trde_tp"] = "보통가(IOC)";
+    CHECK(Access::history_row(other, date, true).type_ == OrderType::UNKNOWN);
+    other["trde_tp"] = "지정가";
+    CHECK(Access::history_row(other, date, false).type_ == OrderType::LIMIT);
+    CHECK(Access::history_row(other, date, true).time_in_force_ == TimeInForce::DAY);
+  }
+  SECTION("a cancellation's own row, now a limit row without a price, is nobody's placement") {
+    // The demo writes the cancellation's row with the same label and no price. With a shape it must not
+    // become a row a sweep could take for an order: not for a limit placement, not for a market one.
+    auto object = json::parse(cancel).as_object();
+    object["ord_uv"] = "0";
+    const auto cancelled = Access::history_row(object, date, true);
+    CHECK(cancelled.type_ == OrderType::LIMIT);
+    CHECK_FALSE(cancelled.price_.has_value());
+    REQUIRE(cancelled.ordered_at_);
+
+    runner::OpenInstruction limit;
+    limit.entry_.action_ = runner::JournalAction::PLACE;
+    limit.entry_.outcome_ = runner::JournalOutcome::PENDING;
+    limit.entry_.recorded_at_ = *cancelled.ordered_at_;
+    limit.entry_.instrument_ = cancelled.instrument_;
+    limit.entry_.side_ = OrderSide::BUY;
+    limit.entry_.type_ = OrderType::LIMIT;
+    limit.entry_.time_in_force_ = TimeInForce::DAY;
+    limit.entry_.session_ = OrderSession::REGULAR;
+    limit.entry_.venue_ = cancelled.venue_;
+    limit.entry_.quantity_ = Decimal64::parse("10");
+    limit.entry_.price_ = Decimal64::parse("221000");
+    limit.opened_at_ = limit.entry_.recorded_at_;
+    auto market = limit;
+    market.entry_.type_ = OrderType::MARKET;
+    market.entry_.price_.reset();
+    auto unrouted = limit;
+    unrouted.entry_.venue_.reset();
+    for (const auto& instruction : {limit, market, unrouted}) {
+      CHECK_FALSE(runner::row_corresponds(instruction, cancelled, runner::MatchWindow{}));
+      CHECK_FALSE(runner::row_might_correspond(instruction, cancelled, runner::MatchWindow{}));
+    }
+    // The order it cancels, a limit row with its price, is the limit placement's.
+    const auto placed = Access::history_row(json::parse(original).as_object(), date, true);
+    CHECK(runner::row_corresponds(limit, placed, runner::MatchWindow{}));
+    CHECK_FALSE(runner::row_corresponds(limit, Access::history_row(json::parse(original).as_object(), date, false), runner::MatchWindow{}));
   }
   SECTION("a bare 취소 on a real account is not a completed cancellation") {
     const auto orders = Access::history_rows({original, cancel}, date, false);
