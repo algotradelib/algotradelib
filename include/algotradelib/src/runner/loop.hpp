@@ -689,6 +689,12 @@ struct LoopReport {
    *   its closing pass never ran. Makes `closing_complete()` false; `stopped_by_` names the stop.
    */
   bool closing_interrupted_{false};
+  /**
+   * @brief The order for which the loop stopped placing by itself (`PollingLoop::set_owed_order_limit`):
+   *   owed longer than the limit with no sweep having named it, or held for an operator. The loop
+   *   requested `QUIESCE` for it, and `notes_` says what to do.
+   */
+  std::optional<Obligation> owed_stop_;
 
   /**
    * @brief Positions whose closing order was sized down, or not sent, because another order could
@@ -1095,6 +1101,39 @@ public:
    * @param limit The longest wait.
    */
   void set_closing_wait(std::chrono::nanoseconds limit) { closing_wait_ = limit; }
+
+  /**
+   * @brief Sets how long a serialized runner's order may stay owed with nobody able to account for it
+   *   before the loop stops placing (ten minutes by default).
+   *
+   * Such an order is one whose outcome is unknown and that no sweep has named
+   * (`ObligationState::UNNAMED`), or one held for an operator (`ObligationState::OPERATOR`). Its
+   * instrument is withheld until `Runner::release_obligations`, and a strategy trading other
+   * instruments would go on beside it: a pair with one leg, a rotation holding a name it meant to
+   * sell. So, once the order list has been read, the loop requests `StopIntent::QUIESCE` on the run's
+   * `StopSource` as soon as it finds such an order sent longer ago than the limit, before anything
+   * further is fed: nothing more is placed, nothing is cancelled or closed, and the order is still owed.
+   * `LoopReport::owed_stop_` names it. The request stays on the `StopSource`, as a control-file word
+   * does, and stops any other loop sharing it. A restart restores the order and stops again after its
+   * first order-list read, before it places anything, until a sweep names the order or it is released.
+   *
+   * To trade again in this process, after reading the broker's order list and holdings for the order:
+   * `Runner::release_obligations` for its instrument, `ledger().resolve_after_reading_orders` if the
+   * ledger still holds the instrument (an unnamed order past the confirmation timeout and one held for
+   * an operator each mark it, and a release leaves the ledger alone), `StopSource::clear`, and
+   * `guard().resume(strategy::HaltReason::STOPPING)`; the next order there waits for a holdings read
+   * received after the release.
+   *
+   * An order the broker named never causes this, however old; it stays owed until holdings or its own
+   * history account for it, which is not guaranteed to happen (`Runner::obligations`). An order whose
+   * reply was lost and that the broker did accept causes it too, if no list shows it within the limit:
+   * the stop says nobody could account for the order, not that it failed. The limit has to exceed the
+   * time a sweep needs to name such an order: its matching window (two minutes by default) and whatever
+   * a listing lags.
+   *
+   * @param limit The longest such an order may be owed; zero or negative never stops the run for one.
+   */
+  void set_owed_order_limit(std::chrono::nanoseconds limit) { owed_order_limit_ = limit; }
 
   /**
    * @brief Accepts holdings of any age, instead of stating a maximum.
@@ -1823,7 +1862,7 @@ private:
   // after them so the report is current. `may_read` is false on the second call so the order-list
   // read is attempted at most once per iteration.
   std::optional<strategy::HaltReason> gate_for(
-    const StopSource& stop,
+    StopSource& stop,
     std::chrono::system_clock::time_point at,
     LoopReport& report,
     bool may_read
@@ -1862,6 +1901,16 @@ private:
       if (!read_order_list_once(at, report)) {
         return strategy::HaltReason::ORDER_LIST_UNREAD;
       }
+    }
+    // **An order nobody can account for, owed too long, stops the run's placements**
+    // (`set_owed_order_limit`). Here: after the order list was read, whose sweep may have named the
+    // order, and before anything this iteration can feed, so that a start with an order left from an
+    // earlier day places nothing on any instrument. Measured on a fresh reading of the clock.
+    if (auto owed = owed_too_long(clock_.now())) {
+      report.notes_.push_back(owed_stop_note(*owed));
+      report.owed_stop_ = std::move(owed);
+      stop.request(StopIntent::QUIESCE);
+      return strategy::HaltReason::STOPPING;
     }
     // Measured from the snapshot's own `as_of_` rather than from when the poll returned, because
     // that is when the broker says the positions were true. A poll that succeeded at noon carrying
@@ -2481,6 +2530,35 @@ private:
     }
   }
 
+  // Returns the oldest order nobody can account for that was sent longer ago than the limit, as of `at`:
+  // one no sweep has named, or one held for an operator (`set_owed_order_limit`). None before the order
+  // list was read (a sweep may name it), with the limit off, or from a runner that is not serialized.
+  std::optional<Obligation> owed_too_long(std::chrono::system_clock::time_point at) const {
+    std::optional<Obligation> oldest;
+    if (!order_list_read_ || owed_order_limit_ <= std::chrono::nanoseconds::zero()) {
+      return oldest;
+    }
+    for (auto& owed : runner_->obligations()) {
+      if (owed.state_ != ObligationState::UNNAMED && owed.state_ != ObligationState::OPERATOR) {
+        continue;
+      }
+      if (at - owed.sent_at_ > owed_order_limit_ && (!oldest || owed.sent_at_ < oldest->sent_at_)) {
+        oldest = std::move(owed);
+      }
+    }
+    return oldest;
+  }
+
+  // The note for a run the loop stopped for `owed`.
+  static std::string owed_stop_note(const Obligation& owed) {
+    return "stopped placing: the " + std::string(owed.side_ == OrderSide::BUY ? "buy" : "sell") + " of " +
+      owed.quantity_.str() + " " + owed.instrument_.symbol_ + " sent " + format_iso8601_utc(owed.sent_at_) +
+      " (journal id " + owed.journal_id_ + ") is still owed, and " +
+      (owed.state_ == ObligationState::OPERATOR ? "is held for an operator" : "no sweep has found its order") +
+      ". Nothing was cancelled or closed. Read the broker's order list and holdings for it, then account for "
+      "it with Runner::release_obligations; until then every start stops here again";
+  }
+
   // Returns whether a stop that closes should let the loop read again before its pass is built.
   //
   // True while a read could still give the pass what it lacks and the wait has not reached its limit;
@@ -2728,6 +2806,7 @@ private:
   // How long a stop that closes may wait for the reads that account for this runner's orders, and how
   // often it repeats them.
   std::chrono::nanoseconds closing_wait_{std::chrono::seconds(30)};
+  std::chrono::nanoseconds owed_order_limit_{std::chrono::minutes(10)};
   static constexpr std::chrono::seconds closing_reread_{5};
   // A stop in progress in this run: when it was entered and when its wait ends, on the monotonic reading,
   // and whether the wait currently wants the two closing reads.

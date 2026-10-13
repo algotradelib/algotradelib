@@ -86,6 +86,12 @@ struct Settings {
    */
   std::chrono::nanoseconds closing_wait_{std::chrono::seconds(30)};
   /**
+   * @brief How long an order may stay owed with nobody able to account for it (its outcome unknown and no
+   *   sweep having found it, or held for an operator) before the run stops placing; zero never stops for
+   *   one. See `runner::PollingLoop::set_owed_order_limit`.
+   */
+  std::chrono::nanoseconds owed_order_limit_{std::chrono::minutes(10)};
+  /**
    * @brief The venue an order is sent to, since a strategy's orders name none; `UNSPECIFIED` takes the
    * broker's own default. Kiwoom has none, so a Kiwoom run must state one. See
    * `live::SessionExecutor::default_route`.
@@ -114,6 +120,11 @@ enum class Exit : int {
   LOCAL_FAILURE = 6,
   /** @brief The program could not settle which account to trade (used by `example-live-program`). */
   ACCOUNT_UNRESOLVED = 7,
+  /**
+   * @brief The run stopped placing by itself: an order has been owed too long with nobody able to account
+   *   for it. Starting again stops again; read the broker's lists and release the order first.
+   */
+  OWED_ORDER = 8,
 };
 
 /**
@@ -283,6 +294,7 @@ void configure(Loop& loop, const Settings& settings) {
   loop.set_maximum_portfolio_age(settings.maximum_portfolio_age_);
   loop.set_maximum_price_limits_age(settings.maximum_price_limits_age_);
   loop.set_closing_wait(settings.closing_wait_);
+  loop.set_owed_order_limit(settings.owed_order_limit_);
   loop.set_control_file(runner::FileStopChannel(settings.control_file_));
 }
 
@@ -305,7 +317,7 @@ void configure(Loop& loop, const Settings& settings) {
  * @param out Where the program prints.
  * @param clock The clock.
  * @return `CLEAN`, `CLOSING_INCOMPLETE`, `JOURNAL_REFUSED`, `RECOVERY_HALTED`,
- *   `REFERENCE_UNREADABLE`, `LOOP_ABANDONED` or `LOCAL_FAILURE`.
+ *   `REFERENCE_UNREADABLE`, `LOOP_ABANDONED`, `LOCAL_FAILURE` or `OWED_ORDER`.
  */
 template <typename Strategy, typename Session, typename MarketData, typename Clock = runner::SteadyClock>
 Exit trade(
@@ -380,7 +392,15 @@ Exit trade(
   if (report.abandoned_) {
     return Exit::LOOP_ABANDONED;
   }
-  return stop_closes(report) && !report.closing_complete() ? Exit::CLOSING_INCOMPLETE : Exit::CLEAN;
+  if (stop_closes(report) && !report.closing_complete()) {
+    return Exit::CLOSING_INCOMPLETE;
+  }
+  if (report.owed_stop_) {
+    out << "OWED ORDER      : the run stopped placing by itself (see the note above). A supervisor must not\n"
+        << "                  restart it: the order is restored from the journal and the run stops again\n";
+    return Exit::OWED_ORDER;
+  }
+  return Exit::CLEAN;
 }
 
 /**
@@ -398,7 +418,7 @@ Exit trade(
  * @param out Where the program prints.
  * @param clock The clock.
  * @return `CLEAN`, `CLOSING_INCOMPLETE`, `JOURNAL_REFUSED`, `RECOVERY_HALTED`,
- *   `REFERENCE_UNREADABLE`, `LOOP_ABANDONED` or `LOCAL_FAILURE`.
+ *   `REFERENCE_UNREADABLE`, `LOOP_ABANDONED`, `LOCAL_FAILURE` or `OWED_ORDER`.
  */
 template <typename Strategy, typename Session, typename Clock = runner::SteadyClock>
 Exit trade(

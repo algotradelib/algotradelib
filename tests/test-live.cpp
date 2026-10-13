@@ -7321,3 +7321,184 @@ TEST_CASE("a runner that overlaps orders makes no later search", "[serialized][u
   CHECK(rig.session.history_calls() == 0);
   CHECK(rig.lines(runner::JournalOutcome::RESOLVED).size() == 1);
 }
+
+TEST_CASE("a run stops placing for an order nobody has been able to account for", "[serialized][unfound][loop]") {
+  using runner::JournalOutcome;
+  const InstrumentId hynix{Country::KR, Venue::COMBINED, "000660"};
+  // What the strategy would do on another instrument at the first poll that feeds it.
+  const auto trade_elsewhere = [&](SerialRig& rig, QuietSource& source) {
+    auto reference = samsung_reference();
+    reference.id_ = hynix;
+    rig.runner_instance.context().set_instrument(reference);
+    rig.runner_instance.context().set_last_price(hynix, Decimal64::parse("100000"));
+    source.act_on_working_poll_ = 1;
+    source.act_ = [&rig, hynix] {
+      auto other = target_of("5");
+      other.instrument_ = hynix;
+      // The loop installs the phase it derives, and this fixture has no calendar.
+      rig.runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+      rig.bar(1, {other});
+    };
+  };
+  const auto noted = [](const runner::LoopReport& report, const char* text) {
+    return std::any_of(report.notes_.begin(), report.notes_.end(), [&](const std::string& note) {
+      return note.find("stopped placing: the buy of 10 005930") == 0 && note.find(text) != std::string::npos;
+    });
+  };
+
+  SECTION("left unnamed by an earlier day: nothing is placed anywhere, and the report names the order") {
+    SerialRig rig(unfound_lines());
+    QuietSource source;
+    trade_elsewhere(rig, source);
+    auto loop = loop_over(rig, source, 1);
+    runner::StopSource stop;
+    const auto report = loop.run(stop, 5);
+    CHECK(rig.session.placed().empty());
+    CHECK(report.iterations_ == 1);
+    REQUIRE(report.stopped_by_.has_value());
+    CHECK(*report.stopped_by_ == runner::StopIntent::QUIESCE);
+    REQUIRE(report.owed_stop_.has_value());
+    CHECK(report.owed_stop_->journal_id_ == "p-1");
+    CHECK(report.owed_stop_->instrument_ == samsung());
+    CHECK(report.owed_stop_->state_ == runner::ObligationState::UNNAMED);
+    CHECK(rig.session.canceled().empty());
+    CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+    CHECK(noted(report, "no sweep has found its order"));
+    CHECK(noted(report, "journal id p-1"));
+    CHECK(stop.requested());
+  }
+
+  SECTION("held for an operator by an older journal: the same") {
+    SerialRig rig({serial_line("old-1", JournalOutcome::ACCEPTED, "A", nullptr)});
+    REQUIRE(rig.owed() == runner::ObligationState::OPERATOR);
+    QuietSource source;
+    trade_elsewhere(rig, source);
+    auto loop = loop_over(rig, source, 1);
+    runner::StopSource stop;
+    const auto report = loop.run(stop, 5);
+    CHECK(rig.session.placed().empty());
+    REQUIRE(report.owed_stop_.has_value());
+    CHECK(report.owed_stop_->state_ == runner::ObligationState::OPERATOR);
+    CHECK(noted(report, "is held for an operator"));
+  }
+
+  SECTION("with the limit off the run goes on beside it") {
+    SerialRig rig(unfound_lines());
+    QuietSource source;
+    trade_elsewhere(rig, source);
+    auto loop = loop_over(rig, source, 1);
+    loop.set_owed_order_limit(std::chrono::nanoseconds::zero());
+    runner::StopSource stop;
+    const auto report = loop.run(stop, 3);
+    CHECK_FALSE(report.owed_stop_.has_value());
+    CHECK_FALSE(report.stopped_by_.has_value());
+    REQUIRE(rig.session.placed().size() == 1);
+    CHECK(rig.session.placed().front().instrument_ == hynix);
+  }
+
+  SECTION("an order the broker named, however old, does not stop it") {
+    SerialRig rig({serial_line("p-1", JournalOutcome::PENDING), serial_line("p-1", JournalOutcome::ACCEPTED, "B")});
+    QuietSource source;
+    trade_elsewhere(rig, source);
+    auto loop = loop_over(rig, source, 1);
+    runner::StopSource stop;
+    const auto report = loop.run(stop, 3);
+    CHECK_FALSE(report.owed_stop_.has_value());
+    CHECK(rig.session.placed().size() == 1);
+  }
+
+  SECTION("not until it has been owed for the limit, on the loop's clock") {
+    // Sent two hours before the loop starts; a limit a few seconds beyond that age.
+    SerialRig rig(unfound_lines());
+    QuietSource source;
+    auto loop = loop_over(rig, source, 1);
+    loop.set_owed_order_limit(std::chrono::hours(2) + std::chrono::milliseconds(3500));
+    runner::StopSource stop;
+    const auto report = loop.run(stop, 10);
+    REQUIRE(report.owed_stop_.has_value());
+    // One-second ticks from the hour: 0, 1, 2 and 3 s are within the limit, 4 s is past it.
+    CHECK(report.iterations_ == 5);
+  }
+
+  SECTION("a stop already asked for is carried out as it is") {
+    SerialRig rig(unfound_lines());
+    QuietSource source;
+    auto loop = loop_over(rig, source, 1);
+    runner::StopSource stop;
+    stop.request(runner::StopIntent::WITHDRAW);
+    const auto report = loop.run(stop, 5);
+    CHECK_FALSE(report.owed_stop_.has_value());
+    REQUIRE(report.stopped_by_.has_value());
+    CHECK(*report.stopped_by_ == runner::StopIntent::WITHDRAW);
+  }
+}
+
+TEST_CASE("after that stop, the documented steps let the instrument trade again", "[serialized][unfound][loop]") {
+  SerialRig rig(unfound_lines());
+  // As its timeout marks it: a release leaves the ledger alone.
+  rig.runner_instance.ledger().mark(samsung(), "not accounted for within the confirmation timeout");
+  QuietSource source;
+  auto loop = loop_over(rig, source, 1);
+  runner::StopSource stop;
+  REQUIRE(loop.run(stop, 5).owed_stop_.has_value());
+
+  // Starting again without them stops again at once.
+  CHECK(loop.run(stop, 5).iterations_ == 1);
+
+  // The operator read the broker's order list and holdings: the order is not there.
+  REQUIRE(rig.runner_instance.release_obligations(samsung(), "read the order list and holdings: not placed"));
+  rig.runner_instance.ledger().resolve_after_reading_orders(samsung());
+  stop.clear();
+  rig.runner_instance.guard().resume(strategy::HaltReason::STOPPING);
+  // Only a holdings read received after the release sizes the next order. (The loop installed the phase
+  // it derives, and this fixture has no calendar.)
+  rig.runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
+  const auto too_early = rig.bar(3, {target_of("10")});
+  CHECK(rig.session.placed().empty());
+  REQUIRE(too_early.withheld_plans_.size() == 1);
+  CHECK(too_early.withheld_plans_.front().detail_.find("waiting for a newer read") != std::string::npos);
+  rig.show(polled(4, "0", {}));
+  rig.bar(5, {target_of("10")});
+  CHECK(rig.session.placed().size() == 1);
+  CHECK_FALSE(loop.run(stop, 2).owed_stop_.has_value());
+}
+
+TEST_CASE("the live program exits apart when it stopped for an order nobody can account for",
+          "[live][program][unfound]") {
+  // Left by an earlier day on an instrument this run does not even trade: the run would buy its share
+  // on the first bars, and places nothing.
+  const InstrumentId hynix{Country::KR, Venue::COMBINED, "000660"};
+  for (const bool limit_off : {false, true}) {
+    const TempPath journal_path("atl-test-program-owed.jsonl");
+    const TempPath control("atl-test-program-owed.stop");
+    {
+      runner::FileJournal journal(journal_path.str(), "fake:demo:1");
+      REQUIRE(journal.open());
+      for (auto line : unfound_lines()) {
+        line.instrument_ = hynix;
+        line.recorded_at_ = program_start() - std::chrono::hours(20);
+        REQUIRE(journal.append(line));
+      }
+    }
+    ProgramSession session;
+    script_ready(session);
+    auto settings = program_settings(journal_path, control);
+    if (limit_off) {
+      settings.owed_order_limit_ = std::chrono::nanoseconds::zero();
+    }
+    runner::StopSource stop;
+    std::ostringstream out;
+    const auto exit =
+      live_program::trade(session, one_share(), settings, stop, out, runner::ManualClock{program_start()});
+    INFO(out.str());
+    if (limit_off) {
+      CHECK(exit == live_program::Exit::CLEAN);
+      CHECK(session.placed().size() == 1);
+    } else {
+      CHECK(exit == live_program::Exit::OWED_ORDER);
+      CHECK(session.placed().empty());
+      CHECK(out.str().find("stopped placing: the buy of 10 000660") != std::string::npos);
+      CHECK(out.str().find("OWED ORDER") != std::string::npos);
+    }
+  }
+}
