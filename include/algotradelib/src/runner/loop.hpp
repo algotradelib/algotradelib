@@ -1110,17 +1110,26 @@ public:
    * (`ObligationState::UNNAMED`), or one held for an operator (`ObligationState::OPERATOR`). Its
    * instrument is withheld until `Runner::release_obligations`, and a strategy trading other
    * instruments would go on beside it: a pair with one leg, a rotation holding a name it meant to
-   * sell. So the loop acts in two steps. From the instant the limit has passed on its clock, placing is
-   * held (`strategy::HaltReason::STOPPING`), so nothing a strategy asks for goes out, the handlers the
-   * next order-list read may call included. Once an order-list read made after that instant has still
-   * left the order so, the loop requests `StopIntent::QUIESCE` on the run's `StopSource`: nothing more
-   * is placed, nothing is cancelled or closed, and the order is still owed. If instead that read's sweep
-   * names the order, the hold is lifted and the run goes on. So the limit bounds how long the run places
-   * beside such an order; the stop itself comes with the next successful read of the order list, later
-   * than the limit by up to that read's cadence, or more while reads fail. `LoopReport::owed_stop_` names
-   * the order. The request stays on the `StopSource`, as a control-file word
-   * does, and stops any other loop sharing it. A restart restores the order and stops again after its
-   * first order-list read, before it places anything, until a sweep names the order or it is released.
+   * sell. So the loop acts in two steps.
+   *
+   * **The hold.** Once the limit has passed on the loop's clock, the loop holds
+   * `strategy::HaltReason::STOPPING`: nothing a strategy asks for goes out, a withdrawal included. It
+   * is taken where the loop checks its holds, before every poll and once more after an iteration's
+   * polls, and is not a deadline enforced at each send: a call already in flight when the limit passes
+   * (a slow read that then feeds a handler) is not interrupted, and what an iteration does after its
+   * last check (the phase handler, then the retry of kept targets) runs on that check. So the hold can
+   * begin later than the limit by the length of one such call. Every order-list read that begins after
+   * the limit runs under it, its handlers included, and the hold stays through a failed read, a start
+   * that cannot read the list, and a run abandoned for failing polls.
+   *
+   * **The stop.** Once an order-list read that began after the limit has succeeded and still left the
+   * order so, the loop requests `StopIntent::QUIESCE` on the run's `StopSource`: nothing more is placed,
+   * nothing is cancelled or closed, and the order is still owed. `LoopReport::owed_stop_` names it. If
+   * that read's sweep names the order instead, the hold is lifted and the run goes on. So the stop
+   * comes later than the limit by up to the order list's cadence, or more while reads fail. The request
+   * stays on the `StopSource`, as a control-file word does, and stops any other loop sharing it. A
+   * restart restores the order and stops again at its first order-list read, having placed nothing,
+   * until a sweep names the order or it is released.
    *
    * To trade again in this process, after reading the broker's order list and holdings for the order:
    * `Runner::release_obligations` for its instrument, `ledger().resolve_after_reading_orders` if the
@@ -1134,9 +1143,10 @@ public:
    * reply was lost and that the broker did accept causes it too, if no list shows it within the limit:
    * the stop says nobody could account for the order, not that it failed. The limit has to exceed the
    * time a sweep needs to name such an order: its matching window (two minutes by default) and whatever
-   * a listing lags.
+   * a listing lags. The ages are on the loop's wall clock against the journal's stamps; a clock set
+   * forward shortens them and one set back lengthens them.
    *
-   * @param limit The longest such an order may be owed; zero or negative never stops the run for one.
+   * @param limit The longest such an order may be owed; zero or negative never holds or stops for one.
    */
   void set_owed_order_limit(std::chrono::nanoseconds limit) { owed_order_limit_ = limit; }
 
@@ -1295,6 +1305,12 @@ public:
         runner_->clear_retained_targets();
         if (const auto intent = stop.intent()) {
           interrupt_stop(*intent, report);
+        } else if (owed_past_limit(clock_.now())) {
+          // Giving up took `POLL_FAILING`, which lets a withdrawal through. The hold for an order nobody
+          // can account for (`set_owed_order_limit`) is the stronger one and stays, with no stop
+          // requested: no read has decided yet, and a later run on this loop takes it up again.
+          hold(strategy::HaltReason::STOPPING);
+          report.final_gate_ = runner_->guard().blocking_reason();
         }
         break;
       }
@@ -1901,23 +1917,29 @@ private:
       // Not attempted when the caller says not to, and not attempted at all while the runner's
       // journal is broken: a runner that cannot record what it does must not be sent looking for
       // more work to fail at. Either way the gate stands, which is the safe answer.
+      //
+      // `STOPPING` rather than `ORDER_LIST_UNREAD` on each path here while an order nobody can account
+      // for is past the limit (below): the stronger hold, which also refuses a withdrawal, must not be
+      // traded for the weaker one because a read failed. And held before the read, since the source is
+      // a template parameter and its read may feed.
+      const bool owed = owed_past_limit(clock_.now());
+      const auto unread = owed ? strategy::HaltReason::STOPPING : strategy::HaltReason::ORDER_LIST_UNREAD;
       if (!may_read || runner_->guard().halted(strategy::HaltReason::LOCAL_FAILURE)) {
-        return strategy::HaltReason::ORDER_LIST_UNREAD;
+        return unread;
       }
-      // Held before the read where an order from an earlier process is already past the limit: the
-      // source is a template parameter and its read may feed.
-      if (owed_past_limit(clock_.now())) {
+      if (owed) {
         hold(strategy::HaltReason::STOPPING);
       }
       if (!read_order_list_once(at, report)) {
-        return strategy::HaltReason::ORDER_LIST_UNREAD;
+        return unread;
       }
     }
     // **An order nobody can account for, owed too long, stops the run's placements**
-    // (`set_owed_order_limit`), in two steps. From the instant the limit has passed on the clock, placing
-    // is held: this gate is evaluated before every poll, so the order-list read that follows, and whatever
-    // its handlers ask for, runs under the hold. Once such a read has left the order unaccounted for, the
-    // stop is requested. A read whose sweep names the order lifts the hold instead.
+    // (`set_owed_order_limit`), in two steps. Once the limit has passed on the clock, this gate holds
+    // `STOPPING`; it is evaluated before every poll, so an order-list read that begins after the limit,
+    // and whatever its handlers ask for, runs under the hold (a call already in flight when the limit
+    // passes is not interrupted). Once such a read has left the order unaccounted for, the stop is
+    // requested. A read whose sweep names the order lifts the hold instead.
     if (auto owed = owed_too_long()) {
       report.notes_.push_back(owed_stop_note(*owed));
       report.owed_stop_ = std::move(owed);
