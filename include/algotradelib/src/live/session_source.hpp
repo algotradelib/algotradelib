@@ -1002,7 +1002,7 @@ private:
     const auto open = runner::unresolved_instructions(replay);
     if (open.empty()) {
       reconcile_ = runner::ReconcileReport{};
-    } else if (!sweep(runner_instance, replay, open, rows)) {
+    } else if (!sweep(runner_instance, open, rows)) {
       return;
     }
     search_again(runner_instance, replay, open, rows);
@@ -1031,8 +1031,8 @@ private:
   // further may be concluded from this read (the history did not arrive, or a resolution could not be
   // written).
   template <typename Runner>
-  bool sweep(Runner& runner_instance, const runner::JournalReplay& replay,
-    const std::vector<runner::OpenInstruction>& open, const std::vector<OrderSnapshot>& rows) {
+  bool sweep(Runner& runner_instance, const std::vector<runner::OpenInstruction>& open,
+    const std::vector<OrderSnapshot>& rows) {
     auto candidates = rows;
     if (runner::any_placement(open)) {
       // **An open-orders listing cannot answer the placement question.** Both brokers' working-order
@@ -1061,8 +1061,6 @@ private:
       }
     }
 
-    // An order this runner sent just before, of the same shape, is not this one.
-    runner::drop_rows_of_other_placements(candidates, replay, open, window_);
     reconcile_ = runner::reconcile_against(
       open,
       candidates,
@@ -1119,8 +1117,9 @@ private:
   // that sweep, and nothing else would ever name the order.
   //
   // Positive evidence only. A row must be dated inside the send's window to count, since this runs for
-  // as long as the order is owed and an undated row of the same shape may be another day's order.
-  // Anything but one such row changes nothing and writes nothing: no order is forgotten here.
+  // as long as the order is owed and an undated row of the same shape may be another day's order; and a
+  // row the journal gives to another placement is not this one's (an order of the same shape sent just
+  // before). Anything but one such row changes nothing and writes nothing: no order is forgotten here.
   template <typename Runner>
   void search_again(Runner& runner_instance, const runner::JournalReplay& replay,
     const std::vector<runner::OpenInstruction>& open, const std::vector<OrderSnapshot>& rows) {
@@ -1144,16 +1143,16 @@ private:
     if (!read_history(late, history)) {
       return;
     }
-    auto candidates = rows;
-    if constexpr (Caps::history_requires_range) {
-      runner::merge_rows(candidates, history);
-    } else {
-      runner::merge_dated_history(candidates, history);
-    }
-    candidates.erase(
-      std::remove_if(candidates.begin(), candidates.end(), [](const OrderSnapshot& row) { return !row.ordered_at_; }),
-      candidates.end()
-    );
+    // Undated rows go before the two lists are merged: a listing row with no date (KIS dates none)
+    // would otherwise stand in for the dated history row of the same order, and then be set aside.
+    const auto dated = [](std::vector<OrderSnapshot> all) {
+      all.erase(
+        std::remove_if(all.begin(), all.end(), [](const OrderSnapshot& row) { return !row.ordered_at_; }), all.end()
+      );
+      return all;
+    };
+    auto candidates = dated(rows);
+    runner::merge_dated_history(candidates, dated(history));
     runner::drop_rows_of_other_placements(candidates, replay, late, window_);
     const auto now = sweep_instant(runner_instance);
     for (const auto& instruction : late) {

@@ -507,6 +507,39 @@ TEST_CASE("a row the journal attributes to another placement is not a candidate"
     CHECK(rows.size() == 1);
   }
 
+  SECTION("a line written later gives a name and does not widen the send's window") {
+    // Round 1 of the review: yesterday's order, named by a sweep and confirmed today, and today's order
+    // carrying the same number, sent seconds after that recovery.
+    const auto today = sent_at() + std::chrono::hours(24);
+    auto yesterday = placement().entry_;
+    yesterday.id_ = "run-0";
+    auto named_today = yesterday;
+    named_today.outcome_ = JournalOutcome::RESOLVED;
+    named_today.order_id_ = "KRX-1";
+    named_today.recorded_at_ = today;
+    auto confirmed_today = named_today;
+    confirmed_today.outcome_ = JournalOutcome::CONFIRMED;
+    replay.entries_ = {yesterday, named_today, confirmed_today};
+    auto reused = row("KRX-1");
+    reused.ordered_at_ = today + std::chrono::seconds(10);
+    std::vector<OrderSnapshot> rows{reused, row("KRX-1")};
+    runner::drop_rows_of_other_placements(rows, replay, {placement()});
+    // Today's order with the reused number stays; yesterday's own row goes.
+    REQUIRE(rows.size() == 1);
+    CHECK(rows.front().ordered_at_ == reused.ordered_at_);
+  }
+
+  SECTION("a name an earlier sweep gave wrongly keeps the row from its real placement, which stays unfound") {
+    // The conservative direction, and why this filter is not for a sweep whose negative verdict is acted
+    // on: the row is not lent to a second placement while the journal says it is the first one's.
+    auto wrongly = first_accepted;
+    wrongly.outcome_ = JournalOutcome::RESOLVED;
+    replay.entries_ = {first_pending, wrongly, placement().entry_};
+    std::vector<OrderSnapshot> rows{row("KRX-1")};
+    runner::drop_rows_of_other_placements(rows, replay, {placement()});
+    CHECK(rows.empty());
+  }
+
   SECTION("the instruction being matched keeps its own row") {
     auto named = placement();
     named.entry_.id_ = "run-0";

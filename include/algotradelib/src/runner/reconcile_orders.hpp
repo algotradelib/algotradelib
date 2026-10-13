@@ -592,9 +592,16 @@ inline OrderMatch match_against(
  * @brief Removes the rows the journal already attributes to another placement.
  *
  * A row is another placement's when one of that placement's lines carries the row's order id, on the
- * row's instrument, and the row is dated inside that placement's own send window. Without this, an
- * order of the same shape sent just before one whose outcome is unknown is taken for it. An undated
- * row is kept: an order number alone is not identity across days.
+ * row's instrument, and the row is dated inside that placement's own send window: from its `PENDING`
+ * line to the answer of that send (`ACCEPTED`, `REJECTED` or `INDETERMINATE`), or `maximum_request_`
+ * after the `PENDING` line where no such answer was written. A line written later (`RESOLVED`,
+ * `CONFIRMED`, `HELD`) gives a name and does not move the window, so another day's order with the
+ * same number is kept. An undated row is kept too: an order number alone is not identity across days.
+ *
+ * For a search that acts only on finding an order (`live::SessionSource` uses it where it looks again
+ * for an order a serialized runner still owes): a name an earlier sweep gave wrongly removes the row
+ * from the placement it belongs to, which then stays unfound. It is not for a sweep whose negative
+ * verdict is acted on, nor for a cancellation, whose row is another placement's by definition.
  *
  * @param rows The rows to filter.
  * @param replay The journal's contents.
@@ -607,7 +614,7 @@ inline void drop_rows_of_other_placements(
   const std::vector<OpenInstruction>& matching,
   const MatchWindow& window = {}
 ) {
-  // One span per placement that has a name: from its first line to its first answer.
+  // One span per placement: from its first line to the answer of its send.
   struct Owner {
     OpenInstruction sent_;
     std::vector<std::string> names_;
@@ -635,7 +642,9 @@ inline void drop_rows_of_other_placements(
       owners.push_back(std::move(fresh));
     }
     auto& owner = owners[known->second];
-    if (entry.outcome_ != JournalOutcome::PENDING && !owner.sent_.closed_at_) {
+    const bool answers_the_send = entry.outcome_ == JournalOutcome::ACCEPTED ||
+      entry.outcome_ == JournalOutcome::REJECTED || entry.outcome_ == JournalOutcome::INDETERMINATE;
+    if (answers_the_send && !owner.sent_.closed_at_) {
       owner.sent_.closed_at_ = entry.recorded_at_;
     }
     if (!entry.order_id_.empty() &&
