@@ -315,6 +315,8 @@ enum class ObligationState {
 
 /** @brief One order a serialized runner still owes (`Runner::obligations`). */
 struct Obligation {
+  /** @brief The instrument. */
+  InstrumentId instrument_;
   /** @brief The id of the order's journal lines. */
   std::string journal_id_;
   /** @brief The broker's order id; empty while unnamed. */

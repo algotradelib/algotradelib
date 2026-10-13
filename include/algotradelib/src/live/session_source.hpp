@@ -13,6 +13,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -997,12 +998,41 @@ private:
     if (journal_ == nullptr) {
       return;
     }
-    const auto open = runner::unresolved_instructions(journal_->replay());
+    const auto replay = journal_->replay();
+    const auto open = runner::unresolved_instructions(replay);
     if (open.empty()) {
       reconcile_ = runner::ReconcileReport{};
+    } else if (!sweep(runner_instance, replay, open, rows)) {
       return;
     }
+    search_again(runner_instance, replay, open, rows);
+  }
 
+  // The instant a sweep measures the matching window against.
+  //
+  // The later of the decision instant and the loop's last reading of the wall clock. The decision
+  // instant alone moves only with bars, quotes and phase changes: on daily bars, or with a stop
+  // pending, an order that is plainly absent from every listing stayed "not enough time has passed"
+  // until the next bar, and its instrument stayed withheld. Both have to be wall time on the journal's
+  // clock: the decision instant comes from a bar's or quote's own time or from the caller, the other
+  // from whoever drives the runner. One that runs ahead of the journal, or a wall clock set forward,
+  // shortens the window; nothing here makes the sweep safe against a clock that is wrong.
+  //
+  // Before anything was fed and without a loop both are the epoch, as at the startup read after a
+  // restart. A resolution stamped there reads back as damage and halts the next start, so the wall
+  // clock stands in.
+  template <typename Runner>
+  static std::chrono::system_clock::time_point sweep_instant(const Runner& runner_instance) {
+    const auto now = std::max(runner_instance.context().now(), runner_instance.observed_at());
+    return now == std::chrono::system_clock::time_point{} ? std::chrono::system_clock::now() : now;
+  }
+
+  // The journal's own sweep: decides what `rows` settle of `open`. Returns `false` where nothing
+  // further may be concluded from this read (the history did not arrive, or a resolution could not be
+  // written).
+  template <typename Runner>
+  bool sweep(Runner& runner_instance, const runner::JournalReplay& replay,
+    const std::vector<runner::OpenInstruction>& open, const std::vector<OrderSnapshot>& rows) {
     auto candidates = rows;
     if (runner::any_placement(open)) {
       // **An open-orders listing cannot answer the placement question.** Both brokers' working-order
@@ -1021,7 +1051,7 @@ private:
         reconcile_ = runner::decide_nothing(
           open, "the order history could not be read, so nothing could be concluded from absence"
         );
-        return;
+        return false;
       }
       if constexpr (Caps::history_requires_range) {
         runner::merge_rows(candidates, history);
@@ -1031,28 +1061,26 @@ private:
       }
     }
 
-    // The later of the decision instant and the loop's last reading of the wall clock. The decision
-    // instant alone moves only with bars, quotes and phase changes: on daily bars, or with a stop
-    // pending, an order that is plainly absent from every listing stayed "not enough time has passed"
-    // until the next bar, and its instrument stayed withheld. Both have to be wall time on the journal's
-    // clock: the decision instant comes from a bar's or quote's own time or from the caller, the other
-    // from whoever drives the runner. One that runs ahead of the journal, or a wall clock set forward,
-    // shortens the window; nothing here makes the sweep safe against a clock that is wrong.
-    //
-    // Before anything was fed and without a loop both are the epoch, as at the startup read after a
-    // restart. A resolution stamped there reads back as damage and halts the next start, so the wall
-    // clock stands in.
-    auto now = std::max(runner_instance.context().now(), runner_instance.observed_at());
-    if (now == std::chrono::system_clock::time_point{}) {
-      now = std::chrono::system_clock::now();
-    }
+    // An order this runner sent just before, of the same shape, is not this one.
+    runner::drop_rows_of_other_placements(candidates, replay, open, window_);
     reconcile_ = runner::reconcile_against(
       open,
       candidates,
-      now,
+      sweep_instant(runner_instance),
       runner_instance.ledger(),
       *journal_,
-      window_
+      window_,
+      // The line says what was found; this says what was read, and what the runner then does about it.
+      runner_instance.serialized() ?
+        std::string_view(
+          " (the order list and the order history of its send); that does not establish that no order was "
+          "placed, and a serialized runner keeps the order owed until dated evidence accounts for it or an "
+          "operator releases it (Runner::release_obligations)"
+        ) :
+        std::string_view(
+          " (the order list and the order history of its send); that does not establish that no order was "
+          "placed"
+        )
     );
     if (reconcile_.unrecorded_) {
       // The sweep decided, and the decision could not be written down. Trading on a resolution that
@@ -1061,7 +1089,7 @@ private:
       runner_instance.halt_locally(
         "the order journal could not record a reconciliation, so the hold stands"
       );
-      return;
+      return false;
     }
     // **A placement whose reply was lost, now answered**: the runner has counted it since the
     // send, and keeps counting a matched one until holdings show it -- the ledger, just cleared, no
@@ -1081,6 +1109,74 @@ private:
           instruction.entry_.id_
         );
         break;
+      }
+    }
+    return true;
+  }
+
+  // Looks again for the placements a serialized runner still owes without a name after a sweep closed
+  // the journal's question about them (`Runner::serialized`): a row can reach the broker's lists after
+  // that sweep, and nothing else would ever name the order.
+  //
+  // Positive evidence only. A row must be dated inside the send's window to count, since this runs for
+  // as long as the order is owed and an undated row of the same shape may be another day's order.
+  // Anything but one such row changes nothing and writes nothing: no order is forgotten here.
+  template <typename Runner>
+  void search_again(Runner& runner_instance, const runner::JournalReplay& replay,
+    const std::vector<runner::OpenInstruction>& open, const std::vector<OrderSnapshot>& rows) {
+    if (!runner_instance.serialized()) {
+      return;
+    }
+    std::vector<std::string> ids;
+    for (const auto& owed : runner_instance.obligations()) {
+      const bool still_open = std::any_of(open.begin(), open.end(), [&](const runner::OpenInstruction& instruction) {
+        return instruction.entry_.id_ == owed.journal_id_;
+      });
+      if (owed.state_ == runner::ObligationState::UNNAMED && !owed.journal_id_.empty() && !still_open) {
+        ids.push_back(owed.journal_id_);
+      }
+    }
+    const auto late = runner::placements_of(replay, ids);
+    if (late.empty()) {
+      return;
+    }
+    std::vector<OrderSnapshot> history;
+    if (!read_history(late, history)) {
+      return;
+    }
+    auto candidates = rows;
+    if constexpr (Caps::history_requires_range) {
+      runner::merge_rows(candidates, history);
+    } else {
+      runner::merge_dated_history(candidates, history);
+    }
+    candidates.erase(
+      std::remove_if(candidates.begin(), candidates.end(), [](const OrderSnapshot& row) { return !row.ordered_at_; }),
+      candidates.end()
+    );
+    runner::drop_rows_of_other_placements(candidates, replay, late, window_);
+    const auto now = sweep_instant(runner_instance);
+    for (const auto& instruction : late) {
+      const auto match = runner::match_against(instruction, candidates, now, window_);
+      if (match.verdict_ != runner::MatchVerdict::MATCHED) {
+        continue;
+      }
+      // Written before the runner hears of it, as every resolution is: a restart restores the name.
+      if (!journal_->append(runner::resolution_entry(instruction, match, now))) {
+        runner_instance.halt_locally("the order journal could not record a reconciliation, so the hold stands");
+        return;
+      }
+      runner_instance.resolve_indeterminate_placement(
+        instruction.entry_.instrument_, instruction.entry_.side_, std::optional<std::string>(match.order_id_),
+        instruction.entry_.id_
+      );
+      // The ledger: what may have marked the instrument meanwhile is this order's own timeout, which a
+      // named order does not carry. Lifted unless this sweep left something undecided on the instrument,
+      // or the runner still owes there an order no sweep named or one held for an operator.
+      const auto& withheld = reconcile_.withheld_;
+      if (std::find(withheld.begin(), withheld.end(), match.instrument_) == withheld.end() &&
+          runner_instance.obligation_state(match.instrument_) == runner::ObligationState::NAMED) {
+        runner_instance.ledger().resolve_after_reading_orders(match.instrument_);
       }
     }
   }

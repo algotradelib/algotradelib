@@ -5,9 +5,11 @@
 
 #include <algotradelib/core>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <ctime>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,7 +23,9 @@ namespace runner {
  * @brief What the broker's order list says about one instruction of unknown outcome.
  *
  * A missing row means `NOT_PLACED` only after the matching window has closed (the listing may lag
- * an accepted write); before that it is `UNDECIDED`.
+ * an accepted write); before that it is `UNDECIDED`. `NOT_PLACED` is a finding about the rows supplied,
+ * not the broker's word that no order exists: an overlapping runner then forgets the placement, and a
+ * serialized runner (`Runner::serialized`) keeps it owed.
  */
 enum class MatchVerdict {
   /**
@@ -32,7 +36,7 @@ enum class MatchVerdict {
    */
   MATCHED,
   /**
-   * @brief No row corresponds and the window has closed; the order does not exist.
+   * @brief No row corresponds and the window has closed: no order was found.
    *
    * For a cancellation: the named order is not in the listing supplied.
    */
@@ -579,8 +583,79 @@ inline OrderMatch match_against(
   match.verdict_ = MatchVerdict::NOT_PLACED;
   match.detail_ = instruction.entry_.action_ == JournalAction::CANCEL ?
     "the order named by the cancellation is no longer in the broker's listing" :
-    "no matching order appeared within the window; the order does not exist";
+    "no matching order was found among the rows read, within the matching window";
   return match;
+}
+
+/**
+ * @brief Removes the rows the journal already attributes to another placement.
+ *
+ * A row is another placement's when one of that placement's lines carries the row's order id, on the
+ * row's instrument, and the row is dated inside that placement's own send window. Without this, an
+ * order of the same shape sent just before one whose outcome is unknown is taken for it. An undated
+ * row is kept: an order number alone is not identity across days.
+ *
+ * @param rows The rows to filter.
+ * @param replay The journal's contents.
+ * @param matching The instructions about to be matched; a row attributed to one of them is kept.
+ * @param window The allowances.
+ */
+inline void drop_rows_of_other_placements(
+  std::vector<OrderSnapshot>& rows,
+  const JournalReplay& replay,
+  const std::vector<OpenInstruction>& matching,
+  const MatchWindow& window = {}
+) {
+  // One span per placement that has a name: from its first line to its first answer.
+  struct Owner {
+    OpenInstruction sent_;
+    std::vector<std::string> names_;
+  };
+  std::vector<Owner> owners;
+  for (const auto& entry : replay.entries_) {
+    if (entry.action_ != JournalAction::PLACE) {
+      continue;
+    }
+    const bool being_matched = std::any_of(matching.begin(), matching.end(), [&](const OpenInstruction& instruction) {
+      return instruction.entry_.id_ == entry.id_;
+    });
+    if (being_matched) {
+      continue;
+    }
+    auto owner = std::find_if(owners.begin(), owners.end(), [&](const Owner& known) {
+      return known.sent_.entry_.id_ == entry.id_;
+    });
+    if (owner == owners.end()) {
+      Owner fresh;
+      fresh.sent_.entry_ = entry;
+      fresh.sent_.opened_at_ = entry.recorded_at_;
+      owners.push_back(std::move(fresh));
+      owner = std::prev(owners.end());
+    }
+    if (entry.outcome_ != JournalOutcome::PENDING && !owner->sent_.closed_at_) {
+      owner->sent_.closed_at_ = entry.recorded_at_;
+    }
+    if (!entry.order_id_.empty() &&
+        std::find(owner->names_.begin(), owner->names_.end(), entry.order_id_) == owner->names_.end()) {
+      owner->names_.push_back(entry.order_id_);
+    }
+  }
+  rows.erase(
+    std::remove_if(
+      rows.begin(), rows.end(),
+      [&](const OrderSnapshot& row) {
+        if (!row.ordered_at_) {
+          return false;
+        }
+        return std::any_of(owners.begin(), owners.end(), [&](const Owner& owner) {
+          return owner.sent_.entry_.instrument_ == row.instrument_ &&
+            std::find(owner.names_.begin(), owner.names_.end(), row.order_id_) != owner.names_.end() &&
+            time_evidence(owner.sent_, row, window) == Evidence::CONFIRMS;
+        });
+      }
+    ),
+    rows.end()
+  );
 }
 
 /** @brief What one sweep of the broker's order list settled, and what is still withheld. */
@@ -644,6 +719,8 @@ inline JournalEntry resolution_entry(
  * @param ledger The ledger to clear.
  * @param journal The journal to record resolutions in.
  * @param window The allowances.
+ * @param unplaced_note Text added to the journal detail of a placement found `NOT_PLACED`: what the
+ *   caller does with that finding.
  * @return The report.
  */
 template <typename Journal>
@@ -653,7 +730,8 @@ ReconcileReport reconcile_against(
   std::chrono::system_clock::time_point now,
   IndeterminacyLedger& ledger,
   Journal& journal,
-  const MatchWindow& window = {}
+  const MatchWindow& window = {},
+  std::string_view unplaced_note = {}
 ) {
   ReconcileReport report;
   report.matches_.reserve(open.size());
@@ -665,6 +743,9 @@ ReconcileReport reconcile_against(
     const auto instrument = match.instrument_;
     if (match.verdict_ == MatchVerdict::AMBIGUOUS) {
       report.ambiguous_ = true;
+    }
+    if (match.verdict_ == MatchVerdict::NOT_PLACED && instruction.entry_.action_ == JournalAction::PLACE) {
+      match.detail_ += unplaced_note;
     }
     if (match_verdict_resolves(match.verdict_)) {
       // Written before the ledger is cleared, for the same reason a placement is written before it

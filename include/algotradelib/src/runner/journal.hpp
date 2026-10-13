@@ -7,9 +7,11 @@
 
 #include <algotradelib/core>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -410,6 +412,47 @@ inline std::vector<OpenInstruction> unresolved_instructions(const JournalReplay&
     }
   }
   return open;
+}
+
+/**
+ * @brief Returns the placements with the given journal ids, each with the span in which it may have
+ *   reached the broker, whatever was written about them since.
+ *
+ * For a placement a sweep closed without finding its order and that a serialized runner still owes
+ * (`Runner::obligations`): `unresolved_instructions` no longer lists it, and this gives a later sweep
+ * the same instruction and span to match against.
+ *
+ * @param replay The journal's contents.
+ * @param ids The journal ids wanted.
+ * @return One instruction per id that has a `PENDING` or `INDETERMINATE` placement line, in file order;
+ *   one recovered from a damaged line is left out.
+ */
+inline std::vector<OpenInstruction> placements_of(const JournalReplay& replay, const std::vector<std::string>& ids) {
+  std::vector<OpenInstruction> found;
+  for (const auto& entry : replay.entries_) {
+    if (entry.action_ != JournalAction::PLACE || entry.requires_operator_ ||
+        (entry.outcome_ != JournalOutcome::PENDING && entry.outcome_ != JournalOutcome::INDETERMINATE) ||
+        std::find(ids.begin(), ids.end(), entry.id_) == ids.end()) {
+      continue;
+    }
+    auto known = std::find_if(found.begin(), found.end(), [&](const OpenInstruction& instruction) {
+      return instruction.entry_.id_ == entry.id_;
+    });
+    if (known == found.end()) {
+      OpenInstruction instruction;
+      instruction.entry_ = entry;
+      instruction.opened_at_ = entry.recorded_at_;
+      instruction.detail_ = entry.detail_;
+      found.push_back(std::move(instruction));
+      known = std::prev(found.end());
+    }
+    if (entry.outcome_ == JournalOutcome::INDETERMINATE) {
+      known->answered_ = true;
+      known->closed_at_ = entry.recorded_at_;
+      known->detail_ = entry.detail_;
+    }
+  }
+  return found;
 }
 
 /**

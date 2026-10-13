@@ -914,15 +914,26 @@ public:
    * @return One entry per order, in the order sent; empty if none or the runner is not serialized.
    */
   std::vector<Obligation> obligations(const InstrumentId& instrument) const {
+    auto owed = obligations();
+    owed.erase(
+      std::remove_if(owed.begin(), owed.end(), [&](const Obligation& one) { return !(one.instrument_ == instrument); }),
+      owed.end()
+    );
+    return owed;
+  }
+
+  /**
+   * @brief Lists every order a serialized runner still owes, on any instrument.
+   * @return One entry per order, in the order sent; empty if none or the runner is not serialized.
+   */
+  std::vector<Obligation> obligations() const {
     std::vector<Obligation> owed;
     if (!serialized()) {
       return owed;
     }
     for (const auto& entry : unconfirmed_) {
-      if (!(entry.instrument_ == instrument)) {
-        continue;
-      }
       Obligation obligation;
+      obligation.instrument_ = entry.instrument_;
       obligation.journal_id_ = entry.journal_ ? entry.journal_->id_ : std::string();
       obligation.order_id_ = entry.ref_.primary_;
       obligation.side_ = entry.side_;

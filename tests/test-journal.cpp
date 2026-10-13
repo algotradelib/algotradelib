@@ -259,6 +259,39 @@ TEST_CASE("a terminal line closes only the entry carrying its own id", "[journal
   REQUIRE(open.front().entry_.id_ == "a-1");
 }
 
+TEST_CASE("a placement is found by its id whatever was written about it since", "[journal]") {
+  // What a later sweep needs of a placement an earlier one closed without finding its order: the
+  // instruction, and the span of its send.
+  auto failed = line("a-1", JournalOutcome::INDETERMINATE);
+  failed.recorded_at_ += std::chrono::seconds(7);
+  auto cancel = line("a-3", JournalOutcome::PENDING);
+  cancel.action_ = runner::JournalAction::CANCEL;
+  auto damaged = line("a-4", JournalOutcome::PENDING);
+  damaged.requires_operator_ = true;
+  runner::JournalReplay replay;
+  replay.entries_ = {
+    line("a-1", JournalOutcome::PENDING),
+    failed,
+    line("a-1", JournalOutcome::RESOLVED),
+    line("a-2", JournalOutcome::INDETERMINATE, hynix()),
+    line("a-2", JournalOutcome::RESOLVED, hynix()),
+    cancel,
+    damaged,
+    line("a-5", JournalOutcome::PENDING),
+  };
+  const auto found = runner::placements_of(replay, {"a-1", "a-2", "a-3", "a-4", "a-9"});
+  REQUIRE(found.size() == 2);
+  CHECK(found[0].entry_.id_ == "a-1");
+  CHECK(found[0].entry_.outcome_ == JournalOutcome::PENDING);
+  CHECK(found[0].opened_at_ == utc(2026, 3, 30, 0, 30));
+  CHECK(found[0].closed_at_ == utc(2026, 3, 30, 0, 30) + std::chrono::seconds(7));
+  CHECK(found[0].answered_);
+  // Its first line was lost: the answer brackets the send alone.
+  CHECK(found[1].entry_.instrument_ == hynix());
+  CHECK(found[1].opened_at_ == found[1].closed_at_);
+  CHECK(runner::placements_of(replay, {}).empty());
+}
+
 TEST_CASE("an orphaned indeterminate line is still owed", "[journal]") {
   // A journal whose beginning was rotated or edited away. An orphaned `ACCEPTED` carries its own
   // answer; an orphaned `INDETERMINATE` carries the absence of one.

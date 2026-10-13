@@ -445,6 +445,74 @@ TEST_CASE("an instrument clears only when every instruction for it is decided", 
   REQUIRE(ledger.requires_reconcile(samsung()));
 }
 
+TEST_CASE("a placement found absent says what was read, and what its caller does with that", "[reconcile]") {
+  IndeterminacyLedger ledger;
+  runner::MemoryJournal journal;
+  auto cancel = cancellation("KRX-9");
+  cancel.entry_.id_ = "run-2";
+  const auto report = runner::reconcile_against(
+    {placement(), cancel}, {}, after_the_window(), ledger, journal, MatchWindow{}, " (kept owed)"
+  );
+  REQUIRE(report.matches_.size() == 2);
+  REQUIRE(report.matches_[0].verdict_ == MatchVerdict::NOT_PLACED);
+  // No claim that the order does not exist: a list can lag an order it accepted.
+  CHECK(
+    report.matches_[0].detail_ ==
+    "no matching order was found among the rows read, within the matching window (kept owed)"
+  );
+  CHECK(report.matches_[1].detail_.find("kept owed") == std::string::npos);
+  REQUIRE(journal.records().size() == 2);
+  CHECK(journal.records()[0].detail_.find("(kept owed)") != std::string::npos);
+  // Said of nothing unless the caller says it.
+  CHECK(runner::match_against(placement(), {}, after_the_window()).detail_.find("owed") == std::string::npos);
+}
+
+TEST_CASE("a row the journal attributes to another placement is not a candidate", "[reconcile]") {
+  // An order sent just before one whose outcome is unknown, of the same shape: its row is inside the
+  // second one's window, and taken for it the second would carry the first one's number for good.
+  auto first_pending = placement().entry_;
+  first_pending.id_ = "run-0";
+  auto first_accepted = first_pending;
+  first_accepted.outcome_ = JournalOutcome::ACCEPTED;
+  first_accepted.order_id_ = "KRX-1";
+  first_accepted.recorded_at_ += std::chrono::seconds(1);
+  runner::JournalReplay replay;
+  replay.entries_ = {first_pending, first_accepted, placement().entry_};
+
+  SECTION("its dated row is dropped; an undated one, another instrument's and another day's are kept") {
+    auto next_day = row("KRX-1");
+    next_day.ordered_at_ = sent_at() + std::chrono::hours(24);
+    std::vector<OrderSnapshot> rows{
+      row("KRX-1"), row("KRX-2"), row("KRX-1", samsung(), "10", "70000", std::nullopt), row("KRX-1", hynix()), next_day,
+    };
+    runner::drop_rows_of_other_placements(rows, replay, {placement()});
+    REQUIRE(rows.size() == 4);
+    CHECK(rows[0].order_id_ == "KRX-2");
+    CHECK_FALSE(rows[1].ordered_at_.has_value());
+    CHECK(rows[2].instrument_ == hynix());
+    CHECK(rows[3].ordered_at_ == next_day.ordered_at_);
+  }
+
+  SECTION("the instruction being matched keeps its own row") {
+    auto named = placement();
+    named.entry_.id_ = "run-0";
+    std::vector<OrderSnapshot> rows{row("KRX-1")};
+    runner::drop_rows_of_other_placements(rows, replay, {named});
+    CHECK(rows.size() == 1);
+  }
+
+  SECTION("so the later order is found absent, or matched to its own row, never to the earlier one") {
+    std::vector<OrderSnapshot> rows{row("KRX-1")};
+    runner::drop_rows_of_other_placements(rows, replay, {placement()});
+    CHECK(runner::match_against(placement(), rows, after_the_window()).verdict_ == MatchVerdict::NOT_PLACED);
+    rows = {row("KRX-1"), row("KRX-2")};
+    runner::drop_rows_of_other_placements(rows, replay, {placement()});
+    const auto match = runner::match_against(placement(), rows, after_the_window());
+    REQUIRE(match.verdict_ == MatchVerdict::MATCHED);
+    CHECK(match.order_id_ == "KRX-2");
+  }
+}
+
 TEST_CASE("verdict names are stable", "[reconcile]") {
   REQUIRE(runner::match_verdict_name(MatchVerdict::MATCHED) == "matched");
   REQUIRE(runner::match_verdict_name(MatchVerdict::NOT_PLACED) == "not_placed");
