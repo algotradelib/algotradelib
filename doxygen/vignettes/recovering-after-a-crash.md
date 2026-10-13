@@ -112,7 +112,7 @@ every instruction resolve, then start the other release on a new journal file.
 | --- | --- |
 | `pending` then `accepted` | the order exists, and `order_id` names it |
 | `pending` then `rejected` | the instruction was refused — by the broker, by the binding or client before it sent, or by local machinery that failed. The order does not exist. Nothing owed |
-| `pending` then `indeterminate` | the outcome is unknown (a failure in transit, an unreadable reply, an HTTP 5xx, or a broker refusal reported as `PROTOCOL`). Still owed |
+| `pending` then `indeterminate` | the outcome is unknown (a failure in transit, an unreadable reply, an HTTP 5xx, or a broker refusal reported as `PROTOCOL`, which is most of them; [Binding a broker](binding-a-broker.md) names the two demo-server refusals that are `rejected` instead). Still owed |
 | `pending` then `resolved` | a sweep read the broker's list and closed it. `order_id` says what it saw |
 | `pending` alone, at the end of the file | the process died between the write and the answer |
 | a last line with no newline | the process died *during* the write |

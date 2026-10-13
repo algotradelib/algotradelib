@@ -689,7 +689,12 @@ enum class ErrorCategory {
    *   an order it means the outcome is unknown.
    */
   PROTOCOL,
-  /** @brief The request was invalid, refused by the client before sending or by the broker. */
+  /**
+   * @brief The request was invalid, refused by the client before sending or by the broker.
+   *
+   * By the broker: `reached_broker_` is set. That includes the two order refusals the KIS and Kiwoom
+   * clients recognize from their demo servers (nothing to sell, nothing left to cancel).
+   */
   INVALID_ARGUMENT,
 };
 

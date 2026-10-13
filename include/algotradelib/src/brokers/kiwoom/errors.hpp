@@ -181,11 +181,11 @@ inline std::string_view kiwoom_refusal_code(std::string_view message) noexcept {
  *   recognizes as one.
  *
  * A placement answered `800033` (not enough to sell) and a cancellation answered `RC4033` (nothing
- * left to amend or cancel), as the demo server sent them on 2026-10-12 and 2026-10-13. Such a reply
- * is `INVALID_ARGUMENT` with `reached_broker_` set, which a runner reads as a rejection; every other
- * `return_code` 20 stays `PROTOCOL`, an unknown outcome.
+ * left to amend or cancel), as the demo server sends them. Such a reply is `INVALID_ARGUMENT` with
+ * `reached_broker_` set, which a runner reads as a rejection; every other `return_code` 20 stays
+ * `PROTOCOL`, an unknown outcome.
  *
- * Demo only: no real-account reply has been observed, and the same body from the real server is not
+ * Demo only: no real-account reply has been seen, and the same body from the real server is not
  * recognized. The reply must be HTTP 200 with `return_code` 20 (a JSON integer, or the string
  * `"20"`), a `return_msg` of the shape `kiwoom_refusal_code` reads, and none of what an
  * acknowledgement carries: `ord_no` absent or empty, and `cncl_qty` and `mdfy_qty` absent, empty or

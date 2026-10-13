@@ -598,6 +598,11 @@ public:
    * a later pass. Read `async_open_orders` or `async_order_history` before placing again, since KIS
    * has no idempotency key.
    *
+   * One refusal is recognized as one, on a demo account only: the demo server's `40240000` (nothing
+   * held to sell), in an HTTP 200 reply that names no order, is `INVALID_ARGUMENT` with
+   * `reached_broker_` set, which `runner::outcome_of` reads as `REJECTED`. The same reply from the
+   * real server stays `PROTOCOL`.
+   *
    * @tparam CompletionToken An Asio completion token.
    * @param account The account.
    * @param order The order (without `client_order_id_`; see `unsupported_client_order_id`).
@@ -671,6 +676,11 @@ public:
    * @brief Cancels an order (all or part of it, as `amendment` says).
    *
    * After an error of unknown outcome (see `async_place_order`) the order may still rest.
+   *
+   * One refusal is recognized as one, on a demo account only: the demo server's `40330000` (nothing
+   * left to amend or cancel), in an HTTP 200 reply that names no order, is `INVALID_ARGUMENT` with
+   * `reached_broker_` set. It says the cancellation did nothing, not what became of the order: it may
+   * have filled. The same reply from the real server stays `PROTOCOL`.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account The account.
@@ -3366,12 +3376,12 @@ private:
 
   // Returns the refusal a demo cash-order reply states, for the two replies this client recognizes
   // as one: a placement answered `40240000` (nothing held to sell) and a cancellation answered
-  // `40330000` (nothing left to amend or cancel), as the demo server sent them on 2026-10-12 and
-  // 2026-10-13. Such a reply is `INVALID_ARGUMENT` with `reached_broker_` set, which a runner reads
+  // `40330000` (nothing left to amend or cancel), as the demo server sends them. Such a reply is
+  // `INVALID_ARGUMENT` with `reached_broker_` set, which a runner reads
   // as a rejection; every other declared failure of an order stays `PROTOCOL`, an unknown outcome.
   //
-  // Demo only: no real-account reply has been observed, and the same body from the real server is
-  // not recognized. The reply must be HTTP 200 with `rt_cd` `"1"`, the code, a message, and none of
+  // Demo only: no real-account reply has been seen, and the same body from the real server is not
+  // recognized. The reply must be HTTP 200 with `rt_cd` `"1"`, the code, a message, and none of
   // the fields an acknowledgement carries (`output` absent, or an object whose `ODNO`,
   // `KRX_FWDG_ORD_ORGNO` and `ORD_TMD` are absent or empty): a reply naming an order is never read
   // as a refusal. A refused cancellation says only that the cancellation did nothing, not what

@@ -330,9 +330,9 @@ refused flatten is reported once rather than twice.
 | `orders_unconfirmed_timed_out_` | an order this run sent was not confirmed by holdings, a listing or its history within the confirmation timeout, or, once its history settled it, a holdings read a timeout later did not show the fill; its instrument is now withheld until you clear it or the process restarts (below) |
 | `orders_guard_refused_` | `RiskGuard` refused it — **a hold as well as a limit**, since it checks the active holds first, so a halted run reports every order here. Nothing was sent |
 | `orders_binding_refused_` | the binding would not send it, or could not reach the broker (a DNS, connect or TLS failure; such an order is kept and retried, see the kept-instructions rules); no request went out |
-| `orders_broker_refused_` | the broker was asked and said no; a request was spent. At KIS, Toss and Kiwoom most refusals are counted in the next row instead |
+| `orders_broker_refused_` | the broker was asked and said no; a request was spent. At KIS, Toss and Kiwoom most refusals are counted in the next row instead (on the KIS and Kiwoom demo servers a sell with nothing to sell is counted here) |
 | `orders_indeterminate_` | the outcome is unknown, so the order may or may not exist: the request failed in transit or was cancelled, the reply could not be read, the broker answered with an HTTP 5xx, or (at KIS, Toss and Kiwoom) its refusal arrived as `PROTOCOL` |
-| `cancels_rejected_` | a withdrawal refused outright — **by the broker or by the binding**; `RejectedCancel::by_broker_` distinguishes them and this figure does not |
+| `cancels_rejected_` | a withdrawal refused outright — **by the broker or by the binding**; `RejectedCancel::by_broker_` distinguishes them and this figure does not. On the KIS and Kiwoom demo servers a withdrawal of an order that has already filled is counted here; on a real account it is still in `cancels_indeterminate_` |
 | `cancels_refused_` | a hold refused the withdrawal before anything was sent |
 | `cancels_unresolved_` | the reference named an order the snapshot does not hold |
 | `cancels_indeterminate_` | the withdrawal's outcome is unknown, for the same reasons; **it may still have withdrawn the order** |
@@ -346,7 +346,8 @@ one **that came with an error**, and a refusal that says nothing clears it rathe
 previous order's words behind. Empty when *this* run's polling saw no refusal, even though the runner
 may still hold one from an earlier run; and empty, with a non-zero count beside it, when the refusals
 themselves were silent. It is empty on a dry runner and in a replay, which have no broker to be refused by,
-and it misses the KIS, Toss and Kiwoom refusals counted as unknown outcomes.
+and it misses the KIS, Toss and Kiwoom refusals counted as unknown outcomes (all of them but the two
+demo-server refusals [Binding a broker](binding-a-broker.md) names).
 
 **`last_unbuildable_` does the same for `orders_unbuildable_`**: the reconciliation's reason
 (`RejectReason`), the instrument and your tag, for the last instruction this run's polling could not
@@ -716,7 +717,8 @@ limits.enforce_buying_power_ = true;        // refuse a buy the broker cannot fu
 ```
 
 The sellable check is on because the alternative is worse than a refusal. A sale the account cannot
-make is refused by the broker in its reply, which at KIS, Kiwoom and Toss reads as an unknown outcome:
+make is refused by the broker in its reply, which at KIS, Kiwoom and Toss reads as an unknown outcome
+(the KIS and Kiwoom demo servers' refusal is recognized as a rejection; a real account's is not):
 a serialized runner then owes an order nobody can find, and the instrument stays withheld until you
 release it (`Runner::release_obligations`). Refused by the guard instead, no placement is sent or
 journaled and no new obligation is created (at Toss the read-only sellable inquiry may still have been
@@ -808,8 +810,8 @@ refusal then ends it as it ends any target (only a phase refusal is kept): if th
 refuses that sell, because the figure is absent, lower than the holding or unanswered at Toss, the exit
 is gone until the strategy states it again.
 The withdrawal is attempted once and not repeated while the target waits: on the KIS and Kiwoom demo
-servers a second one was refused, and such a refusal reads as an unknown outcome that holds the
-instrument. So if the first withdrawal failed
+servers a second one was refused, and outside those two servers' recognized reply such a refusal reads
+as an unknown outcome that holds the instrument. So if the first withdrawal failed
 or could not be sent (an order restored after a restart has no reference to withdraw by until a listing
 shows it) and the order is really resting, the kept target does nothing more by itself; a target stated
 again withdraws again. A target whose order the ledger withholds (`orders_reconcile_withheld_`) is kept

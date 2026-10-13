@@ -1234,6 +1234,10 @@ public:
    * `PROTOCOL`). Read `async_open_orders` or `async_order_history` before placing again, since Kiwoom
    * has no idempotency key.
    *
+   * One refusal is recognized as one, on a demo account only: the demo server's `800033` (not enough
+   * to sell) is `INVALID_ARGUMENT` with `reached_broker_` set, which `runner::outcome_of` reads as
+   * `REJECTED` (`kiwoom_recognized_refusal`). The same reply from the real server stays `PROTOCOL`.
+   *
    * Refused before sending, among others: an instrument that is not Korean or whose `venue_` is not
    * `COMBINED` (route with `OrderRequest::venue_`); no venue on the order; a client order id; a
    * quantity that is not a positive whole number; a missing, non-positive or fractional price on a
@@ -1307,6 +1311,11 @@ public:
    * After an error of unknown outcome (see `async_place_order`) the order may still rest. Refused
    * before sending, among others: a cancellation without a venue, an order number or a symbol; a
    * fractional or negative quantity; or one carrying a price or trigger price.
+   *
+   * One refusal is recognized as one, on a demo account only: the demo server's `RC4033` (nothing
+   * left to amend or cancel) is `INVALID_ARGUMENT` with `reached_broker_` set
+   * (`kiwoom_recognized_refusal`). It says the cancellation did nothing, not what became of the
+   * order: it may have filled. The same reply from the real server stays `PROTOCOL`.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account The account (empty).
