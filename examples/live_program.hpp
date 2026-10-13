@@ -27,10 +27,10 @@
  *     holdings or its own history account for it, and the indeterminacy ledger need not say so: an order
  *     counted as timed out (`Runner::orders_unconfirmed_timed_out`) marks it only if it was never named,
  *     and one whose history reads keep failing is not counted at all. The loop stops placing by itself
- *     for the two kinds nobody but you can end: an order no sweep has named and one held for an operator,
- *     owed longer than `Settings::owed_order_limit_` (`Exit::OWED_ORDER`). An order the broker named is
- *     not watched that way: watch how long each has been owed (`Runner::obligations`, its `sent_at_`)
- *     and a non-empty `Runner::ledger`. `PollingLoop::run` reports only when it returns and has no hook
+ *     for two kinds: an order no sweep has named yet (a later sweep may still find it) and one held for
+ *     an operator, owed longer than `Settings::owed_order_limit_` (`Exit::OWED_ORDER`). An order the
+ *     broker named is not watched that way: watch how long each has been owed (`Runner::obligations`,
+ *     its `sent_at_`) and a non-empty `Runner::ledger`. `PollingLoop::run` reports only when it returns and has no hook
  *     inside a run; calling it in short chunks is no substitute, since each call starts its failure
  *     budget and poll schedule afresh.
  */
@@ -416,7 +416,8 @@ Exit trade(
         << "  3. move the journal aside, keeping it:  mv " << settings.journal_path_ << ' '
         << settings.journal_path_ << ".owed-$(date +%Y%m%d)\n"
         << "the next start then begins a new journal and sizes from the account as it is. A program of\n"
-        << "your own releases the one order instead (Runner::release_obligations; see set_owed_order_limit).\n";
+        << "your own releases that instrument's obligations instead (Runner::release_obligations; see\n"
+        << "set_owed_order_limit).\n";
     return Exit::OWED_ORDER;
   }
   return Exit::CLEAN;

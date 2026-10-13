@@ -811,8 +811,9 @@ publish says "every order accepted so far is listed".
 - A serialized runner keeps it owed, with no name (`ObligationState::UNNAMED`), and places nothing on
   its instrument. From then on `SessionSource` looks for it again at every order-list read, in the order
   history of the days around its send, and names it on one dated row of the same shape inside the send's
-  window, never on an undated row and never on a row the journal gives to another order. A named order
-  is accounted for as any other, by holdings or its own history. If no such row ever comes (the request
+  window, never on an undated row and never on a row that could be another of the journal's orders as
+  well (one of the same shape sent within about a minute of it: such an order stays unfound). A named
+  order is accounted for as any other, by holdings or its own history. If no such row ever comes (the request
   did not reach the broker, or the row never appears), only `Runner::release_obligations` ends it, in
   this process and after a restart. The search costs one history read per order-list read while such an
   order is owed.
@@ -833,16 +834,20 @@ So a loop stops placing by itself, in two steps, for an order a serialized runne
 name (`UNNAMED`) or is held for an operator (`OPERATOR`):
 
 1. **Ten minutes after the order was sent** (`PollingLoop::set_owed_order_limit`), on the loop's clock,
-   placing is held on every instrument (`final_gate_` reads `stopping`). Nothing a strategy asks for
-   goes out from then on, the handlers the next order-list read calls included.
+   the loop holds every instrument (`final_gate_` reads `stopping`): nothing a strategy asks for goes
+   out, a withdrawal included. The loop takes the hold where it checks its holds, before every poll, so
+   a call already in flight when the ten minutes pass is not interrupted and the hold begins with the
+   next one. Every order-list read that begins after that runs under it, its handlers too, and it stays
+   through a failed read and through a run that gives up on failing polls.
 2. **At the next successful read of the order list**, whose sweep is the order's chance to be named: if
    the order is still not accounted for, the loop requests a `quiesce`. Nothing is cancelled or closed,
    and the order is still owed. `LoopReport::owed_stop_` names the order and a note says what to do;
    `example-live-program` exits 8. If that read names the order instead, the hold is lifted and the run
    goes on.
 
-So ten minutes bounds how long a run places beside such an order, not when it ends: a loop that reads
-the order list every fifteen minutes stops at that read, and later still while reads fail. The ages are
+So ten minutes (and the length of one call) bounds how long a run places beside such an order, not
+when it ends: a loop that reads the order list every fifteen minutes stops at that read, and later
+still while reads fail. The ages are
 measured on the loop's wall clock against the journal's stamps, as everything about a serialized order
 is; a clock set forward shortens them and one set back lengthens them. A start with such an order from
 an earlier day places nothing at all, on any instrument, and stops again at every start until the
