@@ -7193,6 +7193,9 @@ TEST_CASE("an order no sweep found is named once its dated row appears", "[seria
     CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
     // The one whose reply was lost; never a second.
     CHECK(rig.session.placed().size() == 1);
+    // A named order is not searched for again.
+    REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+    CHECK(rig.lines(JournalOutcome::RESOLVED).size() == 2);
     rig.show(polled(3, "10", {}));
     rig.runner_instance.refresh_unconfirmed();
     CHECK(rig.owed() == runner::ObligationState::NONE);
@@ -7275,6 +7278,27 @@ TEST_CASE("the later search acts on one dated row of the order's own and on noth
     CHECK(rig.owed() == runner::ObligationState::NAMED);
     CHECK(rig.runner_instance.ledger().requires_reconcile(samsung()));
   }
+}
+
+TEST_CASE("while the journal's own question about an order is open, its sweep alone decides", "[serialized][unfound]") {
+  // Two candidates, one of them undated: the journal's sweep calls it ambiguous and leaves it to an
+  // operator. The later search, which sets undated rows aside, must not then settle it on the other.
+  SerialRig rig({serial_line("p-1", runner::JournalOutcome::PENDING)});
+  REQUIRE(rig.owed() == runner::ObligationState::UNNAMED);
+  auto source = source_over(rig, page_of({market_row("B", at_hour(-1))}));
+  WorkingOrder<FakeBroker> undated;
+  undated.order_ = market_row("C", at_hour(-1), "0", OrderStatus::PENDING);
+  undated.order_.ordered_at_.reset();
+  undated.ref_.primary_ = "C";
+  WorkingOrders<FakeBroker> listing;
+  listing.orders_.push_back(undated);
+  rig.session.set_working_orders(listing);
+  rig.runner_instance.set_observed_at(at_hour(1));
+  REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+  REQUIRE(source.last_reconcile().matches_.size() == 1);
+  CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::AMBIGUOUS);
+  CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+  CHECK(rig.lines(runner::JournalOutcome::RESOLVED).empty());
 }
 
 TEST_CASE("an order this runner sent just before is never taken for the one whose outcome is unknown",
@@ -7380,6 +7404,23 @@ TEST_CASE("a run stops placing for an order nobody has been able to account for"
     REQUIRE(report.owed_stop_.has_value());
     CHECK(report.owed_stop_->state_ == runner::ObligationState::OPERATOR);
     CHECK(noted(report, "is held for an operator"));
+  }
+
+  SECTION("of two such orders the report names the older") {
+    auto lines = unfound_lines();
+    for (auto line : unfound_lines("h-1")) {
+      line.instrument_ = hynix;
+      line.recorded_at_ = at_hour(-3);
+      lines.push_back(line);
+    }
+    SerialRig rig(lines);
+    QuietSource source;
+    auto loop = loop_over(rig, source, 1);
+    runner::StopSource stop;
+    const auto report = loop.run(stop, 5);
+    REQUIRE(report.owed_stop_.has_value());
+    CHECK(report.owed_stop_->instrument_ == hynix);
+    CHECK(report.owed_stop_->journal_id_ == "h-1");
   }
 
   SECTION("with the limit off the run goes on beside it") {

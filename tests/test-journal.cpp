@@ -278,8 +278,10 @@ TEST_CASE("a placement is found by its id whatever was written about it since", 
     cancel,
     damaged,
     line("a-5", JournalOutcome::PENDING),
+    // An answer alone says nothing about when its instruction was sent.
+    line("a-6", JournalOutcome::ACCEPTED),
   };
-  const auto found = runner::placements_of(replay, {"a-1", "a-2", "a-3", "a-4", "a-9"});
+  const auto found = runner::placements_of(replay, {"a-1", "a-2", "a-3", "a-4", "a-6", "a-9"});
   REQUIRE(found.size() == 2);
   CHECK(found[0].entry_.id_ == "a-1");
   CHECK(found[0].entry_.outcome_ == JournalOutcome::PENDING);

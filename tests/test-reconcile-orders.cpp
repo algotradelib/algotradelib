@@ -493,6 +493,15 @@ TEST_CASE("a row the journal attributes to another placement is not a candidate"
     CHECK(rows[3].ordered_at_ == next_day.ordered_at_);
   }
 
+  SECTION("a cancellation's line names the order it withdraws, and owns no row") {
+    auto cancel = cancellation("KRX-2").entry_;
+    cancel.id_ = "run-9";
+    replay.entries_.push_back(cancel);
+    std::vector<OrderSnapshot> rows{row("KRX-2")};
+    runner::drop_rows_of_other_placements(rows, replay, {placement()});
+    CHECK(rows.size() == 1);
+  }
+
   SECTION("the instruction being matched keeps its own row") {
     auto named = placement();
     named.entry_.id_ = "run-0";
