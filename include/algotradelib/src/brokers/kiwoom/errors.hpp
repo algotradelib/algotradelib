@@ -129,4 +129,126 @@ inline std::optional<BrokerError> kiwoom_declared_error(const boost::json::objec
   return error;
 }
 
+/**
+ * @brief Which order instruction a reply answers.
+ *
+ * Fixed where the request is built and carried to the parser with it, never recovered from the
+ * reply. Everything that is not an order request is `UNCLASSIFIED`.
+ */
+enum class KiwoomOrderOperation {
+  /** @brief Not an order request, or one this client does not classify. */
+  UNCLASSIFIED,
+  /** @brief A placement (`kt10000`, `kt10001`). */
+  PLACE,
+  /** @brief An amendment (`kt10002`). */
+  AMEND,
+  /** @brief A cancellation (`kt10003`). */
+  CANCEL,
+};
+
+/**
+ * @brief Reads the code inside an order refusal's `return_msg`, which Kiwoom writes as
+ *   `[2000](CODE:text)` under the generic `return_code` 20.
+ *
+ * The whole message must have that shape, from its first character to its last: the literal
+ * `[2000](`, a code of one or more of `A`-`Z` and `0`-`9`, a colon, some text, and a closing
+ * parenthesis as the last character. A code that only appears somewhere in a message is not read.
+ *
+ * @param message Kiwoom's `return_msg`.
+ * @return The code, a view into `message`, or an empty view if the message has another shape.
+ */
+inline std::string_view kiwoom_refusal_code(std::string_view message) noexcept {
+  constexpr std::string_view prefix = "[2000](";
+  if (message.size() < prefix.size() || message.substr(0, prefix.size()) != prefix || message.back() != ')') {
+    return {};
+  }
+  const auto inner = message.substr(prefix.size(), message.size() - prefix.size() - 1);
+  const auto colon = inner.find(':');
+  if (colon == std::string_view::npos || colon == 0 || colon + 1 == inner.size()) {
+    return {};
+  }
+  const auto code = inner.substr(0, colon);
+  for (const char character : code) {
+    if (!((character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9'))) {
+      return {};
+    }
+  }
+  return code;
+}
+
+/**
+ * @brief Reads the refusal a demo cash-order reply states, for the two replies this client
+ *   recognizes as one.
+ *
+ * A placement answered `800033` (not enough to sell) and a cancellation answered `RC4033` (nothing
+ * left to amend or cancel), as the demo server sent them on 2026-10-12 and 2026-10-13. Such a reply
+ * is `INVALID_ARGUMENT` with `reached_broker_` set, which a runner reads as a rejection; every other
+ * `return_code` 20 stays `PROTOCOL`, an unknown outcome.
+ *
+ * Demo only: no real-account reply has been observed, and the same body from the real server is not
+ * recognized. The reply must be HTTP 200 with `return_code` 20 (a JSON integer, or the string
+ * `"20"`), a `return_msg` of the shape `kiwoom_refusal_code` reads, and none of what an
+ * acknowledgement carries: `ord_no` absent or empty, and `cncl_qty` and `mdfy_qty` absent, empty or
+ * all zeros. A reply naming an order is never read as a refusal. A refused cancellation says only
+ * that the cancellation did nothing, not what became of the order it named.
+ *
+ * @param http_status The reply's HTTP status.
+ * @param document The reply body.
+ * @param operation The instruction the reply answers.
+ * @param demo Whether the request went to the demo server.
+ * @return The error (`broker_code_` the inner code, `message_` Kiwoom's `return_msg` followed by the
+ *   outer code and the rule that matched), or `std::nullopt` if the reply is not one of the two.
+ */
+inline std::optional<BrokerError> kiwoom_recognized_refusal(
+  int http_status,
+  const boost::json::object& document,
+  KiwoomOrderOperation operation,
+  bool demo
+) {
+  std::string_view expected;
+  const char* name = "";
+  if (operation == KiwoomOrderOperation::PLACE) {
+    expected = "800033";
+    name = "placement";
+  } else if (operation == KiwoomOrderOperation::CANCEL) {
+    expected = "RC4033";
+    name = "cancellation";
+  }
+  if (!demo || expected.empty() || http_status != 200) {
+    return std::nullopt;
+  }
+  const auto code = document.if_contains("return_code");
+  const bool generic = code && (
+    (code->is_int64() && code->as_int64() == 20) || (code->is_uint64() && code->as_uint64() == 20) ||
+    (code->is_string() && code->as_string() == "20")
+  );
+  const auto message = document.if_contains("return_msg");
+  if (!generic || !message || !message->is_string() ||
+      kiwoom_refusal_code(std::string_view(message->as_string())) != expected) {
+    return std::nullopt;
+  }
+  if (const auto number = document.if_contains("ord_no");
+      number && !(number->is_string() && number->as_string().empty())) {
+    return std::nullopt;
+  }
+  for (const char* field : {"cncl_qty", "mdfy_qty"}) {
+    const auto quantity = document.if_contains(field);
+    if (!quantity) {
+      continue;
+    }
+    if (!quantity->is_string() ||
+        std::string_view(quantity->as_string()).find_first_not_of('0') != std::string_view::npos) {
+      return std::nullopt;
+    }
+  }
+  BrokerError error;
+  error.category_ = ErrorCategory::INVALID_ARGUMENT;
+  error.reached_broker_ = true;
+  error.http_status_ = http_status;
+  error.broker_code_ = std::string(expected);
+  error.message_ = std::string(message->as_string()) + " (return_code 20; recognized refusal: Kiwoom demo, cash " +
+    name + ", " + std::string(expected) + ")";
+  return error;
+}
+
 } // namespace algotradelib::kiwoom

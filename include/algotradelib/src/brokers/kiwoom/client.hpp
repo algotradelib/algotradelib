@@ -1556,8 +1556,13 @@ private:
   // Returns a response's declared payload, or the error ending it.
   //
   // Applies the HTTP status check, the JSON parse, and Kiwoom's own `return_code` before a parser
-  // looks at any field, so a declared failure is never read as data.
-  static Result<json::object> document(Result<network::HttpResponse> response) {
+  // looks at any field, so a declared failure is never read as data. Only an order reply states an
+  // operation: for every other caller the default keeps a refusal from being recognized.
+  static Result<json::object> document(
+    Result<network::HttpResponse> response,
+    KiwoomOrderOperation operation = KiwoomOrderOperation::UNCLASSIFIED,
+    bool demo = false
+  ) {
     if (!response) {
       return Result<json::object>(std::move(response.error()));
     }
@@ -1568,6 +1573,9 @@ private:
     auto parsed = broker_detail::parse_object(response.value().body(), parse_error);
     if (!parsed) {
       return Result<json::object>(std::move(parse_error));
+    }
+    if (auto refused = kiwoom_recognized_refusal(response.value().result_int(), *parsed, operation, demo)) {
+      return Result<json::object>(std::move(*refused));
     }
     if (auto declared = kiwoom_declared_error(*parsed)) {
       return Result<json::object>(std::move(*declared));
@@ -3130,10 +3138,13 @@ private:
           const std::string symbol = order.instrument_.symbol_;
           self->http_->async_request(
             std::move(request),
-            [self, symbol, completion = std::move(completion)](
+            [self, symbol, demo = self->config_.is_demo_, completion = std::move(completion)](
               Result<network::HttpResponse> result
             ) mutable {
-              self->deliver(std::move(completion), parse_order_ack(symbol, std::move(result)));
+              self->deliver(
+                std::move(completion),
+                parse_order_ack(symbol, std::move(result), KiwoomOrderOperation::PLACE, demo)
+              );
             }
           );
         }
@@ -3161,12 +3172,15 @@ private:
           }
           auto request = amend_order_request(*self, amendment, cancel);
           const std::string symbol = amendment.order_.symbol_;
+          const auto operation = cancel ? KiwoomOrderOperation::CANCEL : KiwoomOrderOperation::AMEND;
           self->http_->async_request(
             std::move(request),
-            [self, symbol, completion = std::move(completion)](
+            [self, symbol, operation, demo = self->config_.is_demo_, completion = std::move(completion)](
               Result<network::HttpResponse> result
             ) mutable {
-              self->deliver(std::move(completion), parse_order_ack(symbol, std::move(result)));
+              self->deliver(
+                std::move(completion), parse_order_ack(symbol, std::move(result), operation, demo)
+              );
             }
           );
         }
@@ -3181,9 +3195,11 @@ private:
   // usable for a later amendment.
   static Result<KiwoomOrderAck> parse_order_ack(
     const std::string& symbol,
-    Result<network::HttpResponse> result
+    Result<network::HttpResponse> result,
+    KiwoomOrderOperation operation,
+    bool demo
   ) {
-    auto body = document(std::move(result));
+    auto body = document(std::move(result), operation, demo);
     if (!body) {
       return Result<KiwoomOrderAck>(std::move(body.error()));
     }

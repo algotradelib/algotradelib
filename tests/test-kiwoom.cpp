@@ -75,7 +75,17 @@ struct KiwoomClientTestAccess {
     network::HttpResponse response
   ) {
     return KiwoomClient::parse_order_ack(
-      symbol, Result<network::HttpResponse>(std::move(response))
+      symbol, Result<network::HttpResponse>(std::move(response)), KiwoomOrderOperation::UNCLASSIFIED, false
+    );
+  }
+
+  static Result<KiwoomOrderAck> order_ack(
+    network::HttpResponse response,
+    KiwoomOrderOperation operation,
+    bool demo
+  ) {
+    return KiwoomClient::parse_order_ack(
+      "005930", Result<network::HttpResponse>(std::move(response)), operation, demo
     );
   }
 
@@ -1014,6 +1024,272 @@ TEST_CASE("an order acknowledgement carries the symbol from the request", "[kiwo
   REQUIRE(amended);
   CHECK(amended.value().base_order_number_ == "00024");
   CHECK(amended.value().amended_quantity_ == Decimal64(3, 0));
+}
+
+// The bodies below are constructed from Kiwoom's documented reply envelope with the codes and the
+// messages the demo server sent (2026-10-12, 2026-10-13). No reply body was recorded.
+namespace {
+
+using kiwoom::KiwoomOrderOperation;
+
+constexpr const char* KIWOOM_NOTHING_TO_CANCEL = "[2000](RC4033:모의투자 정정/취소할 수량이 없습니다.)";
+constexpr const char* KIWOOM_NOTHING_TO_SELL = "[2000](800033:모의투자 매도가능수량이 부족합니다.)";
+
+/** A Kiwoom failure envelope with outer code 20 and the given message, and `extra` appended inside the object. */
+std::string kiwoom_refusal_body(const std::string& message, const std::string& extra = "") {
+  return R"({"return_code":20,"return_msg":")" + message + "\"" + extra + "}";
+}
+
+/** A response with the given status. */
+network::HttpResponse body_with_status(std::string body, int status) {
+  network::HttpResponse response{static_cast<http::status>(status), 11};
+  response.body() = std::move(body);
+  return response;
+}
+
+/** Whether an order reply is read as the recognized refusal `code`. */
+bool kiwoom_recognized(const Result<kiwoom::KiwoomOrderAck>& result, const std::string& code) {
+  return !result && result.error().category_ == ErrorCategory::INVALID_ARGUMENT &&
+    result.error().reached_broker_ && result.error().broker_code_ == code;
+}
+
+/** Whether an order reply keeps the unknown-outcome reading of outer code 20. */
+bool kiwoom_unknown(const Result<kiwoom::KiwoomOrderAck>& result) {
+  return !result && result.error().category_ == ErrorCategory::PROTOCOL &&
+    runner::outcome_of(result.error()) == runner::SendOutcome::INDETERMINATE;
+}
+
+} // namespace
+
+TEST_CASE("the code inside a Kiwoom order refusal is read from the whole message only", "[kiwoom][orders]") {
+  CHECK(kiwoom::kiwoom_refusal_code(KIWOOM_NOTHING_TO_CANCEL) == "RC4033");
+  CHECK(kiwoom::kiwoom_refusal_code(KIWOOM_NOTHING_TO_SELL) == "800033");
+  CHECK(kiwoom::kiwoom_refusal_code("[2000](A:b)") == "A");
+  CHECK(kiwoom::kiwoom_refusal_code("[2000](RC4033:a:b (c))") == "RC4033");
+
+  for (const char* message : {
+         "",
+         "[2000]",
+         "[2000](",
+         "[2000]()",
+         "[2000](:text)",
+         "[2000](RC4033)",
+         "[2000](RC4033:)",
+         "[2000](RC4033:text",
+         "[2000](RC4033:text) ",
+         " [2000](RC4033:text)",
+         "[2001](RC4033:text)",
+         "[2000] (RC4033:text)",
+         "(RC4033:text)",
+         "[2000](rc4033:text)",
+         "[2000](RC 4033:text)",
+         "[2000](RC-4033:text)",
+         "주문이 거부되었습니다 [2000](RC4033:text)",
+         "RC4033",
+         "모의투자 정정/취소할 수량이 없습니다. RC4033",
+       }) {
+    CAPTURE(message);
+    CHECK(kiwoom::kiwoom_refusal_code(message).empty());
+  }
+}
+
+TEST_CASE("a Kiwoom demo cash order refusal the client recognizes is a rejection", "[kiwoom][orders]") {
+  SECTION("a cancellation with nothing left to cancel") {
+    const auto result = kiwoom::KiwoomClientTestAccess::order_ack(
+      ok_body(kiwoom_refusal_body(KIWOOM_NOTHING_TO_CANCEL)), KiwoomOrderOperation::CANCEL, true
+    );
+    REQUIRE_FALSE(result);
+    CHECK(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+    CHECK(result.error().reached_broker_);
+    CHECK(result.error().http_status_ == 200);
+    CHECK(result.error().broker_code_ == "RC4033");
+    CHECK(
+      result.error().message_ ==
+      std::string(KIWOOM_NOTHING_TO_CANCEL) +
+        " (return_code 20; recognized refusal: Kiwoom demo, cash cancellation, RC4033)"
+    );
+    CHECK(runner::outcome_of(result.error()) == runner::SendOutcome::REJECTED);
+  }
+
+  SECTION("a placement with not enough to sell") {
+    const auto result = kiwoom::KiwoomClientTestAccess::order_ack(
+      ok_body(kiwoom_refusal_body(KIWOOM_NOTHING_TO_SELL)), KiwoomOrderOperation::PLACE, true
+    );
+    REQUIRE_FALSE(result);
+    CHECK(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+    CHECK(result.error().reached_broker_);
+    CHECK(result.error().http_status_ == 200);
+    CHECK(result.error().broker_code_ == "800033");
+    CHECK(
+      result.error().message_ ==
+      std::string(KIWOOM_NOTHING_TO_SELL) +
+        " (return_code 20; recognized refusal: Kiwoom demo, cash placement, 800033)"
+    );
+    CHECK(runner::outcome_of(result.error()) == runner::SendOutcome::REJECTED);
+  }
+
+  SECTION("the outer code as the string 20, empty acknowledgement fields, or the original order echoed") {
+    CHECK(kiwoom_recognized(
+      kiwoom::KiwoomClientTestAccess::order_ack(
+        ok_body(std::string(R"({"return_code":"20","return_msg":")") + KIWOOM_NOTHING_TO_CANCEL + "\"}"),
+        KiwoomOrderOperation::CANCEL,
+        true
+      ),
+      "RC4033"
+    ));
+    for (const char* extra : {
+           R"(,"ord_no":"")",
+           R"(,"ord_no":"","cncl_qty":"","mdfy_qty":"")",
+           R"(,"cncl_qty":"000000000000")",
+           R"(,"base_orig_ord_no":"0036037")",
+           R"(,"dmst_stex_tp":"KRX")",
+         }) {
+      CAPTURE(extra);
+      CHECK(kiwoom_recognized(
+        kiwoom::KiwoomClientTestAccess::order_ack(
+          ok_body(kiwoom_refusal_body(KIWOOM_NOTHING_TO_CANCEL, extra)), KiwoomOrderOperation::CANCEL, true
+        ),
+        "RC4033"
+      ));
+    }
+  }
+}
+
+TEST_CASE("a Kiwoom order refusal outside the recognized replies stays an unknown outcome", "[kiwoom][orders]") {
+  const std::string cancel = kiwoom_refusal_body(KIWOOM_NOTHING_TO_CANCEL);
+  const std::string place = kiwoom_refusal_body(KIWOOM_NOTHING_TO_SELL);
+  using Access = kiwoom::KiwoomClientTestAccess;
+
+  SECTION("the real server, another operation, or no operation") {
+    CHECK(kiwoom_unknown(Access::order_ack(ok_body(cancel), KiwoomOrderOperation::CANCEL, false)));
+    CHECK(kiwoom_unknown(Access::order_ack(ok_body(place), KiwoomOrderOperation::PLACE, false)));
+    CHECK(kiwoom_unknown(Access::order_ack(ok_body(cancel), KiwoomOrderOperation::PLACE, true)));
+    CHECK(kiwoom_unknown(Access::order_ack(ok_body(cancel), KiwoomOrderOperation::AMEND, true)));
+    CHECK(kiwoom_unknown(Access::order_ack(ok_body(place), KiwoomOrderOperation::CANCEL, true)));
+    CHECK(kiwoom_unknown(Access::order_ack(ok_body(place), KiwoomOrderOperation::AMEND, true)));
+    CHECK(kiwoom_unknown(Access::order_ack(ok_body(cancel), KiwoomOrderOperation::UNCLASSIFIED, true)));
+    CHECK(kiwoom_unknown(Access::order_ack("005930", ok_body(cancel))));
+
+    // What the unrecognized reading carries: the outer code, Kiwoom's message alone, and no status.
+    const auto live = Access::order_ack(ok_body(cancel), KiwoomOrderOperation::CANCEL, false);
+    CHECK(live.error().broker_code_ == "20");
+    CHECK(live.error().message_ == KIWOOM_NOTHING_TO_CANCEL);
+    CHECK(live.error().http_status_ == 0);
+  }
+
+  SECTION("a reply that is not an order reply never states an operation") {
+    // The shared reader's default: the same body on an inquiry is the generic declared failure.
+    const auto deposit = Access::deposit(ok_body(cancel));
+    REQUIRE_FALSE(deposit);
+    CHECK(deposit.error().category_ == ErrorCategory::PROTOCOL);
+    CHECK(deposit.error().broker_code_ == "20");
+  }
+
+  SECTION("a success status other than 200") {
+    CHECK(kiwoom_unknown(Access::order_ack(body_with_status(cancel, 201), KiwoomOrderOperation::CANCEL, true)));
+    CHECK(kiwoom_unknown(Access::order_ack(body_with_status(cancel, 202), KiwoomOrderOperation::CANCEL, true)));
+  }
+
+  SECTION("another outer code, or one of another type") {
+    for (const char* code : {"2", "21", "200", "20.0", "\"20 \"", "\" 20\"", "\"020\"", "\"2000\""}) {
+      CAPTURE(code);
+      const auto result = Access::order_ack(
+        ok_body(std::string(R"({"return_code":)") + code + R"(,"return_msg":")" + KIWOOM_NOTHING_TO_CANCEL + "\"}"),
+        KiwoomOrderOperation::CANCEL,
+        true
+      );
+      REQUIRE_FALSE(result);
+      CHECK(result.error().category_ != ErrorCategory::INVALID_ARGUMENT);
+      CHECK(result.error().message_.find("recognized refusal") == std::string::npos);
+    }
+    // A code this client already classifies keeps its class.
+    const auto limited = Access::order_ack(
+      ok_body(std::string(R"({"return_code":1700,"return_msg":")") + KIWOOM_NOTHING_TO_CANCEL + "\"}"),
+      KiwoomOrderOperation::CANCEL,
+      true
+    );
+    REQUIRE_FALSE(limited);
+    CHECK(limited.error().category_ == ErrorCategory::RATE_LIMIT);
+  }
+
+  SECTION("another inner code, a message of another shape, or none") {
+    for (const char* message : {
+           "[2000](RC4034:모의투자 정정/취소할 수량이 없습니다.)",
+           "[2000](800033:모의투자 매도가능수량이 부족합니다.)",
+           "[2000](RC40330:text)",
+           "[2000](XRC4033:text)",
+           "[2001](RC4033:text)",
+           "RC4033",
+           "[2000](RC4033:text) ",
+           "the order was refused: [2000](RC4033:text)",
+           "모의투자 정정/취소할 수량이 없습니다.",
+           "",
+         }) {
+      CAPTURE(message);
+      CHECK(kiwoom_unknown(
+        Access::order_ack(ok_body(kiwoom_refusal_body(message)), KiwoomOrderOperation::CANCEL, true)
+      ));
+    }
+    for (const char* body : {
+           R"({"return_code":20})",
+           R"({"return_code":20,"return_msg":null})",
+           R"x({"return_code":20,"return_msg":["[2000](RC4033:text)"]})x",
+         }) {
+      CAPTURE(body);
+      CHECK(kiwoom_unknown(Access::order_ack(ok_body(body), KiwoomOrderOperation::CANCEL, true)));
+    }
+  }
+
+  SECTION("anything an acknowledgement carries") {
+    for (const char* extra : {
+           R"(,"ord_no":"0036038")",
+           R"(,"ord_no":36038)",
+           R"(,"ord_no":0)",
+           R"(,"ord_no":null)",
+           R"(,"ord_no":" ")",
+           R"(,"cncl_qty":"1")",
+           R"(,"cncl_qty":"000000000001")",
+           R"(,"cncl_qty":1)",
+           R"(,"cncl_qty":0)",
+           R"(,"cncl_qty":"+0")",
+           R"(,"mdfy_qty":"3")",
+           R"(,"mdfy_qty":null)",
+         }) {
+      CAPTURE(extra);
+      CHECK(kiwoom_unknown(
+        Access::order_ack(
+          ok_body(kiwoom_refusal_body(KIWOOM_NOTHING_TO_CANCEL, extra)), KiwoomOrderOperation::CANCEL, true
+        )
+      ));
+      CHECK(kiwoom_unknown(
+        Access::order_ack(
+          ok_body(kiwoom_refusal_body(KIWOOM_NOTHING_TO_SELL, extra)), KiwoomOrderOperation::PLACE, true
+        )
+      ));
+    }
+  }
+
+  SECTION("an HTTP error with the same body keeps its own reading") {
+    const auto server = Access::order_ack(body_with_status(cancel, 500), KiwoomOrderOperation::CANCEL, true);
+    REQUIRE_FALSE(server);
+    CHECK(server.error().category_ == ErrorCategory::HTTP);
+    CHECK(runner::outcome_of(server.error()) == runner::SendOutcome::INDETERMINATE);
+
+    const auto client = Access::order_ack(body_with_status(cancel, 400), KiwoomOrderOperation::CANCEL, true);
+    REQUIRE_FALSE(client);
+    CHECK(client.error().category_ == ErrorCategory::HTTP);
+    CHECK(client.error().http_status_ == 400);
+  }
+
+  SECTION("an accepted order is read as before") {
+    const auto accepted = Access::order_ack(
+      ok_body(R"x({"ord_no":"00024","return_code":0,"return_msg":"[2000](RC4033:text)"})x"),
+      KiwoomOrderOperation::CANCEL,
+      true
+    );
+    REQUIRE(accepted);
+    CHECK(accepted.value().order_.order_number_ == "00024");
+  }
 }
 
 TEST_CASE("a history row's state comes from two columns, not one", "[kiwoom][history]") {
