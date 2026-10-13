@@ -1127,9 +1127,10 @@ public:
    * has still left the order so, the loop requests `StopIntent::QUIESCE` on the run's `StopSource`:
    * nothing more is placed, nothing is cancelled or closed, and the order is still owed.
    * `LoopReport::owed_stop_` names it. If that read's sweep names the order instead, the hold is lifted
-   * and the run goes on. So the stop comes later than the limit by up to the order list's cadence (a
-   * read in an iteration that began before the limit does not decide, and the next one does), or more
-   * while reads fail. The request
+   * and the run goes on. So the stop comes later than the limit, with the first successful order-list
+   * read in an iteration that began after it: a read in an iteration that began before the limit does
+   * not decide, and how long the next takes to come depends on the list's cadence, on the time the
+   * loop's own calls take, and on reads failing. The request
    * stays on the `StopSource`, as a control-file word does, and stops any other loop sharing it. A
    * restart restores the order and stops again at its first order-list read, having placed nothing,
    * until a sweep names the order or it is released.
