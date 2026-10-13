@@ -8016,6 +8016,11 @@ TEST_CASE("the live program starts nothing on a journal line it cannot read, and
   // every order ended and its fills in holdings, before the file is moved.
   CHECK(out.str().find("only once no order the journal may track can execute any more") != std::string::npos);
   CHECK(out.str().find("each must have ended") != std::string::npos);
-  CHECK(out.str().find("Do NOT move the journal aside while an order it may track is left working") != std::string::npos);
+  CHECK(out.str().find("holdings must show the final fills of each") != std::string::npos);
+  // A damaged journal cannot be trusted to list its own orders.
+  CHECK(out.str().find("every order sent on this") != std::string::npos);
+  CHECK(out.str().find("on every day and every page of the order history") != std::string::npos);
+  CHECK(out.str().find("leave the journal where it") != std::string::npos);
+  CHECK(out.str().find("Do NOT move it aside while an order it may track is left working") != std::string::npos);
   CHECK(out.str().find("accept that it exists") == std::string::npos);
 }

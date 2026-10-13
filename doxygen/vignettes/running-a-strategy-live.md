@@ -886,7 +886,8 @@ leave working keeps its place in the journal; the example offers no safe way on 
 program of your own releases the one instrument instead.
 The same condition holds when the program starts nothing because a journal line cannot be read (exit
 3): its way on is also a new journal, and a damaged journal may not name every order it tracks, so
-the orders to check are all those the program sent since the journal began.
+the orders to check are all those sent on the account since the journal began, on every day of the
+order history, and those still working.
 `set_owed_order_limit(0)` turns the stop off, for a program that watches `Runner::obligations` itself.
 
 A serialized runner over a broker that lists no working orders places nothing (`Runner::serialized`), so the only such

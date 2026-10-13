@@ -353,17 +353,19 @@ Exit trade(
         << "nothing was started. This program's only way on gives up the whole journal. That is safe\n"
         << "only once no order the journal may track can execute any more:\n"
         << "  1. read the broker's order list, order history and holdings for this account yourself.\n"
-        << "     A damaged journal may not name every order it tracks: take every order this program\n"
-        << "     sent since the journal began, from the broker's order history;\n"
+        << "     A damaged journal may not name every order it tracks: take every order sent on this\n"
+        << "     account since the journal began, on every day and every page of the order history, and\n"
+        << "     every order still working;\n"
         << "  2. each must have ended: filled in full, or cancelled with its history row saying so. A\n"
         << "     cancellation only requested, an order list that no longer shows it, and the close of the\n"
         << "     session do not show that an order has ended;\n"
         << "  3. holdings must show the final fills of each;\n"
         << "  4. only then move the journal aside, keeping it:  mv " << settings.journal_path_ << ' '
         << settings.journal_path_ << ".damaged-$(date +%Y%m%d)\n"
-        << "the next start then begins a new journal and sizes from the account as it is.\n"
-        << "Do NOT move the journal aside while an order it may track is left working: a new journal does\n"
-        << "not know the order, and when it fills before holdings show it, the order is sent again.\n";
+        << "the next start then begins a new journal and sizes from the holdings and working orders the\n"
+        << "broker reports. If steps 2 and 3 cannot be shown for every order, leave the journal where it\n"
+        << "is. Do NOT move it aside while an order it may track is left working: a new journal does not\n"
+        << "know the order, and when it fills before holdings show it, the order is sent again.\n";
     return Exit::RECOVERY_HALTED;
   }
 
