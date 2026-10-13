@@ -7381,6 +7381,29 @@ TEST_CASE("a name that turns the order into an operator's leaves the ledger mark
   CHECK(rig.runner_instance.ledger().requires_reconcile(samsung()));
 }
 
+TEST_CASE("a cancellation of unknown outcome still finds the order it names in the listing", "[serialized][unfound]") {
+  // Round 1 of the review: the row a cancellation names is another placement's by definition. Filtered
+  // out of the first sweep as such, the journal said the order was no longer listed while it was.
+  using runner::JournalOutcome;
+  auto cancel = serial_line("c-1", JournalOutcome::PENDING, "B");
+  cancel.action_ = runner::JournalAction::CANCEL;
+  auto unknown = cancel;
+  unknown.outcome_ = JournalOutcome::INDETERMINATE;
+  SerialRig rig({serial_line("p-1", JournalOutcome::PENDING), serial_line("p-1", JournalOutcome::ACCEPTED, "B"), cancel, unknown});
+  WorkingOrder<FakeBroker> resting;
+  resting.order_ = market_row("B", at_hour(-1), "0", OrderStatus::PENDING);
+  resting.ref_.primary_ = "B";
+  WorkingOrders<FakeBroker> listing;
+  listing.orders_.push_back(resting);
+  auto source = source_over(rig, page_of({market_row("B", at_hour(-1), "0", OrderStatus::PENDING)}));
+  rig.session.set_working_orders(listing);
+  rig.runner_instance.set_observed_at(at_hour(1));
+  REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+  REQUIRE(source.last_reconcile().matches_.size() == 1);
+  CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::MATCHED);
+  CHECK(source.last_reconcile().matches_.front().order_id_ == "B");
+}
+
 TEST_CASE("a runner that overlaps orders makes no later search", "[serialized][unfound]") {
   SerialRig rig(unfound_lines(), /*recover=*/false);
   rig.runner_instance.allow_overlapping_orders();
