@@ -1118,8 +1118,9 @@ private:
   //
   // Positive evidence only. A row must be dated inside the send's window to count, since this runs for
   // as long as the order is owed and an undated row of the same shape may be another day's order; and a
-  // row the journal gives to another placement is not this one's (an order of the same shape sent just
-  // before). Anything but one such row changes nothing and writes nothing: no order is forgotten here.
+  // row that could be another placement's as well (an order of the same shape sent just before or after,
+  // whatever number the journal has for it) is nobody's here. Anything but one row left changes nothing
+  // and writes nothing: no order is forgotten here.
   template <typename Runner>
   void search_again(Runner& runner_instance, const runner::JournalReplay& replay,
     const std::vector<runner::OpenInstruction>& open, const std::vector<OrderSnapshot>& rows) {
@@ -1153,7 +1154,7 @@ private:
     };
     auto candidates = dated(rows);
     runner::merge_dated_history(candidates, dated(history));
-    runner::drop_rows_of_other_placements(candidates, replay, late, window_);
+    runner::drop_rows_fitting_another_placement(candidates, replay, late, window_);
     const auto now = sweep_instant(runner_instance);
     for (const auto& instruction : late) {
       const auto match = runner::match_against(instruction, candidates, now, window_);

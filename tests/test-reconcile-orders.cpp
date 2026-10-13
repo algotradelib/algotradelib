@@ -472,9 +472,9 @@ TEST_CASE("a placement found absent says what was read, and what its caller does
   CHECK(found.matches_.front().detail_.find("kept owed") == std::string::npos);
 }
 
-TEST_CASE("a row the journal attributes to another placement is not a candidate", "[reconcile]") {
-  // An order sent just before one whose outcome is unknown, of the same shape: its row is inside the
-  // second one's window, and taken for it the second would carry the first one's number for good.
+TEST_CASE("a row that could be another placement's order as well is nobody's", "[reconcile]") {
+  // An order of the same shape sent just before the one a search looks for: its row is inside both
+  // windows. Whatever number the journal has for the earlier one, a row that fits it is set aside.
   auto first_pending = placement().entry_;
   first_pending.id_ = "run-0";
   auto first_accepted = first_pending;
@@ -484,79 +484,67 @@ TEST_CASE("a row the journal attributes to another placement is not a candidate"
   runner::JournalReplay replay;
   replay.entries_ = {first_pending, first_accepted, placement().entry_};
 
-  SECTION("its dated row is dropped; an undated one, another instrument's and another day's are kept") {
+  SECTION("by shape and send time, not by number; another instrument, shape or day is kept") {
     auto next_day = row("KRX-1");
     next_day.ordered_at_ = sent_at() + std::chrono::hours(24);
     std::vector<OrderSnapshot> rows{
-      row("KRX-1"), row("KRX-2"), row("KRX-1", samsung(), "10", "70000", std::nullopt), row("KRX-1", hynix()), next_day,
+      row("KRX-1"), row("KRX-2"), row("KRX-3", samsung(), "10", "70000", std::nullopt),
+      row("KRX-1", hynix()), row("KRX-4", samsung(), "20"), next_day,
     };
-    runner::drop_rows_of_other_placements(rows, replay, {placement()});
-    REQUIRE(rows.size() == 4);
-    CHECK(rows[0].order_id_ == "KRX-2");
-    CHECK_FALSE(rows[1].ordered_at_.has_value());
-    CHECK(rows[2].instrument_ == hynix());
-    CHECK(rows[3].ordered_at_ == next_day.ordered_at_);
+    runner::drop_rows_fitting_another_placement(rows, replay, {placement()});
+    REQUIRE(rows.size() == 3);
+    CHECK(rows[0].instrument_ == hynix());
+    CHECK(rows[1].order_id_ == "KRX-4");
+    CHECK(rows[2].ordered_at_ == next_day.ordered_at_);
   }
 
-  SECTION("a cancellation's line names the order it withdraws, and owns no row") {
-    auto cancel = cancellation("KRX-2").entry_;
-    cancel.id_ = "run-9";
-    replay.entries_.push_back(cancel);
-    std::vector<OrderSnapshot> rows{row("KRX-2")};
-    runner::drop_rows_of_other_placements(rows, replay, {placement()});
-    CHECK(rows.size() == 1);
+  SECTION("a number an earlier sweep gave, rightly or wrongly, changes nothing") {
+    // Round 2 of the review: the earlier placement is named with another order's number. Both rows fit
+    // it, so neither is left to be the later one's by exclusion.
+    auto wrongly = first_accepted;
+    wrongly.outcome_ = JournalOutcome::RESOLVED;
+    wrongly.order_id_ = "KRX-2";
+    replay.entries_ = {first_pending, wrongly, placement().entry_};
+    std::vector<OrderSnapshot> rows{row("KRX-1"), row("KRX-2")};
+    runner::drop_rows_fitting_another_placement(rows, replay, {placement()});
+    CHECK(rows.empty());
   }
 
-  SECTION("a line written later gives a name and does not widen the send's window") {
+  SECTION("a line written later does not widen the send's window") {
     // Round 1 of the review: yesterday's order, named by a sweep and confirmed today, and today's order
-    // carrying the same number, sent seconds after that recovery.
+    // of the same shape sent seconds after that recovery.
     const auto today = sent_at() + std::chrono::hours(24);
-    auto yesterday = placement().entry_;
-    yesterday.id_ = "run-0";
-    auto named_today = yesterday;
+    auto named_today = first_pending;
     named_today.outcome_ = JournalOutcome::RESOLVED;
     named_today.order_id_ = "KRX-1";
     named_today.recorded_at_ = today;
     auto confirmed_today = named_today;
     confirmed_today.outcome_ = JournalOutcome::CONFIRMED;
-    replay.entries_ = {yesterday, named_today, confirmed_today};
-    auto reused = row("KRX-1");
-    reused.ordered_at_ = today + std::chrono::seconds(10);
-    std::vector<OrderSnapshot> rows{reused, row("KRX-1")};
-    runner::drop_rows_of_other_placements(rows, replay, {placement()});
-    // Today's order with the reused number stays; yesterday's own row goes.
+    replay.entries_ = {first_pending, named_today, confirmed_today};
+    auto todays = row("KRX-1");
+    todays.ordered_at_ = today + std::chrono::seconds(10);
+    std::vector<OrderSnapshot> rows{todays, row("KRX-1")};
+    runner::drop_rows_fitting_another_placement(rows, replay, {placement()});
     REQUIRE(rows.size() == 1);
-    CHECK(rows.front().ordered_at_ == reused.ordered_at_);
+    CHECK(rows.front().ordered_at_ == todays.ordered_at_);
   }
 
-  SECTION("a name an earlier sweep gave wrongly keeps the row from its real placement, which stays unfound") {
-    // The conservative direction, and why this filter is not for a sweep whose negative verdict is acted
-    // on: the row is not lent to a second placement while the journal says it is the first one's.
-    auto wrongly = first_accepted;
-    wrongly.outcome_ = JournalOutcome::RESOLVED;
-    replay.entries_ = {first_pending, wrongly, placement().entry_};
+  SECTION("a refused placement has no order, a cancellation is not a placement, and the one being matched is no rival") {
+    auto refused = first_accepted;
+    refused.outcome_ = JournalOutcome::REJECTED;
+    refused.order_id_.clear();
+    auto cancel = cancellation("KRX-1").entry_;
+    cancel.id_ = "run-9";
+    replay.entries_ = {first_pending, refused, cancel, placement().entry_};
     std::vector<OrderSnapshot> rows{row("KRX-1")};
-    runner::drop_rows_of_other_placements(rows, replay, {placement()});
-    CHECK(rows.empty());
-  }
+    runner::drop_rows_fitting_another_placement(rows, replay, {placement()});
+    CHECK(rows.size() == 1);
 
-  SECTION("the instruction being matched keeps its own row") {
+    replay.entries_ = {first_pending, first_accepted};
     auto named = placement();
     named.entry_.id_ = "run-0";
-    std::vector<OrderSnapshot> rows{row("KRX-1")};
-    runner::drop_rows_of_other_placements(rows, replay, {named});
+    runner::drop_rows_fitting_another_placement(rows, replay, {named});
     CHECK(rows.size() == 1);
-  }
-
-  SECTION("so the later order is found absent, or matched to its own row, never to the earlier one") {
-    std::vector<OrderSnapshot> rows{row("KRX-1")};
-    runner::drop_rows_of_other_placements(rows, replay, {placement()});
-    CHECK(runner::match_against(placement(), rows, after_the_window()).verdict_ == MatchVerdict::NOT_PLACED);
-    rows = {row("KRX-1"), row("KRX-2")};
-    runner::drop_rows_of_other_placements(rows, replay, {placement()});
-    const auto match = runner::match_against(placement(), rows, after_the_window());
-    REQUIRE(match.verdict_ == MatchVerdict::MATCHED);
-    CHECK(match.order_id_ == "KRX-2");
   }
 }
 

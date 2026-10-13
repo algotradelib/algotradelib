@@ -589,81 +589,73 @@ inline OrderMatch match_against(
 }
 
 /**
- * @brief Removes the rows the journal already attributes to another placement.
+ * @brief Removes the rows that could be another placement's order as well.
  *
- * A row is another placement's when one of that placement's lines carries the row's order id, on the
- * row's instrument, and the row is dated inside that placement's own send window: from its `PENDING`
- * line to the answer of that send (`ACCEPTED`, `REJECTED` or `INDETERMINATE`), or `maximum_request_`
- * after the `PENDING` line where no such answer was written. A line written later (`RESOLVED`,
- * `CONFIRMED`, `HELD`) gives a name and does not move the window, so another day's order with the
- * same number is kept. An undated row is kept too: an order number alone is not identity across days.
+ * A row could be another placement's when it corresponds to that placement as `row_corresponds`
+ * judges it: the same instrument, side and shape, and dated inside that placement's own send window
+ * (from its `PENDING` line to the answer of that send, `ACCEPTED` or `INDETERMINATE`, or
+ * `maximum_request_` after the `PENDING` line where no such answer was written). Whatever order id the
+ * journal records for that placement plays no part: a sweep may have given it another order's number.
+ * A placement the broker or the binding refused (`REJECTED`) has no order and claims no row.
  *
  * For a search that acts only on finding an order (`live::SessionSource` uses it where it looks again
- * for an order a serialized runner still owes): a name an earlier sweep gave wrongly removes the row
- * from the placement it belongs to, which then stays unfound. It is not for a sweep whose negative
- * verdict is acted on, nor for a cancellation, whose row is another placement's by definition.
+ * for an order a serialized runner still owes): what is left can be matched to the instruction with
+ * no other placement in the journal as a rival, and an order sent beside another of the same shape
+ * stays unfound. It is not for a sweep whose negative verdict is acted on.
  *
  * @param rows The rows to filter.
  * @param replay The journal's contents.
- * @param matching The instructions about to be matched; a row attributed to one of them is kept.
+ * @param matching The instructions about to be matched, which are not rivals of each other here.
  * @param window The allowances.
  */
-inline void drop_rows_of_other_placements(
+inline void drop_rows_fitting_another_placement(
   std::vector<OrderSnapshot>& rows,
   const JournalReplay& replay,
   const std::vector<OpenInstruction>& matching,
   const MatchWindow& window = {}
 ) {
-  // One span per placement: from its first line to the answer of its send.
-  struct Owner {
-    OpenInstruction sent_;
-    std::vector<std::string> names_;
-  };
-  std::vector<Owner> owners;
-  // Each journal id's owner and each order id's owners, so a long journal is read in one pass.
-  std::unordered_map<std::string, std::size_t> owner_of;
-  std::unordered_map<std::string, std::vector<std::size_t>> named;
+  // The other placements on the instruments being matched, each with the span of its send.
+  std::vector<OpenInstruction> others;
+  std::unordered_map<std::string, std::size_t> other_of;
+  std::vector<std::string> refused;
   for (const auto& entry : replay.entries_) {
     if (entry.action_ != JournalAction::PLACE) {
       continue;
     }
+    const bool wanted = std::any_of(matching.begin(), matching.end(), [&](const OpenInstruction& instruction) {
+      return instruction.entry_.instrument_ == entry.instrument_ && instruction.entry_.id_ != entry.id_;
+    });
     const bool being_matched = std::any_of(matching.begin(), matching.end(), [&](const OpenInstruction& instruction) {
       return instruction.entry_.id_ == entry.id_;
     });
-    if (being_matched) {
+    if (!wanted || being_matched) {
       continue;
     }
-    auto known = owner_of.find(entry.id_);
-    if (known == owner_of.end()) {
-      Owner fresh;
-      fresh.sent_.entry_ = entry;
-      fresh.sent_.opened_at_ = entry.recorded_at_;
-      known = owner_of.emplace(entry.id_, owners.size()).first;
-      owners.push_back(std::move(fresh));
+    if (entry.outcome_ == JournalOutcome::REJECTED) {
+      refused.push_back(entry.id_);
     }
-    auto& owner = owners[known->second];
+    auto known = other_of.find(entry.id_);
+    if (known == other_of.end()) {
+      OpenInstruction other;
+      other.entry_ = entry;
+      other.opened_at_ = entry.recorded_at_;
+      known = other_of.emplace(entry.id_, others.size()).first;
+      others.push_back(std::move(other));
+    }
+    auto& other = others[known->second];
     const bool answers_the_send = entry.outcome_ == JournalOutcome::ACCEPTED ||
       entry.outcome_ == JournalOutcome::REJECTED || entry.outcome_ == JournalOutcome::INDETERMINATE;
-    if (answers_the_send && !owner.sent_.closed_at_) {
-      owner.sent_.closed_at_ = entry.recorded_at_;
-    }
-    if (!entry.order_id_.empty() &&
-        std::find(owner.names_.begin(), owner.names_.end(), entry.order_id_) == owner.names_.end()) {
-      owner.names_.push_back(entry.order_id_);
-      named[entry.order_id_].push_back(known->second);
+    if (answers_the_send && !other.closed_at_) {
+      other.closed_at_ = entry.recorded_at_;
     }
   }
   rows.erase(
     std::remove_if(
       rows.begin(), rows.end(),
       [&](const OrderSnapshot& row) {
-        const auto holders = named.find(row.order_id_);
-        if (!row.ordered_at_ || holders == named.end()) {
-          return false;
-        }
-        return std::any_of(holders->second.begin(), holders->second.end(), [&](std::size_t at) {
-          return owners[at].sent_.entry_.instrument_ == row.instrument_ &&
-            time_evidence(owners[at].sent_, row, window) == Evidence::CONFIRMS;
+        return std::any_of(others.begin(), others.end(), [&](const OpenInstruction& other) {
+          return std::find(refused.begin(), refused.end(), other.entry_.id_) == refused.end() &&
+            row_corresponds(other, row, window);
         });
       }
     ),
