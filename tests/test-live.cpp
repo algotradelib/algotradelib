@@ -7918,6 +7918,32 @@ TEST_CASE("after that stop, the documented steps let the instrument trade again"
   CHECK_FALSE(loop.run(stop, 2).owed_stop_.has_value());
 }
 
+TEST_CASE("a journal set aside while an order it tracks can still fill lets that order be sent again",
+          "[serialized][unfound]") {
+  // The merge check's sequence, and why the example's way on after exit 8 demands that every order has
+  // ended first. Y, a buy of ten, was accepted and rests. It then fills and leaves the order list while
+  // a holdings read made after that still shows nothing.
+  using runner::JournalOutcome;
+
+  SECTION("the journal that tracked it holds the instrument through that") {
+    SerialRig kept({serial_line("p-1", JournalOutcome::PENDING), serial_line("p-1", JournalOutcome::ACCEPTED, "Y")});
+    kept.show(polled(2, "0", {}));
+    kept.bar(3, {target_of("10")});
+    CHECK(kept.session.placed().empty());
+  }
+
+  SECTION("a new journal counts the order only while the list shows it") {
+    SerialRig fresh;
+    fresh.show(polled(1, "0", {listed_row("Y", OrderSide::BUY, "10", "0")}));
+    fresh.bar(1, {target_of("10")});
+    CHECK(fresh.session.placed().empty());
+    fresh.show(polled(2, "0", {}));
+    fresh.bar(3, {target_of("10")});
+    // The second ten: nothing remembered the first.
+    CHECK(fresh.session.placed().size() == 1);
+  }
+}
+
 TEST_CASE("the live program exits apart when it stopped for an order nobody can account for",
           "[live][program][unfound]") {
   // Left by an earlier day on an instrument this run does not even trade: the run would buy its share
