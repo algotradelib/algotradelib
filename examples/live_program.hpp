@@ -400,12 +400,23 @@ Exit trade(
   if (report.owed_stop_) {
     out << "OWED ORDER      : the run stopped placing by itself (see the note above). A supervisor must not\n"
         << "                  restart it: the order is restored from the journal and the run stops again.\n"
-        << "  1. read the broker's order list, order history and holdings for that instrument yourself;\n"
-        << "  2. decide what the account should hold (cancel the order if it is resting);\n"
-        << "  3. this program has no command to release an order: move the journal aside, keeping it:\n"
-        << "       mv " << settings.journal_path_ << ' ' << settings.journal_path_ << ".owed-$(date +%Y%m%d)\n"
-        << "     the next start then begins a new journal and sizes from the account as it is.\n"
-        << "  A program of your own calls Runner::release_obligations instead (see set_owed_order_limit).\n";
+        << "this journal still owes:\n";
+    for (const auto& owed : bound.obligations()) {
+      out << "  " << owed.instrument_.symbol_ << ' ' << (owed.side_ == atl::OrderSide::BUY ? "buy " : "sell ")
+          << owed.quantity_.str() << ", sent " << atl::format_iso8601_utc(owed.sent_at_) << ", "
+          << (owed.state_ == runner::ObligationState::OPERATOR ? "held for an operator" :
+              owed.state_ == runner::ObligationState::UNNAMED  ? "no order found" :
+                                                                 "order " + owed.order_id_ + ", not yet in holdings")
+          << '\n';
+    }
+    out << "this program has no command to release one order, and its only way on gives up the whole\n"
+        << "journal, so it needs all of them accounted for:\n"
+        << "  1. read the broker's order list, order history and holdings for every order above;\n"
+        << "  2. cancel what is resting or accept that it exists, and wait until holdings show every fill;\n"
+        << "  3. move the journal aside, keeping it:  mv " << settings.journal_path_ << ' '
+        << settings.journal_path_ << ".owed-$(date +%Y%m%d)\n"
+        << "the next start then begins a new journal and sizes from the account as it is. A program of\n"
+        << "your own releases the one order instead (Runner::release_obligations; see set_owed_order_limit).\n";
     return Exit::OWED_ORDER;
   }
   return Exit::CLEAN;

@@ -817,6 +817,10 @@ publish says "every order accepted so far is listed".
   this process and after a restart. The search costs one history read per order-list read while such an
   order is owed.
 
+The first sweep has no such filter for another order's row, in either kind of runner: an order of the
+same shape that this runner sent within half a minute before the one whose outcome is unknown can be
+taken for it, and two rows that both fit read as `ambiguous`.
+
 ### An order nobody can account for stops the run
 
 One instrument held back does not hold back the rest of a strategy. A pair goes on trading its other
@@ -825,13 +829,24 @@ order stays inside its own limits while the account holds what the strategy neve
 `RiskLimits::max_gross_exposure_` bounds what such a run can buy on top; nothing in the library keeps
 two legs together.
 
-So a loop stops placing by itself. Once it has read the order list, if a serialized runner has owed an
-order for longer than ten minutes (`PollingLoop::set_owed_order_limit`) and that order has no name
-(`UNNAMED`) or is held for an operator (`OPERATOR`), the loop requests a `quiesce`: nothing more is
-placed on any instrument, nothing is cancelled or closed, and the order is still owed.
-`LoopReport::owed_stop_` names the order and a note says what to do; `example-live-program` exits 8.
-The check runs before anything is fed, so a start with such an order from an earlier day places
-nothing at all, on any instrument, and stops again at every start until the order is accounted for.
+So a loop stops placing by itself, in two steps, for an order a serialized runner owes that has no
+name (`UNNAMED`) or is held for an operator (`OPERATOR`):
+
+1. **Ten minutes after the order was sent** (`PollingLoop::set_owed_order_limit`), on the loop's clock,
+   placing is held on every instrument (`final_gate_` reads `stopping`). Nothing a strategy asks for
+   goes out from then on, the handlers the next order-list read calls included.
+2. **At the next successful read of the order list**, whose sweep is the order's chance to be named: if
+   the order is still not accounted for, the loop requests a `quiesce`. Nothing is cancelled or closed,
+   and the order is still owed. `LoopReport::owed_stop_` names the order and a note says what to do;
+   `example-live-program` exits 8. If that read names the order instead, the hold is lifted and the run
+   goes on.
+
+So ten minutes bounds how long a run places beside such an order, not when it ends: a loop that reads
+the order list every fifteen minutes stops at that read, and later still while reads fail. The ages are
+measured on the loop's wall clock against the journal's stamps, as everything about a serialized order
+is; a clock set forward shortens them and one set back lengthens them. A start with such an order from
+an earlier day places nothing at all, on any instrument, and stops again at every start until the
+order is accounted for.
 
 What it does not do:
 
@@ -848,9 +863,18 @@ decide what the account should hold (cancel the order if it is resting). Then, i
 own: `Runner::release_obligations(instrument, reason)`, `ledger().resolve_after_reading_orders(instrument)`
 if the ledger still holds the instrument (a release leaves the ledger alone), `StopSource::clear` and
 `guard().resume(strategy::HaltReason::STOPPING)`; the next order on the instrument waits for a holdings
-read received after the release. `example-live-program` has no command for a release: once the account
-is reconciled by hand, move the journal aside, keeping it, and the next start begins a new one.
+read received after the release. Orders the journal owes on other instruments stay owed.
+
+`example-live-program` has no command for a release, and its only way on gives up the whole journal:
+moving it aside, keeping it, so that the next start begins a new one. That forgets **every** order the
+journal still owes, on every instrument, a named one waiting for its fill to reach holdings included,
+and a new journal would let such an order be sent again. The program lists them when it exits 8. Do
+it only once each is accounted for: read the broker's lists for all of them, cancel what rests or accept
+that it exists, and wait until holdings show every fill.
 `set_owed_order_limit(0)` turns the stop off, for a program that watches `Runner::obligations` itself.
+
+A serialized runner over a broker that lists no working orders places nothing (`Runner::serialized`), so the only such
+order it can owe is one a journal restored; the stop then comes at the startup read of the order list.
 
 **A target never re-places what it only reserved.** A reserved row has often filled already,
 so when a target finds more working on its side than it wants, it still withdraws every row there, but
