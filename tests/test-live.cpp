@@ -7364,6 +7364,44 @@ TEST_CASE("an order sent hours before, of the same shape, does not keep the late
   CHECK(rig.runner_instance.obligations().front().order_id_ == "B");
 }
 
+TEST_CASE("an earlier order whose journal lines record no route still keeps its row from the later search",
+          "[serialized][unfound][loop]") {
+  // Round 3 of the review: A is accepted and accounted for by a journal written before routes were
+  // recorded; B, of the same shape, loses its request twenty seconds later. A's row cannot be confirmed
+  // as A's (its route is unknown), which must not make it B's.
+  using runner::JournalOutcome;
+  auto unrouted = [](JournalOutcome outcome, const char* order_id = "", const char* baseline = "0") {
+    auto line = serial_line("p-1", outcome, order_id, baseline);
+    line.venue_.reset();
+    return line;
+  };
+  auto later = [](JournalOutcome outcome) {
+    auto line = serial_line("p-2", outcome, "", "10");
+    line.recorded_at_ += std::chrono::seconds(20);
+    return line;
+  };
+  SerialRig rig({
+    unrouted(JournalOutcome::PENDING), unrouted(JournalOutcome::ACCEPTED, "A"), unrouted(JournalOutcome::CONFIRMED, "A", "10"),
+    later(JournalOutcome::PENDING), later(JournalOutcome::INDETERMINATE), later(JournalOutcome::RESOLVED),
+  });
+  REQUIRE(rig.owed() == runner::ObligationState::UNNAMED);
+  rig.show(polled(0, "10", {}));
+  auto row = market_row("A", at_hour(-1));
+  row.venue_ = Venue::KRX;
+  auto source = source_over(rig, page_of({row}));
+  rig.runner_instance.set_observed_at(at_hour(1));
+  REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+  CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+  CHECK(rig.lines(JournalOutcome::RESOLVED).size() == 1);
+  // And so the run stops for B.
+  QuietSource quiet;
+  auto loop = loop_over(rig, quiet, 1);
+  runner::StopSource stop;
+  const auto report = loop.run(stop, 3);
+  REQUIRE(report.owed_stop_.has_value());
+  CHECK(report.owed_stop_->journal_id_ == "p-2");
+}
+
 TEST_CASE("a number a sweep once gave another order wrongly does not lend that order's row to the later search",
           "[serialized][unfound]") {
   // Round 2 of the review. X is accepted hours earlier. A, of the same shape, loses its reply; the first

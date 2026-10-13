@@ -498,6 +498,22 @@ TEST_CASE("a row that could be another placement's order as well is nobody's", "
     CHECK(rows[2].ordered_at_ == next_day.ordered_at_);
   }
 
+  SECTION("a row that only might be the other placement's is set aside too") {
+    // Round 3 of the review: a line written before routes were recorded cannot confirm a row's venue, so
+    // the row is not established as that placement's; it is not established as anyone else's either.
+    first_pending.venue_.reset();
+    first_accepted.venue_.reset();
+    replay.entries_ = {first_pending, first_accepted, placement().entry_};
+    auto routed = row("KRX-1");
+    routed.venue_ = Venue::KRX;
+    auto unreadable = row("KRX-5");
+    unreadable.type_ = OrderType::UNKNOWN;
+    std::vector<OrderSnapshot> rows{routed, unreadable};
+    REQUIRE_FALSE(runner::row_corresponds(runner::placements_of(replay, {"run-0"}).front(), routed, MatchWindow{}));
+    runner::drop_rows_fitting_another_placement(rows, replay, {placement()});
+    CHECK(rows.empty());
+  }
+
   SECTION("a number an earlier sweep gave, rightly or wrongly, changes nothing") {
     // Round 2 of the review: the earlier placement is named with another order's number. Both rows fit
     // it, so neither is left to be the later one's by exclusion.

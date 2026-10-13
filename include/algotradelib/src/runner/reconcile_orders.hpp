@@ -591,12 +591,14 @@ inline OrderMatch match_against(
 /**
  * @brief Removes the rows that could be another placement's order as well.
  *
- * A row could be another placement's when it corresponds to that placement as `row_corresponds`
- * judges it: the same instrument, side and shape, and dated inside that placement's own send window
- * (from its `PENDING` line to the answer of that send, `ACCEPTED` or `INDETERMINATE`, or
- * `maximum_request_` after the `PENDING` line where no such answer was written). Whatever order id the
- * journal records for that placement plays no part: a sweep may have given it another order's number.
- * A placement the broker or the binding refused (`REJECTED`) has no order and claims no row.
+ * A row could be another placement's when `row_corresponds` says it is that placement's order (the
+ * same instrument, side and shape, dated inside that placement's own send window: from its `PENDING`
+ * line to the answer of that send, `ACCEPTED` or `INDETERMINATE`, or `maximum_request_` after the
+ * `PENDING` line where no such answer was written), or when `row_might_correspond` says it may be:
+ * nothing disagrees and something could not be compared, such as the route of a line written before
+ * routes were recorded. Whatever order id the journal records for that placement plays no part: a
+ * sweep may have given it another order's number. A placement the broker or the binding refused
+ * (`REJECTED`) has no order and claims no row.
  *
  * For a search that acts only on finding an order (`live::SessionSource` uses it where it looks again
  * for an order a serialized runner still owes): what is left can be matched to the instruction with
@@ -656,7 +658,7 @@ inline void drop_rows_fitting_another_placement(
       [&](const OrderSnapshot& row) {
         return std::any_of(others.begin(), others.end(), [&](const OpenInstruction& other) {
           return std::find(refused.begin(), refused.end(), other.entry_.id_) == refused.end() &&
-            row_corresponds(other, row, window);
+            (row_corresponds(other, row, window) || row_might_correspond(other, row, window));
         });
       }
     ),
