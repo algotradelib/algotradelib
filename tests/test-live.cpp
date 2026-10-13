@@ -7983,3 +7983,39 @@ TEST_CASE("the live program exits apart when it stopped for an order nobody can 
     }
   }
 }
+
+TEST_CASE("the live program starts nothing on a journal line it cannot read, and says when the journal may be set aside",
+          "[live][program]") {
+  const TempPath journal_path("atl-test-program-halted.jsonl");
+  const TempPath control("atl-test-program-halted.stop");
+  {
+    runner::FileJournal journal(journal_path.str(), "fake:demo:1");
+    REQUIRE(journal.open());
+    for (const auto& line : unfound_lines()) {
+      REQUIRE(journal.append(line));
+    }
+  }
+  {
+    // A complete line that is not a journal line: damage that names no instrument.
+    std::FILE* handle = std::fopen(journal_path.str().c_str(), "ab");
+    REQUIRE(handle != nullptr);
+    std::fputs("{\"not\":\"a journal line\"}\n", handle);
+    std::fclose(handle);
+  }
+  ProgramSession session;
+  script_ready(session);
+  runner::StopSource stop;
+  std::ostringstream out;
+  const auto exit = live_program::trade(
+    session, one_share(), program_settings(journal_path, control), stop, out, runner::ManualClock{program_start()}
+  );
+  INFO(out.str());
+  CHECK(exit == live_program::Exit::RECOVERY_HALTED);
+  CHECK(session.placed().empty());
+  // The procedure gives up the whole journal, so it has to demand what the owed-order exit demands:
+  // every order ended and its fills in holdings, before the file is moved.
+  CHECK(out.str().find("only once no order the journal may track can execute any more") != std::string::npos);
+  CHECK(out.str().find("each must have ended") != std::string::npos);
+  CHECK(out.str().find("Do NOT move the journal aside while an order it may track is left working") != std::string::npos);
+  CHECK(out.str().find("accept that it exists") == std::string::npos);
+}
