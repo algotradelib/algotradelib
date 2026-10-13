@@ -463,8 +463,13 @@ TEST_CASE("a placement found absent says what was read, and what its caller does
   CHECK(report.matches_[1].detail_.find("kept owed") == std::string::npos);
   REQUIRE(journal.records().size() == 2);
   CHECK(journal.records()[0].detail_.find("(kept owed)") != std::string::npos);
-  // Said of nothing unless the caller says it.
+  // Said of nothing unless the caller says it, and of no other verdict.
   CHECK(runner::match_against(placement(), {}, after_the_window()).detail_.find("owed") == std::string::npos);
+  const auto found = runner::reconcile_against(
+    {placement()}, {row("KRX-1")}, after_the_window(), ledger, journal, MatchWindow{}, " (kept owed)"
+  );
+  REQUIRE(found.matches_.front().verdict_ == MatchVerdict::MATCHED);
+  CHECK(found.matches_.front().detail_.find("kept owed") == std::string::npos);
 }
 
 TEST_CASE("a row the journal attributes to another placement is not a candidate", "[reconcile]") {

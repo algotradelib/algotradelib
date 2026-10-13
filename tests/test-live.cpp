@@ -7232,9 +7232,15 @@ TEST_CASE("the later search acts on one dated row of the order's own and on noth
   };
 
   SECTION("an undated row of the same shape may be another day's order") {
-    auto undated = market_row("B", at_hour(-1));
-    undated.ordered_at_.reset();
-    auto source = source_over(rig, page_of({undated}));
+    // In the order list, where KIS dates no row: the first sweep would take it, within its window.
+    WorkingOrder<FakeBroker> undated;
+    undated.order_ = market_row("B", at_hour(-1), "0", OrderStatus::PENDING);
+    undated.order_.ordered_at_.reset();
+    undated.ref_.primary_ = "B";
+    WorkingOrders<FakeBroker> listing;
+    listing.orders_.push_back(undated);
+    auto source = source_over(rig);
+    rig.session.set_working_orders(listing);
     REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
     CHECK(unchanged());
   }
