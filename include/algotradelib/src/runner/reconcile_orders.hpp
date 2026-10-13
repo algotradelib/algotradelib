@@ -622,13 +622,14 @@ inline void drop_rows_fitting_another_placement(
     if (entry.action_ != JournalAction::PLACE) {
       continue;
     }
-    const bool wanted = std::any_of(matching.begin(), matching.end(), [&](const OpenInstruction& instruction) {
-      return instruction.entry_.instrument_ == entry.instrument_ && instruction.entry_.id_ != entry.id_;
-    });
+    const bool on_an_instrument_matched = std::any_of(
+      matching.begin(), matching.end(),
+      [&](const OpenInstruction& instruction) { return instruction.entry_.instrument_ == entry.instrument_; }
+    );
     const bool being_matched = std::any_of(matching.begin(), matching.end(), [&](const OpenInstruction& instruction) {
       return instruction.entry_.id_ == entry.id_;
     });
-    if (!wanted || being_matched) {
+    if (!on_an_instrument_matched || being_matched) {
       continue;
     }
     if (entry.outcome_ == JournalOutcome::REJECTED) {
