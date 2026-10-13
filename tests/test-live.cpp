@@ -7420,6 +7420,29 @@ TEST_CASE("a run stops placing for an order nobody has been able to account for"
     CHECK(report.iterations_ == 5);
   }
 
+  SECTION("a list read less often than the limit gets its read before the run stops") {
+    // Sent as the loop starts and read at once; the next read of the list is ten seconds later. A limit
+    // of two and a half seconds has passed long before it, and the sweep at that read has its chance.
+    SerialRig rig;
+    rig.session.fail_place_with(reply_lost());
+    rig.bar(1, {target_of("10")});
+    rig.session.heal_place();
+    REQUIRE(rig.owed() == runner::ObligationState::UNNAMED);
+    QuietSource source;
+    runner::PollSchedule schedule;
+    schedule.bars_.reset();
+    schedule.holdings_ = std::chrono::seconds(1);
+    schedule.working_orders_ = std::chrono::seconds(10);
+    schedule.tick_ = std::chrono::seconds(1);
+    SerialLoop loop(rig.runner_instance, source, schedule, runner::ManualClock{at_hour(1)});
+    loop.allow_unbounded_portfolio_age();
+    loop.set_owed_order_limit(std::chrono::milliseconds(2500));
+    runner::StopSource stop;
+    const auto report = loop.run(stop, 30);
+    REQUIRE(report.owed_stop_.has_value());
+    CHECK(report.iterations_ == 11);
+  }
+
   SECTION("a stop already asked for is carried out as it is") {
     SerialRig rig(unfound_lines());
     QuietSource source;

@@ -1110,9 +1110,9 @@ public:
    * (`ObligationState::UNNAMED`), or one held for an operator (`ObligationState::OPERATOR`). Its
    * instrument is withheld until `Runner::release_obligations`, and a strategy trading other
    * instruments would go on beside it: a pair with one leg, a rotation holding a name it meant to
-   * sell. So, once the order list has been read, the loop requests `StopIntent::QUIESCE` on the run's
-   * `StopSource` as soon as it finds such an order sent longer ago than the limit, before anything
-   * further is fed: nothing more is placed, nothing is cancelled or closed, and the order is still owed.
+   * sell. So, once an order-list read made longer after the order's send than the limit has left it
+   * so, the loop requests `StopIntent::QUIESCE` on the run's `StopSource`, before anything further is
+   * fed: nothing more is placed, nothing is cancelled or closed, and the order is still owed.
    * `LoopReport::owed_stop_` names it. The request stays on the `StopSource`, as a control-file word
    * does, and stops any other loop sharing it. A restart restores the order and stops again after its
    * first order-list read, before it places anything, until a sweep names the order or it is released.
@@ -1905,8 +1905,8 @@ private:
     // **An order nobody can account for, owed too long, stops the run's placements**
     // (`set_owed_order_limit`). Here: after the order list was read, whose sweep may have named the
     // order, and before anything this iteration can feed, so that a start with an order left from an
-    // earlier day places nothing on any instrument. Measured on a fresh reading of the clock.
-    if (auto owed = owed_too_long(clock_.now())) {
+    // earlier day places nothing on any instrument.
+    if (auto owed = owed_too_long()) {
       report.notes_.push_back(owed_stop_note(*owed));
       report.owed_stop_ = std::move(owed);
       stop.request(StopIntent::QUIESCE);
@@ -2530,19 +2530,21 @@ private:
     }
   }
 
-  // Returns the oldest order nobody can account for that was sent longer ago than the limit, as of `at`:
-  // one no sweep has named, or one held for an operator (`set_owed_order_limit`). None before the order
-  // list was read (a sweep may name it), with the limit off, or from a runner that is not serialized.
-  std::optional<Obligation> owed_too_long(std::chrono::system_clock::time_point at) const {
+  // Returns the oldest order nobody can account for that the last order-list read, made longer after its
+  // send than the limit, still left so: one no sweep has named, or one held for an operator
+  // (`set_owed_order_limit`). Measured to that read and not to now, so that a loop polling the list
+  // less often than the limit gives a sweep its chance to name the order first. None before the order
+  // list was read, with the limit off, or from a runner that is not serialized.
+  std::optional<Obligation> owed_too_long() const {
     std::optional<Obligation> oldest;
-    if (!order_list_read_ || owed_order_limit_ <= std::chrono::nanoseconds::zero()) {
+    if (!order_list_read_ || !working_orders_at_ || owed_order_limit_ <= std::chrono::nanoseconds::zero()) {
       return oldest;
     }
     for (auto& owed : runner_->obligations()) {
       if (owed.state_ != ObligationState::UNNAMED && owed.state_ != ObligationState::OPERATOR) {
         continue;
       }
-      if (at - owed.sent_at_ > owed_order_limit_ && (!oldest || owed.sent_at_ < oldest->sent_at_)) {
+      if (*working_orders_at_ - owed.sent_at_ > owed_order_limit_ && (!oldest || owed.sent_at_ < oldest->sent_at_)) {
         oldest = std::move(owed);
       }
     }
