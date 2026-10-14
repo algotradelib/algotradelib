@@ -1044,6 +1044,7 @@ using kiwoom::KiwoomOrderOperation;
 constexpr const char* KIWOOM_NOTHING_TO_CANCEL = "[2000](RC4033:모의투자 정정/취소할 수량이 없습니다.)";
 constexpr const char* KIWOOM_NOTHING_TO_SELL = "[2000](800033:모의투자 매도가능수량이 부족합니다.)";
 constexpr const char* KIWOOM_MARKET_CLOSED = "[2000](RC4058:모의투자 장종료)";
+constexpr const char* KIWOOM_MARKET_NOT_OPEN = "[2000](RC4057:모의투자 장시작전)";
 
 /** A Kiwoom failure envelope with outer code 20 and the given message, and `extra` appended inside the object. */
 std::string kiwoom_refusal_body(const std::string& message, const std::string& extra = "") {
@@ -1153,6 +1154,43 @@ TEST_CASE("a Kiwoom demo cash order refusal the client recognizes is a rejection
         " (return_code 20; recognized refusal: Kiwoom demo, cash placement, RC4058)"
     );
     CHECK(runner::outcome_of(result.error()) == runner::SendOutcome::REJECTED);
+  }
+
+  SECTION("a placement before the market has opened") {
+    const auto result = kiwoom::KiwoomClientTestAccess::order_ack(
+      ok_body(kiwoom_refusal_body(KIWOOM_MARKET_NOT_OPEN)), KiwoomOrderOperation::PLACE, true
+    );
+    REQUIRE_FALSE(result);
+    CHECK(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+    CHECK(result.error().reached_broker_);
+    CHECK(result.error().http_status_ == 200);
+    CHECK(result.error().broker_code_ == "RC4057");
+    CHECK(
+      result.error().message_ ==
+      std::string(KIWOOM_MARKET_NOT_OPEN) +
+        " (return_code 20; recognized refusal: Kiwoom demo, cash placement, RC4057)"
+    );
+    CHECK(runner::outcome_of(result.error()) == runner::SendOutcome::REJECTED);
+
+    using Access = kiwoom::KiwoomClientTestAccess;
+    const std::string body = kiwoom_refusal_body(KIWOOM_MARKET_NOT_OPEN);
+    CHECK(kiwoom_unknown(Access::order_ack(ok_body(body), KiwoomOrderOperation::PLACE, false)));
+    CHECK(kiwoom_unknown(Access::order_ack(ok_body(body), KiwoomOrderOperation::CANCEL, true)));
+    CHECK(kiwoom_unknown(Access::order_ack(ok_body(body), KiwoomOrderOperation::AMEND, true)));
+    CHECK(kiwoom_unknown(Access::order_ack(ok_body(body), KiwoomOrderOperation::UNCLASSIFIED, true)));
+    for (const char* message : {
+           "[2000](RC4056:모의투자 장시작전)",
+           "[2000](RC40570:모의투자 장시작전)",
+           "[2000](XRC4057:모의투자 장시작전)",
+           "[2001](RC4057:모의투자 장시작전)",
+           "[2000](RC4057:모의투자 장시작전) ",
+         }) {
+      CAPTURE(message);
+      CHECK(kiwoom_unknown(Access::order_ack(ok_body(kiwoom_refusal_body(message)), KiwoomOrderOperation::PLACE, true)));
+    }
+    CHECK(kiwoom_unknown(Access::order_ack(
+      ok_body(kiwoom_refusal_body(KIWOOM_MARKET_NOT_OPEN, R"(,"ord_no":"0036038")")), KiwoomOrderOperation::PLACE, true
+    )));
   }
 
   SECTION("the outer code as the string 20, empty acknowledgement fields, or the original order echoed") {

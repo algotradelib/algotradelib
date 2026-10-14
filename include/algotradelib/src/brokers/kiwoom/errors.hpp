@@ -179,8 +179,8 @@ inline std::string_view kiwoom_refusal_code(std::string_view message) noexcept {
 /**
  * @brief Reads the refusal a cash-order reply states, for the replies this client recognizes as one.
  *
- * From the demo server: a placement answered `800033` (not enough to sell) or `RC4058` (the market
- * has closed), and a cancellation answered `RC4033` (nothing left to amend or cancel). From the real
+ * From the demo server: a placement answered `800033` (not enough to sell), `RC4057` (the market has
+ * not opened) or `RC4058` (the market has closed), and a cancellation answered `RC4033` (nothing left to amend or cancel). From the real
  * server: a placement answered `571445` (no securities balance) and a cancellation answered `506550`
  * (no quantity left to cancel). Such a reply is `INVALID_ARGUMENT` with `reached_broker_` set, which
  * a runner reads as a rejection; any other reply with `return_code` 20 stays `PROTOCOL`, an unknown
@@ -222,7 +222,7 @@ inline std::optional<BrokerError> kiwoom_recognized_refusal(
   const std::string stated(kiwoom_refusal_code(std::string_view(message->as_string())));
   const char* name = "";
   const bool placement = operation == KiwoomOrderOperation::PLACE &&
-    (demo ? (stated == "800033" || stated == "RC4058") : stated == "571445");
+    (demo ? (stated == "800033" || stated == "RC4057" || stated == "RC4058") : stated == "571445");
   const bool cancellation = operation == KiwoomOrderOperation::CANCEL &&
     (demo ? stated == "RC4033" : stated == "506550");
   if (placement) {

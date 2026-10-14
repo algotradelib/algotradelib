@@ -599,8 +599,9 @@ public:
    * `async_order_history` before placing again, since KIS has no idempotency key.
    *
    * Some refusals are recognized as refusals, each from its own server only: the demo server's
-   * `40240000` (nothing held to sell) and `40580000` (the market has closed), and the real server's
-   * `APBK3061` (during the after-market session, only after-market order types are accepted). In an
+   * `40240000` (nothing held to sell), `40570000` (the market has not opened) and `40580000` (the
+   * market has closed), and the real server's `APBK3061` (during the after-market session, only
+   * after-market order types are accepted). In an
    * HTTP 200 reply that carries no acknowledgement, each is `INVALID_ARGUMENT` with `reached_broker_`
    * set, which `runner::outcome_of` reads as `REJECTED`. A demo code from the real server, or the
    * real code from the demo server, stays `PROTOCOL`, as does every other refusal this client does not
@@ -3386,14 +3387,15 @@ private:
       return operation == OrderOperation::PLACE && code == "APBK3061";
     }
     if (operation == OrderOperation::PLACE) {
-      return code == "40240000" || code == "40580000";
+      return code == "40240000" || code == "40570000" || code == "40580000";
     }
     return operation == OrderOperation::CANCEL && code == "40330000";
   }
 
   // Returns the refusal a cash-order reply states, for the replies this client recognizes as one.
-  // From the demo server: a placement answered `40240000` (nothing held to sell) or `40580000` (the
-  // market has closed), and a cancellation answered `40330000` (nothing left to amend or cancel).
+  // From the demo server: a placement answered `40240000` (nothing held to sell), `40570000` (the
+  // market has not opened) or `40580000` (the market has closed), and a cancellation answered
+  // `40330000` (nothing left to amend or cancel).
   // From the real server: a placement answered `APBK3061` (during the after-market session, only
   // after-market order types are accepted). Such a reply is `INVALID_ARGUMENT` with
   // `reached_broker_` set, which a runner reads as a rejection; any other declared failure of an

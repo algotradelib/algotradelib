@@ -694,7 +694,7 @@ enum class ErrorCategory {
    *
    * By the broker: `reached_broker_` is set. That includes the order refusals the KIS and Kiwoom
    * clients recognize, each from the server it was seen from: from their demo servers nothing to
-   * sell, the market closed and nothing left to cancel; from their real servers KIS's after-market
+   * sell, the market not yet open or closed, and nothing left to cancel; from their real servers KIS's after-market
    * session refusal and Kiwoom's no-balance and nothing-left-to-cancel refusals.
    */
   INVALID_ARGUMENT,
