@@ -5485,9 +5485,9 @@ TEST_CASE("a journaled runner over a broker listing no working orders places not
 
 TEST_CASE("a buy and a sell on one instrument never overlap, so no fill is credited to the wrong order",
           "[serialized]") {
-  // The serialized counterpart of the lab's mixed-pair reproduction (`labs/FINDINGS.md` F48): there, a
-  // buy and a sell of 100 both filled before holdings moved, both were retired by unchanged holdings,
-  // and a later buy was confirmed by the first one's fill. Here the sell waits for the buy.
+  // A mixed pair: a buy and a sell of 100 that both fill before holdings move. Overlapping, both are
+  // retired by the unchanged holdings, and a later buy is confirmed by the first one's fill. Serialized,
+  // the sell waits for the buy.
   SerialRig rig;
   rig.show(polled(0, "100", {}));
   rig.session.order_ids_ = {"B", "C", "D"};
@@ -5830,8 +5830,8 @@ TEST_CASE("orders a serialized runner owes and cannot see are counted for a clos
 }
 
 TEST_CASE("a holdings read older than the one an order was decided against cannot account for it", "[serialized]") {
-  // Codex round 1 C1: a sell decided against the read that confirmed a buy was discharged by an older,
-  // empty read, and a later read let a target sell a second time.
+  // A sell decided against the read that confirmed a buy must not be discharged by an older, empty
+  // read, or a later read lets a target sell a second time.
   SerialRig rig;
   rig.bar(1, {target_of("10")});
   rig.show(polled(4, "10", {}));
@@ -5898,7 +5898,7 @@ TEST_CASE("history that contradicts an order is never read as accounting for it"
 }
 
 TEST_CASE("a name a ranged sweep gave from an undated row does not account for an order", "[serialized]") {
-  // Codex round 1 C3: through a broker whose history takes a range, the sweep named a restored order from
+  // Through a broker whose history takes a range, the sweep named a restored order from
   // an undated row and holdings then accounted for it.
   SerialRigOf<RangedWorkingOrders> rig({serial_line("p-1", runner::JournalOutcome::PENDING)});
   REQUIRE(rig.owed() == runner::ObligationState::UNNAMED);
@@ -5927,7 +5927,7 @@ TEST_CASE("a name a ranged sweep gave from an undated row does not account for a
 }
 
 TEST_CASE("a target behind this runner's own resting stop is withheld before the stop is withdrawn", "[serialized]") {
-  // Codex round 1 C4: the target withdrew the stop and then waited on it, leaving the position unprotected.
+  // A target must not withdraw the stop and then wait on it, leaving the position unprotected.
   auto stop = serial_line("s-1", runner::JournalOutcome::PENDING, "", "10");
   stop.side_ = OrderSide::SELL;
   stop.type_ = OrderType::STOP_LIMIT;
@@ -5991,7 +5991,7 @@ TEST_CASE("an order accounted for just before a restart needs a holdings read ma
 }
 
 TEST_CASE("a final fill the history supplies is taken in before holdings can account for the order", "[serialized]") {
-  // Codex round 2 C6: the preliminary refresh accounted for the order from holdings, or from an earlier
+  // The preliminary refresh must not account for the order from holdings, or from an earlier
   // cap, before the rows just supplied were read.
   using runner::JournalOutcome;
   const std::vector<runner::JournalEntry> accepted{
@@ -6029,8 +6029,8 @@ TEST_CASE("a final fill the history supplies is taken in before holdings can acc
 }
 
 TEST_CASE("a listing reporting more filled than an order's history said it ended with holds it", "[serialized]") {
-  // Codex round 3 C8: the listing only delayed the discharge, and once it moved on the old cap accounted
-  // for the order and a target bought six more.
+  // A listing must do more than delay the discharge: once it moved on, the old cap would account for the
+  // order and a target would buy six more.
   using runner::JournalOutcome;
   SerialRig rig({serial_line("p-1", JournalOutcome::PENDING), serial_line("p-1", JournalOutcome::ACCEPTED, "B")});
   rig.runner_instance.confirm_from_history({dated_row("B", at_hour(-1), "4")});
@@ -6064,8 +6064,8 @@ TEST_CASE("a listing reporting more filled than an order's history said it ended
 
 TEST_CASE("a hold the journal could not record is kept, written later, and never turned into an account",
           "[serialized]") {
-  // Astra's merge-readiness AM1: the failed HELD write left the order an ordinary one, a later refresh
-  // accounted for it from its old cap, and after a restart a target bought six more.
+  // A failed HELD write must not leave the order an ordinary one: a later refresh would account for it
+  // from its old cap, and after a restart a target would buy six more.
   using runner::JournalOutcome;
   SerialRig rig({serial_line("p-1", JournalOutcome::PENDING), serial_line("p-1", JournalOutcome::ACCEPTED, "B")});
   rig.runner_instance.confirm_from_history({dated_row("B", at_hour(-1), "4")});
@@ -6608,7 +6608,7 @@ TEST_CASE("a flatten that lands on an order holdings do not show yet waits for t
           "[live][program][closing-wait]") {
   // The production program, journaled and serialized. The order fills at once; holdings show it three
   // seconds later; the operator's flatten arrives in between. Built at once, the closing pass withdraws
-  // an order that has filled and closes nothing; `labs/FINDINGS.md` F52 saw it on both demo accounts.
+  // an order that has filled and closes nothing; seen on both brokers' demo servers.
   const TempPath journal("atl-test-program-closing-wait.jsonl");
   const TempPath control("atl-test-program-closing-wait.stop");
   runner::ManualClock clock{program_start()};
@@ -7309,7 +7309,7 @@ TEST_CASE("while the journal's own question about an order is open, its sweep al
 
 TEST_CASE("the later search never takes an order this runner sent just before for the one it looks for",
           "[serialized][unfound]") {
-  // Round 0 of the review: A is accepted and accounted for; B, of the same shape, is sent within the
+  // A is accepted and accounted for; B, of the same shape, is sent within the
   // matching window and its request is lost. A's row reaches the history after B's negative sweep, as
   // the only candidate; named A, B could never be accounted for.
   using runner::JournalOutcome;
@@ -7366,7 +7366,7 @@ TEST_CASE("an order sent hours before, of the same shape, does not keep the late
 
 TEST_CASE("an earlier order whose journal lines record no route still keeps its row from the later search",
           "[serialized][unfound][loop]") {
-  // Round 3 of the review: A is accepted and accounted for by a journal written before routes were
+  // A is accepted and accounted for by a journal written before routes were
   // recorded; B, of the same shape, loses its request twenty seconds later. A's row cannot be confirmed
   // as A's (its route is unknown), which must not make it B's.
   using runner::JournalOutcome;
@@ -7404,7 +7404,7 @@ TEST_CASE("an earlier order whose journal lines record no route still keeps its 
 
 TEST_CASE("a number a sweep once gave another order wrongly does not lend that order's row to the later search",
           "[serialized][unfound]") {
-  // Round 2 of the review. X is accepted hours earlier. A, of the same shape, loses its reply; the first
+  // X is accepted hours earlier. A, of the same shape, loses its reply; the first
   // sweep, which has no such filter, names it X, and A's real fill lets holdings confirm that name. B
   // loses its request a little after A. When A's dated row reaches the history at last it is the only
   // candidate for B, and the journal's name for A does not say so.
@@ -7447,7 +7447,7 @@ TEST_CASE("a number a sweep once gave another order wrongly does not lend that o
 }
 
 TEST_CASE("a listing that dates no row does not hide the dated history row of the same order", "[serialized][unfound]") {
-  // Round 1 of the review: KIS dates its history and no working-order row. A resting order the lists
+  // KIS dates its history and no working-order row. A resting order the lists
   // show at last is in both; merged by number, the undated listing row stood in for the history row
   // and was then set aside, so nothing could name the order.
   SerialRigOf<RangedWorkingOrders> rig(unfound_lines());
@@ -7470,7 +7470,7 @@ TEST_CASE("a listing that dates no row does not hide the dated history row of th
 }
 
 TEST_CASE("a name that turns the order into an operator's leaves the ledger marked", "[serialized][unfound]") {
-  // Round 1 of the review: naming rebuilds the runner's picture at once, and a listing row of that
+  // Naming rebuilds the runner's picture at once, and a listing row of that
   // number reporting more filled than the order was for holds it for an operator, with a mark. The
   // later search must not then lift it.
   SerialRig rig(unfound_lines());
@@ -7488,8 +7488,8 @@ TEST_CASE("a name that turns the order into an operator's leaves the ledger mark
 }
 
 TEST_CASE("a cancellation of unknown outcome still finds the order it names in the listing", "[serialized][unfound]") {
-  // Round 1 of the review: the row a cancellation names is another placement's by definition. Filtered
-  // out of the first sweep as such, the journal said the order was no longer listed while it was.
+  // The row a cancellation names is another placement's by definition. Filtered out of the first sweep
+  // as such, the journal would say the order was no longer listed while it was.
   using runner::JournalOutcome;
   auto cancel = serial_line("c-1", JournalOutcome::PENDING, "B");
   cancel.action_ = runner::JournalAction::CANCEL;
@@ -7660,7 +7660,7 @@ TEST_CASE("a run stops placing for an order nobody has been able to account for"
   }
 
   SECTION("the read that decides runs under the hold: what its handlers ask for is not sent") {
-    // Round 1 of the review: sent as the loop starts, limit 2.5 s, the list read every 10 s. A handler
+    // Sent as the loop starts, limit 2.5 s, the list read every 10 s. A handler
     // called inside the second read of the list submits on another instrument.
     for (const bool limit_off : {false, true}) {
       SerialRig rig;
@@ -7758,8 +7758,7 @@ TEST_CASE("a run stops placing for an order nobody has been able to account for"
   }
 
   SECTION("a source that publishes no working orders stops at its startup read") {
-    // Round 1 of the review: such a source never refreshes a listing, and a restored order would never
-    // have stopped the run.
+    // Such a source never refreshes a listing, and a restored order must still stop the run.
     struct NoListing {
       runner::PollOutcome poll(runner::PollKind, SerialRunner&) { return runner::PollOutcome::UNCHANGED; }
       runner::PollOutcome read_order_list(SerialRunner&) { return runner::PollOutcome::UPDATED; }
@@ -7781,8 +7780,8 @@ TEST_CASE("a run stops placing for an order nobody has been able to account for"
   }
 
   SECTION("a read that fails keeps the hold, at a start and when the run gives up, and a later run takes it up") {
-    // Round 2 of the review: the loop's hold for an unread list or for failing polls lets a withdrawal
-    // through, and replaced this one.
+    // The loop's hold for an unread list or for failing polls lets a withdrawal through, and must not
+    // replace the owed-order stop.
     struct Failing : QuietSource {
       bool list_fails_{true};
       runner::PollOutcome read_order_list(SerialRunner&) {
@@ -7851,7 +7850,7 @@ TEST_CASE("a run stops placing for an order nobody has been able to account for"
   }
 
   SECTION("a call in flight when the limit passes is not interrupted; the next one is held") {
-    // Round 2 of the review, as the limit of the hold rather than a guarantee: the loop checks its holds
+    // The limit of the hold rather than a guarantee: the loop checks its holds
     // before each poll, and a read that began before the limit and took three seconds feeds its handler.
     SerialRig rig(unfound_lines());
     QuietSource source;
@@ -7920,7 +7919,7 @@ TEST_CASE("after that stop, the documented steps let the instrument trade again"
 
 TEST_CASE("a journal set aside while an order it tracks can still fill lets that order be sent again",
           "[serialized][unfound]") {
-  // The merge check's sequence, and why the example's way on after exit 8 demands that every order has
+  // Why the example's way on after exit 8 demands that every order has
   // ended first. Y, a buy of ten, was accepted and rests. It then fills and leaves the order list while
   // a holdings read made after that still shows nothing.
   using runner::JournalOutcome;

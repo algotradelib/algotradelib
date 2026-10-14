@@ -499,7 +499,7 @@ TEST_CASE("a row that could be another placement's order as well is nobody's", "
   }
 
   SECTION("a row that only might be the other placement's is set aside too") {
-    // Round 3 of the review: a line written before routes were recorded cannot confirm a row's venue, so
+    // A line written before routes were recorded cannot confirm a row's venue, so
     // the row is not established as that placement's; it is not established as anyone else's either.
     first_pending.venue_.reset();
     first_accepted.venue_.reset();
@@ -515,7 +515,7 @@ TEST_CASE("a row that could be another placement's order as well is nobody's", "
   }
 
   SECTION("a number an earlier sweep gave, rightly or wrongly, changes nothing") {
-    // Round 2 of the review: the earlier placement is named with another order's number. Both rows fit
+    // The earlier placement is named with another order's number. Both rows fit
     // it, so neither is left to be the later one's by exclusion.
     auto wrongly = first_accepted;
     wrongly.outcome_ = JournalOutcome::RESOLVED;
@@ -527,7 +527,7 @@ TEST_CASE("a row that could be another placement's order as well is nobody's", "
   }
 
   SECTION("a line written later does not widen the send's window") {
-    // Round 1 of the review: yesterday's order, named by a sweep and confirmed today, and today's order
+    // Yesterday's order, named by a sweep and confirmed today, and today's order
     // of the same shape sent seconds after that recovery.
     const auto today = sent_at() + std::chrono::hours(24);
     auto named_today = first_pending;
