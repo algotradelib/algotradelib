@@ -86,6 +86,7 @@ and [`examples/live_program.hpp`](examples/live_program.hpp) and replace the str
 ```sh
 cmake -S . -B build -DATL_BUILD_EXAMPLES=ON
 cmake --build build
+./build/bin/example-backtest-compare # offline: no credentials, no network
 export KIS_APP_KEY=... KIS_APP_SECRET=... KIS_CANO=... KIS_DEMO=1
 ./build/bin/example-live-program kis 005930 # observe: real data, nothing can be sent
 ./build/bin/example-live-program kis 005930 --live # trade, through a journal
