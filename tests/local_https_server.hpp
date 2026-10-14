@@ -15,6 +15,7 @@
 #include <poll.h>
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <map>
@@ -23,6 +24,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace algotradelib::test {
 
@@ -160,7 +162,33 @@ public:
    */
   void script(std::string target, unsigned status, std::string body) {
     std::lock_guard<std::mutex> lock(mutex_);
-    scripts_[std::move(target)] = Scripted{status, std::move(body)};
+    scripted_counts_.erase(target);
+    scripts_[std::move(target)] = {Scripted{status, std::move(body), {}}};
+  }
+
+  /** One scripted reply: a status, a JSON body and response headers. */
+  struct Scripted {
+    unsigned status_;
+    std::string body_;
+    std::map<std::string, std::string> headers_;
+  };
+
+  /**
+   * Answers the requests for `target` (the path, without a query) with `replies` in order: each request
+   * takes the next reply, and the last one repeats. For a client behaviour that spans requests, such as
+   * continuation paging or a cache that asks again.
+   */
+  void scriptSequence(std::string target, std::vector<Scripted> replies) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    scripted_counts_.erase(target);
+    scripts_[std::move(target)] = std::move(replies);
+  }
+
+  /** How many requests a scripted `target` has answered since it was scripted. */
+  std::size_t scriptedCount(std::string_view target) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = scripted_counts_.find(std::string(target));
+    return found == scripted_counts_.end() ? 0 : found->second;
   }
 
   /** The body of the last request for `target`, or empty. */
@@ -188,14 +216,10 @@ private:
   std::atomic<bool> stopped_{false};
   std::atomic<std::size_t> connection_count_{0};
   std::atomic<long long> idle_timeout_ms_{0};
-  struct Scripted {
-    unsigned status_;
-    std::string body_;
-  };
-
   mutable std::mutex mutex_;
   std::map<std::string, std::size_t> request_counts_;
-  std::map<std::string, Scripted> scripts_;
+  std::map<std::string, std::vector<Scripted>> scripts_;
+  std::map<std::string, std::size_t> scripted_counts_;
   std::map<std::string, std::map<std::string, std::string>> last_headers_;
   std::map<std::string, std::string> last_bodies_;
   std::thread thread_;
@@ -269,6 +293,9 @@ private:
         http::response<http::string_body> reply(static_cast<http::status>(scripted->status_), request.version());
         reply.set(http::field::server, "algotradelib-test");
         reply.set(http::field::content_type, "application/json;charset=UTF-8");
+        for (const auto& [name, value] : scripted->headers_) {
+          reply.set(name, value);
+        }
         reply.keep_alive(request.keep_alive());
         reply.body() = scripted->body_;
         reply.prepare_payload();
@@ -321,16 +348,17 @@ private:
     const std::string path = target.substr(0, target.find('?'));
     std::lock_guard<std::mutex> lock(mutex_);
     const auto found = scripts_.find(path);
-    if (found == scripts_.end()) {
+    if (found == scripts_.end() || found->second.empty()) {
       return std::nullopt;
     }
+    const auto served = scripted_counts_[path]++;
     auto& headers = last_headers_[path];
     headers.clear();
     for (const auto& field : request) {
       headers[std::string(field.name_string())] = std::string(field.value());
     }
     last_bodies_[path] = request.body();
-    return found->second;
+    return found->second[std::min(served, found->second.size() - 1)];
   }
 
   std::size_t recordRequest(
