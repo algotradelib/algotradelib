@@ -261,7 +261,7 @@ a request:
 - `ctx.last_price(id)`, `ctx.now()`, `ctx.phase()`, `ctx.calendar()`.
 - `ctx.bars(id, interval)` — a contiguous trailing series, available when the library was built with
   a linear-algebra backend. Returns `nullptr` when nothing is cached.
-- `ctx.log().note(text)` — one plain line, kept in memory (the oldest dropped past 4,096); it never blocks.
+- `ctx.log().note(text)` — one plain line, kept in memory (the oldest dropped past 4,096); it performs no I/O.
 
 Writes are queued and drained by the runner after the handler returns, which is what keeps order
 safety in one place:
