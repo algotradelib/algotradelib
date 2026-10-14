@@ -92,8 +92,9 @@ public:
    *
    * @param order The order.
    * @return `ACCEPTED`, or `REFUSED_LOCALLY` for an order the replay cannot price from bars (see
-   *   `can_model`); a refused order reaches the strategy as a rejection, as a live binding's refusal
-   *   does.
+   *   `can_model`); a refused order is reported as a `BINDING_REFUSED` rejection
+   *   (`ReplayResult::rejected_`, the pass's `Report::rejected_`), as a live binding's refusal is; the
+   *   strategy is not told.
    */
   runner::SendOutcome place(const strategy::PlannedOrder& order) {
     if (!can_model(order)) {
@@ -1048,7 +1049,7 @@ private:
   // **It has to be a complete answer, because it overwrites one.**
   // `Runner::persist_reservation` writes an accepted order into the context portfolio and relies on
   // a wholesale replacement carrying what the reservation was standing in for
-  // (`runner/runner.hpp:628-634`). Live that replacement is a broker's listing. Here it is this
+  // (`Runner::persist_reservation`'s comment). Live that replacement is a broker's listing. Here it is this
   // function, and a partial answer is therefore not a smaller improvement -- it is a *loss*, because
   // the reservation it erased was carrying the part it left out.
   //
@@ -1204,7 +1205,7 @@ private:
   // commission are both outside this figure, so the real spend can exceed what was committed. An
   // order that can be valued by neither route is left uncommitted rather than guessed at.
   //
-  // **Scoped to the limit, exactly as `Runner::reserve` is** (`runner/runner.hpp:700-705`).
+  // **Scoped to the limit, exactly as `Runner::reserve` is.**
   // `buying_power_in()` is a public figure a strategy is free to size its next order from, so
   // lowering it for a caller who never enabled the check would change how their strategy sizes --
   // a behaviour change well past enforcing a ceiling, and the reason the runner passes `spends`

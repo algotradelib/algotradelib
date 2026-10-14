@@ -42,11 +42,17 @@ enum class MatchVerdict {
    * For a cancellation: the named order is not in the listing supplied.
    */
   NOT_PLACED,
-  /** @brief More than one row could correspond; the instrument stays withheld until an operator decides. */
+  /**
+   * @brief Several rows could correspond, a row that fits is another placement's, or a row that fits
+   *   cannot be confirmed; the instrument stays withheld until a later sweep or an operator decides.
+   */
   AMBIGUOUS,
   /** @brief No row yet, and the window is still open; wait for the next sweep. */
   UNDECIDED,
-  /** @brief The instruction came from a damaged journal line; only an operator may resolve it. */
+  /**
+   * @brief The instruction came from a damaged journal line, or its line cannot be matched
+   *   (`unresolvable_reason`); only an operator may resolve it.
+   */
   NEEDS_OPERATOR,
 };
 
@@ -105,7 +111,7 @@ struct OrderMatch {
   std::string entry_id_;
   /** @brief The broker's order id, on `MATCHED`. */
   std::string order_id_;
-  /** @brief How many rows could correspond (more than one on `AMBIGUOUS`). */
+  /** @brief How many rows could correspond (one or more on `AMBIGUOUS`). */
   std::size_t candidates_{0};
   /** @brief What was decided and why, for the operator. */
   std::string detail_;
@@ -242,7 +248,7 @@ inline Evidence trigger_evidence(
  * @brief Compares a row's order time with the window in which the instruction was sent.
  *
  * A row with no time is judged on its other attributes (`CONFIRMS` here), because every KIS
- * working-order row lacks a date. So an identical order placed through another channel, while this
+ * real-account working-order row lacks a date. So an identical order placed through another channel, while this
  * runner's own order is not listed, can be matched to it; when both are listed the result is
  * `AMBIGUOUS`. A row whose date the adapter assumed (`OrderSnapshot::ordered_date_assumed_`) may be
  * another day's order at the same time of day, so it establishes nothing (`ABSENT`), whether or not its
@@ -1049,8 +1055,9 @@ inline bool exact_copy(const OrderSnapshot& a, const OrderSnapshot& b) {
 
 /**
  * @brief Tests whether a dated history row is the order a listing row whose date was assumed shows: the
- *   same order id and instrument at the same time of day, and nothing either row states disagrees (side,
- *   quantity, price, type, time in force, session, trigger, venue).
+ *   same order id and instrument at the same time of day, nothing either row states disagrees (side,
+ *   quantity, type, time in force, session, trigger, venue), and the price is stated alike on both
+ *   (both absent, or equal).
  * @param assumed The listing row (`OrderSnapshot::ordered_date_assumed_`).
  * @param row The history row.
  * @return `true` if the history row dates the listed order.
@@ -1078,8 +1085,8 @@ inline bool dates_listed_order(const OrderSnapshot& assumed, const OrderSnapshot
 }
 
 /**
- * @brief Adds history rows to a working-order listing, dropping only established copies
- *   (`exact_copy`); for brokers whose history is read one date at a time (Kiwoom).
+ * @brief Adds history rows to a working-order listing, dropping established copies (`exact_copy`) and
+ *   listing rows a history row dates; for brokers whose history takes no range (Kiwoom, Toss).
  *
  * A listing row whose date was assumed (`OrderSnapshot::ordered_date_assumed_`) is dropped where a
  * history row dates the same order (`dates_listed_order`): the history row stands for it, on its own

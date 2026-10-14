@@ -1531,7 +1531,7 @@ private:
     //
     // Announcing the change is the opposite case: `on_phase` may place orders, and it should see this
     // iteration's polls rather than the previous one's -- fresh prices, a fresh portfolio, and a gate
-    // re-evaluated against them. That is what `backtest/engine.hpp:283-306` does for the replay, with
+    // re-evaluated against them. That is what the replay's step does (`backtest/engine.hpp`, "The price moves with the portfolio"), with
     // the same argument: a handler deciding on a mark from one moment beside a price from another is
     // not looking at a fresher picture, it is looking at an incoherent one.
     install_phase(iteration);
@@ -1640,7 +1640,7 @@ private:
       // would hand `on_phase` an instant hours old, and `RiskGuard` files a send at
       // `GuardInputs::now_` and counts sends within `rate_window_` of it -- the phase order and the
       // next bar's order would be filed at what the guard thinks are two unrelated moments, and two
-      // orders would pass a one-order window. `backtest/engine.hpp:296-302` documents the same hazard
+      // orders would pass a one-order window. The replay's step (`backtest/engine.hpp`) documents the same hazard
       // for the replay.
       //
       // Forwards only: a broker stamp ahead of this machine's clock must not be walked backwards,

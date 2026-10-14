@@ -156,7 +156,7 @@ the source reads. `runner::match_verdict_name` prints these:
 | `not_placed` | no row, and the window has closed | resolved: no order was found. A runner that overlaps orders forgets the placement; a serialized runner keeps it owed (below) |
 | `ambiguous` | more than one row could be it, a row that fits is one the journal records for another of your placements, or a row that fits lacks the evidence to be told from another order | **nothing is resolved**; the next sweep asks again, and you decide if it stays |
 | `undecided` | no row yet, window still open | wait for the next sweep |
-| `needs_operator` | the entry came from a damaged line | **only you can resolve it** |
+| `needs_operator` | the entry came from a damaged line, or its line cannot be matched (a cancellation with no order id, a placement whose price does not fit its type) | **only you can resolve it** |
 
 A resolution is written back to the journal **before** the ledger is cleared — the same discipline as
 writing before a send, applied to the other end. Without it the instruction would stay open on disk
@@ -248,7 +248,8 @@ reconcile it.
 **A row whose day nobody stated proves no day.** Kiwoom's working-order listing gives a time of day and
 no date; the adapter dates it today and says so (`OrderSnapshot::ordered_date_assumed_`), and the demo
 server has listed the previous day's order after midnight. Where the history a sweep reads has the
-order's own row (the same number at the same time of day, and nothing either row states disagrees), that
+order's own row (the same number at the same time of day, nothing either row states disagrees, and the
+price stated alike on both), that
 dated row stands for it, on its own evidence. Until then the listed row neither matches an order nor lets
 one be found absent (`ambiguous`), and the later search for an order still owed ignores it.
 

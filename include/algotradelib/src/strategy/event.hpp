@@ -251,8 +251,9 @@ struct QuoteEvent {
  * @brief One execution of an order the strategy placed, delivered to `on_fill`.
  *
  * Each execution is its own event, so a partial fill arrives as several; `quantity_` is this
- * execution's quantity, and the order's running total is in the portfolio. The order is named by
- * the broker's order id as a string; look it up in `ctx.portfolio()` to amend or cancel it.
+ * execution's quantity, and the order's running total is in the portfolio. `order_id_` names the
+ * order by the broker's id where the source states one; a replay's fills leave it empty, and live,
+ * `on_fill` does not fire (`Runner::on_fill_never_fires`). Look orders up in `ctx.portfolio()`.
  *
  * @warning A backtest delivers fills, but the shipped live loop never does: no broker inquiry
  *   produces a `Fill`. A strategy that reacts to fills in `on_fill` (for example, to set a stop)
