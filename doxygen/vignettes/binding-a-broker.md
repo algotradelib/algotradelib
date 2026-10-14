@@ -333,9 +333,9 @@ as `PROTOCOL` instead, so they are treated as unknown and the instrument is reco
 
 Some refusals are recognized as answers, each only from the server it was seen from. On the KIS and
 Kiwoom **demo** servers: a cash sell refused because nothing is held to sell (KIS `40240000`, Kiwoom
-`800033`), a cash order refused because the market has closed (KIS `40580000`, Kiwoom `RC4058`), and a
-cancellation refused because nothing is left to cancel (KIS `40330000`, Kiwoom `RC4033`), which is what a
-cancellation of an order that has just filled gets. On the **real** servers: a KIS cash order of a type the
+`800033`), a cash order refused because the market has not opened (KIS `40570000`, Kiwoom `RC4057`) or has
+closed (KIS `40580000`, Kiwoom `RC4058`), and a cancellation refused because nothing is left to cancel (KIS
+`40330000`, Kiwoom `RC4033`), which is what a cancellation of an order that has just filled gets. On the **real** servers: a KIS cash order of a type the
 after-market session does not accept (`APBK3061`), a Kiwoom cash order refused for want of a securities
 balance (`571445`, a sell of what is not held), and a Kiwoom cancellation with nothing left to cancel
 (`506550`). The reply must be an HTTP 200 that states the code and carries no new acknowledgement (the

@@ -3750,7 +3750,7 @@ TEST_CASE(
 }
 
 // The bodies below are constructed from KIS's documented reply envelope with the code and the message
-// the demo server sent (2026-10-12, 2026-10-13). No reply body was recorded.
+// the demo server sent (2026-10-12 to 2026-10-14). No reply body was recorded.
 namespace {
 
 using KisOperation = kis::KisClientTestAccess::Operation;
@@ -3758,6 +3758,7 @@ using KisOperation = kis::KisClientTestAccess::Operation;
 constexpr const char* KIS_NOTHING_TO_CANCEL = "모의투자 정정/취소할 수량이 없습니다.";
 constexpr const char* KIS_NOTHING_HELD = "모의투자 잔고내역이 없습니다.";
 constexpr const char* KIS_MARKET_CLOSED = "모의투자 장종료 입니다.";
+constexpr const char* KIS_MARKET_NOT_OPEN = "모의투자 장시작전 입니다.";
 
 /** A KIS failure envelope with the given code and message, and `extra` appended inside the object. */
 std::string kis_refusal_body(const std::string& code, const std::string& message, const std::string& extra = "") {
@@ -3819,6 +3820,42 @@ TEST_CASE("a KIS demo cash order refusal the client recognizes is a rejection", 
       std::string(KIS_MARKET_CLOSED) + " (recognized refusal: KIS demo, cash placement, 40580000)"
     );
     CHECK(runner::outcome_of(result.error()) == runner::SendOutcome::REJECTED);
+  }
+
+  SECTION("a placement before the market has opened") {
+    const auto result = kis::KisClientTestAccess::parse_order_ack(
+      json_response(kis_refusal_body("40570000", KIS_MARKET_NOT_OPEN)), KisOperation::PLACE, true
+    );
+    REQUIRE_FALSE(result);
+    CHECK(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+    CHECK(result.error().reached_broker_);
+    CHECK(result.error().http_status_ == 200);
+    CHECK(result.error().broker_code_ == "40570000");
+    CHECK(
+      result.error().message_ ==
+      std::string(KIS_MARKET_NOT_OPEN) + " (recognized refusal: KIS demo, cash placement, 40570000)"
+    );
+    CHECK(runner::outcome_of(result.error()) == runner::SendOutcome::REJECTED);
+
+    const auto unknown = [](const Result<kis::KisOrderAck>& reply) {
+      return !reply && reply.error().category_ == ErrorCategory::PROTOCOL;
+    };
+    const std::string body = kis_refusal_body("40570000", KIS_MARKET_NOT_OPEN);
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(body), KisOperation::PLACE, false)));
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(body), KisOperation::CANCEL, true)));
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(body), KisOperation::AMEND, true)));
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(body), KisOperation::UNCLASSIFIED, true)));
+    for (const char* code : {"40570001", "4057000", "405700000", " 40570000", "40570000 "}) {
+      CAPTURE(code);
+      CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(
+        json_response(kis_refusal_body(code, KIS_MARKET_NOT_OPEN)), KisOperation::PLACE, true
+      )));
+    }
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(
+      json_response(kis_refusal_body("40570000", KIS_MARKET_NOT_OPEN, R"(,"output":{"ODNO":"0001569157"})")),
+      KisOperation::PLACE,
+      true
+    )));
   }
 
   SECTION("an empty acknowledgement beside it, or the original order echoed, changes nothing") {

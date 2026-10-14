@@ -1236,7 +1236,8 @@ public:
    * again, since Kiwoom has no idempotency key.
    *
    * Some refusals are recognized as refusals, each from its own server only: the demo server's
-   * `800033` (not enough to sell) and `RC4058` (the market has closed), and the real server's `571445`
+   * `800033` (not enough to sell), `RC4057` (the market has not opened) and `RC4058` (the market has
+   * closed), and the real server's `571445`
    * (no securities balance), are `INVALID_ARGUMENT` with `reached_broker_` set, which
    * `runner::outcome_of` reads as `REJECTED` (`kiwoom_recognized_refusal`). A demo code from the real
    * server, or the real code from the demo server, stays `PROTOCOL`, as does every other refusal this
