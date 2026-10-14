@@ -1048,14 +1048,44 @@ inline bool exact_copy(const OrderSnapshot& a, const OrderSnapshot& b) {
 }
 
 /**
+ * @brief Tests whether a dated history row is the order a listing row whose date was assumed shows: the
+ *   same order id and instrument at the same time of day, and nothing either row states disagrees (side,
+ *   quantity, price, type, time in force, session, trigger, venue).
+ * @param assumed The listing row (`OrderSnapshot::ordered_date_assumed_`).
+ * @param row The history row.
+ * @return `true` if the history row dates the listed order.
+ */
+inline bool dates_listed_order(const OrderSnapshot& assumed, const OrderSnapshot& row) {
+  if (row.ordered_date_assumed_ || !row.ordered_at_ || !assumed.ordered_at_ || assumed.order_id_.empty() ||
+      row.order_id_ != assumed.order_id_ || !(row.instrument_ == assumed.instrument_)) {
+    return false;
+  }
+  // Both stamped from a date and the same `HHmmss` in one zone, so one order's two rows differ by whole days.
+  if ((*assumed.ordered_at_ - *row.ordered_at_) % std::chrono::hours(24) != std::chrono::hours(0)) {
+    return false;
+  }
+  // A number reused on another day can belong to a different order at the same time of day.
+  const bool venues_differ = row.venue_ != Venue::UNSPECIFIED && assumed.venue_ != Venue::UNSPECIFIED &&
+    row.venue_ != assumed.venue_;
+  return row.side_ == assumed.side_ &&
+    reconcile_detail::same_value(row.quantity_, assumed.quantity_) &&
+    reconcile_detail::same_value(row.price_, assumed.price_) &&
+    attribute_evidence(row.type_, assumed.type_) != Evidence::CONTRADICTS &&
+    attribute_evidence(row.time_in_force_, assumed.time_in_force_) != Evidence::CONTRADICTS &&
+    attribute_evidence(row.session_, assumed.session_) != Evidence::CONTRADICTS &&
+    trigger_evidence(row.trigger_price_, assumed.trigger_price_) != Evidence::CONTRADICTS &&
+    !venues_differ;
+}
+
+/**
  * @brief Adds history rows to a working-order listing, dropping only established copies
  *   (`exact_copy`); for brokers whose history is read one date at a time (Kiwoom).
  *
- * A listing row whose date was assumed (`OrderSnapshot::ordered_date_assumed_`) first takes the date of
- * a history row of the same order id and instrument at the same time of day, whose date is not
- * assumed and which describes the same order (side, quantity, price, and no disagreement on type or
- * trigger). An uncertain row is kept, at the cost of a possible `AMBIGUOUS`. An adapter should stamp
- * `ordered_at_` the same way on working and history rows of one order, or both are kept.
+ * A listing row whose date was assumed (`OrderSnapshot::ordered_date_assumed_`) is dropped where a
+ * history row dates the same order (`dates_listed_order`): the history row stands for it, on its own
+ * evidence, and nothing of the listing row is carried over. An uncertain row is kept, at the cost of a
+ * possible `AMBIGUOUS`. An adapter should stamp `ordered_at_` the same way on working and history rows
+ * of one order, or both are kept.
  *
  * @param into The listing, extended in place.
  * @param rows The history rows.
@@ -1064,39 +1094,22 @@ inline void merge_dated_history(
   std::vector<OrderSnapshot>& into,
   const std::vector<OrderSnapshot>& rows
 ) {
-  const auto listed = into.size();
-  for (std::size_t at = 0; at < listed; ++at) {
-    auto& assumed = into[at];
-    if (!assumed.ordered_date_assumed_ || !assumed.ordered_at_ || assumed.order_id_.empty()) {
-      continue;
-    }
-    for (const auto& row : rows) {
-      if (row.ordered_date_assumed_ || !row.ordered_at_ || row.order_id_ != assumed.order_id_ ||
-          !(row.instrument_ == assumed.instrument_)) {
-        continue;
-      }
-      // A number reused on another day can belong to a different order at the same time of day: the two
-      // rows must also describe the same order.
-      const bool same_order = row.side_ == assumed.side_ &&
-        reconcile_detail::same_value(row.quantity_, assumed.quantity_) &&
-        reconcile_detail::same_value(row.price_, assumed.price_) &&
-        attribute_evidence(row.type_, assumed.type_) != Evidence::CONTRADICTS &&
-        trigger_evidence(row.trigger_price_, assumed.trigger_price_) != Evidence::CONTRADICTS;
-      if (!same_order) {
-        continue;
-      }
-      // Both stamped from a date and the same `HHmmss` in one zone, so the same order differs by whole days.
-      if ((*assumed.ordered_at_ - *row.ordered_at_) % std::chrono::hours(24) == std::chrono::hours(0)) {
-        assumed.ordered_at_ = row.ordered_at_;
-        assumed.ordered_date_assumed_ = false;
-        break;
-      }
+  std::vector<OrderSnapshot> listing;
+  listing.reserve(into.size() + rows.size());
+  for (auto& listed : into) {
+    const bool dated_by_history = listed.ordered_date_assumed_ &&
+      std::any_of(rows.begin(), rows.end(), [&](const OrderSnapshot& row) { return dates_listed_order(listed, row); });
+    if (!dated_by_history) {
+      listing.push_back(std::move(listed));
     }
   }
+  into = std::move(listing);
+  const auto listed = into.size();
   for (const auto& row : rows) {
     bool known = false;
     for (std::size_t at = 0; at < listed; ++at) {
-      if (exact_copy(into[at], row)) {
+      // A listing row still assumed is no copy of anything: the dated row is the evidence, and both stay.
+      if (!into[at].ordered_date_assumed_ && exact_copy(into[at], row)) {
         known = true;
         break;
       }

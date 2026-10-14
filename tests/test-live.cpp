@@ -7467,6 +7467,26 @@ TEST_CASE("a listed row whose day the adapter assumed names no order", "[seriali
     }
   }
 
+  SECTION("the number at that time of day on an order of another time in force establishes nothing") {
+    // The send's day has S at that second, a market order good only immediately: not this order. The
+    // listed S, good for the day, is the next day's under a reused number, its date assumed.
+    auto immediate = market_row("S", when, "0", OrderStatus::PENDING);
+    immediate.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+    auto next_day = listing;
+    next_day.orders_.front().order_.ordered_at_ = when + std::chrono::hours(24);
+    SerialRig rig({serial_line("p-1", JournalOutcome::PENDING)});
+    SerialRig later(unfound_lines());
+    for (auto* each : {&rig, &later}) {
+      auto source = source_over(*each, page_of({immediate}));
+      each->session.set_working_orders(next_day);
+      each->runner_instance.set_observed_at(at_hour(1));
+      REQUIRE(source.read_order_list(each->runner_instance) == runner::PollOutcome::UPDATED);
+      CHECK(each->owed() == runner::ObligationState::UNNAMED);
+    }
+    CHECK(rig.lines(JournalOutcome::RESOLVED).empty());
+    CHECK(later.lines(JournalOutcome::RESOLVED).size() == 1);
+  }
+
   SECTION("the history dates it that day: the order is named") {
     SerialRig rig({serial_line("p-1", JournalOutcome::PENDING)});
     auto source = source_over(rig, page_of({market_row("S", when, "0", OrderStatus::PENDING)}));

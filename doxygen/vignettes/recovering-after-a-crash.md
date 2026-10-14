@@ -239,8 +239,9 @@ reconcile it.
 
 **A row whose day nobody stated proves no day.** Kiwoom's working-order listing gives a time of day and
 no date; the adapter dates it today and says so (`OrderSnapshot::ordered_date_assumed_`), and the demo
-server has listed the previous day's order after midnight. A sweep takes the day from the order's own
-history row when the history it reads has one; until then the row neither matches an order nor lets
+server has listed the previous day's order after midnight. Where the history a sweep reads has the
+order's own row (the same number at the same time of day, and nothing either row states disagrees), that
+dated row stands for it, on its own evidence. Until then the listed row neither matches an order nor lets
 one be found absent (`ambiguous`), and the later search for an order still owed ignores it.
 
 **A placement is matched against order history, not against the open-orders listing.** This is the

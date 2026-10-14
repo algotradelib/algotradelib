@@ -1366,13 +1366,13 @@ TEST_CASE("a working-order row's date is assumed until the day's history states 
     runner::merge_dated_history(rows, {row});
     return rows;
   };
-  SECTION("today's history row of the order: one row, dated") {
+  SECTION("today's history row of the order stands for it") {
     const auto rows = merged(history(today, "13:05:43"));
     REQUIRE(rows.size() == 1);
     CHECK_FALSE(rows.front().ordered_date_assumed_);
     CHECK(rows.front().time_in_force_ == TimeInForce::DAY);
   }
-  SECTION("an earlier day's row of the order at the same time: the listing row takes its date") {
+  SECTION("an earlier day's row of the order at the same time stands for it, with its own date") {
     const auto earlier = history(Date{2026, 3, 25}, "13:05:43");
     const auto rows = merged(earlier);
     REQUIRE(rows.size() == 1);
@@ -1397,6 +1397,36 @@ TEST_CASE("a working-order row's date is assumed until the day's history states 
     auto priced = history(Date{2026, 3, 25}, "13:05:43");
     priced.price_ = Decimal64::parse("70100");
     CHECK(merged(priced).front().ordered_date_assumed_);
+    auto immediate = history(Date{2026, 3, 25}, "13:05:43");
+    immediate.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+    CHECK(merged(immediate).size() == 2);
+    // The same second today, another time in force: both rows are kept, neither stands for the other.
+    auto immediate_today = history(today, "13:05:43");
+    immediate_today.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+    CHECK(merged(immediate_today).size() == 2);
+  }
+  SECTION("what the history row does not state is not taken from the listing row") {
+    // Kept on its own evidence: an unreadable type, or a missing trigger, still decides nothing.
+    runner::OpenInstruction placement;
+    placement.entry_.id_ = "p-1";
+    placement.entry_.action_ = runner::JournalAction::PLACE;
+    placement.entry_.instrument_ = listed.instrument_;
+    placement.entry_.side_ = OrderSide::BUY;
+    placement.entry_.type_ = OrderType::LIMIT;
+    placement.entry_.time_in_force_ = TimeInForce::DAY;
+    placement.entry_.session_ = OrderSession::REGULAR;
+    placement.entry_.venue_ = Venue::UNSPECIFIED;
+    placement.entry_.quantity_ = Decimal64::parse("10");
+    placement.entry_.price_ = Decimal64::parse("70000");
+    auto unread = history(Date{2026, 3, 25}, "13:05:43");
+    unread.type_ = OrderType::UNKNOWN;
+    unread.time_in_force_ = TimeInForce::UNKNOWN;
+    unread.session_ = OrderSession::UNKNOWN;
+    placement.entry_.recorded_at_ = *unread.ordered_at_;
+    placement.opened_at_ = placement.entry_.recorded_at_;
+    const auto later = *unread.ordered_at_ + std::chrono::hours(1);
+    REQUIRE(runner::match_against(placement, {unread}, later).verdict_ == runner::MatchVerdict::AMBIGUOUS);
+    CHECK(runner::match_against(placement, merged(unread), later).verdict_ == runner::MatchVerdict::AMBIGUOUS);
   }
 }
 
