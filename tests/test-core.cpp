@@ -4267,6 +4267,43 @@ TEST_CASE("a KIS real-server refusal is recognized under the same conditions as 
   }
 }
 
+TEST_CASE("a reply whose body is not a JSON object keeps its HTTP status", "[broker][order]") {
+  const auto unreadable = [](const auto& result, int status) {
+    return !result && result.error().category_ == ErrorCategory::PROTOCOL && result.error().reached_broker_ &&
+      result.error().broker_code_ == "invalid_json" && result.error().http_status_ == status &&
+      runner::outcome_of(result.error()) == runner::SendOutcome::INDETERMINATE;
+  };
+
+  SECTION("at Toss, which reads the body before the status") {
+    for (const int status : {200, 400, 404, 429, 500}) {
+      CAPTURE(status);
+      for (const char* body : {"", "<html>Bad Request</html>", "[]", "\"text\""}) {
+        CAPTURE(body);
+        CHECK(unreadable(tossinvest::TossClientTestAccess::parse_order_ack(json_response(body, status)), status));
+        CHECK(unreadable(tossinvest::TossClientTestAccess::parse_buying_power(json_response(body, status)), status));
+      }
+    }
+    // The message is the parser's, never the body.
+    const auto html = tossinvest::TossClientTestAccess::parse_order_ack(json_response("<html>secret</html>", 400));
+    REQUIRE_FALSE(html);
+    CHECK(html.error().message_.find("secret") == std::string::npos);
+  }
+
+  SECTION("at KIS, which reads the status first") {
+    for (const char* body : {"", "<html></html>", "[]"}) {
+      CAPTURE(body);
+      CHECK(unreadable(
+        kis::KisClientTestAccess::parse_order_ack(json_response(body), KisOperation::PLACE, false), 200
+      ));
+    }
+    // A non-2xx reply is still an HTTP error, whatever its body.
+    const auto server = kis::KisClientTestAccess::parse_order_ack(json_response("<html></html>", 500));
+    REQUIRE_FALSE(server);
+    CHECK(server.error().category_ == ErrorCategory::HTTP);
+    CHECK(server.error().http_status_ == 500);
+  }
+}
+
 TEST_CASE(
   "Toss candles normalize into ascending bars with its stamp convention",
   "[broker][tossinvest][bars]"

@@ -1530,7 +1530,7 @@ private:
       failure->category_ = ErrorCategory::AUTHENTICATION;
     } else {
       BrokerError parse_error;
-      auto document = broker_detail::parse_object(result.value().body(), parse_error);
+      auto document = broker_detail::parse_object(result.value(), parse_error);
       if (!document) {
         failure = std::move(parse_error);
       } else if (auto declared = kiwoom_declared_error(*document)) {
@@ -1584,7 +1584,7 @@ private:
       return Result<json::object>(broker_detail::http_error(response.value()));
     }
     BrokerError parse_error;
-    auto parsed = broker_detail::parse_object(response.value().body(), parse_error);
+    auto parsed = broker_detail::parse_object(response.value(), parse_error);
     if (!parsed) {
       return Result<json::object>(std::move(parse_error));
     }

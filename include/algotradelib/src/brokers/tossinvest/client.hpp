@@ -935,7 +935,7 @@ private:
       return std::move(result.error());
     }
     BrokerError parse_error;
-    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    auto document = broker_detail::parse_object(result.value(), parse_error);
     if (!document) {
       return parse_error;
     }
@@ -1047,7 +1047,7 @@ private:
       return Result<json::value>(std::move(response.error()));
     }
     BrokerError parse_error;
-    auto document = broker_detail::parse_object(response.value().body(), parse_error);
+    auto document = broker_detail::parse_object(response.value(), parse_error);
     if (!document) {
       return Result<json::value>(std::move(parse_error));
     }
@@ -1700,7 +1700,7 @@ private:
       return Result<DepthSnapshot>(std::move(result.error()));
     }
     BrokerError parse_error;
-    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    auto document = broker_detail::parse_object(result.value(), parse_error);
     if (!document) {
       return Result<DepthSnapshot>(std::move(parse_error));
     }
@@ -2046,7 +2046,7 @@ private:
       failure = std::move(result.error());
     } else {
       BrokerError parse_error;
-      auto document = broker_detail::parse_object(result.value().body(), parse_error);
+      auto document = broker_detail::parse_object(result.value(), parse_error);
       if (!document) {
         failure = std::move(parse_error);
       } else if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
@@ -2171,7 +2171,7 @@ private:
       return Result<QuoteSnapshot>(std::move(result.error()));
     }
     BrokerError parse_error;
-    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    auto document = broker_detail::parse_object(result.value(), parse_error);
     if (!document) {
       return Result<QuoteSnapshot>(std::move(parse_error));
     }
@@ -2219,7 +2219,7 @@ private:
       return Result<std::vector<TossAccount>>(std::move(result.error()));
     }
     BrokerError parse_error;
-    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    auto document = broker_detail::parse_object(result.value(), parse_error);
     if (!document) {
       return Result<std::vector<TossAccount>>(std::move(parse_error));
     }
@@ -2403,7 +2403,7 @@ private:
       return Result<json::value>(std::move(result.error()));
     }
     BrokerError parse_error;
-    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    auto document = broker_detail::parse_object(result.value(), parse_error);
     if (!document) {
       return Result<json::value>(std::move(parse_error));
     }
@@ -2435,7 +2435,7 @@ private:
       return Result<HoldingsSnapshot>(std::move(result.error()));
     }
     BrokerError parse_error;
-    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    auto document = broker_detail::parse_object(result.value(), parse_error);
     if (!document) {
       return Result<HoldingsSnapshot>(std::move(parse_error));
     }
@@ -3331,7 +3331,7 @@ private:
       return Result<OrderAck>(std::move(result.error()));
     }
     BrokerError parse_error;
-    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    auto document = broker_detail::parse_object(result.value(), parse_error);
     if (!document) {
       return Result<OrderAck>(std::move(parse_error));
     }
@@ -3368,7 +3368,7 @@ private:
       return Result<OrderPage>(std::move(result.error()));
     }
     BrokerError parse_error;
-    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    auto document = broker_detail::parse_object(result.value(), parse_error);
     if (!document) {
       return Result<OrderPage>(std::move(parse_error));
     }
@@ -3415,7 +3415,7 @@ private:
       return Result<OrderSnapshot>(std::move(result.error()));
     }
     BrokerError parse_error;
-    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    auto document = broker_detail::parse_object(result.value(), parse_error);
     if (!document) {
       return Result<OrderSnapshot>(std::move(parse_error));
     }
