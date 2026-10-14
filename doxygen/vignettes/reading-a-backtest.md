@@ -308,7 +308,11 @@ backtest::SlippageModel::of_basis_points(bps); // a fraction of the price
 Slippage always moves **against** the order — slippage that helped would not be slippage, and a model
 cutting both ways would be right on average and flattering in exactly the cases a strategy trades most.
 A tick means a tick *at that price level*, through the instrument's `PriceRule`, so it is 100 won at
-70,000 and 50 at 30,000; an unknown grid contributes nothing rather than a guessed step.
+70,000 and 50 at 30,000; an unknown grid contributes nothing rather than a guessed step. Several ticks
+walk the grid one step at a time: three ticks up from 4,990 are 4,995, 5,000 and 5,010, and three down
+from 5,010 are 5,000, 4,995 and 4,990, so from a price on the KRX grid a slipped price stays on it across
+a band boundary. A sell never steps to zero or below; the report's `slippage_ticks_` is the count you
+configured, and fewer apply where the grid has no further step.
 
 **Charging nothing is itself a model**, and the report says so. A zero-cost run should be your informed
 choice, not an oversight you cannot detect.

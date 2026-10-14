@@ -412,13 +412,15 @@ private:
 /**
  * @brief Slippage: how far a fill price moves against the order (a buy pays more, a sell gets less).
  *
- * `basis_points_` is a fraction of the price in ten-thousandths; `ticks_` adds whole grid steps at
- * the instrument's own tick size. Both apply when both are set.
+ * `basis_points_` is a fraction of the price in ten-thousandths; `ticks_` walks that many steps along
+ * the instrument's grid, one at a time, so a walk that crosses into another band takes that band's
+ * tick from there on. Both apply when both are set: the ticks are walked from the price before
+ * slippage, and the two amounts added.
  */
 struct SlippageModel {
   /** @brief The price given up per execution, in ten-thousandths of the price. */
   Decimal64 basis_points_{Decimal64::parse("0")};
-  /** @brief Whole ticks given up per execution, at the instrument's tick size. */
+  /** @brief Grid steps given up per execution, each a step to the next grid price against the order. */
   int ticks_{0};
 
   /**
@@ -426,7 +428,11 @@ struct SlippageModel {
    *
    * @param price The price before slippage.
    * @param side The order's side.
-   * @param rule The instrument's grid; with an unknown grid the tick part is not applied.
+   * @param rule The instrument's grid. A buy steps up by the tick at each price; a sell steps down by
+   *   the tick of the band below each price. From a price on the KRX grid each step reaches the next
+   *   grid price; from a price off the grid, or with a custom table whose band starts are not multiples
+   *   of both ticks, it may not (as with `PriceRule::round_to_tick`). A step the grid has no tick for (an
+   *   unknown grid, a sell at the first band's start) or that would end at or below zero is not taken.
    * @return The slipped price and the amount given up, or `std::nullopt` if the arithmetic does
    *   not fit.
    */
@@ -456,21 +462,43 @@ struct SlippageModel {
     }
 
     if (ticks_ > 0) {
-      const auto tick = rule.tick_at(price);
-      if (tick) {
-        const auto steps = decimal_multiply(*tick, Decimal64(static_cast<std::int64_t>(ticks_), 0));
-        if (!steps) {
+      // One step at a time, each with the tick where it starts: the first tick of a band is not the
+      // last tick of the band below.
+      const auto zero = Decimal64::parse("0");
+      auto walked = price;
+      for (int step = 0; step < ticks_; ++step) {
+        const auto tick = side == OrderSide::BUY ?
+          rule.tick_at(walked) :
+          tick_below(rule, walked);
+        if (!tick) {
+          // An unknown grid, or the bottom of a known one, contributes nothing rather than a guessed step.
+          break;
+        }
+        const auto next = side == OrderSide::BUY ?
+          decimal_add(walked, *tick) :
+          decimal_subtract(walked, *tick);
+        if (!next) {
           return std::nullopt;
         }
-        const auto shifted = side == OrderSide::BUY ?
-          decimal_add(moved, *steps) :
-          decimal_subtract(moved, *steps);
-        if (!shifted) {
-          return std::nullopt;
+        if (!decimal_less(zero, *next)) {
+          // No price at or below zero.
+          break;
         }
-        moved = *shifted;
+        walked = *next;
       }
-      // An unknown grid contributes nothing rather than a guessed step.
+      const auto steps = side == OrderSide::BUY ?
+        decimal_subtract(walked, price) :
+        decimal_subtract(price, walked);
+      if (!steps) {
+        return std::nullopt;
+      }
+      const auto shifted = side == OrderSide::BUY ?
+        decimal_add(moved, *steps) :
+        decimal_subtract(moved, *steps);
+      if (!shifted) {
+        return std::nullopt;
+      }
+      moved = *shifted;
     }
 
     const auto given_up = side == OrderSide::BUY ?
@@ -508,6 +536,20 @@ struct SlippageModel {
     SlippageModel model;
     model.ticks_ = count;
     return model;
+  }
+
+private:
+  // The tick of the band below a price: the step down to the next lower grid price, for a price on a
+  // grid like KRX's. None at or below the first band's start, or without bands.
+  static std::optional<Decimal64> tick_below(const PriceRule& rule, const Decimal64& price) {
+    std::optional<Decimal64> tick;
+    for (const auto& band : rule.bands_) {
+      if (!decimal_less(band.from_, price)) {
+        break;
+      }
+      tick = band.tick_;
+    }
+    return tick;
   }
 };
 

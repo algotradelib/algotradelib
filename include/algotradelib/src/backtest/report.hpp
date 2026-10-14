@@ -59,7 +59,7 @@ struct ReportCaveats {
   bool cost_totals_incomplete_{false};
   /** @brief The basis points of slippage applied. */
   Decimal64 slippage_basis_points_;
-  /** @brief The ticks of slippage applied. */
+  /** @brief The ticks of slippage configured; fewer apply where the grid has no further step. */
   int slippage_ticks_{0};
 
   /**
