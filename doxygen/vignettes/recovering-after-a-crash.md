@@ -232,7 +232,10 @@ the first order's row inside the second's window. The sweep does not name the lo
 number: the row is the other placement's by its accepted line (or by an earlier sweep's name), so the
 verdict is `ambiguous`, never `matched` and never `not_placed`, and a serialized run stops for the
 order at the owed-order limit. A number counts as the other placement's only on a row inside that
-placement's own send window, since some brokers reuse order numbers on another day.
+placement's own send window, since some brokers reuse order numbers on another day. A row with no time
+(every KIS real-account working order) cannot be placed outside that window, so where a number is
+reused, an older placement of the same shape that recorded it makes such a row `ambiguous`: you
+reconcile it.
 
 **A placement is matched against order history, not against the open-orders listing.** This is the
 subtlest thing in the whole design. Both brokers' working-order inquiry returns only what is still
