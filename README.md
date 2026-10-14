@@ -81,7 +81,8 @@ struct MyStrategy {
 
 [`examples/example-backtest-compare.cpp`](examples/example-backtest-compare.cpp) replays a strategy against history, offline.
 To run one live, copy [`examples/example-live-program.cpp`](examples/example-live-program.cpp)
-and [`examples/live_program.hpp`](examples/live_program.hpp) and replace the strategy with yours:
+and [`examples/live_program.hpp`](examples/live_program.hpp) and replace the strategy with yours.
+The examples build in a checkout of this repository:
 
 ```sh
 cmake -S . -B build -DATL_BUILD_EXAMPLES=ON

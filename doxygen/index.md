@@ -34,7 +34,7 @@ underneath it, and what that compile-time claim does and does not cover.
 | Dependency | Floor | Needed for |
 | --- | --- | --- |
 | A C++17 compiler | — | everything |
-| CMake | 3.10 for the library, **3.16** for the consumer example below, 3.14 for the tests | everything |
+| CMake | 3.10 for the library, **3.16** for the consumer example below, 3.19 for the tests | everything |
 | Boost | 1.87, component `json` | everything (see below for where to get it) |
 | OpenSSL | 3.0 | everything (see below) |
 | Eigen | 3.4 | the analytics layer, on by default |
@@ -45,9 +45,9 @@ Three of those floors are worth a sentence each.
 project on an old CMake can consume it. The consumer `CMakeLists.txt` shown below asks for 3.16,
 which is simply a saner floor to start a new project on. Lower it to 3.10 in your own project if you
 need to; nothing here requires the newer version. Building this
-repository's tests needs 3.14, and downloads Catch2 if it is not installed. The commands on this page
-use `cmake -S . -B build`, which needs 3.13, and `ctest --test-dir`, which needs 3.20; on an older
-CMake, configure from inside the build directory and run `ctest` there.
+repository's tests needs 3.19, for Catch2's test discovery, and downloads Catch2 if it is not installed.
+The commands on this page use `cmake -S . -B build`, which needs 3.13, and `ctest --test-dir`, which needs
+3.20; on an older CMake, configure from inside the build directory and run `ctest` there.
 
 **OpenSSL's floor is an API minimum, not a recommendation.** The headers call OpenSSL directly only
 to set the TLS server name, which OpenSSL has offered since long before 3.0; everything else goes
@@ -60,7 +60,8 @@ Homebrew's `openssl@3` is keg-only: if CMake does not find it, pass
 
 **Boost 1.87 is newer than many Linux distributions ship** (Ubuntu 24.04 has 1.83). Homebrew has it; elsewhere,
 build Boost from source, or configure this repository with `-DATL_FETCH_DEPS=ON` (CMake 3.24), which downloads
-and builds Boost 1.87, Eigen and Catch2 inside the build tree and installs nothing. OpenSSL is never fetched.
+Boost 1.87 into the build tree, with Eigen when the analytics layer is on and Catch2 when the tests are, and
+installs nothing. OpenSSL is never fetched.
 
 **Boost and OpenSSL are required even for a backtest that touches no network.** The library exports
 one interface target for every consumer, so an offline program still links `libssl`, `libcrypto` and
@@ -133,7 +134,7 @@ any release.
 | `ATL_BUILD_EXAMPLES` | `OFF` | the `example-*` programs in `examples/` |
 | `ATL_BUILD_TESTS` | `OFF` | the Catch2 suite in `tests/` |
 | `ATL_ENABLE_COVERAGE` | `OFF` | coverage instrumentation for that suite (Clang or GCC) |
-| `ATL_FETCH_DEPS` | `OFF` | download and build Boost, Eigen and Catch2 instead of finding them (CMake 3.24; the CI uses it) |
+| `ATL_FETCH_DEPS` | `OFF` | download Boost, and Eigen and Catch2 when they are needed, instead of finding them; installs nothing (CMake 3.24; the CI uses it) |
 
 `ATL_USE_EIGEN=OFF` does not make analytics slower — it removes them.
 `<algotradelib/analytics>` becomes a deliberate `#error` naming the option to set,
@@ -269,8 +270,8 @@ The buying-power guard is left off, its default. **On Kiwoom it places nothing a
 `recover_runner` returns, and the five verdicts a sweep of the broker's lists gives.
 
 Bars reach a replay either from a broker (`example-backtest-broker` fetches real history through KIS,
-with real-account keys since a KIS demo host refuses the reference data it reads first, or through
-Toss) or from `Bar` values you construct yourself. This library reads no files on purpose: parsing
+with real-account keys and `KIS_DEMO=0` since a KIS demo host refuses the reference data it reads
+first, or through Toss) or from `Bar` values you construct yourself. This library reads no files on purpose: parsing
 somebody's CSV is not a thing it can do honestly for everyone, and it belongs in your project where
 its assumptions are yours.
 
