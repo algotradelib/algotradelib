@@ -1586,6 +1586,15 @@ TEST_CASE("a Kiwoom real-server refusal is recognized under the same conditions 
     }
   }
 
+  SECTION("a reply that is not an order reply never states an operation") {
+    for (const std::string& body : {cancel, place}) {
+      const auto deposit = Access::deposit(ok_body(body));
+      REQUIRE_FALSE(deposit);
+      CHECK(deposit.error().category_ == ErrorCategory::PROTOCOL);
+      CHECK(deposit.error().broker_code_ == "20");
+    }
+  }
+
   SECTION("an HTTP error with the same body keeps its own reading") {
     for (const int status : {400, 500}) {
       const auto result = Access::order_ack(body_with_status(cancel, status), KiwoomOrderOperation::CANCEL, false);

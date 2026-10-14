@@ -1239,7 +1239,8 @@ public:
    * `800033` (not enough to sell) and `RC4058` (the market has closed), and the real server's `571445`
    * (no securities balance), are `INVALID_ARGUMENT` with `reached_broker_` set, which
    * `runner::outcome_of` reads as `REJECTED` (`kiwoom_recognized_refusal`). A demo code from the real
-   * server, or the real code from the demo server, stays `PROTOCOL`, as does every other refusal.
+   * server, or the real code from the demo server, stays `PROTOCOL`, as does every other refusal this
+   * client does not classify further (its documented error codes keep their categories).
    *
    * Refused before sending, among others: an instrument that is not Korean or whose `venue_` is not
    * `COMBINED` (route with `OrderRequest::venue_`); no venue on the order; a client order id; a

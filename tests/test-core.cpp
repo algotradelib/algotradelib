@@ -4213,6 +4213,18 @@ TEST_CASE("a KIS real-server refusal is recognized under the same conditions as 
   }
 
   SECTION("a status, code or message of another value or type") {
+    // A success status, or one that is not a string, is not a reply the refusal rule reads.
+    for (const char* body : {
+           R"({"rt_cd":"0","msg_cd":"APBK3061","msg1":"m"})",
+           R"({"rt_cd":1,"msg_cd":"APBK3061","msg1":"m"})",
+           R"({"msg_cd":"APBK3061","msg1":"m"})",
+         }) {
+      CAPTURE(body);
+      const auto result = kis::KisClientTestAccess::parse_order_ack(json_response(body), KisOperation::PLACE, false);
+      REQUIRE_FALSE(result);
+      CHECK(result.error().category_ == ErrorCategory::PROTOCOL);
+      CHECK(result.error().broker_code_ == "invalid_order_response");
+    }
     for (const char* body : {
            R"({"rt_cd":"7","msg_cd":"APBK3061","msg1":"m"})",
            R"({"rt_cd":" 1","msg_cd":"APBK3061","msg1":"m"})",

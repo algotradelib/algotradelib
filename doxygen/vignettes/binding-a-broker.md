@@ -342,8 +342,9 @@ balance (`571445`, a sell of what is not held), and a Kiwoom cancellation with n
 original order's number, echoed, is not one); it is then `INVALID_ARGUMENT` with `reached_broker_` set, and
 its message ends by naming the rule: `recognized refusal: KIS demo, cash cancellation, 40330000)` or
 `recognized refusal: Kiwoom real, cash placement, 571445)`, for example. A demo code from a real server, or
-a real code from a demo server, is not recognized, and every other refusal is still an unknown outcome
-(Toss, for one, answered a second cancellation of a cancelled order with a reply that is not JSON,
+a real code from a demo server, is not recognized, and every other refusal the clients do not classify
+further (a rate limit, an authentication failure, a documented invalid argument) is still an unknown
+outcome (Toss, for one, answered a second cancellation of a cancelled order with a reply that is not JSON,
 `invalid_json`). A refused cancellation says that the cancellation did nothing,
 not what became of the order.
 

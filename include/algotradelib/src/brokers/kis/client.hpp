@@ -603,7 +603,8 @@ public:
    * `APBK3061` (during the after-market session, only after-market order types are accepted). In an
    * HTTP 200 reply that carries no acknowledgement, each is `INVALID_ARGUMENT` with `reached_broker_`
    * set, which `runner::outcome_of` reads as `REJECTED`. A demo code from the real server, or the
-   * real code from the demo server, stays `PROTOCOL`, as does every other refusal.
+   * real code from the demo server, stays `PROTOCOL`, as does every other refusal this client does not
+   * classify further (a rate-limit code is `RATE_LIMIT`, as above).
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account The account.
@@ -682,8 +683,9 @@ public:
    * One refusal is recognized as one, on a demo account only: the demo server's `40330000` (nothing
    * left to amend or cancel), in an HTTP 200 reply that carries no new acknowledgement, is
    * `INVALID_ARGUMENT` with `reached_broker_` set. It says the cancellation did nothing, not what
-   * became of the order: it may have filled. The same reply from the real server, and every real
-   * server's refusal of a cancellation, stays `PROTOCOL`.
+   * became of the order: it may have filled. The same reply from the real server stays `PROTOCOL`, as
+   * does every other refusal of a cancellation this client does not classify further (a rate-limit
+   * code is `RATE_LIMIT`).
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account The account.
