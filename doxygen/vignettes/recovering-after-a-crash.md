@@ -76,12 +76,13 @@ intended interface:
 
 ```
 $ tail -2 /var/lib/mybot/orders.jsonl
-{"id":"run-a-7","action":"place","outcome":"pending","country":"KR","venue":"COMBINED","symbol":"005930","side":"BUY","type":"LIMIT","quantity":"10","price":"70000","at":1774832400000000,"at_text":"2026-03-30T01:00:00Z","crc":"f9ee1cbf"}
+{"id":"run-a-7","action":"place","outcome":"pending","country":"KR","venue":"COMBINED","symbol":"005930","side":"BUY","type":"LIMIT","time_in_force":"DAY","session":"REGULAR","quantity":"10","price":"70000","at":1774832400000000,"at_text":"2026-03-30T01:00:00Z","crc":"…"}
 {"id":"run-a-7","action":"place","outcome":"accepted","country":"KR",...,"order_id":"KRX-4412","crc":"…"}
 ```
 
-Two lines per instruction, never an edit of one. The first is written **before** the send is
-attempted; the second says what happened. A `pending` line with no companion is the signal.
+At least two lines per instruction, never an edit of one. The first is written **before** the send is
+attempted; the second says what happened, and a serialized runner (the default with a journal) adds a
+third when the placement is accounted for. A `pending` line with no companion is the signal.
 
 `at` is the record and `at_text` is the caption: the integer is exact on every platform and is what
 matching reads, the text is for you.
@@ -117,6 +118,8 @@ saying so) and holdings must show its final fills, as for rotation under "What t
 | `pending` then `accepted` | the order exists, and `order_id` names it |
 | `pending` then `rejected` | the instruction was refused — by the broker, by the binding or client before it sent, or by local machinery that failed. The order does not exist. Nothing owed |
 | `pending` then `indeterminate` | the outcome is unknown (a failure in transit, an unreadable reply, an HTTP 5xx, or a broker refusal reported as `PROTOCOL`, which is most of them; [Binding a broker](binding-a-broker.md) names the refusals that are `rejected` instead). Still owed |
+| a later `confirmed` | a serialized runner accounted for the placement: holdings showed its fill, or its history showed it ended with nothing filled, or an operator released it. The instrument is free again |
+| a later `held` | evidence contradicted the placement (holdings moved past what it can explain); only an operator can account for it, with `Runner::release_obligations` |
 | `pending` then `resolved` | a sweep read the broker's lists and closed the question. `order_id` says what it saw: a number, or nothing found. A second `resolved` line for the same id, with a number, is a later sweep finding the order |
 | `pending` alone, at the end of the file | the process died between the write and the answer |
 | a last line with no newline | the process died *during* the write |
@@ -162,8 +165,9 @@ write-back fails, the hold deliberately stands and the runner halts.
 
 The record's outcome is `resolved`, not `accepted` or `rejected`. Those are answers the *broker*
 gave to the instruction; a sweep learns something different — what the listing shows now. On a
-cancellation they can be opposites: a matched row means the target order is **still resting**, so
-`accepted` would claim a withdrawal that plainly has not happened. What was observed is in
+cancellation they can be opposites: a matched row means the target order was in the lists read, and
+**still resting** when no history was read with them, so `accepted` would claim a withdrawal that may
+plainly not have happened. What was observed is in
 `order_id` (set when a row was found, empty when none was) and spelled out in `detail`.
 
 **`not_placed` is a finding, not the broker's word.** It says that no row of the lists read matched
@@ -218,16 +222,17 @@ instrument again once it is past the confirmation timeout from its send, at the 
 ## What matching can and cannot do
 
 **It cannot manufacture idempotency.** A journal narrows the window and makes ambiguity
-machine-visible. Only a broker can promise that a duplicate is discarded, and neither supported broker
-offers that on a recovery path:
+machine-visible. Only a broker can promise that a duplicate is discarded, and none of the three supported
+brokers offers that on a recovery path:
 
 - Toss accepts a `clientOrderId` on the order POST and echoes it on the *acknowledgement* — but its
   order **listing** rows carry no such field. The key is an idempotency guarantee on the write path,
   not a handle you can find an order by afterwards.
 - KIS has no equivalent outside `gt_uid`, documented corporate-only (`[법인 전용]`).
+- Kiwoom documents no caller-supplied order identifier; an order carrying one is refused before sending.
 
 So placements are matched on attributes — instrument, side, type, quantity, price, and a timestamp
-inside the window — on both brokers. That is a heuristic, and `ambiguous` is how it tells you so.
+inside the window — at every broker. That is a heuristic, and `ambiguous` is how it tells you so.
 
 **A row the journal already gives to another placement is not this one's.** Two orders of the same
 shape sent within the window — the first accepted with its number, the second's request lost — leave
@@ -248,13 +253,15 @@ dated row stands for it, on its own evidence. Until then the listed row neither 
 one be found absent (`ambiguous`), and the later search for an order still owed ignores it.
 
 **A placement is matched against order history, not against the open-orders listing.** This is the
-subtlest thing in the whole design. Both brokers' working-order inquiry returns only what is still
-*resting*: Toss maps it to its `OPEN` scope, KIS to the modifiable set. A market or aggressive limit
+subtlest thing in the whole design. Each broker's working-order inquiry returns only what is still
+*resting*: Toss maps it to its `OPEN` scope, KIS to the modifiable set, Kiwoom to its unfilled-order
+list (`ka10075`). A market or aggressive limit
 order can fill and leave that listing within seconds — well before the first sweep — so matching
 against open orders alone would find nothing, and once the window closed that absence would read as
 `not_placed`. The hold would clear for an order that existed and executed, and the runner would place
 it again. So any sweep with a placement owed reads the history too, with the calendar range KIS
-requires and the cursor paging Toss offers, and deduplicates by order id because a still-open order
+requires, the cursor paging Toss offers and one date at a time for Kiwoom, which refuses a range, and
+deduplicates by order id because a still-open order
 appears in both listings.
 
 History is read **only when something is owed**, so an ordinary sweep costs no request of its own.
@@ -262,11 +269,12 @@ And a history read that fails concludes nothing at all: absence from a listing t
 not evidence, so every instruction stays owed.
 
 **A cancellation needs no history.** It names an order id, and whether that order is still resting is
-exactly what the open listing answers.
+exactly what the open listing answers (a sweep that also owes a placement reads history too, and then a
+matched row says only that the order was listed).
 
 **Cancellations are matched by identity**, because a cancellation names an order that already exists,
-so its journal line carries the broker's own `order_id` from the moment it is written. `ambiguous` is
-unreachable there.
+so its journal line carries the broker's own `order_id` from the moment it is written. `ambiguous` comes
+only from two rows carrying that id (an order number a broker reused on another day).
 
 **Two identical orders in the same second are already prevented**, which is why second-granularity
 timestamps (KIS reports `ord_tmd` as `HHMMSS`) are not the problem they look like. Once an instrument

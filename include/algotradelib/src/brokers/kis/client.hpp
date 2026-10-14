@@ -4409,7 +4409,7 @@ private:
   // The two KIS limit layers call for different corrections. A ledger refusal is
   // a cap shared with every other customer, so the budget was not the problem and
   // only a wait helps. A personal refusal means this key's own allowance was
-  // exceeded, and KIS reports no number to correct to, so the rate is halved.
+  // exceeded, but KIS reports no number to correct to; so both only hold admission.
   void note_rate_limit(const BrokerError& error) {
     if (error.category_ != ErrorCategory::RATE_LIMIT) {
       return;

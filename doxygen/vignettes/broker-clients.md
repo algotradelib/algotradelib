@@ -169,12 +169,13 @@ Read these before using the order clients.
   after-hours auction, after-market, GTP). A broker names an order with a single
   code and that code is a product of the three: KIS's `ORD_DVSN` `16` is a
   best-limit order, filled-or-killed, in the regular session. Splitting them is
-  what lets a caller ask "is this a best-limit order" without enumerating six
+  what lets a caller ask "is this a best-limit order" without enumerating seven
   spellings, and what lets the two brokers report a session in one field when
   KIS spells it inside `ORD_DVSN` and Toss spells it on `timeInForce`.
 - **A shape is offered per venue, not per broker.** KRX, NXT and SOR each
-  publish their own set of `ORD_DVSN` codes, and they differ: a market order is
-  available at KRX and through SOR and is **not** available at NXT. The library
+  publish their own set of `ORD_DVSN` codes, and they differ: a plain (day) market
+  order (`01`) is listed at KRX and SOR but **not** at NXT, while a market order that
+  is immediate-or-cancel or fill-or-kill (`13`, `14`) is listed at all three. The library
   holds the workbook's table and refuses a combination the requested venue does
   not list, so the refusal arrives before the POST rather than after it — which
   matters because an order POST is never replayed.

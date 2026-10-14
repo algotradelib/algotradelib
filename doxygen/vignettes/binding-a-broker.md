@@ -94,7 +94,7 @@ the broker accepted the request:
 | `unresolved_cancel_` | it named an order the snapshot does not hold |
 
 **None of these — `would_cancel_` included — tells you whether the order is still working.**
-Cancellation is asynchronous at both brokers: Toss publishes `PENDING_CANCEL` while the request is in
+Cancellation is asynchronous: Toss, for one, publishes `PENDING_CANCEL` while the request is in
 flight and `CANCEL_REJECTED` when it fails, which returns the order to its previous state. So an
 accepted withdrawal can still be resting, and a refused one may have filled a moment earlier — a fill
 is an ordinary reason to refuse a withdrawal. These buckets say what happened to the *instruction*.
@@ -169,7 +169,7 @@ when an order is *sent*, not when it is checked.
 strategy::TradeTolerance tolerance;
 tolerance.minimum_notional_ = algotradelib::Decimal64::parse("100000");
 tolerance.minimum_fraction_of_working_ = algotradelib::Decimal64::parse("0.02");
-runner.set_trade_tolerance(tolerance);
+dry.set_trade_tolerance(tolerance);
 ```
 
 An execution-cost policy, so it lives with the runner rather than in a strategy: a strategy states the
@@ -386,12 +386,14 @@ Three things "stop" can mean, which are worth keeping apart because each leaves 
 *quiesce* (no new orders, positions held, working orders still resting — this is what `halt()` does),
 *withdraw* (quiesce, then cancel the working orders), and *flatten* (withdraw, then close the
 positions). Flattening is a strategy's decision — `vanilla::TimedLiquidation` makes it on a session
-boundary — or an operator's through the broker's own tools.
+boundary — or an operator's: `flatten` through the loop's control file (`runner::StopIntent::FLATTEN`),
+or the broker's own tools.
 
 **It does not withdraw anything.** An order the broker already accepted stays live on the exchange,
 which knows nothing about a process that died. Killing a program is not a kill switch in the
 exchange's sense, and `halt()` is not a flatten. Flattening is a decision — `vanilla::TimedLiquidation`
-makes it on a session boundary, or an operator makes it through the broker's own tools.
+makes it on a session boundary, or an operator makes it, with `flatten` in the loop's control file or
+through the broker's own tools.
 
 **And the reconciliation obligation is lost with it.** `IndeterminacyLedger` lives in memory. Two
 things follow:
@@ -436,10 +438,10 @@ the *send step* an executor that has no session:
 
 ```cpp
 // Trading: instructions go to the broker.
-drive<Caps, Tag>(instrument, state, live::SessionExecutor<Session>(session));
+drive<Tag>(instrument, state, open_orders, live::bind(session, strategy, limits));
 
 // Observing: identical pipeline, identical data, and nothing for an order to go through.
-drive<Caps, Tag>(instrument, state, runner::RecordingExecutor<Tag>{});
+drive<Tag>(instrument, state, open_orders, live::bind_observer(session, strategy, limits));
 ```
 
 Both paths run the same `Runner` over the same real bars. The difference is where the send goes, which

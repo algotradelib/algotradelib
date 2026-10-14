@@ -10,16 +10,18 @@ parameter.
 using namespace algotradelib;
 
 template <typename Client>
-void report(BlockingSession<Client>& session) {
+void report(BlockingSession<Client>& session, const OrderRequest& order) {
   auto holdings = session.holdings();          // no account argument
   auto working = session.working_orders();     // normalized WorkingOrders
-  auto placed = session.place(order);          // Result<PlacedOrder<Broker>>
+  auto placed = session.place(order);          // Result<typename BlockingSession<Client>::Placed>
   session.cancel(placed.value().ref_, cancel_all(working.value().orders_.front()));
 }
 
-auto client = std::make_shared<kis::KisBlockingClient>(tls, std::move(config));
-BlockingSession<kis::KisBlockingClient> session(std::move(client), account);
-report(session);
+void run(ssl::context& tls, kis::KisConfig config, kis::KisAccount account, const OrderRequest& order) {
+  auto client = std::make_shared<kis::KisBlockingClient>(tls, std::move(config));
+  BlockingSession<kis::KisBlockingClient> session(std::move(client), account);
+  report(session, order);
+}
 ```
 
 `BrokerSession<Client>` is the asynchronous form and takes a completion token on
