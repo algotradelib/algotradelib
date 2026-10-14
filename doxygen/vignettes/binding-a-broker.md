@@ -340,8 +340,9 @@ acknowledgement (the original order's number, echoed, is not one); it is then `I
 `reached_broker_` set, and its message ends by naming the rule: `recognized refusal: KIS demo, cash
 cancellation, 40330000)`, for example. A real server's refusal is not recognized: the real servers answer
 with other codes (seen once: KIS `APBK3061` for a regular order during the after-market, Kiwoom `506550` for a
-cancellation with nothing left to cancel and `571445` for a sell with nothing to sell), so on a real account it
-is still an unknown outcome. A refused cancellation says that the
+cancellation with nothing left to cancel and `571445` for a sell with nothing to sell; Toss answered a second
+cancellation of a cancelled order with a reply that is not JSON, `invalid_json`), so on a real account it is still
+an unknown outcome. A refused cancellation says that the
 cancellation did nothing, not what became of the order.
 
 When the outcome is unknown, the runner marks the instrument and **withholds everything further for
