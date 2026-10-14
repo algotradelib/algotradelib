@@ -850,7 +850,8 @@ private:
 };
 
 /**
- * @brief A blocking broker client bound to one account, with the same operations as `BrokerSession`.
+ * @brief A blocking broker client bound to one account, with the same broker operations as
+ *   `BrokerSession`, plus `accounts()`.
  *
  * Every operation returns `Result<T>`. An operation the broker does not offer does not compile.
  *

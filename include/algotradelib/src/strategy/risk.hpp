@@ -240,7 +240,8 @@ struct GuardRejection {
  * @brief The limits the operator sets for `RiskGuard`.
  *
  * Every limit is optional and absent means unlimited, except `permitted_phases_`, which by
- * default permits opening positions only while the market is `OPEN`. Holds (halts) are not limits;
+ * default permits opening positions only while the market is `OPEN`, and
+ * `enforce_sellable_quantity_`, which is on by default. Holds (halts) are not limits;
  * they are taken on the guard itself.
  */
 struct RiskLimits {

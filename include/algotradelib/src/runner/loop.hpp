@@ -115,7 +115,7 @@ static_assert(
  * refusal (`RATE_LIMITED`) do not.
  */
 enum class PollOutcome {
-  /** @brief New data arrived and was fed to the runner. */
+  /** @brief New data arrived and was fed to the runner, or installed in it (a calendar, price bands). */
   UPDATED,
   /** @brief The poll succeeded and there was nothing new. */
   UNCHANGED,
@@ -528,7 +528,7 @@ struct IterationReport {
    * (`strategy::halt_blocks`).
    */
   std::optional<strategy::HaltReason> gate_;
-  /** @brief Whether anything was fed to the runner. */
+  /** @brief Whether any poll returned `UPDATED`: something was fed to the runner or installed in it. */
   bool fed_{false};
   /**
    * @brief The market phase the loop computed.
@@ -929,10 +929,10 @@ private:
  * @brief Runs a runner for a live session: polls a source on a schedule, gates placements, derives
  *   the market phase, and honours stop requests.
  *
- * Each iteration: check for a stop (a `StopSource` or the control file); make sure the broker's
- * order list has been read once (until it has, placements are held); derive and install the market
- * phase from the `SessionWindow` and the polled calendar; poll whatever is due, in `all_poll_kinds`
- * order; announce a phase change; retry retained targets.
+ * Each iteration: check for a stop (a `StopSource` or the control file); derive and install the
+ * market phase from the `SessionWindow` and the polled calendar; make sure the broker's order list
+ * has been read once (until it has, placements are held); poll whatever is due, in `all_poll_kinds`
+ * order, deriving the phase again before each poll; announce a phase change; retry retained targets.
  *
  * Placements are held through holds on the runner's `strategy::RiskGuard`: `ORDER_LIST_UNREAD`,
  * `PORTFOLIO_ABSENT`, `PORTFOLIO_STALE`, `BUYING_POWER_UNREAD` and `POLL_FAILING` are data holds,

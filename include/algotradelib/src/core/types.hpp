@@ -685,7 +685,7 @@ enum class ErrorCategory {
   /**
    * @brief The reply could not be read, or the broker declared a failure this client does not
    *   classify further: at KIS an unrecognized reply with `rt_cd` not `0` (such as insufficient balance), at Toss
-   *   any refusal but a rate limit, at Kiwoom a `return_code` outside its documented error list. For
+   *   any refusal but a rate limit or a refused token (`AUTHENTICATION`), at Kiwoom a `return_code` outside its documented error list. For
    *   an order it means the outcome is unknown.
    */
   PROTOCOL,
@@ -1036,7 +1036,7 @@ enum class SellableSource {
   HOLDINGS,
   /** @brief From a per-instrument inquiry, made only where the snapshot has no figure. */
   INQUIRY,
-  /** @brief Not available for this broker. */
+  /** @brief No per-instrument inquiry: any figure comes on the holdings rows (Kiwoom), or there is none. */
   NONE,
 };
 
@@ -1731,8 +1731,8 @@ struct OrderRequest {
    *
    * Set routing here, not in `instrument_.venue_` (an adapter refuses an identity venue other than
    * the one it reports). `UNSPECIFIED` takes the broker's default:
-   * - KIS routes `UNSPECIFIED` to KRX; `COMBINED` is sent as `SOR`, which a KIS **demo** account
-   *   refuses;
+   * - KIS routes `UNSPECIFIED` to KRX; `COMBINED` is sent as `SOR` on a real account, and on a
+   *   **demo** account `COMBINED` and `NXT` are refused before any request (`venue_unavailable`);
    * - Kiwoom requires a venue and refuses `UNSPECIFIED` before any request;
    * - Toss offers no choice and refuses any venue but `UNSPECIFIED`.
    *
@@ -1777,13 +1777,14 @@ struct OrderExecution {
   /**
    * @brief The average fill price, only where the broker supplies it.
    *
-   * KIS's open-order listing never sets it, even on a partly filled order.
+   * KIS's real-server open-order listing never sets it, even on a partly filled order; on a demo
+   * account, where the listing is built from the day's history, it is set once something has filled.
    */
   std::optional<Decimal64> average_filled_price_;
   /**
    * @brief The value of the fills, as the broker computed it.
    *
-   * Present (zero) on every KIS row, filled or not; empty at Toss when not reported.
+   * Present on every KIS row, and zero when nothing has filled; empty at Toss when not reported.
    */
   std::optional<Money> filled_amount_;
   /** @brief Commission charged so far, if the broker reports it per order. */
@@ -1848,7 +1849,10 @@ struct OrderSnapshot {
   std::optional<Decimal64> order_amount_;
   /** @brief The currency of the row's prices and amounts. */
   Currency currency_;
-  /** @brief When the broker recorded the order, if it gives a time. KIS working orders have none. */
+  /**
+   * @brief When the broker recorded the order, if it gives a time. KIS's real-server working orders
+   *   have none; on a demo account they carry the history's order time.
+   */
   std::optional<std::chrono::system_clock::time_point> ordered_at_;
   /**
    * @brief Whether the broker stated only the time of day, and the date in `ordered_at_` is the day the
