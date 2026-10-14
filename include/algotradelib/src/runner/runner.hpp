@@ -364,8 +364,10 @@ public:
   Executor& executor() noexcept { return executor_; }
 
   /**
-   * @brief Returns the instruments the runner will not place on until the broker's order list resolves
-   *   them: an order of unknown outcome, one that timed out unconfirmed, or one held for an operator.
+   * @brief Returns the ledger of instruments withheld pending reconciliation or an operator: an order of
+   *   unknown outcome, which a sweep of the broker's lists can resolve, or one that timed out unconfirmed
+   *   or is held for an operator, which no listing clears (account for it with `release_obligations`, and
+   *   clear the ledger entry yourself once the broker's state is read).
    * @return The ledger.
    */
   const IndeterminacyLedger& ledger() const noexcept { return ledger_; }
