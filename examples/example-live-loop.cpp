@@ -8,7 +8,7 @@
  * stopping and the safety gates is exercisable with nothing on the wire.
  *
  * It is also a **template for a broker this library does not support**. `ScriptedSource` below is a
- * complete source in forty lines: anything that can answer "any new bars?" can drive this loop, and
+ * complete source in one short class: anything that can answer "any new bars?" can drive this loop, and
  * the strategy above it does not change. Swap the body for your own HTTP calls and the rest of the
  * stack -- reconciliation, the guards, the indeterminacy rules, the stop intents -- comes along.
  *

@@ -415,7 +415,7 @@ struct AllCaps {
   static constexpr bool has_commission_schedule = true;
   /** @brief The sellable quantity comes from an inquiry. */
   static constexpr SellableSource sellable_source = SellableSource::INQUIRY;
-  /** @brief The whole holding, with resting sells deducted (the basis Toss states). */
+  /** @brief The whole holding, with resting sells deducted (the basis the library assumes for Toss, unverified). */
   static constexpr SellableBasis sellable_inquiry_basis{
     SellableBasis::Coverage::WHOLE_HOLDING,
     SellableBasis::RestingTreatment::DEDUCT,

@@ -21,8 +21,8 @@ namespace vanilla {
  * are cancelled by reconciliation.
  *
  * @warning To combine it with a signal strategy, the signal must stop stating its target once this
- *   has fired. `on_bar` runs after `on_phase` in the same pass, so a signal that restates its target
- *   on every bar (such as `BuyAndHold`) replaces the flatten. See `BuyThenLiquidate` in
+ *   has fired. In a backtest `on_bar` runs right after `on_phase`, and live the next bar follows it, so
+ *   a signal that restates its target on every bar (such as `BuyAndHold`) replaces the flatten. See `BuyThenLiquidate` in
  *   `tests/test-backtest.cpp` for a gated composition.
  */
 struct TimedLiquidation {

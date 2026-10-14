@@ -32,8 +32,9 @@ enum class HaltReason {
   /**
    * @brief Local machinery failed, such as the order journal not being writable; nothing is sent.
    *
-   * Sticky; released only by `runner::Runner::resume_after_local_failure`. The detail names the
-   * failure.
+   * Sticky; release it with `runner::Runner::resume_after_local_failure`, which also acknowledges the
+   * journal failures (`RiskGuard::resume(LOCAL_FAILURE)` lifts the hold without that). The detail names
+   * the failure.
    */
   LOCAL_FAILURE,
   /** @brief A stop was requested and the run is shutting down. */
@@ -240,7 +241,8 @@ struct GuardRejection {
  * @brief The limits the operator sets for `RiskGuard`.
  *
  * Every limit is optional and absent means unlimited, except `permitted_phases_`, which by
- * default permits opening positions only while the market is `OPEN`. Holds (halts) are not limits;
+ * default permits opening positions only while the market is `OPEN`, and
+ * `enforce_sellable_quantity_`, which is on by default. Holds (halts) are not limits;
  * they are taken on the guard itself.
  */
 struct RiskLimits {

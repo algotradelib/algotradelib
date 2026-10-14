@@ -1,4 +1,4 @@
-// One strategy, compiled for both brokers from this one source, bound at a single line in `main`.
+// One strategy, compiled for KIS and Toss from this one source, bound at a single line in `main`.
 //
 // The point, demonstrated: `trade()` below names no broker. It takes a session
 // by template parameter, and everything broker-specific is either behind a capability gate or
@@ -383,6 +383,12 @@ int main(int argc, char** argv) {
       mode = Mode::TRADE;
     } else if (argument == "--dry-run") {
       dry = true;
+    } else if (argument.rfind("--", 0) == 0) {
+      // An option this program does not know is refused, never read as a positional argument: a
+      // mistyped or unsupported flag beside `--live` must not leave the run trading as if it were absent.
+      std::cerr << "example-strategy-live: unknown option " << argument
+                << " (credentials come from the environment or ATL_CREDENTIALS_DIR)\n";
+      return 2;
     } else {
       positional.push_back(argument);
     }

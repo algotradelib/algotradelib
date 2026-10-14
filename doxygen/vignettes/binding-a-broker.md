@@ -324,7 +324,7 @@ So a failure is classified by whether the order might exist, and four categories
 | --- | --- |
 | `TRANSPORT` | the connection failed; did the bytes arrive? |
 | `CANCELLED` | a *local* deadline or a closing session says nothing about what was already sent |
-| `PROTOCOL` | the answer could not be parsed — it may have been an ack — or the broker declared a failure the client does not classify (at KIS an unrecognized reply with `rt_cd` not `0`, such as insufficient balance; at Toss any refusal but a rate limit; at Kiwoom a `return_code` outside its documented error list) |
+| `PROTOCOL` | the answer could not be parsed — it may have been an ack — or the broker declared a failure the client does not classify (at KIS an unrecognized reply with `rt_cd` not `0`, such as insufficient balance; at Toss any refusal but a rate limit or a refused token; at Kiwoom a `return_code` outside its documented error list) |
 | `HTTP` 5xx | the broker's own infrastructure failing, possibly after the engine took the order |
 
 An HTTP 4xx, an authentication failure, an invalid argument and a rate-limit refusal are *answers*:

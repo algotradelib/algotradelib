@@ -1,6 +1,6 @@
-// Reads one Kiwoom quote, its price bounds and the top of its book.
+// Reads one Kiwoom quote with its volume and the top of its book.
 //
-// All three come from one `ka10007` response, so this costs one request rather than three.
+// Both come from one `ka10007` response, so this costs one request rather than two.
 
 #include "kiwoom_credentials.hpp"
 

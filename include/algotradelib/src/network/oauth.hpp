@@ -137,7 +137,7 @@ struct AuthBody {
   /**
    * @brief Reads a token response.
    *
-   * Reads the token, a relative `expires_in` (number or numeric string) if present, then calls the
+   * Reads the token, a relative `expires_in` (a whole number, or a string of one) if present, then calls the
    * broker's `from_json_impl`, which may set an absolute expiry.
    *
    * @param document The response.

@@ -230,8 +230,8 @@ public:
   }
 
   /**
-   * @brief Returns the buying-power currencies, which the loop holds sending for until each has
-   *   answered.
+   * @brief Returns the buying-power currencies; with `RiskLimits::enforce_buying_power_` on, the loop
+   *   holds placements until each has a usable reading.
    * @return The currencies.
    */
   const std::vector<Currency>& buying_power_currencies() const noexcept { return currencies_; }
@@ -296,7 +296,7 @@ public:
    * after one fails: the answers that arrived are installed, and the poll returns the failure (a
    * failure outranks a rate-limit refusal). A quote poll stops at the first failure, with the quotes
    * before it already fed. A bar poll that fails feeds nothing. A working-order poll installs the
-   * listing, feeds order updates and reconciles before it reads any history the runner needs; if
+   * listing, reconciles, then feeds order updates, before it reads any history the runner needs; if
    * that read fails it returns the failure with those effects kept. `UPDATED` does not mean journal
    * reconciliation succeeded (see `last_reconcile()` and `last_error()`).
    *
@@ -948,8 +948,8 @@ private:
       // `Runner::deferred_targets`.
       //
       // The same read serves an order this runner sent that only the history can settle now (one a
-      // listing carried and no longer does, one it withdrew, one past the confirmation timeout; see
-      // `Runner::unconfirmed_awaiting_evidence`). Settled first, so a released target is planned against
+      // listing carried and no longer does, one it withdrew, one restored that no listing carries, one
+      // past the confirmation timeout, one a sweep named; see `Runner::unconfirmed_awaiting_evidence`). Settled first, so a released target is planned against
       // what the history said became of it.
       const auto deferred_since = runner_instance.deferred_awaiting_evidence();
       const auto unconfirmed_since = runner_instance.unconfirmed_awaiting_evidence();
@@ -1056,7 +1056,8 @@ private:
       if constexpr (Caps::history_requires_range) {
         runner::merge_rows(candidates, history);
       } else {
-        // Read one date at a time; see `runner::merge_dated_history`.
+        // A history that takes no range (Kiwoom reads one date at a time, Toss a cursor); see
+        // `runner::merge_dated_history`.
         runner::merge_dated_history(candidates, history);
       }
     }
@@ -1145,7 +1146,7 @@ private:
     if (!read_history(late, history)) {
       return;
     }
-    // Undated rows go before the two lists are merged: a listing row with no date (KIS dates none)
+    // Undated rows go before the two lists are merged: a listing row with no date (KIS real dates none)
     // would otherwise stand in for the dated history row of the same order, and then be set aside.
     const auto dated = [](std::vector<OrderSnapshot> all) {
       all.erase(

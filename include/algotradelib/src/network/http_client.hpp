@@ -82,12 +82,15 @@ struct HttpClientOptions {
   std::chrono::seconds timeout_{30};
   /** @brief The largest response body accepted, in bytes. */
   std::size_t body_limit_{8 * 1024 * 1024};
-  /** @brief How many requests may wait (`AsyncHttpClient`); one more fails with `queue_full`, unsent. */
+  /**
+   * @brief How many requests the queue may hold, the one being sent included (`AsyncHttpClient`); one
+   *   more fails with `queue_full`, unsent.
+   */
   std::size_t queue_limit_{1024};
 
   /**
    * @brief The rate-limit budget that paces this connection's requests, or empty (the default) for
-   *   no pacing (`AsyncHttpClient` only). Broker adapters set it.
+   *   no pacing (`AsyncHttpClient` only). The caller sets it; the broker clients pass it through.
    */
   std::optional<RateLimitBudget> rate_limit_;
 
@@ -865,9 +868,10 @@ private:
   }
 
   void fail(const char* stage, beast::error_code ec) {
-    // **Read before disconnecting**, for the reason `close()` gives: `disconnect()` resets the
-    // state, and asking afterwards would answer "not in flight" for every failure -- including one
-    // that happened halfway through writing an order. This is the same question from the other
+    // **Asked of the request, not of the connection** (`sent_` is kept on each pending request), for
+    // the reason `close()` gives: `disconnect()` resets the connection's state, and asking it afterwards
+    // would answer "not in flight" for every failure -- including one that happened halfway through
+    // writing an order. This is the same question from the other
     // side: a resolve, connect, or handshake failure happens *before* `start_write()`, so an order
     // has certainly not been sent, and reporting it as indeterminate spends a rate-limit slot and
     // withholds the instrument to reconcile an order that does not exist.

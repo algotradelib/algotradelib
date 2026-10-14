@@ -276,7 +276,7 @@ public:
     // told one and neither is `equity_in`'s caller beyond the currency it is asking about, so a
     // position that never wrote its own currency down cannot be told apart from one denominated in
     // whatever the caller happened to ask for. `Currency` default-constructs to KRW
-    // (`core/types.hpp:154`), which makes the untold case silently *answer* rather than be absent --
+    // (`Currency`'s default constructor), which makes the untold case silently *answer* rather than be absent --
     // a USD position would read as Korean won to anything summing per currency.
     lot->market_value_ = Money{*valued, currency};
     set_amount(cash_, currency, *cash_total);

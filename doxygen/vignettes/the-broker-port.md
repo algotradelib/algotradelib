@@ -132,7 +132,7 @@ both list a partly filled order) with one parser from the order's `orderedAt`.
 
 ## Example
 
-`example-portable-holdings` is one source file compiled for both brokers:
+`example-portable-holdings` is one source file compiled for KIS and Toss:
 
 ```bash
 example-portable-holdings kis

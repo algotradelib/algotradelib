@@ -349,11 +349,14 @@ struct JournalReplay {
  * `INDETERMINATE` (the two lines bracket the send exactly).
  */
 struct OpenInstruction {
-  /** @brief The instruction, as its `PENDING` line recorded it. */
+  /** @brief The instruction, as its first line recorded it (its `order_id_` may come from a later line). */
   JournalEntry entry_;
   /** @brief When the send began. */
   std::chrono::system_clock::time_point opened_at_{};
-  /** @brief When the send failed, if an `INDETERMINATE` line says so. */
+  /**
+   * @brief When the send was answered: by an `INDETERMINATE` line in `unresolved_instructions`, by any
+   *   answer in `recorded_placements`.
+   */
   std::optional<std::chrono::system_clock::time_point> closed_at_;
   /** @brief Whether an `INDETERMINATE` line answered it. */
   bool answered_{false};
@@ -549,7 +552,7 @@ public:
   /**
    * @brief Sets the prefix of line ids.
    *
-   * Ids are the prefix plus a counter starting at zero, and recovery pairs lines by id, so the prefix
+   * Ids are the prefix, a hyphen and a counter starting at one (`<prefix>-1`), and recovery pairs lines by id, so the prefix
    * must differ between every executor run that shares a journal. The default is the construction
    * time in microseconds, which is distinct only if no two executors on the journal are made at the
    * same instant.
@@ -643,8 +646,9 @@ public:
   }
 
   /**
-   * @brief Returns the answering line last written (or attempted) for a placement that was sent.
-   * @return The line, or `std::nullopt` before any placement was sent.
+   * @brief Returns the answering line last written (or attempted) for a placement the wrapped executor
+   *   was asked to place, sent or refused before sending.
+   * @return The line, or `std::nullopt` before any placement was asked for.
    */
   const std::optional<JournalEntry>& last_entry() const noexcept { return last_entry_; }
 

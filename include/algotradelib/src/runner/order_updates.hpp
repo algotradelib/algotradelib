@@ -17,7 +17,7 @@ namespace order_update_detail {
 /**
  * Returns whether two decimals are the same number, at whatever scale each was written.
  *
- * **Not `operator==`, which compares the coefficient *and the scale*** (`core/types.hpp:347-349`),
+ * **Not `operator==`, which compares the coefficient *and the scale*** (`Decimal64::operator==`),
  * so `Decimal64(100, 1)` and `Decimal64(10, 0)` are distinct values although both are ten. Two
  * readings of one order that differ only in how a quantity is written are not a change, and a
  * detector comparing with `==` would report an update every listing for as long as they differed.

@@ -19,8 +19,9 @@ namespace strategy {
  *   cancellations to send.
  *
  * The `reconcile` functions are pure: no I/O and no state. A target is compared with the position
- * **plus the orders already working**, so restating it does not order twice. Prices are clamped
- * into the day's band and rounded onto the tick grid, and quantities rounded down onto the lot; each
+ * **plus the orders already working**, so restating it does not order twice. A buy above the day's
+ * band is clamped down to it and a sell below it up (a less aggressive price is left as it is), prices
+ * are rounded onto the tick grid, and quantities rounded down onto the lot; each
  * adjustment is flagged on the `PlannedOrder`.
  */
 
@@ -43,7 +44,10 @@ enum class RejectReason {
   QUANTITY_ROUNDS_TO_ZERO,
   /** @brief The decimal arithmetic did not fit, or the portfolio's rows did not add up. */
   NOT_REPRESENTABLE,
-  /** @brief A limit price fell outside the day's band and the band leaves no valid price. */
+  /**
+   * @brief Reserved for a limit price the day's band leaves no valid tick for; nothing produces it
+   *   yet (a band narrower than one tick is not refused).
+   */
   NO_PERMITTED_PRICE,
   /** @brief The broker refused the instruction (a request was sent). */
   BROKER_REFUSED,
@@ -168,7 +172,7 @@ struct PlannedOrder {
 
   /** @brief Whether the price was rounded onto the tick grid. */
   bool price_rounded_{false};
-  /** @brief Whether the price was clamped into the day's band. */
+  /** @brief Whether the price was clamped to the day's band (an aggressive limit beyond it). */
   bool price_clamped_{false};
   /**
    * @brief Whether a price band was known but not applied (too old), and would have clamped this
@@ -435,8 +439,8 @@ inline bool is_stop_order(const OrderSnapshot& order) {
  *    order on the instrument is.
  * 3. What is already working on the needed side is subtracted from the need.
  * 4. If more is working than needed, that whole side is cancelled and the remainder placed fresh.
- * 5. The order is rounded down onto the lot, and its limit (if the target has one) clamped and
- *    rounded; without a limit it is a market order.
+ * 5. The order is rounded down onto the lot, and its limit (if the target has one) clamped where it
+ *    is more aggressive than the band allows, and rounded; without a limit it is a market order.
  *
  * When a stop order rests on the instrument, the steps above do not apply:
  * - if a trade is needed, the plan cancels the stop (unless its cancellation is already pending)
@@ -661,7 +665,7 @@ Plan<Broker> reconcile(
  *
  * An intent says "trade this much", so the portfolio is not consulted. A notional size is divided
  * by the limit price (or the reference price); the quantity is rounded down onto the lot; a limit
- * is clamped into the band and rounded onto the grid; a trigger must already be on the grid.
+ * more aggressive than the band is clamped to it, and rounded onto the grid; a trigger must already be on the grid.
  *
  * @note The runner plans a weight-sized intent with `weight_target` instead; called directly, this
  *   sizes the whole allocation as a trade.

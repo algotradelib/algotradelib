@@ -3691,7 +3691,7 @@ private:
   // Toss documents a token bucket and reports `X-RateLimit-Limit` with its
   // refusal, so the allowance it is enforcing is known and is applied directly.
   // The headers are documented on the refusal rather than promised on every
-  // response, so an absent one falls back to halving rather than to a guess.
+  // response, so an absent one only holds admission rather than guessing an allowance.
   void note_rate_limit(const BrokerError& error) {
     if (error.category_ != ErrorCategory::RATE_LIMIT) {
       return;

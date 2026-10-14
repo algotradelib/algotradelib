@@ -1,4 +1,4 @@
-// One account report written once and compiled for every supported broker.
+// One account report written once and compiled for two brokers, KIS and Toss.
 //
 // `report()` below is the point of this example: it names no vendor type, no
 // account selector, and no broker-specific acknowledgement. It is instantiated
@@ -10,7 +10,8 @@
 //   example-portable-holdings kis
 //   example-portable-holdings tossinvest [account-sequence]
 //
-// KIS reads its account selector from `KIS_CANO` and the optional
+// KIS reads its account from `DIR/kis/demo.json` (or `real.json` with `KIS_DEMO=0`) when
+// `ATL_CREDENTIALS_DIR` names a directory, and otherwise from `KIS_CANO` and the optional
 // `KIS_ACNT_PRDT_CD`; Toss discovers its accounts over the network and uses the
 // first one unless a sequence is supplied. Credentials come from the same
 // environment variables the other examples document, and no order is ever placed.
@@ -119,9 +120,9 @@ int report(BlockingSession<Client>& session) {
   if constexpr (Caps::has_working_orders) {
     auto working = session.working_orders();
     if (!working) {
-      // KIS does not serve this inquiry to a demo account, which is a run-time
-      // condition of the configuration rather than a missing feature, so the
-      // report continues instead of failing.
+      // A failed inquiry is a run-time condition (a refused key, a closed host), not a missing
+      // feature, so the report continues instead of failing. On a KIS demo account the inquiry is
+      // answered from the day's order history.
       print_error("working-order inquiry", working.error());
     } else {
       print_working_orders(working.value());

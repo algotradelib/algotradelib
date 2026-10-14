@@ -166,14 +166,17 @@ struct RefusedCancel {
 };
 
 /**
- * @brief A cancellation that was refused, by the broker or by the binding.
+ * @brief A cancellation that was refused, by the broker or before it was sent.
  * @tparam BrokerTag The broker tag.
  */
 template <typename BrokerTag>
 struct RejectedCancel {
   /** @brief The order that was to be cancelled. */
   OrderRef<BrokerTag> ref_;
-  /** @brief `true` if the broker refused it; `false` if the binding refused to send it. */
+  /**
+   * @brief `true` if the broker refused it; `false` if it was refused before sending (by the binding,
+   *   or by a serialized runner for a row whose reference the broker did not issue).
+   */
   bool by_broker_{true};
 };
 
@@ -206,8 +209,10 @@ struct DryRunReport {
   /** @brief Instructions the risk guard refused (a limit or a hold). */
   std::vector<strategy::GuardRejection> refused_;
   /**
-   * @brief Orders held back because an earlier order for the instrument has an unknown outcome, or
-   *   local machinery cannot send; not retried automatically.
+   * @brief Orders held back because an earlier order on the instrument has an unknown outcome
+   *   (`RECONCILE_REQUIRED`) or, in a serialized runner, is not yet accounted for
+   *   (`AWAITING_CONFIRMATION`); a serialized runner keeps the target and plans it again at a later
+   *   holdings read.
    */
   std::vector<WithheldOrder> withheld_;
   /**
@@ -359,7 +364,10 @@ public:
   Executor& executor() noexcept { return executor_; }
 
   /**
-   * @brief Returns the instruments with an order of unknown outcome.
+   * @brief Returns the ledger of instruments withheld pending reconciliation or an operator: an order of
+   *   unknown outcome, which a sweep of the broker's lists can resolve, or one that timed out unconfirmed
+   *   or is held for an operator, which no listing clears (account for it with `release_obligations`, and
+   *   clear the ledger entry yourself once the broker's state is read).
    * @return The ledger.
    */
   const IndeterminacyLedger& ledger() const noexcept { return ledger_; }
@@ -372,8 +380,8 @@ public:
   /**
    * @brief Returns why local machinery stopped sending, if it did.
    *
-   * The hold (`strategy::HaltReason::LOCAL_FAILURE`) stays until `resume_after_local_failure`, even
-   * if the failure was transient. The detail is the first failure recorded through this runner.
+   * The hold (`strategy::HaltReason::LOCAL_FAILURE`) stays until `resume_after_local_failure` (or a
+   * direct `guard().resume`), even if the failure was transient. The detail is the first failure recorded through this runner.
    *
    * @return The detail, or `std::nullopt` while sending works.
    */
@@ -626,9 +634,10 @@ public:
    * @brief Returns how many orders reconciliation could not build (any `strategy::RejectReason`
    *   before sending, including a quantity that rounded to zero).
    *
-   * One of six counters of what became of placements: `orders_unbuildable`,
-   * `orders_reconcile_withheld`, `orders_guard_refused`, `orders_binding_refused`,
-   * `orders_broker_refused`, `orders_indeterminate`. All count over the runner's life, so a loop
+   * One of eight counters of what became of placements: `orders_unbuildable`,
+   * `orders_reconcile_withheld`, `orders_awaiting_confirmation`, `orders_guard_refused`,
+   * `orders_binding_refused`, `orders_broker_refused`, `orders_indeterminate` and
+   * `instructions_unavailable` (which counts cancellations too). All count over the runner's life, so a loop
    * differences them; the per-instruction reasons are in each pass's `Report`. See also
    * `last_unbuildable`.
    *
@@ -636,7 +645,8 @@ public:
    */
   std::size_t orders_unbuildable() const noexcept { return orders_unbuildable_; }
   /**
-   * @brief Returns how many orders were held back because the instrument had an order of unknown outcome; see `orders_unbuildable`.
+   * @brief Returns how many orders were held back because the instrument was in the ledger (an order of
+   *   unknown outcome, timed out unconfirmed, or held for an operator); see `orders_unbuildable`.
    * @return The count.
    */
   std::size_t orders_reconcile_withheld() const noexcept { return orders_reconcile_withheld_; }
@@ -859,8 +869,8 @@ public:
    * shows no older content, and that the journal's clock and the holdings' `as_of_` are one clock (as
    * they are live; a simulated market must journal on its own clock). Orders placed any other way are outside it, as is an executor that drives
    * this runner from inside its own `place`. A runner that journals to a broker but lacks what this
-   * needs (a broker that lists working orders, and an executor with `last_entry` and `record`, as
-   * `JournalingExecutor` has) places nothing until `allow_overlapping_orders` is called.
+   * needs (a broker that lists working orders, and an executor with `last_entry`, `record` and
+   * `place(order, baseline)`, as `JournalingExecutor` has) places nothing until `allow_overlapping_orders` is called.
    *
    * @return Whether serialized.
    */
@@ -1061,10 +1071,12 @@ public:
    * @brief Returns from when the broker's order history must be read to settle sent orders.
    *
    * An order needs it when part of it is unexplained and either it passed the confirmation timeout
-   * (listed or not), or no listing carries it and it was listed before or its cancellation was
-   * accepted. Excluded: an order the history already settled; one whose history had no answer after
-   * the timeout (until a later listing or holdings explain it again); and an order of unknown outcome
-   * with no reference while its instrument is in the ledger.
+   * (listed or not), or no listing carries it and it was listed before, its cancellation was accepted,
+   * or it was restored at startup. In a serialized runner, an order a sweep named and no dated row has
+   * confirmed always needs it. Excluded: an order the history already settled; one whose history had
+   * no answer after the timeout (until a later listing or holdings explain it again); an order held
+   * for an operator; in a serialized runner, an order with no name; and, overlapping, an order of
+   * unknown outcome with no reference while its instrument is in the ledger.
    *
    * @return The earliest such order's send instant, or `std::nullopt` if none needs history.
    */
