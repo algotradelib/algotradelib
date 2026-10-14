@@ -177,19 +177,19 @@ inline std::string_view kiwoom_refusal_code(std::string_view message) noexcept {
 }
 
 /**
- * @brief Reads the refusal a demo cash-order reply states, for the replies this client recognizes
- *   as one.
+ * @brief Reads the refusal a cash-order reply states, for the replies this client recognizes as one.
  *
- * A placement answered `800033` (not enough to sell) or `RC4058` (the market has closed), and a
- * cancellation answered `RC4033` (nothing left to amend or cancel), as the demo server sends them.
- * Such a reply is `INVALID_ARGUMENT` with
- * `reached_broker_` set, which a runner reads as a rejection; any other reply with `return_code` 20
- * stays `PROTOCOL`, an unknown outcome.
+ * From the demo server: a placement answered `800033` (not enough to sell) or `RC4058` (the market
+ * has closed), and a cancellation answered `RC4033` (nothing left to amend or cancel). From the real
+ * server: a placement answered `571445` (no securities balance) and a cancellation answered `506550`
+ * (no quantity left to cancel). Such a reply is `INVALID_ARGUMENT` with `reached_broker_` set, which
+ * a runner reads as a rejection; any other reply with `return_code` 20 stays `PROTOCOL`, an unknown
+ * outcome.
  *
- * Demo only: no real-account reply has been seen, and the same body from the real server is not
- * recognized. The reply must be HTTP 200 with `return_code` 20 (a JSON integer, or the string
- * `"20"`), a `return_msg` of the shape `kiwoom_refusal_code` reads, and none of what an
- * acknowledgement carries: `ord_no` absent or empty, and `cncl_qty` and `mdfy_qty` absent, empty or
+ * Each code is recognized from the server it was seen from only: a demo code from the real server,
+ * or a real code from the demo server, is not. The reply must be HTTP 200 with `return_code` 20 (a
+ * JSON integer, or the string `"20"`), a `return_msg` of the shape `kiwoom_refusal_code` reads, and
+ * none of what an acknowledgement carries: `ord_no` absent or empty, and `cncl_qty` and `mdfy_qty` absent, empty or
  * all zeros. A reply acknowledging a new order is never read as a refusal (the original order's
  * number, echoed in `base_orig_ord_no`, is not an acknowledgement). A refused cancellation says only
  * that the cancellation did nothing, not what became of the order it named.
@@ -207,7 +207,7 @@ inline std::optional<BrokerError> kiwoom_recognized_refusal(
   KiwoomOrderOperation operation,
   bool demo
 ) {
-  if (!demo || http_status != 200) {
+  if (http_status != 200) {
     return std::nullopt;
   }
   const auto code = document.if_contains("return_code");
@@ -221,9 +221,13 @@ inline std::optional<BrokerError> kiwoom_recognized_refusal(
   }
   const std::string stated(kiwoom_refusal_code(std::string_view(message->as_string())));
   const char* name = "";
-  if (operation == KiwoomOrderOperation::PLACE && (stated == "800033" || stated == "RC4058")) {
+  const bool placement = operation == KiwoomOrderOperation::PLACE &&
+    (demo ? (stated == "800033" || stated == "RC4058") : stated == "571445");
+  const bool cancellation = operation == KiwoomOrderOperation::CANCEL &&
+    (demo ? stated == "RC4033" : stated == "506550");
+  if (placement) {
     name = "placement";
-  } else if (operation == KiwoomOrderOperation::CANCEL && stated == "RC4033") {
+  } else if (cancellation) {
     name = "cancellation";
   } else {
     return std::nullopt;
@@ -247,8 +251,8 @@ inline std::optional<BrokerError> kiwoom_recognized_refusal(
   error.reached_broker_ = true;
   error.http_status_ = http_status;
   error.broker_code_ = stated;
-  error.message_ = std::string(message->as_string()) + " (return_code 20; recognized refusal: Kiwoom demo, cash " +
-    name + ", " + stated + ")";
+  error.message_ = std::string(message->as_string()) + " (return_code 20; recognized refusal: Kiwoom " +
+    (demo ? "demo" : "real") + ", cash " + name + ", " + stated + ")";
   return error;
 }
 
