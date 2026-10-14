@@ -3750,7 +3750,7 @@ TEST_CASE(
 }
 
 // The bodies below are constructed from KIS's documented reply envelope with the code and the message
-// the demo server sent (2026-10-12, 2026-10-13). No reply body was recorded.
+// the demo server sent (2026-10-12 to 2026-10-14). No reply body was recorded.
 namespace {
 
 using KisOperation = kis::KisClientTestAccess::Operation;

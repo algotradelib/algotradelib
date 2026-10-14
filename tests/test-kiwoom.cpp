@@ -1036,7 +1036,7 @@ TEST_CASE("an order acknowledgement carries the symbol from the request", "[kiwo
 }
 
 // The bodies below are constructed from Kiwoom's documented reply envelope with the codes and the
-// messages the demo server sent (2026-10-12, 2026-10-13). No reply body was recorded.
+// messages the demo server sent (2026-10-12 to 2026-10-14). No reply body was recorded.
 namespace {
 
 using kiwoom::KiwoomOrderOperation;
