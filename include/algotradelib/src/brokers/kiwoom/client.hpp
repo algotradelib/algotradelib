@@ -3402,7 +3402,7 @@ private:
     order.trigger_price_ = reported_trigger(row, "stop_pric");
     // `tm` is `HHmmss` with no date. The calendar day is today in Seoul, and only assumed: the demo
     // server has listed an order of the previous day after midnight. The history path takes its date
-    // from the request, and a sweep dates this row from it when both carry the order.
+    // from the request; where both carry the order, a sweep drops this row and keeps the dated one.
     order.ordered_at_ = detail::seoul_timestamp(today_in_seoul(), detail::text_field(row, "tm"));
     order.ordered_date_assumed_ = true;
     order.execution_.filled_quantity_ = detail::required_magnitude(row, "cntr_qty");

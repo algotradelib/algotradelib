@@ -89,9 +89,9 @@ inline constexpr std::string_view send_outcome_name(SendOutcome outcome) noexcep
  * - `REFUSED_LOCALLY` when `reached_broker_` is `false` (nothing was sent), whatever the category;
  * - `INDETERMINATE` for `TRANSPORT`, `CANCELLED` (a local timeout says nothing about whether the
  *   request went out), `PROTOCOL` (an unreadable reply may have been an acknowledgement; at KIS,
- *   Toss and Kiwoom this also covers most of the broker's own refusals), an HTTP status of 500 or
- *   more, and any unknown category;
- * - `REJECTED` for an HTTP status below 500, `AUTHENTICATION`, `RATE_LIMIT` and `INVALID_ARGUMENT`.
+ *   Toss and Kiwoom this also covers most of the broker's own refusals, whatever `http_status_` the
+ *   reply carried), `HTTP` with a status of 500 or more, and any unknown category;
+ * - `REJECTED` for `HTTP` with a status below 500, `AUTHENTICATION`, `RATE_LIMIT` and `INVALID_ARGUMENT`.
  *
  * Doubtful cases are classified as unknown, which costs a reconciliation, rather than as refused,
  * which could leave a live order unwatched.
