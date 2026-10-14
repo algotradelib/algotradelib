@@ -104,13 +104,14 @@ Clock::time_point after_the_window() { return sent_at() + std::chrono::minutes(1
 Clock::time_point inside_the_window() { return sent_at() + std::chrono::seconds(5); }
 
 /**
- * Somewhere for a sweep to record its resolutions when the test is about the verdict.
+ * Somewhere for a sweep to record its resolutions when the test is about the verdict; one per test.
  *
  * A journal is a required argument rather than an optional one, deliberately: a sweep that clears
  * the ledger without writing down why leaves the instruction owed on disk, so every caller has to
- * say where the record goes. Tests that care about the record use their own.
+ * say where the record goes. Tests that care about the record use their own. Never shared between
+ * tests: a sweep reads the journal too, and another test's lines would be placements of its own.
  */
-runner::MemoryJournal sink;
+using Sink = runner::MemoryJournal;
 
 } // namespace
 
@@ -413,6 +414,7 @@ TEST_CASE("a cancellation can never be ambiguous", "[reconcile]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("an ambiguous instruction leaves its instrument withheld", "[reconcile]") {
+  Sink sink;
   IndeterminacyLedger ledger;
   ledger.mark(samsung(), "an order request failed in transit");
 
@@ -426,6 +428,7 @@ TEST_CASE("an ambiguous instruction leaves its instrument withheld", "[reconcile
 }
 
 TEST_CASE("an instrument clears only when every instruction for it is decided", "[reconcile]") {
+  Sink sink;
   IndeterminacyLedger ledger;
   ledger.mark(samsung(), "an order request failed in transit");
 
@@ -564,6 +567,129 @@ TEST_CASE("a row that could be another placement's order as well is nobody's", "
   }
 }
 
+TEST_CASE("a row the journal records for another placement is not this one's", "[reconcile]") {
+  // A is accepted as KRX-1. B, of the same shape, is sent ten seconds later and its request is lost: A's
+  // row is inside B's window and is its only fit.
+  auto a_pending = placement().entry_;
+  a_pending.id_ = "run-0";
+  a_pending.recorded_at_ = sent_at() - std::chrono::seconds(10);
+  auto a_accepted = a_pending;
+  a_accepted.outcome_ = JournalOutcome::ACCEPTED;
+  a_accepted.order_id_ = "KRX-1";
+  a_accepted.recorded_at_ += std::chrono::seconds(1);
+  const auto a_row = row("KRX-1", samsung(), "10", "70000", a_pending.recorded_at_ + std::chrono::seconds(1));
+  REQUIRE(runner::row_corresponds(placement(), a_row, MatchWindow{}));
+
+  runner::MemoryJournal journal;
+  IndeterminacyLedger ledger;
+  ledger.mark(samsung(), "a request whose reply was lost");
+  const auto sweep = [&](const std::vector<OrderSnapshot>& rows, const OpenInstruction& open = placement()) {
+    return runner::reconcile_against({open}, rows, after_the_window(), ledger, journal);
+  };
+
+  SECTION("its only fit: undecided for an operator, never this order and never absent") {
+    journal.append(a_pending);
+    journal.append(a_accepted);
+    const auto report = sweep({a_row});
+    REQUIRE(report.matches_.size() == 1);
+    const auto& match = report.matches_.front();
+    CHECK(match.verdict_ == MatchVerdict::AMBIGUOUS);
+    CHECK(match.order_id_.empty());
+    CHECK(match.detail_.find("run-0") != std::string::npos);
+    CHECK(match.detail_.find("KRX-1") != std::string::npos);
+    CHECK(report.ambiguous_);
+    CHECK(report.recorded_ == 0);
+    CHECK(report.withheld_ == std::vector<InstrumentId>{samsung()});
+    CHECK(ledger.requires_reconcile(samsung()));
+  }
+
+  SECTION("the same when the number came from an earlier sweep, which may have been wrong") {
+    auto a_lost = a_pending;
+    a_lost.outcome_ = JournalOutcome::INDETERMINATE;
+    a_lost.recorded_at_ += std::chrono::seconds(1);
+    auto a_named = a_pending;
+    a_named.outcome_ = JournalOutcome::RESOLVED;
+    a_named.order_id_ = "KRX-1";
+    a_named.recorded_at_ = sent_at() + std::chrono::minutes(2);
+    journal.append(a_pending);
+    journal.append(a_lost);
+    journal.append(a_named);
+    CHECK(sweep({a_row}).matches_.front().verdict_ == MatchVerdict::AMBIGUOUS);
+  }
+
+  SECTION("B's own row beside it: still undecided, as before") {
+    journal.append(a_pending);
+    journal.append(a_accepted);
+    CHECK(sweep({a_row, row("KRX-2")}).matches_.front().verdict_ == MatchVerdict::AMBIGUOUS);
+  }
+
+  SECTION("the number on a row of another day is another order") {
+    // Order numbers repeat across days at some brokers: yesterday's A does not own today's KRX-1.
+    a_pending.recorded_at_ -= std::chrono::hours(24);
+    a_accepted.recorded_at_ -= std::chrono::hours(24);
+    journal.append(a_pending);
+    journal.append(a_accepted);
+    const auto report = sweep({a_row});
+    REQUIRE(report.matches_.front().verdict_ == MatchVerdict::MATCHED);
+    CHECK(report.matches_.front().order_id_ == "KRX-1");
+  }
+
+  SECTION("a refused placement, or one on another instrument, owns no row") {
+    auto refused = a_accepted;
+    refused.outcome_ = JournalOutcome::REJECTED;
+    refused.order_id_.clear();
+    auto elsewhere = a_accepted;
+    elsewhere.id_ = "run-9";
+    elsewhere.instrument_ = hynix();
+    journal.append(a_pending);
+    journal.append(refused);
+    journal.append(elsewhere);
+    CHECK(sweep({a_row}).matches_.front().verdict_ == MatchVerdict::MATCHED);
+  }
+
+  SECTION("a cancellation still finds the order it names, beside a placement the claim holds") {
+    journal.append(a_pending);
+    journal.append(a_accepted);
+    auto cancel = cancellation("KRX-1");
+    cancel.entry_.id_ = "run-2";
+    const auto report = runner::reconcile_against({placement(), cancel}, {a_row}, after_the_window(), ledger, journal);
+    REQUIRE(report.matches_.size() == 2);
+    CHECK(report.matches_[0].verdict_ == MatchVerdict::AMBIGUOUS);
+    REQUIRE(report.matches_[1].verdict_ == MatchVerdict::MATCHED);
+    CHECK(report.matches_[1].order_id_ == "KRX-1");
+  }
+
+  SECTION("a placement's own earlier name is no rival") {
+    // A sweep named B; asked again about B (the caller still lists it), the journal's line naming it is
+    // B's own and claims nothing.
+    journal.append(placement().entry_);
+    auto named = placement().entry_;
+    named.outcome_ = JournalOutcome::RESOLVED;
+    named.order_id_ = "KRX-2";
+    named.recorded_at_ = after_the_window();
+    journal.append(named);
+    const auto again = sweep({row("KRX-2")});
+    REQUIRE(again.matches_.front().verdict_ == MatchVerdict::MATCHED);
+    CHECK(again.matches_.front().order_id_ == "KRX-2");
+  }
+
+  SECTION("a row the broker dates no time for cannot be told from an earlier order of that number") {
+    // The cost of the rule where a number repeats on another day: yesterday's A was accepted as KRX-1,
+    // and today's undated row KRX-1 fits both. It is left to an operator rather than named.
+    a_pending.recorded_at_ -= std::chrono::hours(24);
+    a_accepted.recorded_at_ -= std::chrono::hours(24);
+    journal.append(a_pending);
+    journal.append(a_accepted);
+    auto undated = a_row;
+    undated.ordered_at_.reset();
+    CHECK(sweep({undated}).matches_.front().verdict_ == MatchVerdict::AMBIGUOUS);
+  }
+
+  SECTION("matched against rows alone, no placement is anyone else's") {
+    CHECK(runner::match_against(placement(), {a_row}, after_the_window()).verdict_ == MatchVerdict::MATCHED);
+  }
+}
+
 TEST_CASE("verdict names are stable", "[reconcile]") {
   REQUIRE(runner::match_verdict_name(MatchVerdict::MATCHED) == "matched");
   REQUIRE(runner::match_verdict_name(MatchVerdict::NOT_PLACED) == "not_placed");
@@ -629,6 +755,7 @@ JournalEntry entry_at(
 } // namespace
 
 TEST_CASE("a crash and a restart, end to end", "[reconcile][recover]") {
+  Sink sink;
   // The story the feature exists for, with no broker and no filesystem: a runner sends, the process
   // dies before the outcome is known, a new process starts with an empty ledger, and recovery plus
   // one order-list read is what decides whether trading may resume.
