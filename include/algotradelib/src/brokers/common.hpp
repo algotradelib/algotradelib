@@ -51,11 +51,14 @@ inline BrokerError http_error(const network::HttpResponse& response) {
   return error;
 }
 
-inline std::optional<json::object> parse_object(std::string_view body, BrokerError& error) {
+// Reads a response's body as a JSON object. A body that is not one is `PROTOCOL` `invalid_json`, with the
+// response's HTTP status kept and the parser's message, never the body.
+inline std::optional<json::object> parse_object(const network::HttpResponse& response, BrokerError& error) {
   boost::system::error_code ec;
-  auto value = json::parse(body, ec);
+  auto value = json::parse(response.body(), ec);
   if (ec || !value.is_object()) {
     error.category_ = ErrorCategory::PROTOCOL;
+    error.http_status_ = response.result_int();
     error.broker_code_ = "invalid_json";
     error.message_ = ec ? ec.message() : "JSON response is not an object";
     return std::nullopt;

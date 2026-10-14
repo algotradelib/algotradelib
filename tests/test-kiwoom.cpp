@@ -1490,6 +1490,18 @@ TEST_CASE("a Kiwoom order reply is read with the operation and environment of th
   }
 }
 
+TEST_CASE("a Kiwoom reply whose body is not a JSON object keeps its HTTP status", "[kiwoom][orders]") {
+  for (const char* body : {"", "<html></html>", "[]"}) {
+    CAPTURE(body);
+    const auto result = kiwoom::KiwoomClientTestAccess::order_ack(ok_body(body), KiwoomOrderOperation::PLACE, false);
+    REQUIRE_FALSE(result);
+    CHECK(result.error().category_ == ErrorCategory::PROTOCOL);
+    CHECK(result.error().broker_code_ == "invalid_json");
+    CHECK(result.error().http_status_ == 200);
+    CHECK(runner::outcome_of(result.error()) == runner::SendOutcome::INDETERMINATE);
+  }
+}
+
 TEST_CASE("a Kiwoom real-server refusal is recognized under the same conditions as a demo one", "[kiwoom][orders]") {
   using Access = kiwoom::KiwoomClientTestAccess;
   const std::string cancel = kiwoom_refusal_body(KIWOOM_REAL_NOTHING_TO_CANCEL);

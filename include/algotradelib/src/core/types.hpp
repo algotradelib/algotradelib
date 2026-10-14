@@ -717,7 +717,7 @@ struct BrokerError {
    * limit and was not the broker's; a runner may offer the instruction again. Defaults to `true`.
    */
   bool reached_broker_{true};
-  /** @brief The HTTP status, or `0` if the failure happened before a response. */
+  /** @brief The HTTP status of the response, whatever its body, or `0` if no response arrived. */
   int http_status_{0};
   /** @brief The broker's own error code, verbatim (for example KIS's `EGW00201`). */
   std::string broker_code_;

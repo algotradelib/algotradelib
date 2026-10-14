@@ -1169,7 +1169,7 @@ private:
       return kis_http_error(result.value());
     }
     BrokerError parse_error;
-    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    auto document = broker_detail::parse_object(result.value(), parse_error);
     if (!document) {
       return parse_error;
     }
@@ -1780,7 +1780,7 @@ private:
       return Result<json::object>(kis_http_error(response.value()));
     }
     BrokerError parse_error;
-    auto document = broker_detail::parse_object(response.value().body(), parse_error);
+    auto document = broker_detail::parse_object(response.value(), parse_error);
     if (!document) {
       return Result<json::object>(std::move(parse_error));
     }
@@ -1987,7 +1987,7 @@ private:
       return Result<DepthSnapshot>(kis_http_error(result.value()));
     }
     BrokerError parse_error;
-    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    auto document = broker_detail::parse_object(result.value(), parse_error);
     if (!document) {
       return Result<DepthSnapshot>(std::move(parse_error));
     }
@@ -2278,7 +2278,7 @@ private:
       failure->category_ = ErrorCategory::AUTHENTICATION;
     } else {
       BrokerError parse_error;
-      auto document = broker_detail::parse_object(result.value().body(), parse_error);
+      auto document = broker_detail::parse_object(result.value(), parse_error);
       if (!document) {
         failure = std::move(parse_error);
       } else {
@@ -2537,7 +2537,7 @@ private:
       return Result<QuoteSnapshot>(kis_http_error(result.value()));
     }
     BrokerError parse_error;
-    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    auto document = broker_detail::parse_object(result.value(), parse_error);
     if (!document) {
       return Result<QuoteSnapshot>(std::move(parse_error));
     }
@@ -2600,7 +2600,7 @@ private:
       return Result<HoldingsSnapshot>(kis_http_error(result.value()));
     }
     BrokerError parse_error;
-    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    auto document = broker_detail::parse_object(result.value(), parse_error);
     if (!document) {
       return Result<HoldingsSnapshot>(std::move(parse_error));
     }
@@ -3458,7 +3458,7 @@ private:
       return Result<KisOrderAck>(kis_http_error(result.value(), /*classify_rate=*/false));
     }
     BrokerError parse_error;
-    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    auto document = broker_detail::parse_object(result.value(), parse_error);
     if (!document) {
       return Result<KisOrderAck>(std::move(parse_error));
     }
@@ -3772,7 +3772,7 @@ private:
       return Result<KisOpenOrderPage>(kis_http_error(result.value()));
     }
     BrokerError parse_error;
-    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    auto document = broker_detail::parse_object(result.value(), parse_error);
     if (!document) {
       return Result<KisOpenOrderPage>(std::move(parse_error));
     }
@@ -4106,7 +4106,7 @@ private:
       return Result<OrderPage>(kis_http_error(result.value()));
     }
     BrokerError parse_error;
-    auto document = broker_detail::parse_object(result.value().body(), parse_error);
+    auto document = broker_detail::parse_object(result.value(), parse_error);
     if (!document) {
       return Result<OrderPage>(std::move(parse_error));
     }
