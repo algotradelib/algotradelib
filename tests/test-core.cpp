@@ -5038,6 +5038,111 @@ TEST_CASE("a KIS page of only unreadable rows is progress, not the end of the li
   CHECK(kis::KisClientTestAccess::calendar_rows_consumed(calendar) == before + 2);
 }
 
+// Through the client's own request path: the loopback server answers the token request and then each
+// calendar page in turn, so the wiring around the two helpers above is exercised, not only the helpers.
+namespace {
+
+constexpr const char* KIS_CALENDAR = "/uapi/domestic-stock/v1/quotations/chk-holiday";
+
+/** A calendar page with the given cursors, continuation and rows. */
+test::LocalHttpsServer::Scripted kis_calendar_page(const std::string& cursor, bool more, const std::string& rows) {
+  return test::LocalHttpsServer::Scripted{
+    200,
+    R"({"rt_cd":"0","msg_cd":"MCA00000","msg1":"ok","ctx_area_fk":")" + cursor + R"(","ctx_area_nk":")" + cursor +
+      R"(","output":[)" + rows + "]}",
+    {{"tr_cont", more ? "M" : "D"}},
+  };
+}
+
+/** Asks `client` for the calendar from `from`, without a refresh, and runs the exchange to completion. */
+Result<TradingCalendar> kis_calendar_from(net::io_context& ioc, kis::KisClient& client, Date from) {
+  auto result = client.async_calendar(from, false, net::use_future);
+  ioc.restart();
+  ioc.run();
+  return result.get();
+}
+
+} // namespace
+
+TEST_CASE("a KIS calendar request reads on past a page of only unreadable rows", "[core][calendar][kis]") {
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  server.script(
+    "/oauth2/tokenP",
+    200,
+    R"({"access_token":"test-token","token_type":"Bearer","expires_in":86400,)"
+    R"("access_token_token_expired":"2099-12-31 23:59:59"})"
+  );
+  server.scriptSequence(
+    KIS_CALENDAR,
+    {
+      kis_calendar_page("P1", true, R"({"bass_dt":"2026090x"},{"bass_dt":""})"),
+      kis_calendar_page("P2", false, R"({"bass_dt":"20260901","opnd_yn":"Y"},{"bass_dt":"20260902","opnd_yn":"N"})"),
+    }
+  );
+  auto client = scripted_kis(ioc, context, server, false);
+
+  const auto calendar = kis_calendar_from(ioc, *client, Date{2026, 9, 1});
+  REQUIRE(calendar);
+  // The first page kept no day; the second was still asked for, as a continuation.
+  CHECK(server.scriptedCount(KIS_CALENDAR) == 2);
+  CHECK(server.lastHeader(KIS_CALENDAR, "tr_cont") == "N");
+  REQUIRE(calendar.value().days_.size() == 2);
+  CHECK(calendar.value().unreadable_days_ == 2);
+  CHECK(calendar.value().is_trading_day(Date{2026, 9, 1}) == std::optional<bool>(true));
+  CHECK(calendar.value().is_trading_day(Date{2026, 9, 2}) == std::optional<bool>(false));
+}
+
+TEST_CASE("a KIS calendar day dropped as unreadable is asked for again but a cached day is not", "[core][calendar][kis]") {
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  server.script(
+    "/oauth2/tokenP",
+    200,
+    R"({"access_token":"test-token","token_type":"Bearer","expires_in":86400,)"
+    R"("access_token_token_expired":"2099-12-31 23:59:59"})"
+  );
+  server.scriptSequence(
+    KIS_CALENDAR,
+    {
+      kis_calendar_page(
+        "C1", false, R"({"bass_dt":"20260901","opnd_yn":"Y"},{"bass_dt":"2026090x"},{"bass_dt":"20260903","opnd_yn":"Y"})"
+      ),
+      kis_calendar_page(
+        "C2",
+        false,
+        R"({"bass_dt":"20260901","opnd_yn":"Y"},{"bass_dt":"20260902","opnd_yn":"Y"},{"bass_dt":"20260903","opnd_yn":"Y"})"
+      ),
+    }
+  );
+  auto client = scripted_kis(ioc, context, server, false);
+
+  const auto first = kis_calendar_from(ioc, *client, Date{2026, 9, 1});
+  REQUIRE(first);
+  CHECK(server.scriptedCount(KIS_CALENDAR) == 1);
+  CHECK_FALSE(first.value().is_trading_day(Date{2026, 9, 2}).has_value());
+
+  // A day the cache holds is served without a request.
+  const auto cached = kis_calendar_from(ioc, *client, Date{2026, 9, 3});
+  REQUIRE(cached);
+  CHECK(server.scriptedCount(KIS_CALENDAR) == 1);
+
+  // The day whose row was dropped lies inside the cached span, and is asked for again.
+  const auto repaired = kis_calendar_from(ioc, *client, Date{2026, 9, 2});
+  REQUIRE(repaired);
+  CHECK(server.scriptedCount(KIS_CALENDAR) == 2);
+  CHECK(repaired.value().is_trading_day(Date{2026, 9, 2}) == std::optional<bool>(true));
+
+  // And now the repaired day is cached.
+  const auto again = kis_calendar_from(ioc, *client, Date{2026, 9, 2});
+  REQUIRE(again);
+  CHECK(server.scriptedCount(KIS_CALENDAR) == 2);
+}
+
 TEST_CASE("instrument reference data normalizes from both brokers") {
   const auto hynix = InstrumentId{Country::KR, Venue::KRX, "000660"};
 
