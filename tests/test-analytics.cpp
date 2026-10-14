@@ -40,6 +40,16 @@ TEST_CASE("a value too large for an exact decimal is refused, not wrapped") {
   REQUIRE(to_decimal(-9223372036854775808.0, 0).has_value());
 }
 
+TEST_CASE("a scalar rounds half away from zero without rounding the addition first") {
+  CHECK(to_decimal(2.5, 0)->coefficient() == 3);
+  CHECK(to_decimal(-2.5, 0)->coefficient() == -3);
+  // The largest double below one half: adding 0.5 rounds the sum up to exactly 1.
+  CHECK(to_decimal(0.49999999999999994, 0)->coefficient() == 0);
+  CHECK(to_decimal(-0.49999999999999994, 0)->coefficient() == 0);
+  // An odd integer between 2^52 and 2^53 is exact, and adding 0.5 moved it to the next even one.
+  CHECK(to_decimal(4503599627370497.0, 0)->coefficient() == 4503599627370497LL);
+}
+
 TEST_CASE("a decimal converts to the nearest double, as its text parses") {
   // Python's float and strtod give the nearest double; analytics on the same prices must start from
   // the same doubles. 16896.7559 is a split-adjusted close that four successive divisions put an ulp

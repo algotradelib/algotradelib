@@ -9,6 +9,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
+#include <stdexcept>
 #include <memory>
 #include <optional>
 #include <string>
@@ -195,6 +196,18 @@ TEST_CASE(
   const auto allowance = tossinvest::reported_rate_limit(*response);
   REQUIRE(allowance.has_value());
   REQUIRE(*allowance == 3);
+}
+
+TEST_CASE("a stated allowance that cannot be adopted leaves the budget in force") {
+  network::RateLimitController controller(RateLimitBudget{8, 8, 2});
+  REQUIRE_THROWS_AS(controller.shrink(0, 3, std::chrono::milliseconds(1)), std::invalid_argument);
+  REQUIRE_THROWS_AS(controller.shrink(3, 0, std::chrono::milliseconds(1)), std::invalid_argument);
+  // What `budget()` and `stats()` report is still what the bucket enforces.
+  CHECK(controller.budget().burst_ == 8);
+  CHECK(controller.budget().per_second_ == 8);
+  CHECK(controller.budget().trading_reserve_ == 2);
+  CHECK(controller.stats().burst_ == 8);
+  CHECK(controller.stats().broker_rejections_ == 0);
 }
 
 TEST_CASE("a stated allowance is adopted and an unstated one is waited out") {
