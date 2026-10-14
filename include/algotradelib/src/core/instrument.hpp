@@ -142,8 +142,8 @@ struct TickBand {
 /**
  * @brief The price grid (tick sizes) an instrument's order prices must sit on.
  *
- * No broker publishes tick sizes, so the library maintains these tables (`source_` names the
- * table and its revision); replace a rule if the exchange revises its grid. A rule of kind
+ * A broker states at most the tick at one price, not the ladder, so the library maintains these
+ * tables (`source_` names the table and its revision); replace a rule if the exchange revises its grid. A rule of kind
  * `UNKNOWN` refuses to check or round a price. A custom table needs positive ticks and bands
  * sorted by `from_`.
  */

@@ -40,7 +40,7 @@ schedule.tick_ = std::chrono::seconds(1);
 
 runner::PollingLoop loop(live_runner, source, schedule);
 loop.set_maximum_portfolio_age(std::chrono::minutes(2));
-loop.set_maximum_price_limits_age(std::chrono::minutes(30));
+loop.set_maximum_price_limits_age(std::chrono::minutes(20));
 
 runner::StopSource stop;
 runner::SignalStop::install(stop);
@@ -247,8 +247,8 @@ With a policy stated, the loop refuses to place while the snapshot is older than
 `portfolio_stale`. Reconciling a target against
 stale positions is how a position gets double-sized by a route that `working_quantity` does not close.
 Staleness is measured against `Portfolio::as_of_`, and **that is when the reply arrived here, not
-when the positions were true at the broker**. Neither broker timestamps a holdings answer, so the
-adapters stamp `HoldingsSnapshot::received_at_` with the local clock as they parse, and
+when the positions were true at the broker**. No adapter here gets a time from the broker for a
+holdings answer, so the adapters stamp `HoldingsSnapshot::received_at_` with the local clock as they parse, and
 `SessionSource` copies it straight into `as_of_`. The gate therefore understates the age of the
 figures by however long the request took: a snapshot the broker computed slowly can pass an age
 limit it should have failed. Set the limit with that headroom in mind.
@@ -497,7 +497,9 @@ All but the last are what the closing wait reads for, and usually cures. When it
 cannot, the pass still sends what it can see, because withdrawing some beats withdrawing none, but it
 will not call the result complete, and the note says which of these it was.
 
-Two more keep `closing_complete()` false. `closing_unconfirmed_` counts orders this runner sent that
+Three more keep `closing_complete()` false. `closing_unsizable_` counts positions whose close could not
+be sized: holding rows that do not add up, a closing quantity that cannot be represented, or a same-side
+working quantity that cannot be subtracted. `closing_unconfirmed_` counts orders this runner sent that
 neither holdings nor a listing accounted for when the pass ran: exposure it could not withdraw or size
 around. And `closing_interrupted_` says the run was abandoned for failing polls while a `withdraw` or
 `flatten` was pending: the pass did not run at all, and the runner is left unable to send.
@@ -505,7 +507,7 @@ around. And `closing_interrupted_` says the run was abandoned for failing polls 
 **It is not a confirmation of anything at the exchange.** `true` means every instruction the loop
 asked for was *accepted by the broker*, and that is where the library's knowledge stops. An accepted
 closing order may not have filled, which only a later holdings snapshot shows. An accepted
-cancellation may not have completed: cancellation is asynchronous at both brokers — Toss publishes
+cancellation may not have completed: cancellation is asynchronous — Toss, for one, publishes
 `PENDING_CANCEL` while it is in flight and `CANCEL_REJECTED` when it fails, returning the order to its
 previous state — so a withdraw that reports complete can still have orders working.
 
@@ -1057,8 +1059,8 @@ with `GuardReason::VALUE_NOT_KNOWN` until you register it.
   of shares.
 - **Stream.** It polls; streaming would plug into the same source seam.
 - **Run more than one loop.** One loop, one thread.
-- **Tell you whether the sellable figure already excludes your resting orders.** Neither broker
-  documents it, so the guard subtracts them — safe, and possibly twice. Turn on
+- **Tell you whether the sellable figure already excludes your resting orders.** No broker this
+  library binds is known to document it, so the guard subtracts them — safe, and possibly twice. Turn on
   `probe_sellable_convention()` and a run that observes one says so in `report.notes_`.
 
 Surviving a restart is not on this list, except for the lag above. Bind a

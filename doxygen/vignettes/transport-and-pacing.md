@@ -63,8 +63,8 @@ Kiwoom's specification gives no numeric allowance. The Kiwoom clients of `exampl
 
 **Leaving `rate_limit_` unset issues requests unpaced**, which is the default. Not
 every endpoint is metered, and one that is not should not be slowed down; an
-unpaced client also keeps strict arrival order, exactly as it did before pacing
-existed.
+unpaced client sends without waiting, but still in priority order (`AUTH`, then
+`TRADING`, `ACCOUNT`, `MARKET_DATA`, `REFERENCE`); arrival order holds within a class.
 
 ## Traffic classes
 
@@ -140,11 +140,13 @@ window.
 number of broker refusals seen. Rising `delayed_` on a polling class while
 `TRADING` stays undelayed is the reserve working; rising `shed_` means the queue is
 full rather than the pacer slow. The counters are not synchronized: read them on
-the client's strand (a completion handler with no executor of its own runs there)
-or while no request is in progress, such as between calls on a blocking session.
+the client's strand (a broker's reply to a completion handler with no executor of its own runs
+there; a refusal before any request is sent does not) or while no request is in progress, such as
+between calls on a blocking session.
 
-`example-rate-limit-stats [burst] [per-second] [reserve]` prints all of this for a
-budget offline, with no credentials and no network access.
+`example-rate-limit-stats [burst] [per-second] [reserve]` shows offline how a budget is spent: each
+class's burst allowance, what the reserve keeps free, the sustained rate, and how a broker's refusal
+changes the budget. It needs no credentials and no network access, and reads no live counters.
 
 ## Where to go next
 

@@ -22,9 +22,9 @@ const auto bands = analytics::bollinger(close, 20, 2.0);
 const auto strength = analytics::rsi(close, 14);
 
 // And the one route back to something a broker will accept.
-const auto rule = algotradelib::price_rule_for(instrument.country_, SecurityType::STOCK);
+const auto rule = algotradelib::price_rule_for(bars.instrument_.country_, algotradelib::SecurityType::STOCK);
 const auto limit = analytics::round_scalar_to_tick(
-  bands.upper_[close.size() - 1], rule, OrderSide::SELL
+  bands.upper_[close.size() - 1], rule, algotradelib::OrderSide::SELL
 );
 ```
 
@@ -82,9 +82,10 @@ out, a computation can produce an infinity, a `NaN`, or a magnitude no decimal c
 holds, and each of those has to be refused rather than truncated into something plausible.
 
 `PriceRule::Kind::UNKNOWN` refuses to round at all. An instrument whose tick ladder the
-library does not know — an ETN, a foreign listing on a venue with its own rules — gets no
-answer rather than a guess, because a guessed tick is an order the exchange will reject at
-best and fill at the wrong price at worst.
+library does not know — a KRX ETF, ETN or warrant — gets no answer rather than a guess, because a
+guessed tick is an order the exchange will reject at best and fill at the wrong price at worst. A
+listing outside Korea gets `UNCONSTRAINED` instead: its price is only rounded to the `scale` passed,
+which defaults to 0, so pass the market's (2 for US dollars).
 
 ## Convention 2: two kinds of absence, and every reduction masks both
 
@@ -190,11 +191,11 @@ where they break:
 
 - **Trailing variance.** `rolling_stdev` takes two passes over each window rather than
   computing `E[x²] - E[x]²`. At price levels near `1e8` the one-pass form returns a variance
-  of 2 where the answer is 1 — wrong by 41% with no diagnostic — because the two terms agree
+  of 2 where the answer is 1, a standard deviation wrong by 41%, with no diagnostic, because the two terms agree
   to more digits than a `double` has. It can even come out negative and become a `NaN` at the
   square root, with nothing to say arithmetic rather than data produced it.
-- **Masking is paid for once per series, not once per window.** Every trailing function splits its
-  input through `math::observed_parts` into values-with-absences-zeroed plus a 0/1 presence mask.
+- **Masking is paid for once per series, not once per window.** Every trailing window function splits
+  its input through `math::observed_parts` into values-with-absences-zeroed plus a 0/1 presence mask.
   A window's sum is then `values_.segment(...).sum()` and its divisor `present_.segment(...).sum()`
   — two reductions over contiguous memory with no branch and no per-element predicate. Adding zero
   for an absent entry is exact, so the answers are unchanged; only the summation order differs, and
@@ -209,14 +210,14 @@ where they break:
   The remaining `O(rows x window)` structure is deliberate. A prefix-sum would make it linear and
   would lose exactly the significant digits the two-pass variance exists to protect.
 
-  `ema` and `cumulative_returns` are the exceptions and cannot be vectorized at all: each value
-  depends on the one before it, so there is no reduction to hand a backend.
+  The recursive ones are the exceptions and cannot be vectorized at all: `ema` (and `macd`, built on
+  it), Wilder's smoothing in `rsi` and `atr`, and `cumulative_returns`. Each value depends on the one
+  before it, so there is no reduction to hand a backend.
 
 - **The masking vocabulary lives in the seam, not in the indicators.** `observed_parts`,
-  `observed_or` and `both_present` are defined in `math/eigen.hpp`, so no analytics header writes
-  `.array().isNaN().select(...)` and the layer above stays backend-agnostic while still running at
-  full speed. A second backend implements three small functions rather than having its expression
-  API assumed throughout.
+  `observed_or` and `both_present` are defined in `math/eigen.hpp`, so the indicators do not spell
+  their own absence test. The layer above still uses the backend's expression API for its
+  arithmetic (sums, norms, segments), so a second backend would supply more than these three.
 
   Eigen's plugin macros (`EIGEN_MATRIXBASE_PLUGIN` and friends) would allow `series.observedSum()`
   instead, and are deliberately not used: they must be defined before any Eigen header anywhere in
@@ -225,7 +226,7 @@ where they break:
   Appropriate for an application that owns its whole build; not for a header-only library other
   people include.
 
-And two places where the honest answer is a flag rather than a number:
+And one place where the honest answer is a flag rather than a number:
 
 - **The decompositions are Eigen's own, exposed as aliases**, not wrapped. `math::Llt`,
   `math::Ldlt`, `math::HouseholderQr`, `math::ColPivQr`, `math::FullPivQr`, `math::FullPivLu`,
@@ -273,7 +274,8 @@ what it needs.
 Note that this is not the same rule as "ship only what the first strategies use". Applied that way
 it would also delete `macd`, `bollinger`, `atr`, `wma`, `sharpe`, `one_way_turnover`,
 and `max_drawdown`, since the first set of vanilla strategies needs only `sma`,
-`ema`, `rolling_min`/`rolling_max`, `zscore`, `rsi`, `rolling_stdev`, and `Panel`.
+`ema`, `alpha_from_span`, `rolling_min`/`rolling_max`, `zscore`, `rsi`, `returns`, `rolling_stdev` and
+`to_decimal`.
 
 ## Where the numbers live
 

@@ -28,8 +28,8 @@ is bounded by a page budget and stops on an empty page.
 stamps a minute bar at its close and a daily bar at local midnight; KIS reports a
 period bar by trading date and a minute bar by execution time. The convention travels
 in the value because a timestamp alone cannot reveal it, and reading one as the other
-is a lookahead. `BarSeries::ascending()` makes the ordering invariant checkable — both
-brokers send newest first and the adapter reverses once.
+is a lookahead. `BarSeries::ascending()` makes the ordering invariant checkable — every
+broker sends newest first and its adapter reverses once.
 
 The interval, the stamp convention, and the currency live on the series rather than on
 each bar, because all three are constant across one. A `Bar` is therefore 120 bytes of
@@ -51,8 +51,10 @@ that is the following midnight.
 
 ## The price grid is the library's own
 
-**Neither broker publishes tick size anywhere in its API.** `PriceRule` is therefore
-a table this library maintains, carried on `Instrument::price_rule_`. It records its
+**No adapter builds the grid from the broker.** A broker states at most the tick at
+one price (KIS's quote carries `aspr_unit`; Toss's refusal of an off-tick price names
+the tick it wanted), not the whole ladder, so `PriceRule` is a table this library
+maintains, carried on `Instrument::price_rule_`. It records its
 own `source_` so a stale table is visible rather than assumed, and it is data a caller
 can replace.
 
@@ -75,8 +77,8 @@ three states:
 | `UNCONSTRAINED` | the market quotes in free decimals | returns the price unchanged |
 | `UNKNOWN` | this library has no table for the instrument | **returns nothing** |
 
-KRX prices funds and notes on a different ladder from cash equities and neither broker
-publishes either, so an ETF or ETN arrives with `UNKNOWN` rather than the equity table.
+KRX prices funds and notes on a different ladder from cash equities and this library
+carries no table for it, so an ETF or ETN arrives with `UNKNOWN` rather than the equity table.
 Attaching the equity grid would be worse than attaching none: it would round onto a
 ladder the exchange does not use and the order would be rejected, with the library
 having confidently produced the price. A default-constructed rule is `UNKNOWN` too, so

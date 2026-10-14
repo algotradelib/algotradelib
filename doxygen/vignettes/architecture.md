@@ -296,8 +296,9 @@ than a guess, because attaching the equity grid to an ETF would round onto a lad
 not use and the order would be rejected — with the library having confidently produced the price.
 
 That is also why the tick rule lives in market data rather than in the strategy layer, and why
-`PriceRule` records its own `source_`: neither broker publishes tick size anywhere in its API, so the
-table is this library's own and a stale one has to be visible rather than assumed.
+`PriceRule` records its own `source_`: no adapter builds the grid from a broker's reply (a broker
+states at most the tick at one price), so the table is this library's own and a stale one has to be
+visible rather than assumed.
 
 ## Where to go next
 

@@ -578,8 +578,8 @@ private:
     // every checked sell would refuse at both shipped adapters. It is assigned, not merged, for the
     // same reason `positions_` is: this is one read, and its figures mean what this read says.
     portfolio.sellable_basis_ = result.value().sellable_basis_;
-    // When the snapshot arrived, which is the best the two brokers allow: neither timestamps a
-    // holdings answer, so `received_at_` is this machine's clock at parse time. The loop's staleness
+    // When the snapshot arrived, which is the best the adapters can do: none gets a time from the
+    // broker for a holdings answer, so `received_at_` is this machine's clock at parse time. The loop's staleness
     // gate therefore measures time since arrival, and understates the age of the figures by the
     // request's own latency.
     portfolio.as_of_ = result.value().received_at_;
@@ -1035,9 +1035,9 @@ private:
     const std::vector<runner::OpenInstruction>& open, const std::vector<OrderSnapshot>& rows) {
     auto candidates = rows;
     if (runner::any_placement(open)) {
-      // **An open-orders listing cannot answer the placement question.** Both brokers' working-order
+      // **An open-orders listing cannot answer the placement question.** Each broker's working-order
       // inquiry returns only what is still resting -- Toss maps it to its `OPEN` scope, KIS to the
-      // modifiable set -- and a market or aggressive limit order can fill and leave that listing
+      // modifiable set, Kiwoom to its unfilled-order list -- and a market or aggressive limit order can fill and leave that listing
       // before the first sweep. Matching against it alone would then find nothing, and after the
       // window closed would report `NOT_PLACED` and clear the ledger for an order that existed and
       // executed. So a sweep with any placement owed reads the history as well.
