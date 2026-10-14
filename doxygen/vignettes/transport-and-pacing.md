@@ -24,7 +24,7 @@ it, and an opt-in pacer that decides what goes out and in what order.
   `ssl::context` you pass must enable `ssl::verify_peer` and hold trusted roots
   (the broker-client examples do).
 - WebSocket sessions accept a target path and handshake headers, serialize
-  writes and close, send idle keep-alive pings, and report lifecycle events
+  writes and close, and report lifecycle events
   through virtual callbacks. `WssSessionOptions` can enable bounded exponential
   reconnect backoff with jitter; adapters resubscribe from `on_open()`.
 
@@ -138,8 +138,8 @@ window.
 `BrokerSession::rate_limit_stats()` returns per-class `admitted_`, `delayed_`,
 `shed_`, and accumulated `waited_`, plus the allowance currently in force and the
 number of broker refusals seen. Rising `delayed_` on a polling class while
-`TRADING` stays undelayed is the reserve working; rising `shed_` means the queue is
-full rather than the pacer slow. The counters are not synchronized: read them on
+`TRADING` stays undelayed is the reserve working; rising `shed_` means the queue was
+full, or the budget is too slow for the request timeout. The counters are not synchronized: read them on
 the client's strand (a broker's reply to a completion handler with no executor of its own runs
 there; a refusal before any request is sent does not) or while no request is in progress, such as
 between calls on a blocking session.

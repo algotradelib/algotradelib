@@ -157,7 +157,7 @@ protected:
   virtual void on_open() {}
 
   /**
-   * @brief Called when a stage fails; the session is then torn down, and reconnects if
+   * @brief Called after a failed stage has torn the session down; it then reconnects if
    *   `automatic_reconnect_` is set and `close()` was not called.
    * @param stage The stage, such as `"connect"`, `"handshake"`, `"read"` or `"write"`.
    * @param error The error.
@@ -220,7 +220,10 @@ protected:
     );
   }
 
-  /** @brief Sends the upgrade request; called by the transport class's `on_connect()` once connected. */
+  /**
+   * @brief Sends the upgrade request; called once connected (`WsSession`) or after the TLS handshake
+   *   (`WssSession`).
+   */
   void start_ws_handshake() {
     beast::get_lowest_layer(*ws_).expires_never();
     auto timeout = websocket::stream_base::timeout::suggested(beast::role_type::client);

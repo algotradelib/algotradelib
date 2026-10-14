@@ -15,7 +15,7 @@ namespace analytics {
  * @file
  * @brief Trailing-window statistics: sums, means, deviations, extremes and moving averages.
  *
- * Every function returns a series as long as its input: row `i` of the result describes the
+ * Every series function returns a series as long as its input: row `i` of the result describes the
  * window ending at row `i` of the input. A row that cannot be computed is `missing()`.
  *
  * Two numbers describe a window:

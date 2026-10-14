@@ -378,8 +378,8 @@ public:
   /**
    * @brief Returns why local machinery stopped sending, if it did.
    *
-   * The hold (`strategy::HaltReason::LOCAL_FAILURE`) stays until `resume_after_local_failure`, even
-   * if the failure was transient. The detail is the first failure recorded through this runner.
+   * The hold (`strategy::HaltReason::LOCAL_FAILURE`) stays until `resume_after_local_failure` (or a
+   * direct `guard().resume`), even if the failure was transient. The detail is the first failure recorded through this runner.
    *
    * @return The detail, or `std::nullopt` while sending works.
    */

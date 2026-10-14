@@ -215,7 +215,8 @@ public:
    * @brief Returns the client's request-pacing counters.
    *
    * A rising `delayed_` on a polling group while `TRADING` stays undelayed means trading capacity
-   * is being kept free; a rising `shed_` means the queue is full.
+   * is being kept free; a rising `shed_` means the queue was full or the budget is too slow for the
+   * timeout.
    *
    * @warning The counters are plain integers the client updates on its own strand. Read them only
    *   when no request is in flight, or from code running on that strand; a completion handler bound
@@ -934,7 +935,8 @@ public:
    * @brief Returns the client's request-pacing counters.
    *
    * A rising `delayed_` on a polling group while `TRADING` stays undelayed means trading capacity
-   * is being kept free; a rising `shed_` means the queue is full. Safe to read between calls.
+   * is being kept free; a rising `shed_` means the queue was full or the budget is too slow for the
+   * timeout. Safe to read between calls.
    *
    * @return The counters, or `nullptr` if the client is not paced.
    */

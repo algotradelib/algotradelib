@@ -206,7 +206,7 @@ struct BollingerBands {
  *   deviations either side of it.
  *
  * Uses the sample deviation (as `rolling_stdev`); packages that use the population deviation draw
- * bands narrower by `sqrt((n - 1) / n)` (about 2.6% at 20 rows). A window with no dispersion gives
+ * bands narrower by a factor of `sqrt((n - 1) / n)` (about 2.5% at 20 rows). A window with no dispersion gives
  * three equal lines.
  *
  * @param values The series; `NaN` entries are unobserved.

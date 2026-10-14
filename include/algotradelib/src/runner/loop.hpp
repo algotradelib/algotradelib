@@ -48,7 +48,7 @@ enum class PollKind {
    */
   CALENDAR,
   /**
-   * @brief Today's price bands, which limit prices are clamped into; polled second, before anything
+   * @brief Today's price bands, which an aggressive limit price is clamped to; polled second, before anything
    *   that feeds.
    *
    * It installs bands with `Runner::set_price_limits` and feeds nothing. Orders decided from a poll

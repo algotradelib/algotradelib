@@ -32,8 +32,9 @@ enum class HaltReason {
   /**
    * @brief Local machinery failed, such as the order journal not being writable; nothing is sent.
    *
-   * Sticky; released only by `runner::Runner::resume_after_local_failure`. The detail names the
-   * failure.
+   * Sticky; release it with `runner::Runner::resume_after_local_failure`, which also acknowledges the
+   * journal failures (`RiskGuard::resume(LOCAL_FAILURE)` lifts the hold without that). The detail names
+   * the failure.
    */
   LOCAL_FAILURE,
   /** @brief A stop was requested and the run is shutting down. */
