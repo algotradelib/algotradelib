@@ -949,6 +949,24 @@ TEST_CASE("a torn line naming nothing halts the runner outright", "[journal][fil
   REQUIRE(dry.ledger().empty());
 }
 
+TEST_CASE("a torn line naming nothing halts the runner beside another open instruction", "[journal][file]") {
+  // Read without a writer's repair (a reader, or a journal that never reopened for writing): the
+  // complete line is an instruction of unknown outcome on one instrument, and the torn one names
+  // none. Withholding the one instrument would leave the other instruction's, whatever it was, free.
+  const auto pending = sample_entry();
+  runner::JournalBytes bytes;
+  bytes.status_ = runner::JournalReadStatus::READ;
+  bytes.text_ = runner::journal_entry_to_line(pending) + "\n" + R"({"id":"run-2","ac)";
+  const auto replay = runner::parse_journal_bytes(bytes);
+  REQUIRE(replay.truncated_tail_);
+
+  runner::IndeterminacyLedger ledger;
+  const auto recovery = runner::recover_into(replay, ledger);
+  REQUIRE(recovery.open_.size() == 2);
+  REQUIRE(recovery.unattributable_);
+  REQUIRE(ledger.requires_reconcile(samsung()));
+}
+
 TEST_CASE(
   "a cancellation of a market order the broker priced survives writer to reader",
   "[journal][file][reconcile]"

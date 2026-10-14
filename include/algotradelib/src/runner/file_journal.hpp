@@ -1090,8 +1090,10 @@ inline JournalBytes read_journal_bytes(const std::string& path) {
 /**
  * @brief Parses a journal's bytes, salvaging a torn final line.
  *
- * Unparsed lines are counted and a torn last line is salvaged as an operator-only entry; an empty
- * line, or a header that is not the first line, counts as damage.
+ * Unparsed lines are counted and a torn last line is salvaged as an operator-only entry: the
+ * instruction it names, or, when it names no instrument, the entry `unattributable_journal_entry`
+ * makes, on which recovery halts all trading. An empty line, or a header that is not the first line,
+ * counts as damage.
  *
  * @param bytes The bytes and read status; a status other than `READ` is passed through.
  * @return The replay.
@@ -1122,6 +1124,9 @@ inline JournalReplay parse_journal_bytes(const JournalBytes& bytes) {
       } else {
         replay.detail_ =
           "the final journal line was truncated and named no instrument; something was in flight";
+        // The same entry a writer's repair appends for this tail, so recovery halts on it whether or
+        // not the file was repaired, and whatever else is open beside it.
+        replay.entries_.push_back(unattributable_journal_entry(tail));
       }
       break;
     }
