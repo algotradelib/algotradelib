@@ -119,7 +119,7 @@ saying so) and holdings must show its final fills, as for rotation under "What t
 | `pending` then `rejected` | the instruction was refused — by the broker, by the binding or client before it sent, or by local machinery that failed. The order does not exist. Nothing owed |
 | `pending` then `indeterminate` | the outcome is unknown (a failure in transit, an unreadable reply, an HTTP 5xx, or a broker refusal reported as `PROTOCOL`, which is most of them; [Binding a broker](binding-a-broker.md) names the refusals that are `rejected` instead). Still owed |
 | a later `confirmed` | a serialized runner accounted for the placement: holdings showed its fill, or its history showed it ended with nothing filled, or an operator released it. The placement is no longer owed; an operator's release does not clear a ledger hold, and the next order on the instrument waits for a holdings read received after it |
-| a later `held` | evidence contradicted the placement (holdings moved past what it can explain); only an operator can account for it, with `Runner::release_obligations` (see the operator procedure above) |
+| a later `held` | evidence contradicted the placement (holdings moved past what it can explain); only an operator can account for it, with `Runner::release_obligations` (see the operator procedure below) |
 | `pending` then `resolved` | a sweep read the broker's lists and closed the question. `order_id` says what it saw: a number, or nothing found. A second `resolved` line for the same id, with a number, is a later sweep finding the order |
 | `pending` alone, at the end of the file | the process died between the write and the answer |
 | a last line with no newline | the process died *during* the write |

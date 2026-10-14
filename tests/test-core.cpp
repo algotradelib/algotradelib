@@ -5171,8 +5171,8 @@ TEST_CASE("instrument reference data normalizes from both brokers") {
     REQUIRE(instrument.delisted_on_.state() == StatedDate::State::NOT_STATED);
     REQUIRE(*instrument.shares_outstanding_ == Decimal64::parse("728002365"));
 
-    // The grid is the library's own, because no broker publishes tick size, and this
-    // is a cash equity so the equity ladder applies.
+    // The grid is the library's own (the adapter chooses it from the market, not from a reply), and
+    // this is a cash equity so the equity ladder applies.
     REQUIRE(instrument.price_rule_.kind_ == PriceRule::Kind::STATED);
     REQUIRE(instrument.price_rule_.tick_at(Decimal64::parse("70000"))->str() == "100");
   }
