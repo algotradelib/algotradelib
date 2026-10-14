@@ -1132,6 +1132,22 @@ TEST_CASE("a rate whose window could not be read is refused as unknown, not as m
   REQUIRE(backtest::commission_model_from(sound, Country::KR, Date{2026, 9, 23}));
 }
 
+TEST_CASE("a flat commission model keeps the origin of the schedule it was built from") {
+  CommissionSchedule published;
+  published.rates_.push_back(rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, std::nullopt));
+  const auto broker = backtest::commission_model_from(published, Country::KR, Date{2026, 9, 23});
+  REQUIRE(broker);
+  CHECK(broker.value().from_broker_);
+
+  // A rate the caller typed from a fee page is reported as the caller's, never as one a broker published.
+  CommissionSchedule stated = published;
+  stated.origin_ = CommissionOrigin::CALLER_STATED;
+  stated.tariff_ = "online account";
+  const auto caller = backtest::commission_model_from(stated, Country::KR, Date{2026, 9, 23});
+  REQUIRE(caller);
+  CHECK_FALSE(caller.value().from_broker_);
+}
+
 // ---------------------------------------------------------------------------
 // Order identity in a replay: what rests, and which one a withdrawal names
 // ---------------------------------------------------------------------------

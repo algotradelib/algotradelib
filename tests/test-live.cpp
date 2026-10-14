@@ -3163,6 +3163,22 @@ TEST_CASE("an outright failure wins however late in the sweep it lands") {
   CHECK(source.last_error()->category_ == ErrorCategory::TRANSPORT);
 }
 
+TEST_CASE("a bar or quote poll over an empty universe reads nothing and keeps the last error") {
+  BudgetSession session;
+  session.fail_buying_power_in(Currency::usd());
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<BudgetSession> source(session, {});
+  source.set_buying_power_currencies({Currency::usd()});
+
+  CHECK(source.poll(runner::PollKind::BUYING_POWER, live_runner) == runner::PollOutcome::FAILED);
+  REQUIRE(source.last_error().has_value());
+  // Nothing is configured to read, so nothing succeeded: the failure stays the latest diagnostic.
+  CHECK(source.poll(runner::PollKind::BARS, live_runner) == runner::PollOutcome::UNCHANGED);
+  CHECK(source.poll(runner::PollKind::QUOTES, live_runner) == runner::PollOutcome::UNCHANGED);
+  REQUIRE(source.last_error().has_value());
+  CHECK(source.last_error()->category_ == ErrorCategory::TRANSPORT);
+}
+
 TEST_CASE("a throttled currency alone is a throttled poll, not an outage") {
   BudgetSession session;
   session.set_buying_power("5000000");

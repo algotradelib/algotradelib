@@ -412,6 +412,10 @@ private:
   // `Runner::feed_warmup`).
   template <typename Runner>
   runner::PollOutcome poll_bars(Runner& runner_instance) {
+    // Nothing configured is nothing read: `last_error()` is left as it was, as the other polls leave it.
+    if (universe_.empty()) {
+      return runner::PollOutcome::UNCHANGED;
+    }
     // **Every instrument is read before anything is fed**, and then the new bars of all of them are
     // fed in period-end order, ties in universe order -- the order a replay feeds them. Fed one
     // instrument at a time, a cold start handed a cross-sectional strategy all of one name's history
@@ -539,6 +543,9 @@ private:
   // Fetches a quote per instrument and feeds each one.
   template <typename Runner>
   runner::PollOutcome poll_quotes(Runner& runner_instance) {
+    if (universe_.empty()) {
+      return runner::PollOutcome::UNCHANGED;
+    }
     auto outcome = runner::PollOutcome::UNCHANGED;
     for (const auto& instrument : universe_) {
       auto result = market_data_->quote(instrument);

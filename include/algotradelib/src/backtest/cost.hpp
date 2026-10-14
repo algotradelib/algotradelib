@@ -30,7 +30,10 @@ struct CommissionModel {
   Decimal64 rate_{Decimal64::parse("0")};
   /** @brief The smallest commission on any execution. */
   Decimal64 minimum_{Decimal64::parse("0")};
-  /** @brief Whether the rate came from a broker's published schedule; set by `commission_model_from`. */
+  /**
+   * @brief Whether the rate came from a broker's published schedule; `commission_model_from` sets it
+   *   from the schedule's `origin_`.
+   */
   bool from_broker_{false};
 
   /**
@@ -75,16 +78,17 @@ struct CommissionModel {
 };
 
 /**
- * @brief Builds a flat commission model from the rate a broker published for a market on a date.
+ * @brief Builds a flat commission model from a schedule's rate for a market on a date.
  *
  * The model has no minimum (none is published) and no tax; it charges that one rate for the whole
  * replay, even if the schedule changes rate later. For per-date rates use
  * `CommissionPolicy::scheduled`.
  *
- * @param schedule The broker's schedule.
+ * @param schedule The schedule, published by a broker or stated by the caller.
  * @param country The market.
  * @param date The date whose rate to use.
- * @return The model (with `from_broker_` set), or an `INVALID_ARGUMENT` error with broker code
+ * @return The model (`from_broker_` true only when the schedule's `origin_` is `BROKER_PUBLISHED`), or
+ *   an `INVALID_ARGUMENT` error with broker code
  *   `no_rate_for_date` or `rate_bounds_unreadable` (see `CommissionSchedule::RateSelection`).
  */
 inline Result<CommissionModel> commission_model_from(
@@ -111,7 +115,8 @@ inline Result<CommissionModel> commission_model_from(
   }
   const auto& rate = selection.rate_;
   auto model = CommissionModel::of(rate->rate_);
-  model.from_broker_ = true;
+  // A caller's stated schedule stays the caller's: the report says where the rate it charged came from.
+  model.from_broker_ = schedule.origin_ == CommissionOrigin::BROKER_PUBLISHED;
   return Result<CommissionModel>(std::move(model));
 }
 
