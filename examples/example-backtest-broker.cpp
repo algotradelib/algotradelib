@@ -14,8 +14,9 @@
 //   example-backtest-broker tossinvest 005930 [account-sequence]
 //
 // Credentials come from the same environment variables the other examples document. What you can fetch
-// bounds what you can test: KIS serves about 5,000 daily bars per request, which is roughly twenty
-// years of KRX trading days, but serves minute bars one trading day at a time.
+// bounds what you can test: KIS returns 100 daily bars a request and one `bars()` call pages up to
+// 50 requests (about 5,000 bars, roughly twenty years of KRX trading days), but serves minute bars
+// one trading day at a time.
 
 #include "kis_credentials.hpp"
 

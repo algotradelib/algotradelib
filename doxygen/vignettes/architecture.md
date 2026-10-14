@@ -250,7 +250,7 @@ Three consequences that come up constantly:
 
 Brokers do not publish the same information, and that is not a problem to be solved by normalization.
 
-- A value both brokers genuinely mean the same way becomes a shared type. *Genuinely* is load-bearing:
+- A value the brokers genuinely mean the same way becomes a shared type. *Genuinely* is load-bearing:
   two fields with similar names that mean different things are not one thing, they are two.
 - A capability only one broker has stays that broker's, reachable through `BrokerCaps` and
   `session.client()`. It is neither hidden nor faked on the broker that lacks it.

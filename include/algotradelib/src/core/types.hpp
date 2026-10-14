@@ -841,8 +841,9 @@ struct QuoteSnapshot {
   /**
    * @brief The best bid and offer.
    *
-   * @warning No shipped adapter fills this: it is empty on every quote from KIS, Toss or Kiwoom.
-   *   For the spread or midpoint, read the order book with the session's `depth()`.
+   * @warning Only Kiwoom's quote fills this (from `ka10007`'s best bid and offer); it is empty on
+   *   every quote from KIS or Toss. For the spread or midpoint there, read the order book with the
+   *   session's `depth()`.
    */
   std::optional<TopOfBook> top_of_book_;
   /** @brief The session's cumulative traded volume, if the broker gave it. */

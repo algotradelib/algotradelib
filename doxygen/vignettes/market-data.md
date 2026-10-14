@@ -131,7 +131,7 @@ reporting it as open would let it place orders into a holiday.
 
 ## Example
 
-`example-portable-market-data` is one source file compiled for both brokers:
+`example-portable-market-data` is one source file compiled for KIS and Toss:
 
 ```bash
 example-portable-market-data kis 005930

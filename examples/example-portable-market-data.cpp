@@ -1,6 +1,6 @@
-// One market-data report written once and compiled for every supported broker.
+// One market-data report written once and compiled for two brokers, KIS and Toss.
 //
-// `report()` names no vendor type. Everything that differs between the two brokers
+// `report()` names no vendor type. Everything that differs between KIS and Toss
 // appears as an `if constexpr` on a capability, which is what the port is for: the
 // common questions are asked the same way, and each broker's own strengths are
 // reached deliberately rather than faked for the other.

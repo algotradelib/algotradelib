@@ -6,8 +6,8 @@
 // not remember.
 //
 // The same strategies are replayed at daily and at minute granularity, and the engine is told nothing
-// about which it is getting. Neither supported broker makes intraday history easy, but that is a
-// limitation of two adapters rather than of backtesting.
+// about which it is getting. Neither KIS nor Toss makes intraday history easy, but that is a
+// limitation of those adapters rather than of backtesting.
 //
 // Run it as:
 //
