@@ -1513,7 +1513,7 @@ TEST_CASE("a history row's state comes from two columns, not one", "[kiwoom][his
 
 TEST_CASE("a cancelled order's own history row ends once its cancellation names it", "[kiwoom][history]") {
   const auto date = Date{2026, 10, 6};
-  // The demo server's rows for a far limit buy and its cancel (2026-10-06, F45), at 10 shares rather than the observed 1
+  // The demo server's rows for a far limit buy and its cancel (observed 2026-10-06), at 10 shares rather than the observed 1
   // so that a partial fill can be written.
   const auto row = [](
     const std::string& number, const std::string& original, const std::string& amendment,

@@ -112,12 +112,21 @@ accept that too or the order-list gate stays closed. Recovery merges the two lis
 copy** of a working row (`runner::exact_copy`: the same order id, instrument and
 `ordered_at_`), because an order number alone is not an order's identity across days.
 So **where your history can list an order your working listing also lists, stamp
-`ordered_at_` on both rows alike**: the order is then one row. Stamped differently, or
-unstamped on either side, both rows are kept, and if both answer the instruction a
+`ordered_at_` on both rows alike** wherever the broker states the instant: the order is then one row.
+Stamped differently, or unstamped on either side, both rows are kept, and if both answer the instruction a
 journal is waiting on, it recovers as `AMBIGUOUS` and holds its instrument until an
-operator settles it. Kiwoom stamps both listings from the broker's own order time; Toss
-reads both (its `OPEN` and `CLOSED` scopes, which can both list a partly filled order)
-with one parser from the order's `orderedAt`.
+operator settles it.
+
+**A date the broker did not state is not evidence.** If your working listing gives only a time of day
+and you supply the date (the day you read it), set `OrderSnapshot::ordered_date_assumed_` on the row,
+also when the time itself could not be read. Such a row neither matches an instruction nor lets one be
+found absent; where the history has a row of the same order (`runner::dates_listed_order`: the same order
+id and instrument at the same time of day, and nothing either row states disagrees), the listing row is
+dropped and the dated history row stands for the order on its own evidence. Left unset, an invented date
+is taken as the broker's word, and a previous day's order still listed can name an order of unknown
+outcome. Kiwoom's working-order listing (`ka10075`) is such a listing, and its history (`kt00007`) is
+dated by the day asked for; Toss reads both of its listings (its `OPEN` and `CLOSED` scopes, which can
+both list a partly filled order) with one parser from the order's `orderedAt`.
 
 ## Example
 
