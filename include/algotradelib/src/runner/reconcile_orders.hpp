@@ -245,22 +245,23 @@ inline Evidence trigger_evidence(
  * working-order row lacks a date. So an identical order placed through another channel, while this
  * runner's own order is not listed, can be matched to it; when both are listed the result is
  * `AMBIGUOUS`. A row whose date the adapter assumed (`OrderSnapshot::ordered_date_assumed_`) may be
- * another day's order at the same time of day, so it establishes nothing (`ABSENT`).
+ * another day's order at the same time of day, so it establishes nothing (`ABSENT`), whether or not its
+ * time could be read.
  *
  * @param instruction The instruction.
  * @param row The row.
  * @param window The allowances.
- * @return `CONFIRMS` if the row has no time or its time is inside the widened send window; `ABSENT`
- *   if its date was assumed; otherwise `CONTRADICTS`.
+ * @return `ABSENT` if the row's date was assumed; otherwise `CONFIRMS` if it has no time or its time is
+ *   inside the widened send window, and `CONTRADICTS` if not.
  */
 inline Evidence time_evidence(
   const OpenInstruction& instruction, const OrderSnapshot& row, const MatchWindow& window
 ) {
-  if (!row.ordered_at_) {
-    return Evidence::CONFIRMS;
-  }
   if (row.ordered_date_assumed_) {
     return Evidence::ABSENT;
+  }
+  if (!row.ordered_at_) {
+    return Evidence::CONFIRMS;
   }
   const auto begin = instruction.opened_at_ - window.clock_skew_;
   const auto end = instruction_sent_by(instruction, window) + window.clock_skew_;
@@ -1052,7 +1053,8 @@ inline bool exact_copy(const OrderSnapshot& a, const OrderSnapshot& b) {
  *
  * A listing row whose date was assumed (`OrderSnapshot::ordered_date_assumed_`) first takes the date of
  * a history row of the same order id and instrument at the same time of day, whose date is not
- * assumed. An uncertain row is kept, at the cost of a possible `AMBIGUOUS`. An adapter should stamp
+ * assumed and which describes the same order (side, quantity, price, and no disagreement on type or
+ * trigger). An uncertain row is kept, at the cost of a possible `AMBIGUOUS`. An adapter should stamp
  * `ordered_at_` the same way on working and history rows of one order, or both are kept.
  *
  * @param into The listing, extended in place.
@@ -1071,6 +1073,16 @@ inline void merge_dated_history(
     for (const auto& row : rows) {
       if (row.ordered_date_assumed_ || !row.ordered_at_ || row.order_id_ != assumed.order_id_ ||
           !(row.instrument_ == assumed.instrument_)) {
+        continue;
+      }
+      // A number reused on another day can belong to a different order at the same time of day: the two
+      // rows must also describe the same order.
+      const bool same_order = row.side_ == assumed.side_ &&
+        reconcile_detail::same_value(row.quantity_, assumed.quantity_) &&
+        reconcile_detail::same_value(row.price_, assumed.price_) &&
+        attribute_evidence(row.type_, assumed.type_) != Evidence::CONTRADICTS &&
+        trigger_evidence(row.trigger_price_, assumed.trigger_price_) != Evidence::CONTRADICTS;
+      if (!same_order) {
         continue;
       }
       // Both stamped from a date and the same `HHmmss` in one zone, so the same order differs by whole days.

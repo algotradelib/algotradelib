@@ -1384,6 +1384,50 @@ TEST_CASE("a working-order row's date is assumed until the day's history states 
     REQUIRE(rows.size() == 2);
     CHECK(rows.front().ordered_date_assumed_);
   }
+  SECTION("the number and the time of day of an order of another shape establish nothing") {
+    // A number reused on another day, at the same second: the history row says buy 20, the listing buy 10.
+    auto other = history(Date{2026, 3, 25}, "13:05:43");
+    other.quantity_ = Decimal64::parse("20");
+    const auto rows = merged(other);
+    REQUIRE(rows.size() == 2);
+    CHECK(rows.front().ordered_date_assumed_);
+    auto sold = history(Date{2026, 3, 25}, "13:05:43");
+    sold.side_ = OrderSide::SELL;
+    CHECK(merged(sold).front().ordered_date_assumed_);
+    auto priced = history(Date{2026, 3, 25}, "13:05:43");
+    priced.price_ = Decimal64::parse("70100");
+    CHECK(merged(priced).front().ordered_date_assumed_);
+  }
+}
+
+TEST_CASE("a working-order row whose time cannot be read names no order", "[kiwoom][orders]") {
+  // Flagged as assumed and with no time at all: still not evidence that it is the order looked for.
+  runner::OpenInstruction placement;
+  placement.entry_.id_ = "p-1";
+  placement.entry_.action_ = runner::JournalAction::PLACE;
+  placement.entry_.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+  placement.entry_.side_ = OrderSide::BUY;
+  placement.entry_.type_ = OrderType::LIMIT;
+  placement.entry_.time_in_force_ = TimeInForce::DAY;
+  placement.entry_.session_ = OrderSession::REGULAR;
+  placement.entry_.quantity_ = Decimal64::parse("10");
+  placement.entry_.price_ = Decimal64::parse("70000");
+  placement.entry_.recorded_at_ = std::chrono::system_clock::now();
+  placement.opened_at_ = placement.entry_.recorded_at_;
+  for (const char* time : {"", "bad", "130543"}) {
+    INFO("tm '" << time << "'");
+    const auto listed = kiwoom::KiwoomClientTestAccess::open_order(
+      json::parse(
+        std::string(R"({"ord_no":"0000050","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
+          "ord_qty":"10","ord_pric":"70000","oso_qty":"10","orig_ord_no":"0000000",
+          "io_tp_nm":"+매수","trde_tp":"보통","tm":")") + time + R"(","cntr_qty":"0","stex_tp":"1"})"
+      ).as_object()
+    ).order_;
+    CHECK(listed.ordered_date_assumed_);
+    const auto match = runner::match_against(placement, {listed}, placement.opened_at_ + std::chrono::hours(1));
+    CHECK(match.verdict_ == runner::MatchVerdict::AMBIGUOUS);
+    CHECK(match.order_id_.empty());
+  }
 }
 
 TEST_CASE("a history row's state comes from two columns, not one", "[kiwoom][history]") {

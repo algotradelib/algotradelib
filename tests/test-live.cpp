@@ -7442,6 +7442,31 @@ TEST_CASE("a listed row whose day the adapter assumed names no order", "[seriali
     CHECK(rig.owed() == runner::ObligationState::UNNAMED);
   }
 
+  SECTION("the number at that time of day on an order of another shape establishes nothing") {
+    // The send's own day has order S at that second, a buy of twenty: not this order. The listed S is a
+    // later day's, its number reused.
+    auto twenty = market_row("S", when, "0", OrderStatus::PENDING);
+    twenty.quantity_ = Decimal64::parse("20");
+    SECTION("the first sweep") {
+      SerialRig rig({serial_line("p-1", JournalOutcome::PENDING)});
+      auto source = source_over(rig, page_of({twenty}));
+      rig.session.set_working_orders(listing);
+      rig.runner_instance.set_observed_at(at_hour(1));
+      REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+      CHECK(verdict(source) != runner::MatchVerdict::MATCHED);
+      CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+    }
+    SECTION("the later search") {
+      SerialRig rig(unfound_lines());
+      auto source = source_over(rig, page_of({twenty}));
+      rig.session.set_working_orders(listing);
+      rig.runner_instance.set_observed_at(at_hour(1));
+      REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+      CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+      CHECK(rig.lines(JournalOutcome::RESOLVED).size() == 1);
+    }
+  }
+
   SECTION("the history dates it that day: the order is named") {
     SerialRig rig({serial_line("p-1", JournalOutcome::PENDING)});
     auto source = source_over(rig, page_of({market_row("S", when, "0", OrderStatus::PENDING)}));
