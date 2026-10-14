@@ -19,6 +19,7 @@
 #include <chrono>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -153,6 +154,33 @@ public:
     return found == request_counts_.end() ? 0 : found->second;
   }
 
+  /**
+   * Answers every later request for `target` (the path, without a query) with `status` and the JSON
+   * `body`, so a broker client can be driven through its own request and reply path.
+   */
+  void script(std::string target, unsigned status, std::string body) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    scripts_[std::move(target)] = Scripted{status, std::move(body)};
+  }
+
+  /** The body of the last request for `target`, or empty. */
+  std::string lastBody(std::string_view target) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = last_bodies_.find(std::string(target));
+    return found == last_bodies_.end() ? std::string() : found->second;
+  }
+
+  /** The value of header `name` on the last request for `target`, or empty. */
+  std::string lastHeader(std::string_view target, std::string_view name) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto request = last_headers_.find(std::string(target));
+    if (request == last_headers_.end()) {
+      return {};
+    }
+    const auto value = request->second.find(std::string(name));
+    return value == request->second.end() ? std::string() : value->second;
+  }
+
 private:
   net::io_context ioc_;
   ssl::context context_;
@@ -160,8 +188,16 @@ private:
   std::atomic<bool> stopped_{false};
   std::atomic<std::size_t> connection_count_{0};
   std::atomic<long long> idle_timeout_ms_{0};
+  struct Scripted {
+    unsigned status_;
+    std::string body_;
+  };
+
   mutable std::mutex mutex_;
   std::map<std::string, std::size_t> request_counts_;
+  std::map<std::string, Scripted> scripts_;
+  std::map<std::string, std::map<std::string, std::string>> last_headers_;
+  std::map<std::string, std::string> last_bodies_;
   std::thread thread_;
 
   void run() noexcept {
@@ -229,6 +265,20 @@ private:
         return;
       }
 
+      if (const auto scripted = scriptFor(request)) {
+        http::response<http::string_body> reply(static_cast<http::status>(scripted->status_), request.version());
+        reply.set(http::field::server, "algotradelib-test");
+        reply.set(http::field::content_type, "application/json;charset=UTF-8");
+        reply.keep_alive(request.keep_alive());
+        reply.body() = scripted->body_;
+        reply.prepare_payload();
+        http::write(stream, reply, ec);
+        if (ec) {
+          return;
+        }
+        continue;
+      }
+
       if (target == "/rate-limited") {
         // A broker refusal carrying both hints Toss documents on its 429: the
         // allowance being enforced, and how long to wait.
@@ -263,6 +313,24 @@ private:
         return;
       }
     }
+  }
+
+  // The script for the request's path, after recording its headers; nothing if it has none.
+  std::optional<Scripted> scriptFor(const http::request<http::string_body>& request) {
+    const std::string target(request.target());
+    const std::string path = target.substr(0, target.find('?'));
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = scripts_.find(path);
+    if (found == scripts_.end()) {
+      return std::nullopt;
+    }
+    auto& headers = last_headers_[path];
+    headers.clear();
+    for (const auto& field : request) {
+      headers[std::string(field.name_string())] = std::string(field.value());
+    }
+    last_bodies_[path] = request.body();
+    return found->second;
   }
 
   std::size_t recordRequest(

@@ -331,19 +331,22 @@ An HTTP 4xx, an authentication failure, an invalid argument and a rate-limit ref
 the order does not exist, so nothing needs reconciling. At KIS, Toss and Kiwoom most refusals arrive
 as `PROTOCOL` instead, so they are treated as unknown and the instrument is reconciled.
 
-Three refusals are recognized as answers, on the KIS and Kiwoom **demo** servers only: a cash sell
-refused because nothing is held to sell (KIS `40240000`, Kiwoom `800033`), a cash order refused because
-the market has closed (KIS `40580000`, Kiwoom `RC4058`), and a cancellation refused because nothing is
-left to cancel (KIS `40330000`, Kiwoom `RC4033`), which is what a cancellation of an order that has
-just filled gets. The reply must be an HTTP 200 that states the code and carries no new
-acknowledgement (the original order's number, echoed, is not one); it is then `INVALID_ARGUMENT` with
-`reached_broker_` set, and its message ends by naming the rule: `recognized refusal: KIS demo, cash
-cancellation, 40330000)`, for example. A real server's refusal is not recognized: the real servers answer
-with other codes (seen once: KIS `APBK3061` for a regular order during the after-market, Kiwoom `506550` for a
-cancellation with nothing left to cancel and `571445` for a sell with nothing to sell; Toss answered a second
-cancellation of a cancelled order with a reply that is not JSON, `invalid_json`), so on a real account it is still
-an unknown outcome. A refused cancellation says that the
-cancellation did nothing, not what became of the order.
+Some refusals are recognized as answers, each only from the server it was seen from. On the KIS and
+Kiwoom **demo** servers: a cash sell refused because nothing is held to sell (KIS `40240000`, Kiwoom
+`800033`), a cash order refused because the market has closed (KIS `40580000`, Kiwoom `RC4058`), and a
+cancellation refused because nothing is left to cancel (KIS `40330000`, Kiwoom `RC4033`), which is what a
+cancellation of an order that has just filled gets. On the **real** servers: a KIS cash order of a type the
+after-market session does not accept (`APBK3061`), a Kiwoom cash order refused for want of a securities
+balance (`571445`, a sell of what is not held), and a Kiwoom cancellation with nothing left to cancel
+(`506550`). The reply must be an HTTP 200 that states the code and carries no new acknowledgement (the
+original order's number, echoed, is not one); it is then `INVALID_ARGUMENT` with `reached_broker_` set, and
+its message ends by naming the rule: `recognized refusal: KIS demo, cash cancellation, 40330000)` or
+`recognized refusal: Kiwoom real, cash placement, 571445)`, for example. A demo code from a real server, or
+a real code from a demo server, is not recognized, and every other refusal the clients do not classify
+further (a rate limit, an authentication failure, a documented invalid argument) is still an unknown
+outcome (Toss, for one, answered a second cancellation of a cancelled order with a reply that is not JSON,
+`invalid_json`). A refused cancellation says that the cancellation did nothing,
+not what became of the order.
 
 When the outcome is unknown, the runner marks the instrument and **withholds everything further for
 it**. Not retried — a retry is exactly what doubles a position. Nothing clears the mark except

@@ -1235,10 +1235,12 @@ public:
    * document (both `PROTOCOL`). Read `async_open_orders` or `async_order_history` before placing
    * again, since Kiwoom has no idempotency key.
    *
-   * Two refusals are recognized as refusals, on a demo account only: the demo server's `800033` (not
-   * enough to sell) and `RC4058` (the market has closed) are `INVALID_ARGUMENT` with `reached_broker_`
-   * set, which `runner::outcome_of` reads as `REJECTED` (`kiwoom_recognized_refusal`). The same reply
-   * from the real server stays `PROTOCOL`.
+   * Some refusals are recognized as refusals, each from its own server only: the demo server's
+   * `800033` (not enough to sell) and `RC4058` (the market has closed), and the real server's `571445`
+   * (no securities balance), are `INVALID_ARGUMENT` with `reached_broker_` set, which
+   * `runner::outcome_of` reads as `REJECTED` (`kiwoom_recognized_refusal`). A demo code from the real
+   * server, or the real code from the demo server, stays `PROTOCOL`, as does every other refusal this
+   * client does not classify further (its documented error codes keep their categories).
    *
    * Refused before sending, among others: an instrument that is not Korean or whose `venue_` is not
    * `COMBINED` (route with `OrderRequest::venue_`); no venue on the order; a client order id; a
@@ -1314,10 +1316,11 @@ public:
    * before sending, among others: a cancellation without a venue, an order number or a symbol; a
    * fractional or negative quantity; or one carrying a price or trigger price.
    *
-   * One refusal is recognized as one, on a demo account only: the demo server's `RC4033` (nothing
-   * left to amend or cancel) is `INVALID_ARGUMENT` with `reached_broker_` set
-   * (`kiwoom_recognized_refusal`). It says the cancellation did nothing, not what became of the
-   * order: it may have filled. The same reply from the real server stays `PROTOCOL`.
+   * Two refusals are recognized as refusals, each from its own server only: the demo server's
+   * `RC4033` (nothing left to amend or cancel) and the real server's `506550` (no quantity left to
+   * cancel) are `INVALID_ARGUMENT` with `reached_broker_` set (`kiwoom_recognized_refusal`). Each says
+   * the cancellation did nothing, not what became of the order: it may have filled. Either code from
+   * the other server stays `PROTOCOL`.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account The account (empty).

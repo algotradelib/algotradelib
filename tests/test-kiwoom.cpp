@@ -9,10 +9,14 @@
 #include <algotradelib/live>
 #include <algotradelib/tossinvest>
 
+#include <boost/asio/use_future.hpp>
 #include <catch2/catch_test_macros.hpp>
+
+#include "local_https_server.hpp"
 
 #include <chrono>
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <optional>
 #include <string>
@@ -26,6 +30,11 @@ namespace algotradelib::kiwoom {
 
 /** Reaches the client's pure request builders and parsers, which are private by design. */
 struct KiwoomClientTestAccess {
+  /** Points `client` at a loopback server in place of Kiwoom's host; its configuration is unchanged. */
+  static void connect(KiwoomClient& client, ssl::context& context, const std::string& port) {
+    client.http_ = std::make_shared<network::AsyncHttpClient>(client.strand_, context, "localhost", port);
+  }
+
   static Result<QuoteSnapshot> quote(InstrumentId instrument, network::HttpResponse response) {
     return KiwoomClient::parse_quote(
       std::move(instrument), Result<network::HttpResponse>(std::move(response))
@@ -1333,6 +1342,266 @@ TEST_CASE("a Kiwoom order refusal outside the recognized replies stays an unknow
     );
     REQUIRE(accepted);
     CHECK(accepted.value().order_.order_number_ == "00024");
+  }
+}
+
+// Through the client's own request and reply path, against a loopback server that answers the token
+// request and then the order request with a constructed reply (the real server's codes and messages as
+// they were seen on 2026-10-14; no reply body was recorded): the operation and the environment the
+// parser is given are the ones the public call fixes, not a test's argument.
+namespace {
+
+constexpr const char* KIWOOM_ORDER = "/api/dostk/ordr";
+constexpr const char* KIWOOM_REAL_NOTHING_TO_CANCEL = "[2000](506550:취소가능수량이 없습니다.)";
+constexpr const char* KIWOOM_REAL_NO_BALANCE = "[2000](571445:유가증권 잔고가 존재하지 않습니다)";
+
+enum class KiwoomCall { PLACE_BUY, PLACE_SELL, CANCEL, AMEND };
+
+/** Makes one public order call with `reply` scripted on the order endpoint, and returns what the client returned. */
+Result<kiwoom::KiwoomOrderAck> kiwoom_call(
+  bool demo, KiwoomCall call, const std::string& reply, test::LocalHttpsServer& server
+) {
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  server.script(
+    "/oauth2/token",
+    200,
+    R"({"expires_dt":"20991231235959","token_type":"bearer","token":"test-token","return_code":0,"return_msg":"ok"})"
+  );
+  server.script(KIWOOM_ORDER, 200, reply);
+  kiwoom::KiwoomConfig config;
+  config.is_demo_ = demo;
+  config.holdings_position_scope_ = kiwoom::KiwoomPositionScope::VALUATION_ONLY;
+  auto client = std::make_shared<kiwoom::KiwoomClient>(ioc.get_executor(), context, std::move(config));
+  kiwoom::KiwoomClientTestAccess::connect(*client, context, server.port());
+
+  kiwoom::KiwoomAmendment amendment;
+  amendment.order_ = kiwoom::KiwoomOrderRef{"0000069", "005930"};
+  amendment.venue_ = Venue::KRX;
+  amendment.quantity_ = Decimal64(1, 0);
+  OrderRequest order;
+  order.instrument_ = samsung();
+  order.side_ = call == KiwoomCall::PLACE_SELL ? OrderSide::SELL : OrderSide::BUY;
+  order.type_ = OrderType::LIMIT;
+  order.time_in_force_ = TimeInForce::DAY;
+  order.session_ = OrderSession::REGULAR;
+  order.venue_ = Venue::KRX;
+  order.quantity_ = Decimal64(1, 0);
+  order.price_ = Decimal64(70000, 0);
+
+  std::future<Result<kiwoom::KiwoomOrderAck>> result;
+  switch (call) {
+    case KiwoomCall::PLACE_BUY:
+    case KiwoomCall::PLACE_SELL:
+      result = client->async_place_order(kiwoom::KiwoomAccount{}, order, net::use_future);
+      break;
+    case KiwoomCall::CANCEL:
+      result = client->async_cancel_order(kiwoom::KiwoomAccount{}, amendment, net::use_future);
+      break;
+    case KiwoomCall::AMEND:
+      amendment.price_ = Decimal64(71000, 0);
+      result = client->async_replace_order(kiwoom::KiwoomAccount{}, amendment, net::use_future);
+      break;
+  }
+  ioc.run();
+  return result.get();
+}
+
+/** The `api-id` each call sends. */
+const char* kiwoom_api_id(KiwoomCall call) {
+  switch (call) {
+    case KiwoomCall::PLACE_BUY: return "kt10000";
+    case KiwoomCall::PLACE_SELL: return "kt10001";
+    case KiwoomCall::AMEND: return "kt10002";
+    case KiwoomCall::CANCEL: return "kt10003";
+  }
+  return "";
+}
+
+} // namespace
+
+TEST_CASE("a Kiwoom order reply is read with the operation and environment of the call that sent it", "[kiwoom][orders]") {
+  test::LocalHttpsServer server;
+  const std::string no_balance = kiwoom_refusal_body(KIWOOM_REAL_NO_BALANCE);
+  const std::string real_nothing_to_cancel = kiwoom_refusal_body(KIWOOM_REAL_NOTHING_TO_CANCEL);
+  const std::string demo_nothing_to_cancel = kiwoom_refusal_body(KIWOOM_NOTHING_TO_CANCEL);
+  const std::string demo_nothing_to_sell = kiwoom_refusal_body(KIWOOM_NOTHING_TO_SELL);
+
+  SECTION("the real server's refusals of a placement and of a cancellation") {
+    for (const auto call : {KiwoomCall::PLACE_BUY, KiwoomCall::PLACE_SELL}) {
+      const auto result = kiwoom_call(false, call, no_balance, server);
+      REQUIRE_FALSE(result);
+      CHECK(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+      CHECK(result.error().reached_broker_);
+      CHECK(result.error().http_status_ == 200);
+      CHECK(result.error().broker_code_ == "571445");
+      CHECK(
+        result.error().message_ ==
+        std::string(KIWOOM_REAL_NO_BALANCE) +
+          " (return_code 20; recognized refusal: Kiwoom real, cash placement, 571445)"
+      );
+      CHECK(runner::outcome_of(result.error()) == runner::SendOutcome::REJECTED);
+      CHECK(server.lastHeader(KIWOOM_ORDER, "api-id") == kiwoom_api_id(call));
+    }
+
+    const auto cancelled = kiwoom_call(false, KiwoomCall::CANCEL, real_nothing_to_cancel, server);
+    REQUIRE_FALSE(cancelled);
+    CHECK(cancelled.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+    CHECK(cancelled.error().reached_broker_);
+    CHECK(cancelled.error().http_status_ == 200);
+    CHECK(cancelled.error().broker_code_ == "506550");
+    CHECK(
+      cancelled.error().message_ ==
+      std::string(KIWOOM_REAL_NOTHING_TO_CANCEL) +
+        " (return_code 20; recognized refusal: Kiwoom real, cash cancellation, 506550)"
+    );
+    CHECK(runner::outcome_of(cancelled.error()) == runner::SendOutcome::REJECTED);
+    CHECK(server.lastHeader(KIWOOM_ORDER, "api-id") == "kt10003");
+  }
+
+  SECTION("the same replies from the demo server, or on another operation, stay unknown") {
+    const auto unknown = [](const Result<kiwoom::KiwoomOrderAck>& result) {
+      return !result && result.error().category_ == ErrorCategory::PROTOCOL &&
+        runner::outcome_of(result.error()) == runner::SendOutcome::INDETERMINATE;
+    };
+    CHECK(unknown(kiwoom_call(true, KiwoomCall::PLACE_SELL, no_balance, server)));
+    CHECK(unknown(kiwoom_call(true, KiwoomCall::CANCEL, real_nothing_to_cancel, server)));
+    CHECK(unknown(kiwoom_call(false, KiwoomCall::AMEND, real_nothing_to_cancel, server)));
+    CHECK(server.lastHeader(KIWOOM_ORDER, "api-id") == "kt10002");
+    CHECK(unknown(kiwoom_call(false, KiwoomCall::PLACE_SELL, real_nothing_to_cancel, server)));
+    CHECK(unknown(kiwoom_call(false, KiwoomCall::CANCEL, no_balance, server)));
+    // A demo server's code from the real server.
+    CHECK(unknown(kiwoom_call(false, KiwoomCall::CANCEL, demo_nothing_to_cancel, server)));
+    CHECK(unknown(kiwoom_call(false, KiwoomCall::PLACE_SELL, demo_nothing_to_sell, server)));
+  }
+
+  SECTION("a demo server's refusal is recognized from the demo server") {
+    const auto sell = kiwoom_call(true, KiwoomCall::PLACE_SELL, demo_nothing_to_sell, server);
+    CHECK(kiwoom_recognized(sell, "800033"));
+    CHECK(sell.error().message_.find("recognized refusal: Kiwoom demo, cash placement, 800033)") != std::string::npos);
+    const auto cancel = kiwoom_call(true, KiwoomCall::CANCEL, demo_nothing_to_cancel, server);
+    CHECK(kiwoom_recognized(cancel, "RC4033"));
+    CHECK(cancel.error().message_.find("recognized refusal: Kiwoom demo, cash cancellation, RC4033)") != std::string::npos);
+    // The amendment shares the endpoint; only the cancellation is recognized.
+    const auto amend = kiwoom_call(true, KiwoomCall::AMEND, demo_nothing_to_cancel, server);
+    REQUIRE_FALSE(amend);
+    CHECK(amend.error().category_ == ErrorCategory::PROTOCOL);
+  }
+}
+
+TEST_CASE("a Kiwoom real-server refusal is recognized under the same conditions as a demo one", "[kiwoom][orders]") {
+  using Access = kiwoom::KiwoomClientTestAccess;
+  const std::string cancel = kiwoom_refusal_body(KIWOOM_REAL_NOTHING_TO_CANCEL);
+  const std::string place = kiwoom_refusal_body(KIWOOM_REAL_NO_BALANCE);
+
+  SECTION("the two rows, with the empty acknowledgement fields a refusal may carry") {
+    CHECK(kiwoom_recognized(Access::order_ack(ok_body(cancel), KiwoomOrderOperation::CANCEL, false), "506550"));
+    CHECK(kiwoom_recognized(Access::order_ack(ok_body(place), KiwoomOrderOperation::PLACE, false), "571445"));
+    CHECK(kiwoom_recognized(
+      Access::order_ack(
+        ok_body(std::string(R"({"return_code":"20","return_msg":")") + KIWOOM_REAL_NOTHING_TO_CANCEL + "\"}"),
+        KiwoomOrderOperation::CANCEL,
+        false
+      ),
+      "506550"
+    ));
+    for (const char* extra : {R"(,"ord_no":"")", R"(,"cncl_qty":"000000000000")", R"(,"base_orig_ord_no":"0417354")"}) {
+      CAPTURE(extra);
+      CHECK(kiwoom_recognized(
+        Access::order_ack(ok_body(kiwoom_refusal_body(KIWOOM_REAL_NOTHING_TO_CANCEL, extra)), KiwoomOrderOperation::CANCEL, false),
+        "506550"
+      ));
+    }
+  }
+
+  SECTION("a status, an outer code or an envelope the rows do not cover") {
+    for (const int status : {201, 202}) {
+      CHECK(kiwoom_unknown(Access::order_ack(body_with_status(cancel, status), KiwoomOrderOperation::CANCEL, false)));
+      CHECK(kiwoom_unknown(Access::order_ack(body_with_status(place, status), KiwoomOrderOperation::PLACE, false)));
+    }
+    for (const char* code : {"0", "2", "21", "\"20 \"", "\"020\""}) {
+      CAPTURE(code);
+      const auto result = Access::order_ack(
+        ok_body(std::string(R"({"return_code":)") + code + R"(,"return_msg":")" + KIWOOM_REAL_NO_BALANCE + "\"}"),
+        KiwoomOrderOperation::PLACE,
+        false
+      );
+      CHECK((!result || result.error().category_ != ErrorCategory::INVALID_ARGUMENT));
+      if (!result) {
+        CHECK(result.error().message_.find("recognized refusal") == std::string::npos);
+      }
+    }
+    for (const char* message : {
+           "[2000](506551:취소가능수량이 없습니다.)",
+           "[2000](5065500:취소가능수량이 없습니다.)",
+           "[2000](X506550:취소가능수량이 없습니다.)",
+           "[2001](506550:취소가능수량이 없습니다.)",
+           "[2000](506550:취소가능수량이 없습니다.) ",
+           "[2000](506550:)",
+           "506550",
+           "취소가능수량이 없습니다.",
+         }) {
+      CAPTURE(message);
+      CHECK(kiwoom_unknown(Access::order_ack(ok_body(kiwoom_refusal_body(message)), KiwoomOrderOperation::CANCEL, false)));
+    }
+    for (const char* message : {
+           "[2000](571446:유가증권 잔고가 존재하지 않습니다)",
+           "[2000](57144:유가증권 잔고가 존재하지 않습니다)",
+           "[2000](571445:유가증권 잔고가 존재하지 않습니다",
+           " [2000](571445:유가증권 잔고가 존재하지 않습니다)",
+         }) {
+      CAPTURE(message);
+      CHECK(kiwoom_unknown(Access::order_ack(ok_body(kiwoom_refusal_body(message)), KiwoomOrderOperation::PLACE, false)));
+    }
+    for (const char* body : {
+           R"({"return_code":20})",
+           R"({"return_code":20,"return_msg":null})",
+           R"x({"return_code":20,"return_msg":["[2000](506550:text)"]})x",
+         }) {
+      CAPTURE(body);
+      CHECK(kiwoom_unknown(Access::order_ack(ok_body(body), KiwoomOrderOperation::CANCEL, false)));
+    }
+  }
+
+  SECTION("anything an acknowledgement carries") {
+    for (const char* extra : {
+           R"(,"ord_no":"0417393")",
+           R"(,"ord_no":417393)",
+           R"(,"ord_no":null)",
+           R"(,"ord_no":" ")",
+           R"(,"cncl_qty":"1")",
+           R"(,"cncl_qty":"000000000001")",
+           R"(,"cncl_qty":1)",
+           R"(,"mdfy_qty":"1")",
+           R"(,"mdfy_qty":null)",
+         }) {
+      CAPTURE(extra);
+      CHECK(kiwoom_unknown(
+        Access::order_ack(ok_body(kiwoom_refusal_body(KIWOOM_REAL_NOTHING_TO_CANCEL, extra)), KiwoomOrderOperation::CANCEL, false)
+      ));
+      CHECK(kiwoom_unknown(
+        Access::order_ack(ok_body(kiwoom_refusal_body(KIWOOM_REAL_NO_BALANCE, extra)), KiwoomOrderOperation::PLACE, false)
+      ));
+    }
+  }
+
+  SECTION("a reply that is not an order reply never states an operation") {
+    for (const std::string& body : {cancel, place}) {
+      const auto deposit = Access::deposit(ok_body(body));
+      REQUIRE_FALSE(deposit);
+      CHECK(deposit.error().category_ == ErrorCategory::PROTOCOL);
+      CHECK(deposit.error().broker_code_ == "20");
+    }
+  }
+
+  SECTION("an HTTP error with the same body keeps its own reading") {
+    for (const int status : {400, 500}) {
+      const auto result = Access::order_ack(body_with_status(cancel, status), KiwoomOrderOperation::CANCEL, false);
+      REQUIRE_FALSE(result);
+      CHECK(result.error().category_ == ErrorCategory::HTTP);
+      CHECK(result.error().http_status_ == status);
+    }
   }
 }
 

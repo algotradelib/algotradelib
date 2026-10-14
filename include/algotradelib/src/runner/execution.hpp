@@ -39,7 +39,8 @@ enum class SendOutcome {
    * At KIS (an unrecognized reply with `rt_cd` not `0`, such as insufficient balance), Toss (any
    * refusal but a rate limit) and Kiwoom (a `return_code` outside its documented error list) the broker's own
    * refusals are reported as `PROTOCOL`, so they land here, not in `REJECTED`. The exception is the
-   * demo-server order refusals the KIS and Kiwoom clients recognize, which are `REJECTED`.
+   * few order refusals the KIS and Kiwoom clients recognize (most from their demo servers, three
+   * from their real servers), which are `REJECTED`.
    * Nothing more is placed for that instrument until the broker's order list has been read and the
    * instrument resolved.
    */

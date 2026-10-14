@@ -598,10 +598,13 @@ public:
    * which `runner::Runner` keeps for a later pass. Read `async_open_orders` or
    * `async_order_history` before placing again, since KIS has no idempotency key.
    *
-   * Two refusals are recognized as refusals, on a demo account only: the demo server's `40240000`
-   * (nothing held to sell) and `40580000` (the market has closed), in an HTTP 200 reply that carries
-   * no acknowledgement, are `INVALID_ARGUMENT` with `reached_broker_` set, which `runner::outcome_of`
-   * reads as `REJECTED`. The same reply from the real server stays `PROTOCOL`.
+   * Some refusals are recognized as refusals, each from its own server only: the demo server's
+   * `40240000` (nothing held to sell) and `40580000` (the market has closed), and the real server's
+   * `APBK3061` (during the after-market session, only after-market order types are accepted). In an
+   * HTTP 200 reply that carries no acknowledgement, each is `INVALID_ARGUMENT` with `reached_broker_`
+   * set, which `runner::outcome_of` reads as `REJECTED`. A demo code from the real server, or the
+   * real code from the demo server, stays `PROTOCOL`, as does every other refusal this client does not
+   * classify further (a rate-limit code is `RATE_LIMIT`, as above).
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account The account.
@@ -680,7 +683,9 @@ public:
    * One refusal is recognized as one, on a demo account only: the demo server's `40330000` (nothing
    * left to amend or cancel), in an HTTP 200 reply that carries no new acknowledgement, is
    * `INVALID_ARGUMENT` with `reached_broker_` set. It says the cancellation did nothing, not what
-   * became of the order: it may have filled. The same reply from the real server stays `PROTOCOL`.
+   * became of the order: it may have filled. The same reply from the real server stays `PROTOCOL`, as
+   * does every other refusal of a cancellation this client does not classify further (a rate-limit
+   * code is `RATE_LIMIT`).
    *
    * @tparam CompletionToken An Asio completion token.
    * @param account The account.
@@ -3374,26 +3379,31 @@ private:
     return !value || (value->is_string() && value->as_string().empty());
   }
 
-  // Tests whether `code` is a refusal this client recognizes for `operation` on the demo server.
-  static bool recognized_refusal_code(OrderOperation operation, std::string_view code) {
+  // Tests whether `code` is a refusal this client recognizes for `operation` from the demo server
+  // (`demo`) or the real one. Each code is recognized from the server it was seen from only.
+  static bool recognized_refusal_code(OrderOperation operation, std::string_view code, bool demo) {
+    if (!demo) {
+      return operation == OrderOperation::PLACE && code == "APBK3061";
+    }
     if (operation == OrderOperation::PLACE) {
       return code == "40240000" || code == "40580000";
     }
     return operation == OrderOperation::CANCEL && code == "40330000";
   }
 
-  // Returns the refusal a demo cash-order reply states, for the replies this client recognizes as
-  // one: a placement answered `40240000` (nothing held to sell) or `40580000` (the market has
-  // closed), and a cancellation answered `40330000` (nothing left to amend or cancel), as the demo
-  // server sends them. Such a reply is `INVALID_ARGUMENT` with `reached_broker_` set, which a runner
-  // reads as a rejection; any other declared failure of an order keeps the reading
-  // `kis_declared_error` gives it (`PROTOCOL`, an unknown outcome, unless it is a rate limit).
+  // Returns the refusal a cash-order reply states, for the replies this client recognizes as one.
+  // From the demo server: a placement answered `40240000` (nothing held to sell) or `40580000` (the
+  // market has closed), and a cancellation answered `40330000` (nothing left to amend or cancel).
+  // From the real server: a placement answered `APBK3061` (during the after-market session, only
+  // after-market order types are accepted). Such a reply is `INVALID_ARGUMENT` with
+  // `reached_broker_` set, which a runner reads as a rejection; any other declared failure of an
+  // order keeps the reading `kis_declared_error` gives it (`PROTOCOL`, an unknown outcome, unless it
+  // is a rate limit).
   //
-  // Demo only: no real-account reply has been seen, and the same body from the real server is not
-  // recognized. The reply must be HTTP 200 with `rt_cd` `"1"`, the code, a message, and none of
-  // the fields an acknowledgement carries (`output` absent, or an object whose `ODNO`,
-  // `KRX_FWDG_ORD_ORGNO` and `ORD_TMD` are absent or empty): a reply acknowledging an order is never read
-  // as a refusal. A refused cancellation says only that the cancellation did nothing, not what
+  // Each code is recognized from the server it was seen from only. The reply must be HTTP 200 with
+  // `rt_cd` `"1"`, the code, a message, and none of the fields an acknowledgement carries (`output`
+  // absent, or an object whose `ODNO`, `KRX_FWDG_ORD_ORGNO` and `ORD_TMD` are absent or empty): a
+  // reply acknowledging an order is never read as a refusal. A refused cancellation says only that the cancellation did nothing, not what
   // became of the order it named.
   static std::optional<BrokerError> kis_recognized_refusal(
     int http_status,
@@ -3401,14 +3411,14 @@ private:
     OrderOperation operation,
     bool demo
   ) {
-    if (!demo || http_status != 200) {
+    if (http_status != 200) {
       return std::nullopt;
     }
     const auto status = document.if_contains("rt_cd");
     const auto code = document.if_contains("msg_cd");
     const auto message = document.if_contains("msg1");
     if (!status || !status->is_string() || status->as_string() != "1" || !code || !code->is_string() ||
-        !recognized_refusal_code(operation, std::string_view(code->as_string())) || !message ||
+        !recognized_refusal_code(operation, std::string_view(code->as_string()), demo) || !message ||
         !message->is_string() || message->as_string().empty()) {
       return std::nullopt;
     }
@@ -3429,8 +3439,8 @@ private:
     error.reached_broker_ = true;
     error.http_status_ = http_status;
     error.broker_code_ = stated;
-    error.message_ = std::string(message->as_string()) + " (recognized refusal: KIS demo, cash " + name +
-      ", " + stated + ")";
+    error.message_ = std::string(message->as_string()) + " (recognized refusal: KIS " + (demo ? "demo" : "real") +
+      ", cash " + name + ", " + stated + ")";
     return error;
   }
 
