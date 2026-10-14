@@ -228,6 +228,39 @@ TEST_CASE("slippage always moves against the order, never for it") {
   REQUIRE(selling->second == Decimal64::parse("70"));
 }
 
+TEST_CASE("tick slippage walks the grid one step at a time and across band boundaries") {
+  const auto ticks = [](int count, const char* price, OrderSide side) {
+    auto model = backtest::SlippageModel::of_ticks(count);
+    const auto slipped = model.apply(Decimal64::parse(price), side, krx_grid());
+    REQUIRE(slipped);
+    return *slipped;
+  };
+  // Inside one band: whole ticks of that band.
+  CHECK(ticks(2, "70000", OrderSide::BUY).first == Decimal64::parse("70200"));
+  CHECK(ticks(2, "70000", OrderSide::SELL).first == Decimal64::parse("69800"));
+  // A buy from 4,990: 4,995, 5,000, then 5,010; never 5,005, which is off the grid.
+  const auto bought = ticks(3, "4990", OrderSide::BUY);
+  CHECK(bought.first == Decimal64::parse("5010"));
+  CHECK(bought.second == Decimal64::parse("20"));
+  // A sell from 5,010: 5,000, 4,995, then 4,990; not 4,980, which skips two grid prices.
+  const auto sold = ticks(3, "5010", OrderSide::SELL);
+  CHECK(sold.first == Decimal64::parse("4990"));
+  CHECK(sold.second == Decimal64::parse("20"));
+  // One tick down from a band's first price is the band below's tick.
+  CHECK(ticks(1, "5000", OrderSide::SELL).first == Decimal64::parse("4995"));
+  CHECK(ticks(1, "2000", OrderSide::SELL).first == Decimal64::parse("1999"));
+  // A sell does not walk below the grid's first price.
+  const auto floor = ticks(3, "1", OrderSide::SELL);
+  CHECK(floor.first == Decimal64::parse("0"));
+  CHECK(floor.second == Decimal64::parse("1"));
+  // Basis points and ticks together: the ticks are walked from the price before slippage.
+  auto both = backtest::SlippageModel::of_ticks(3);
+  both.basis_points_ = Decimal64::parse("10");
+  const auto combined = both.apply(Decimal64::parse("4990"), OrderSide::BUY, krx_grid());
+  REQUIRE(combined);
+  CHECK(combined->second == Decimal64::parse("24.99"));
+}
+
 // ---------------------------------------------------------------------------
 // Filling, and the lookahead discipline that is structural rather than a rule
 // ---------------------------------------------------------------------------
