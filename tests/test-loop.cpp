@@ -593,6 +593,31 @@ void give_one_resting_order(Portfolio& portfolio) {
 
 } // namespace
 
+namespace {
+
+/** A runner type that does not say whether it keeps the orders it sends. */
+struct SilentRunner {};
+
+/** One that says it keeps them. */
+struct KeepingRunner {
+  static constexpr bool keeps_sent_orders_until_listed = true;
+};
+
+/** One that says it keeps none. */
+struct ForgettingRunner {
+  static constexpr bool keeps_sent_orders_until_listed = false;
+};
+
+} // namespace
+
+TEST_CASE("a runner that does not say whether it keeps sent orders is held for the listing", "[loop]") {
+  // A wrapper around `runner::Runner` that does not forward the constant must not skip the hold that
+  // waits for a working-order listing to account for what it sent.
+  STATIC_REQUIRE(runner::runner_keeps_sent_orders<SilentRunner>::value);
+  STATIC_REQUIRE(runner::runner_keeps_sent_orders<KeepingRunner>::value);
+  STATIC_REQUIRE_FALSE(runner::runner_keeps_sent_orders<ForgettingRunner>::value);
+}
+
 TEST_CASE("a steady clock returns immediately for a non-positive wait", "[loop][clock]") {
   // The only property of the real clock worth asserting, and the one a loop that has fallen behind
   // its cadence depends on: an overdue poll must not pause. Asserting anything about a *positive*

@@ -240,13 +240,15 @@ struct source_provides_working_orders<
 /**
  * @brief Detects `Runner::keeps_sent_orders_until_listed`.
  *
- * `false` when undeclared, so a type wrapping `runner::Runner` for `PollingLoop` must forward the
- * constant, or the loop does not hold it for a missing working-order listing.
+ * `true` when undeclared: a runner that does not say is assumed to keep each order it sends until a
+ * working-order listing accounts for it, so `PollingLoop` holds it while that listing is missing. A
+ * type wrapping `runner::Runner` should forward the constant; one that keeps no sent orders declares
+ * it `false`.
  *
  * @tparam Runner The runner type.
  */
 template <typename Runner, typename = void>
-struct runner_keeps_sent_orders : std::false_type {};
+struct runner_keeps_sent_orders : std::true_type {};
 
 template <typename Runner>
 struct runner_keeps_sent_orders<
