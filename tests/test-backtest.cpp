@@ -249,10 +249,17 @@ TEST_CASE("tick slippage walks the grid one step at a time and across band bound
   // One tick down from a band's first price is the band below's tick.
   CHECK(ticks(1, "5000", OrderSide::SELL).first == Decimal64::parse("4995"));
   CHECK(ticks(1, "2000", OrderSide::SELL).first == Decimal64::parse("1999"));
-  // A sell does not walk below the grid's first price.
-  const auto floor = ticks(3, "1", OrderSide::SELL);
-  CHECK(floor.first == Decimal64::parse("0"));
+  // A sell never steps to zero or below.
+  const auto floor = ticks(3, "2", OrderSide::SELL);
+  CHECK(floor.first == Decimal64::parse("1"));
   CHECK(floor.second == Decimal64::parse("1"));
+  CHECK(ticks(3, "1", OrderSide::SELL).second == Decimal64::parse("0"));
+  // From a price off the grid each step still takes the tick where it starts.
+  CHECK(ticks(2, "4998", OrderSide::BUY).first == Decimal64::parse("5013"));
+  // An unknown grid contributes no tick slippage.
+  const auto unknown = backtest::SlippageModel::of_ticks(3).apply(Decimal64::parse("4990"), OrderSide::BUY, PriceRule{});
+  REQUIRE(unknown);
+  CHECK(unknown->second == Decimal64::parse("0"));
   // Basis points and ticks together: the ticks are walked from the price before slippage.
   auto both = backtest::SlippageModel::of_ticks(3);
   both.basis_points_ = Decimal64::parse("10");
