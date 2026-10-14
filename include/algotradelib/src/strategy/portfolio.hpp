@@ -230,8 +230,10 @@ struct Portfolio {
       }
       // Then figures that disagree under one basis: two rows claiming the limit for the same shares
       // with different numbers contradict each other. (KIS pages can repeat a `pdno`.)
+      // Compared as numbers: `operator==` also compares the scale, and "70" beside "70.0" is one figure.
       if (reading.quantity_ && position.sellable_quantity_ &&
-          !(*position.sellable_quantity_ == *reading.quantity_)) {
+          (decimal_less(*position.sellable_quantity_, *reading.quantity_) ||
+           decimal_less(*reading.quantity_, *position.sellable_quantity_))) {
         return SellableReading{reading.quantity_, SellableBasis{}};
       }
       // A later row's figure where the first had none is the only figure stated.

@@ -497,6 +497,24 @@ ProbePortfolio observed(const char* held, const char* sellable, const char* rest
 
 } // namespace
 
+TEST_CASE("two rows of one instrument agree on a sellable figure written at different scales") {
+  // KIS pages can repeat a row; "70" and "70.0" are one figure, not a contradiction that refuses the sell.
+  auto repeated = observed("70", "70", "0");
+  auto second = repeated.positions_.front();
+  second.sellable_quantity_ = Decimal64::parse("70.0");
+  repeated.positions_.push_back(second);
+  const auto reading = repeated.sellable_reading_for(samsung());
+  REQUIRE(reading.quantity_);
+  CHECK(reading.basis_.is_enforceable());
+
+  // Figures that differ in value still make the basis unestablished.
+  auto contradicted = observed("70", "70", "0");
+  auto other = contradicted.positions_.front();
+  other.sellable_quantity_ = Decimal64::parse("71");
+  contradicted.positions_.push_back(other);
+  CHECK_FALSE(contradicted.sellable_reading_for(samsung()).basis_.is_enforceable());
+}
+
 TEST_CASE("the probe learns nothing from a figure of unknown coverage") {
   // **Why this gate exists.** The probe reads the distance between what is held and what is sellable.
   // If `rmnd_qty` is account-wide while `trde_able_qty` covers one venue -- which is precisely what an

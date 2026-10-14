@@ -278,6 +278,29 @@ TEST_CASE("a reversion with its exit at or beyond its entry refuses to act") {
   REQUIRE(first_order_bar(dry, 15) == 15);
 }
 
+TEST_CASE("a reversion with an entry or exit that is not positive refuses to act") {
+  // An exit at or above zero standard deviations below the mean would sell above it, and an entry at or
+  // above zero would buy at or above the mean: neither is a reversion, and the documented rule is to
+  // trade nothing.
+  for (const auto [entry, exit] : {std::pair{1.0, 0.0}, std::pair{1.0, -1.0}, std::pair{0.0, -1.0}}) {
+    CAPTURE(entry, exit);
+    vanilla::ZScoreReversion reverting;
+    reverting.params_.instrument_ = samsung();
+    reverting.params_.window_ = 6;
+    reverting.params_.entry_ = entry;
+    reverting.params_.exit_ = exit;
+    reverting.params_.quantity_ = Decimal64::parse("10");
+
+    runner::DryRunner<vanilla::ZScoreReversion> dry(reverting);
+    arrange(dry);
+    // The same flat run and sharp drop that make a valid reversion buy.
+    for (std::size_t at = 0; at < 7; ++at) {
+      REQUIRE(dry.feed(bar(at, "70000")).quiet());
+    }
+    REQUIRE(dry.feed(bar(7, "50000")).would_place_.empty());
+  }
+}
+
 TEST_CASE("volatility targeting sizes from return deviation, not price deviation") {
   vanilla::VolatilityTargetSizing sizing;
   sizing.params_.instrument_ = samsung();

@@ -451,9 +451,10 @@ public:
    * @throws std::invalid_argument if `burst` or `per_second` is below 1.
    */
   void shrink(int burst, int per_second, Duration retry) {
+    // The bucket validates first, so a refused figure leaves the reported budget the one in force.
+    bucket_.observe_limit(RateLimitBucket::ClockType::now(), burst, per_second, retry);
     ++stats_.broker_rejections_;
     apply_budget(burst, per_second);
-    bucket_.observe_limit(RateLimitBucket::ClockType::now(), burst, per_second, retry);
   }
 
   /**

@@ -29,7 +29,7 @@ struct ZScoreReversion {
     InstrumentId instrument_;
     /** @brief The number of closes the z-score is measured over; below 2, nothing is traded. */
     std::size_t window_{20};
-    /** @brief How many standard deviations below the mean to buy at; positive. */
+    /** @brief How many standard deviations below the mean to buy at; positive, or nothing is traded. */
     math::Scalar entry_{2.0};
     /** @brief The z-score `-exit_` at which to sell; positive and less than `entry_`, or nothing is traded. */
     math::Scalar exit_{0.5};
@@ -59,8 +59,10 @@ struct ZScoreReversion {
     if (!(bar.instrument_ == params_.instrument_)) {
       return;
     }
-    if (params_.window_ < 2 || !(params_.exit_ < params_.entry_)) {
-      // An exit at or beyond the entry is contradictory; do nothing.
+    if (params_.window_ < 2 || !(params_.entry_ > 0) || !(params_.exit_ > 0) ||
+        !(params_.exit_ < params_.entry_)) {
+      // An entry that is not below the mean, an exit that is not, or an exit at or beyond the entry
+      // is contradictory; do nothing.
       return;
     }
     const auto* series = ctx.bars(bar.instrument_, bar.interval_);

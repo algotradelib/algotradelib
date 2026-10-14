@@ -65,7 +65,9 @@ inline std::optional<Decimal64> to_decimal(Scalar value, std::uint8_t scale) {
   for (std::uint8_t step = 0; step < scale; ++step) {
     scaled *= Scalar(10);
   }
-  const Scalar rounded = scaled < 0 ? std::ceil(scaled - Scalar(0.5)) : std::floor(scaled + Scalar(0.5));
+  // `std::round` is half away from zero by definition. Adding 0.5 first rounds the sum: 0.49999999999999994
+  // became 1, and an odd integer near 2^52 moved up by one.
+  const Scalar rounded = std::round(scaled);
   // `INT64_MAX` is not a double: it converts to 2^63, which does not fit, so that bound is exclusive.
   if (
     rounded >= static_cast<Scalar>(std::numeric_limits<std::int64_t>::max()) ||
