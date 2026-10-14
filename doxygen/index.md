@@ -34,8 +34,8 @@ underneath it, and what that compile-time claim does and does not cover.
 | Dependency | Floor | Needed for |
 | --- | --- | --- |
 | A C++17 compiler | — | everything |
-| CMake | 3.10 for the library, **3.16** for the consumer example below, 3.14 for the tests | everything |
-| Boost | 1.87, component `json` | everything |
+| CMake | 3.10 for the library, **3.16** for the consumer example below, 3.19 for the tests | everything |
+| Boost | 1.87, component `json` | everything (see below for where to get it) |
 | OpenSSL | 3.0 | everything (see below) |
 | Eigen | 3.4 | the analytics layer, on by default |
 
@@ -45,15 +45,23 @@ Three of those floors are worth a sentence each.
 project on an old CMake can consume it. The consumer `CMakeLists.txt` shown below asks for 3.16,
 which is simply a saner floor to start a new project on. Lower it to 3.10 in your own project if you
 need to; nothing here requires the newer version. Building this
-repository's tests needs 3.14, and downloads Catch2 if it is not installed.
+repository's tests needs 3.19, for Catch2's test discovery, and downloads Catch2 if it is not installed.
+The commands on this page use `cmake -S . -B build`, which needs 3.13, and `ctest --test-dir`, which needs
+3.20; on an older CMake, configure from inside the build directory and run `ctest` there.
 
 **OpenSSL's floor is an API minimum, not a recommendation.** The headers call OpenSSL directly only
 to set the TLS server name, which OpenSSL has offered since long before 3.0; everything else goes
 through Boost.Asio's `ssl` layer. So the build accepts 3.0. But upstream support for 3.0 ended in
 September 2026: for anything that trades, use 3.5, the long-term support line (supported until April
 2030), or a distribution package that still receives security fixes. The tests have been built against
-3.6 (Homebrew), and the coverage workflow builds them against Ubuntu 24.04's 3.0 package; 4.0 has not
-been tried.
+3.6 and 4.0 (Homebrew), and the coverage workflow builds them against Ubuntu 24.04's 3.0 package.
+Homebrew's `openssl@3` is keg-only: if CMake does not find it, pass
+`-DOPENSSL_ROOT_DIR=$(brew --prefix openssl@3)`.
+
+**Boost 1.87 is newer than many Linux distributions ship** (Ubuntu 24.04 has 1.83). Homebrew has it; elsewhere,
+build Boost from source, or configure this repository with `-DATL_FETCH_DEPS=ON` (CMake 3.24), which downloads
+Boost 1.87 into the build tree, with Eigen when the analytics layer is on and Catch2 when the tests are, and
+installs nothing. OpenSSL is never fetched.
 
 **Boost and OpenSSL are required even for a backtest that touches no network.** The library exports
 one interface target for every consumer, so an offline program still links `libssl`, `libcrypto` and
@@ -126,6 +134,7 @@ any release.
 | `ATL_BUILD_EXAMPLES` | `OFF` | the `example-*` programs in `examples/` |
 | `ATL_BUILD_TESTS` | `OFF` | the Catch2 suite in `tests/` |
 | `ATL_ENABLE_COVERAGE` | `OFF` | coverage instrumentation for that suite (Clang or GCC) |
+| `ATL_FETCH_DEPS` | `OFF` | download Boost, and Eigen and Catch2 when they are needed, instead of finding them; installs nothing (CMake 3.24; the CI uses it) |
 
 `ATL_USE_EIGEN=OFF` does not make analytics slower — it removes them.
 `<algotradelib/analytics>` becomes a deliberate `#error` naming the option to set,
@@ -234,6 +243,8 @@ source.set_journal(journal);                    // lets the listings it reads re
 runner::PollingLoop<decltype(bound), decltype(source), Clock> loop(bound, source, settings.schedule_);
 loop.set_maximum_portfolio_age(settings.maximum_portfolio_age_);        // every age stated
 loop.set_maximum_price_limits_age(settings.maximum_price_limits_age_);
+loop.set_closing_wait(settings.closing_wait_);                          // a withdraw waits for its reads
+loop.set_owed_order_limit(settings.owed_order_limit_);                  // exit 8 below
 loop.set_control_file(runner::FileStopChannel(settings.control_file_)); // echo withdraw > it
 const auto report = loop.run(stop);             // stop also comes from SIGINT / SIGTERM
 // ... the report, its notes, and closing_complete()
@@ -255,11 +266,12 @@ the market is open; otherwise an opening order waits for the first open iteratio
 and kept if the broker refuses it. After that a daily bar is fed at the first poll after midnight KST,
 its session over, under the same rule.
 The buying-power guard is left off, its default. **On Kiwoom it places nothing as shipped** — see "Brokers and accounts" below.
-[Recovering after a crash](vignettes/recovering-after-a-crash.md) explains each step and the
-verdicts `recover_runner` returns.
+[Recovering after a crash](vignettes/recovering-after-a-crash.md) explains each step, the report
+`recover_runner` returns, and the five verdicts a sweep of the broker's lists gives.
 
-Bars reach a replay either from a broker (`example-backtest-broker` fetches real history through KIS
-or Toss) or from `Bar` values you construct yourself. This library reads no files on purpose: parsing
+Bars reach a replay either from a broker (`example-backtest-broker` fetches real history through KIS,
+with real-account keys and `KIS_DEMO=0` since a KIS demo host refuses the reference data it reads
+first, or through Toss) or from `Bar` values you construct yourself. This library reads no files on purpose: parsing
 somebody's CSV is not a thing it can do honestly for everyone, and it belongs in your project where
 its assumptions are yours.
 
@@ -268,7 +280,8 @@ the fastest way to see each layer work: `example-strategy-dryrun`, `example-back
 `example-backtest-compare`, `example-inverse-fund`, `example-live-loop`, `example-order-journal`,
 `example-analytics-offline` and `example-rate-limit-stats`. `example-kis-place-order` is offline too
 — it constructs and prints an `OrderRequest` and can send nothing. The rest read credentials from
-the environment, and the KIS and Kiwoom ones also from a credentials directory; the
+the environment, and the KIS and Kiwoom ones also from a credentials directory, except
+`example-backtest-broker`, which reads only the environment; the
 [broker clients](vignettes/broker-clients.md) page lists which.
 
 ## Brokers and accounts
@@ -337,7 +350,7 @@ The [user guide](vignettes/guide.md) is eleven pages in the order they are worth
 | 7 | [Running a strategy live](vignettes/running-a-strategy-live.md) | the three stops, the gates, the supervisor grace period |
 | 8 | [Recovering after a crash](vignettes/recovering-after-a-crash.md) | the journal, the five verdicts, reading them under pressure |
 | 9 | [The broker port](vignettes/the-broker-port.md) | `BrokerTraits`, `BrokerCaps`, order identity — read this to add a broker |
-| 10 | [Talking to a broker directly](vignettes/broker-clients.md) | the KIS and Toss clients, and the order-safety rules |
+| 10 | [Talking to a broker directly](vignettes/broker-clients.md) | the KIS, Kiwoom and Toss clients, and the order-safety rules |
 | 11 | [Transport and request pacing](vignettes/transport-and-pacing.md) | the pacer, the traffic classes, how each broker reports a refusal |
 
 The same pages, with the API reference, build into HTML with Doxygen, in a build directory configured

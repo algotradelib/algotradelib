@@ -33,7 +33,7 @@ not fit in a `\brief`, and because the reasoning is the part that is expensive t
 
 - \subpage broker-port — `BrokerTraits`, `BrokerCaps`, order identity, and the capability table.
   Read this to add a broker.
-- \subpage broker-clients — the concrete KIS and Toss clients, the order-safety rules, and the
+- \subpage broker-clients — the concrete KIS, Kiwoom and Toss clients, the order-safety rules, and the
   examples.
 - \subpage transport-and-pacing — the HTTPS transport, the pacer, the five traffic classes, and how
   differently the two brokers report a refusal.
