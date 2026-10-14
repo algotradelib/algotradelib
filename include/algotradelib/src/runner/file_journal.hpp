@@ -1314,8 +1314,8 @@ public:
    * @brief Returns why the journal refused to open.
    *
    * The file holds another account's records, has no header, or cannot be read; another writer
-   * holds its lock (POSIX); the lock could not be taken; the file could not be opened; or the scope
-   * is empty.
+   * holds its lock (POSIX); the lock could not be taken; the file could not be opened; a torn last
+   * line could not be repaired; or the scope is empty.
    *
    * @return The reason, or empty if it opened.
    */
@@ -1453,6 +1453,7 @@ private:
       // answer: a caller that cannot journal must not trade, and `open()` is how it finds out.
       handle_.reset();
       repaired_ = "a torn final line could not be repaired";
+      rejection_ = "the journal at " + path_ + " ends in a torn line that could not be repaired";
       return;
     }
     pending_repair_.clear();
