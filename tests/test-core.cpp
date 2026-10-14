@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <future>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -36,6 +37,11 @@ inline KisConfig live_config() {
 }
 
 struct KisClientTestAccess {
+  /** Points `client` at a loopback server in place of KIS's host; its configuration is unchanged. */
+  static void connect(KisClient& client, ssl::context& context, const std::string& port) {
+    client.http_ = std::make_shared<network::AsyncHttpClient>(client.strand_, context, "localhost", port);
+  }
+
   static Result<QuoteSnapshot> parse(
     InstrumentId instrument,
     Result<network::HttpResponse> response
@@ -3996,6 +4002,256 @@ TEST_CASE("a KIS order refusal outside the recognized replies stays an unknown o
     );
     REQUIRE(accepted);
     CHECK(accepted.value().order_.order_number_ == "0001569157");
+  }
+}
+
+// Through the client's own request and reply path, against a loopback server that answers the token
+// request and then the order request with a constructed reply: the operation and the environment the
+// parser is given are the ones the public call fixes, not a test's argument.
+namespace {
+
+constexpr const char* KIS_ORDER_CASH = "/uapi/domestic-stock/v1/trading/order-cash";
+constexpr const char* KIS_ORDER_AMEND = "/uapi/domestic-stock/v1/trading/order-rvsecncl";
+constexpr const char* KIS_AFTER_MARKET_ONLY = "[애프터마켓] 애프터 지정가/최유리/최우선 주문만 가능합니다.";
+
+/** A KIS client with the given environment, its requests sent to `server`. */
+std::shared_ptr<kis::KisClient> scripted_kis(
+  net::io_context& ioc, ssl::context& context, const test::LocalHttpsServer& server, bool demo
+) {
+  kis::KisConfig config;
+  config.is_demo_ = demo;
+  auto client = std::make_shared<kis::KisClient>(ioc.get_executor(), context, std::move(config));
+  kis::KisClientTestAccess::connect(*client, context, server.port());
+  return client;
+}
+
+/** A limit order of one share on KRX. */
+OrderRequest kis_scripted_order(OrderSide side) {
+  OrderRequest order;
+  order.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+  order.side_ = side;
+  order.type_ = OrderType::LIMIT;
+  order.time_in_force_ = TimeInForce::DAY;
+  order.venue_ = Venue::KRX;
+  order.quantity_ = Decimal64::parse("1");
+  order.price_ = Decimal64::parse("70000");
+  return order;
+}
+
+/** An amendment of a working order to one share at 71,000 KRW. */
+kis::KisAmendment kis_scripted_amendment() {
+  kis::KisAmendment amendment;
+  amendment.order_ = kis::KisOrderRef{"00950", "0000117057"};
+  amendment.type_ = OrderType::LIMIT;
+  amendment.time_in_force_ = TimeInForce::DAY;
+  amendment.session_ = OrderSession::REGULAR;
+  amendment.venue_ = Venue::KRX;
+  amendment.quantity_ = Decimal64::parse("1");
+  amendment.price_ = Decimal64::parse("71000");
+  return amendment;
+}
+
+enum class KisCall { PLACE_BUY, PLACE_SELL, CANCEL, AMEND };
+
+/** Makes one public order call with `reply` scripted on its endpoint, and returns what the client returned. */
+Result<kis::KisOrderAck> kis_call(bool demo, KisCall call, const std::string& reply, test::LocalHttpsServer& server) {
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  server.script(
+    "/oauth2/tokenP",
+    200,
+    R"({"access_token":"test-token","token_type":"Bearer","expires_in":86400,)"
+    R"("access_token_token_expired":"2099-12-31 23:59:59"})"
+  );
+  server.script(call == KisCall::PLACE_BUY || call == KisCall::PLACE_SELL ? KIS_ORDER_CASH : KIS_ORDER_AMEND, 200, reply);
+  auto client = scripted_kis(ioc, context, server, demo);
+  const kis::KisAccount account{"12345678", "01"};
+  std::future<Result<kis::KisOrderAck>> result;
+  switch (call) {
+    case KisCall::PLACE_BUY:
+      result = client->async_place_order(account, kis_scripted_order(OrderSide::BUY), net::use_future);
+      break;
+    case KisCall::PLACE_SELL:
+      result = client->async_place_order(account, kis_scripted_order(OrderSide::SELL), net::use_future);
+      break;
+    case KisCall::CANCEL:
+      result = client->async_cancel_order(account, kis_scripted_amendment(), net::use_future);
+      break;
+    case KisCall::AMEND:
+      result = client->async_replace_order(account, kis_scripted_amendment(), net::use_future);
+      break;
+  }
+  ioc.run();
+  return result.get();
+}
+
+} // namespace
+
+TEST_CASE("a KIS order reply is read with the operation and environment of the call that sent it", "[broker][kis][order]") {
+  test::LocalHttpsServer server;
+  const std::string after_market = kis_refusal_body("APBK3061", KIS_AFTER_MARKET_ONLY);
+  const std::string nothing_held = kis_refusal_body("40240000", KIS_NOTHING_HELD);
+  const std::string nothing_to_cancel = kis_refusal_body("40330000", KIS_NOTHING_TO_CANCEL);
+
+  SECTION("the real server's after-market refusal of a placement, buy or sell") {
+    for (const auto call : {KisCall::PLACE_BUY, KisCall::PLACE_SELL}) {
+      const auto result = kis_call(false, call, after_market, server);
+      REQUIRE_FALSE(result);
+      CHECK(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+      CHECK(result.error().reached_broker_);
+      CHECK(result.error().http_status_ == 200);
+      CHECK(result.error().broker_code_ == "APBK3061");
+      CHECK(
+        result.error().message_ ==
+        std::string(KIS_AFTER_MARKET_ONLY) + " (recognized refusal: KIS real, cash placement, APBK3061)"
+      );
+      CHECK(runner::outcome_of(result.error()) == runner::SendOutcome::REJECTED);
+      CHECK(server.lastHeader(KIS_ORDER_CASH, "tr_id") == (call == KisCall::PLACE_BUY ? "TTTC0012U" : "TTTC0011U"));
+    }
+  }
+
+  SECTION("the same reply from the demo server, or on a cancellation or an amendment, stays unknown") {
+    for (const auto call : {KisCall::PLACE_BUY, KisCall::PLACE_SELL}) {
+      const auto demo = kis_call(true, call, after_market, server);
+      REQUIRE_FALSE(demo);
+      CHECK(demo.error().category_ == ErrorCategory::PROTOCOL);
+      CHECK(server.lastHeader(KIS_ORDER_CASH, "tr_id") == (call == KisCall::PLACE_BUY ? "VTTC0012U" : "VTTC0011U"));
+    }
+    for (const auto call : {KisCall::CANCEL, KisCall::AMEND}) {
+      const auto amended = kis_call(false, call, after_market, server);
+      REQUIRE_FALSE(amended);
+      CHECK(amended.error().category_ == ErrorCategory::PROTOCOL);
+      CHECK(runner::outcome_of(amended.error()) == runner::SendOutcome::INDETERMINATE);
+    }
+  }
+
+  SECTION("a demo server's refusal is recognized from the demo server only") {
+    const auto demo_sell = kis_call(true, KisCall::PLACE_SELL, nothing_held, server);
+    REQUIRE_FALSE(demo_sell);
+    CHECK(demo_sell.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+    CHECK(demo_sell.error().message_.find("(recognized refusal: KIS demo, cash placement, 40240000)") != std::string::npos);
+    const auto real_sell = kis_call(false, KisCall::PLACE_SELL, nothing_held, server);
+    REQUIRE_FALSE(real_sell);
+    CHECK(real_sell.error().category_ == ErrorCategory::PROTOCOL);
+
+    const auto demo_cancel = kis_call(true, KisCall::CANCEL, nothing_to_cancel, server);
+    REQUIRE_FALSE(demo_cancel);
+    CHECK(demo_cancel.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+    CHECK(demo_cancel.error().message_.find("(recognized refusal: KIS demo, cash cancellation, 40330000)") != std::string::npos);
+    CHECK(server.lastHeader(KIS_ORDER_AMEND, "tr_id") == "VTTC0013U");
+    CHECK(json::parse(server.lastBody(KIS_ORDER_AMEND)).as_object().at("RVSE_CNCL_DVSN_CD").as_string() == "02");
+
+    // The amendment shares the endpoint and the transaction id; only the cancellation is recognized.
+    const auto demo_amend = kis_call(true, KisCall::AMEND, nothing_to_cancel, server);
+    REQUIRE_FALSE(demo_amend);
+    CHECK(demo_amend.error().category_ == ErrorCategory::PROTOCOL);
+    CHECK(json::parse(server.lastBody(KIS_ORDER_AMEND)).as_object().at("RVSE_CNCL_DVSN_CD").as_string() == "01");
+
+    const auto real_cancel = kis_call(false, KisCall::CANCEL, nothing_to_cancel, server);
+    REQUIRE_FALSE(real_cancel);
+    CHECK(real_cancel.error().category_ == ErrorCategory::PROTOCOL);
+  }
+}
+
+TEST_CASE("a KIS real-server refusal is recognized under the same conditions as a demo one", "[broker][kis][order]") {
+  const auto unknown = [](const Result<kis::KisOrderAck>& result) {
+    return !result && result.error().category_ == ErrorCategory::PROTOCOL &&
+      runner::outcome_of(result.error()) == runner::SendOutcome::INDETERMINATE;
+  };
+  const std::string place = kis_refusal_body("APBK3061", KIS_AFTER_MARKET_ONLY);
+
+  SECTION("the row, with the empty acknowledgement a refusal may carry") {
+    const auto result = kis::KisClientTestAccess::parse_order_ack(json_response(place), KisOperation::PLACE, false);
+    REQUIRE_FALSE(result);
+    CHECK(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+    CHECK(result.error().reached_broker_);
+    CHECK(result.error().http_status_ == 200);
+    CHECK(result.error().broker_code_ == "APBK3061");
+    CHECK(
+      result.error().message_ ==
+      std::string(KIS_AFTER_MARKET_ONLY) + " (recognized refusal: KIS real, cash placement, APBK3061)"
+    );
+    for (const char* extra : {
+           R"(,"output":{})",
+           R"(,"output":{"KRX_FWDG_ORD_ORGNO":"","ODNO":"","ORD_TMD":""})",
+           R"(,"msg2":"an unrelated field")",
+         }) {
+      CAPTURE(extra);
+      CHECK(kis_recognized(
+        kis::KisClientTestAccess::parse_order_ack(
+          json_response(kis_refusal_body("APBK3061", KIS_AFTER_MARKET_ONLY, extra)), KisOperation::PLACE, false
+        ),
+        "APBK3061"
+      ));
+    }
+  }
+
+  SECTION("another operation, the demo server, another status, or another code") {
+    for (const auto operation : {KisOperation::CANCEL, KisOperation::AMEND, KisOperation::UNCLASSIFIED}) {
+      CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(place), operation, false)));
+    }
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(place))));
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(place), KisOperation::PLACE, true)));
+    for (const int status : {201, 202}) {
+      CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(place, status), KisOperation::PLACE, false)));
+    }
+    for (const char* code : {"APBK3062", "APBK306", "APBK30610", " APBK3061", "APBK3061 ", "apbk3061", "40580000", ""}) {
+      CAPTURE(code);
+      CHECK(unknown(
+        kis::KisClientTestAccess::parse_order_ack(
+          json_response(kis_refusal_body(code, KIS_AFTER_MARKET_ONLY)), KisOperation::PLACE, false
+        )
+      ));
+    }
+    // The code in the message, under another code.
+    CHECK(unknown(
+      kis::KisClientTestAccess::parse_order_ack(
+        json_response(kis_refusal_body("APBK0919", "APBK3061")), KisOperation::PLACE, false
+      )
+    ));
+  }
+
+  SECTION("a status, code or message of another value or type") {
+    for (const char* body : {
+           R"({"rt_cd":"7","msg_cd":"APBK3061","msg1":"m"})",
+           R"({"rt_cd":" 1","msg_cd":"APBK3061","msg1":"m"})",
+           R"({"rt_cd":"1","msg_cd":["APBK3061"],"msg1":"m"})",
+           R"({"rt_cd":"1","msg_cd":"APBK3061"})",
+           R"({"rt_cd":"1","msg_cd":"APBK3061","msg1":""})",
+           R"({"rt_cd":"1","msg_cd":"APBK3061","msg1":null})",
+         }) {
+      CAPTURE(body);
+      CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(body), KisOperation::PLACE, false)));
+    }
+  }
+
+  SECTION("anything an acknowledgement carries, or an output that is not an object") {
+    for (const char* extra : {
+           R"(,"output":{"ODNO":"0001569157"})",
+           R"(,"output":{"ODNO":null})",
+           R"(,"output":{"ODNO":"","ORD_TMD":"194112"})",
+           R"(,"output":{"KRX_FWDG_ORD_ORGNO":"06010"})",
+           R"(,"output":null)",
+           R"(,"output":[])",
+           R"(,"output":"")",
+         }) {
+      CAPTURE(extra);
+      CHECK(unknown(
+        kis::KisClientTestAccess::parse_order_ack(
+          json_response(kis_refusal_body("APBK3061", KIS_AFTER_MARKET_ONLY, extra)), KisOperation::PLACE, false
+        )
+      ));
+    }
+  }
+
+  SECTION("an HTTP error with the same body keeps its own reading") {
+    for (const int status : {400, 500}) {
+      const auto result = kis::KisClientTestAccess::parse_order_ack(json_response(place, status), KisOperation::PLACE, false);
+      REQUIRE_FALSE(result);
+      CHECK(result.error().category_ == ErrorCategory::HTTP);
+      CHECK(result.error().message_.find("recognized refusal") == std::string::npos);
+    }
   }
 }
 
