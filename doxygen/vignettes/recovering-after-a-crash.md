@@ -262,6 +262,9 @@ the first is unresolved.
 
 ## What this does not do yet
 
+- **Tell apart two of your own lost orders of one shape.** Two placements of the same instrument, side,
+  type, quantity and price whose replies were both lost can both be matched to one row. Only a runner
+  that overlaps orders (`Runner::allow_overlapping_orders`) can have two such orders open at once.
 - **Compaction or rotation.** The file is append-only and grows. One trading day is small; a year is
   not. Rotate it yourself, and note that recovery reads what it is given — a journal rotated away is a
   journal that remembers nothing. The end of a session is not enough: rotate only once every order the
