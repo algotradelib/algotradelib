@@ -338,8 +338,10 @@ left to cancel (KIS `40330000`, Kiwoom `RC4033`), which is what a cancellation o
 just filled gets. The reply must be an HTTP 200 that states the code and carries no new
 acknowledgement (the original order's number, echoed, is not one); it is then `INVALID_ARGUMENT` with
 `reached_broker_` set, and its message ends by naming the rule: `recognized refusal: KIS demo, cash
-cancellation, 40330000)`, for example. The same reply from a real server is not recognized: no real-account
-refusal has been seen, so there it is still an unknown outcome. A refused cancellation says that the
+cancellation, 40330000)`, for example. A real server's refusal is not recognized: the real servers answer
+with other codes (seen once: KIS `APBK3061` for a regular order during the after-market, Kiwoom `506550` for a
+cancellation with nothing left to cancel and `571445` for a sell with nothing to sell), so on a real account it
+is still an unknown outcome. A refused cancellation says that the
 cancellation did nothing, not what became of the order.
 
 When the outcome is unknown, the runner marks the instrument and **withholds everything further for
