@@ -151,7 +151,7 @@ the source reads. `runner::match_verdict_name` prints these:
 | --- | --- | --- |
 | `matched` | exactly one row corresponds | resolved; the ledger lets the instrument go, and the runner counts the order until holdings account for it |
 | `not_placed` | no row, and the window has closed | resolved: no order was found. A runner that overlaps orders forgets the placement; a serialized runner keeps it owed (below) |
-| `ambiguous` | more than one row could be it, or a row that fits is one the journal records for another of your placements | **nothing is resolved**; you decide |
+| `ambiguous` | more than one row could be it, a row that fits is one the journal records for another of your placements, or a row that fits lacks the evidence to be told from another order | **nothing is resolved**; the next sweep asks again, and you decide if it stays |
 | `undecided` | no row yet, window still open | wait for the next sweep |
 | `needs_operator` | the entry came from a damaged line | **only you can resolve it** |
 
@@ -199,8 +199,11 @@ loop's clock passes the window, not at the next bar. A source driven without a l
 decision instant, and the wall clock stands in before anything was fed. Both have to be wall time on
 the journal's clock: one that runs ahead shortens the window.
 
-**`ambiguous` is a stop, not a retry.** Two rows that could both be your order stay ambiguous however
-many times you sweep; no heuristic turns them into one answer. Go and look, then clear the ledger entry
+**`ambiguous` is a stop, not a retry.** Nothing is written for it, and every sweep asks again, so an
+ambiguity that comes from missing evidence can end by itself (a Kiwoom order listed before its history
+row arrives matches once the row does). Two rows that could both be your order stay ambiguous however
+many times you sweep; no heuristic turns them into one answer. Meanwhile the instrument stays withheld,
+and a serialized run stops at the owed-order limit. Go and look, then clear the ledger entry
 yourself with `ledger().resolve_after_reading_orders(instrument)` — named for what it requires, because
 calling it without having read that list defeats the entire mechanism. If the order was this run's own,
 you must also tell the runner what you found: `Runner::resolve_indeterminate_placement(instrument, side,
@@ -236,6 +239,13 @@ placement's own send window, since some brokers reuse order numbers on another d
 (every KIS real-account working order) cannot be placed outside that window, so where a number is
 reused, an older placement of the same shape that recorded it makes such a row `ambiguous`: you
 reconcile it.
+
+**A row whose day nobody stated proves no day.** Kiwoom's working-order listing gives a time of day and
+no date; the adapter dates it today and says so (`OrderSnapshot::ordered_date_assumed_`), and the demo
+server has listed the previous day's order after midnight. Where the history a sweep reads has the
+order's own row (the same number at the same time of day, and nothing either row states disagrees), that
+dated row stands for it, on its own evidence. Until then the listed row neither matches an order nor lets
+one be found absent (`ambiguous`), and the later search for an order still owed ignores it.
 
 **A placement is matched against order history, not against the open-orders listing.** This is the
 subtlest thing in the whole design. Both brokers' working-order inquiry returns only what is still

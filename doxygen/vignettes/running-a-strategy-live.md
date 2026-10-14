@@ -818,9 +818,11 @@ publish says "every order accepted so far is listed".
   this process and after a restart. The search costs one history read per order-list read while such an
   order is owed.
 
-The first sweep has no such filter for another order's row, in either kind of runner: an order of the
-same shape that this runner sent within half a minute before the one whose outcome is unknown can be
-taken for it, and two rows that both fit read as `ambiguous`.
+The first sweep's rule is narrower, in either kind of runner: a row carrying the order number the journal
+records for another of its placements, inside that placement's own send, is not the lost order's, and
+makes the verdict `ambiguous` (an order of the same shape that this runner sent just before is not taken
+for it). A row of that shape whose number the journal does not record for anyone is still a candidate,
+and two rows that both fit read as `ambiguous`.
 
 ### An order nobody can account for stops the run
 

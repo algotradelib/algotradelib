@@ -7395,6 +7395,109 @@ TEST_CASE("the first sweep never names an order with the number of one this runn
   }
 }
 
+TEST_CASE("a listed row whose day the adapter assumed names no order", "[serialized][unfound]") {
+  // A row of the same shape listed with a time of day and no date, which the adapter dated today: it may
+  // be another day's order at that time, still listed.
+  using runner::JournalOutcome;
+  const auto when = at_hour(-1) + std::chrono::seconds(5);
+  WorkingOrder<FakeBroker> assumed;
+  assumed.order_ = market_row("S", when, "0", OrderStatus::PENDING);
+  assumed.order_.ordered_date_assumed_ = true;
+  assumed.ref_.primary_ = "S";
+  WorkingOrders<FakeBroker> listing;
+  listing.orders_.push_back(assumed);
+  const auto verdict = [](const SerialSource& source) {
+    REQUIRE(source.last_reconcile().matches_.size() == 1);
+    return source.last_reconcile().matches_.front().verdict_;
+  };
+
+  SECTION("the first sweep leaves it to an operator") {
+    SerialRig rig({serial_line("p-1", JournalOutcome::PENDING)});
+    auto source = source_over(rig);
+    rig.session.set_working_orders(listing);
+    rig.runner_instance.set_observed_at(at_hour(1));
+    REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+    CHECK(verdict(source) == runner::MatchVerdict::AMBIGUOUS);
+    CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+    CHECK(rig.lines(JournalOutcome::RESOLVED).empty());
+  }
+
+  SECTION("the later search does not act on it") {
+    SerialRig rig(unfound_lines());
+    auto source = source_over(rig);
+    rig.session.set_working_orders(listing);
+    rig.runner_instance.set_observed_at(at_hour(1));
+    REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+    CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+    CHECK(rig.lines(JournalOutcome::RESOLVED).size() == 1);
+  }
+
+  SECTION("the history dates it a day earlier: plainly another order") {
+    SerialRig rig({serial_line("p-1", JournalOutcome::PENDING)});
+    auto source = source_over(rig, page_of({market_row("S", when - std::chrono::hours(24), "0", OrderStatus::PENDING)}));
+    rig.session.set_working_orders(listing);
+    rig.runner_instance.set_observed_at(at_hour(1));
+    REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+    CHECK(verdict(source) == runner::MatchVerdict::NOT_PLACED);
+    CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+  }
+
+  SECTION("the number at that time of day on an order of another shape establishes nothing") {
+    // The send's own day has order S at that second, a buy of twenty: not this order. The listed S is a
+    // later day's, its number reused.
+    auto twenty = market_row("S", when, "0", OrderStatus::PENDING);
+    twenty.quantity_ = Decimal64::parse("20");
+    SECTION("the first sweep") {
+      SerialRig rig({serial_line("p-1", JournalOutcome::PENDING)});
+      auto source = source_over(rig, page_of({twenty}));
+      rig.session.set_working_orders(listing);
+      rig.runner_instance.set_observed_at(at_hour(1));
+      REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+      CHECK(verdict(source) != runner::MatchVerdict::MATCHED);
+      CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+    }
+    SECTION("the later search") {
+      SerialRig rig(unfound_lines());
+      auto source = source_over(rig, page_of({twenty}));
+      rig.session.set_working_orders(listing);
+      rig.runner_instance.set_observed_at(at_hour(1));
+      REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+      CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+      CHECK(rig.lines(JournalOutcome::RESOLVED).size() == 1);
+    }
+  }
+
+  SECTION("the number at that time of day on an order of another time in force establishes nothing") {
+    // The send's day has S at that second, a market order good only immediately: not this order. The
+    // listed S, good for the day, is the next day's under a reused number, its date assumed.
+    auto immediate = market_row("S", when, "0", OrderStatus::PENDING);
+    immediate.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+    auto next_day = listing;
+    next_day.orders_.front().order_.ordered_at_ = when + std::chrono::hours(24);
+    SerialRig rig({serial_line("p-1", JournalOutcome::PENDING)});
+    SerialRig later(unfound_lines());
+    for (auto* each : {&rig, &later}) {
+      auto source = source_over(*each, page_of({immediate}));
+      each->session.set_working_orders(next_day);
+      each->runner_instance.set_observed_at(at_hour(1));
+      REQUIRE(source.read_order_list(each->runner_instance) == runner::PollOutcome::UPDATED);
+      CHECK(each->owed() == runner::ObligationState::UNNAMED);
+    }
+    CHECK(rig.lines(JournalOutcome::RESOLVED).empty());
+    CHECK(later.lines(JournalOutcome::RESOLVED).size() == 1);
+  }
+
+  SECTION("the history dates it that day: the order is named") {
+    SerialRig rig({serial_line("p-1", JournalOutcome::PENDING)});
+    auto source = source_over(rig, page_of({market_row("S", when, "0", OrderStatus::PENDING)}));
+    rig.session.set_working_orders(listing);
+    rig.runner_instance.set_observed_at(at_hour(1));
+    REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+    CHECK(verdict(source) == runner::MatchVerdict::MATCHED);
+    CHECK(rig.owed() == runner::ObligationState::NAMED);
+  }
+}
+
 TEST_CASE("an order sent hours before, of the same shape, does not keep the later search from naming one",
           "[serialized][unfound]") {
   using runner::JournalOutcome;

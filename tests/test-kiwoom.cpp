@@ -1336,6 +1336,130 @@ TEST_CASE("a Kiwoom order refusal outside the recognized replies stays an unknow
   }
 }
 
+TEST_CASE("a working-order row's date is assumed until the day's history states it", "[kiwoom][orders][history]") {
+  // ka10075 states `tm` and no date: the demo server has listed the previous day's order after midnight.
+  const auto listed = kiwoom::KiwoomClientTestAccess::open_order(
+    json::parse(
+      R"({"ord_no":"0000050","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
+          "ord_qty":"10","ord_pric":"70000","oso_qty":"10","orig_ord_no":"0000000",
+          "io_tp_nm":"+매수","trde_tp":"보통","tm":"130543","cntr_qty":"0","stex_tp":"1"})"
+    ).as_object()
+  ).order_;
+  REQUIRE(listed.ordered_at_.has_value());
+  CHECK(listed.ordered_date_assumed_);
+
+  const auto history = [](const Date& date, const char* time) {
+    return kiwoom::KiwoomClientTestAccess::history_row(
+      json::parse(
+        std::string(R"({"ord_no":"0000050","stk_cd":"A005930","trde_tp":"지정가","ord_qty":"0000000010",
+          "ord_uv":"0000070000","stk_nm":"삼성전자","io_tp_nm":"현금매수","dmst_stex_tp":"KRX","ord_tm":")") +
+        time + R"(","acpt_tp":"접수","cntr_qty":"0","ord_remnq":"10"})"
+      ).as_object(),
+      date
+    );
+  };
+  const auto today = kiwoom::today_in_seoul();
+  CHECK_FALSE(history(today, "13:05:43").ordered_date_assumed_);
+
+  const auto merged = [&](const OrderSnapshot& row) {
+    std::vector<OrderSnapshot> rows{listed};
+    runner::merge_dated_history(rows, {row});
+    return rows;
+  };
+  SECTION("today's history row of the order stands for it") {
+    const auto rows = merged(history(today, "13:05:43"));
+    REQUIRE(rows.size() == 1);
+    CHECK_FALSE(rows.front().ordered_date_assumed_);
+    CHECK(rows.front().time_in_force_ == TimeInForce::DAY);
+  }
+  SECTION("an earlier day's row of the order at the same time stands for it, with its own date") {
+    const auto earlier = history(Date{2026, 3, 25}, "13:05:43");
+    const auto rows = merged(earlier);
+    REQUIRE(rows.size() == 1);
+    CHECK_FALSE(rows.front().ordered_date_assumed_);
+    CHECK(rows.front().ordered_at_ == earlier.ordered_at_);
+  }
+  SECTION("another time of day under that number is another order: nothing is established") {
+    const auto rows = merged(history(today, "13:05:44"));
+    REQUIRE(rows.size() == 2);
+    CHECK(rows.front().ordered_date_assumed_);
+  }
+  SECTION("the number and the time of day of an order of another shape establish nothing") {
+    // A number reused on another day, at the same second: the history row says buy 20, the listing buy 10.
+    auto other = history(Date{2026, 3, 25}, "13:05:43");
+    other.quantity_ = Decimal64::parse("20");
+    const auto rows = merged(other);
+    REQUIRE(rows.size() == 2);
+    CHECK(rows.front().ordered_date_assumed_);
+    auto sold = history(Date{2026, 3, 25}, "13:05:43");
+    sold.side_ = OrderSide::SELL;
+    CHECK(merged(sold).front().ordered_date_assumed_);
+    auto priced = history(Date{2026, 3, 25}, "13:05:43");
+    priced.price_ = Decimal64::parse("70100");
+    CHECK(merged(priced).front().ordered_date_assumed_);
+    auto immediate = history(Date{2026, 3, 25}, "13:05:43");
+    immediate.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+    CHECK(merged(immediate).size() == 2);
+    // The same second today, another time in force: both rows are kept, neither stands for the other.
+    auto immediate_today = history(today, "13:05:43");
+    immediate_today.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+    CHECK(merged(immediate_today).size() == 2);
+  }
+  SECTION("what the history row does not state is not taken from the listing row") {
+    // Kept on its own evidence: an unreadable type, or a missing trigger, still decides nothing.
+    runner::OpenInstruction placement;
+    placement.entry_.id_ = "p-1";
+    placement.entry_.action_ = runner::JournalAction::PLACE;
+    placement.entry_.instrument_ = listed.instrument_;
+    placement.entry_.side_ = OrderSide::BUY;
+    placement.entry_.type_ = OrderType::LIMIT;
+    placement.entry_.time_in_force_ = TimeInForce::DAY;
+    placement.entry_.session_ = OrderSession::REGULAR;
+    placement.entry_.venue_ = Venue::UNSPECIFIED;
+    placement.entry_.quantity_ = Decimal64::parse("10");
+    placement.entry_.price_ = Decimal64::parse("70000");
+    auto unread = history(Date{2026, 3, 25}, "13:05:43");
+    unread.type_ = OrderType::UNKNOWN;
+    unread.time_in_force_ = TimeInForce::UNKNOWN;
+    unread.session_ = OrderSession::UNKNOWN;
+    placement.entry_.recorded_at_ = *unread.ordered_at_;
+    placement.opened_at_ = placement.entry_.recorded_at_;
+    const auto later = *unread.ordered_at_ + std::chrono::hours(1);
+    REQUIRE(runner::match_against(placement, {unread}, later).verdict_ == runner::MatchVerdict::AMBIGUOUS);
+    CHECK(runner::match_against(placement, merged(unread), later).verdict_ == runner::MatchVerdict::AMBIGUOUS);
+  }
+}
+
+TEST_CASE("a working-order row whose time cannot be read names no order", "[kiwoom][orders]") {
+  // Flagged as assumed and with no time at all: still not evidence that it is the order looked for.
+  runner::OpenInstruction placement;
+  placement.entry_.id_ = "p-1";
+  placement.entry_.action_ = runner::JournalAction::PLACE;
+  placement.entry_.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+  placement.entry_.side_ = OrderSide::BUY;
+  placement.entry_.type_ = OrderType::LIMIT;
+  placement.entry_.time_in_force_ = TimeInForce::DAY;
+  placement.entry_.session_ = OrderSession::REGULAR;
+  placement.entry_.quantity_ = Decimal64::parse("10");
+  placement.entry_.price_ = Decimal64::parse("70000");
+  placement.entry_.recorded_at_ = std::chrono::system_clock::now();
+  placement.opened_at_ = placement.entry_.recorded_at_;
+  for (const char* time : {"", "bad", "130543"}) {
+    INFO("tm '" << time << "'");
+    const auto listed = kiwoom::KiwoomClientTestAccess::open_order(
+      json::parse(
+        std::string(R"({"ord_no":"0000050","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
+          "ord_qty":"10","ord_pric":"70000","oso_qty":"10","orig_ord_no":"0000000",
+          "io_tp_nm":"+매수","trde_tp":"보통","tm":")") + time + R"(","cntr_qty":"0","stex_tp":"1"})"
+      ).as_object()
+    ).order_;
+    CHECK(listed.ordered_date_assumed_);
+    const auto match = runner::match_against(placement, {listed}, placement.opened_at_ + std::chrono::hours(1));
+    CHECK(match.verdict_ == runner::MatchVerdict::AMBIGUOUS);
+    CHECK(match.order_id_.empty());
+  }
+}
+
 TEST_CASE("a history row's state comes from two columns, not one", "[kiwoom][history]") {
   const auto date = Date{2026, 3, 25};
   const auto base = std::string(
@@ -1389,7 +1513,7 @@ TEST_CASE("a history row's state comes from two columns, not one", "[kiwoom][his
 
 TEST_CASE("a cancelled order's own history row ends once its cancellation names it", "[kiwoom][history]") {
   const auto date = Date{2026, 10, 6};
-  // The demo server's rows for a far limit buy and its cancel (2026-10-06, F45), at 10 shares rather than the observed 1
+  // The demo server's rows for a far limit buy and its cancel (observed 2026-10-06), at 10 shares rather than the observed 1
   // so that a partial fill can be written.
   const auto row = [](
     const std::string& number, const std::string& original, const std::string& amendment,

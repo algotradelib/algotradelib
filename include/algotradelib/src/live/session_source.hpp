@@ -1155,6 +1155,13 @@ private:
     };
     auto candidates = dated(rows);
     runner::merge_dated_history(candidates, dated(history));
+    // A listing row whose day the history did not establish is undated here too.
+    candidates.erase(
+      std::remove_if(
+        candidates.begin(), candidates.end(), [](const OrderSnapshot& row) { return row.ordered_date_assumed_; }
+      ),
+      candidates.end()
+    );
     runner::drop_rows_fitting_another_placement(candidates, replay, late, window_);
     const auto now = sweep_instant(runner_instance);
     for (const auto& instruction : late) {
