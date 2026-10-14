@@ -1844,6 +1844,11 @@ struct OrderSnapshot {
   Currency currency_;
   /** @brief When the broker recorded the order, if it gives a time. KIS working orders have none. */
   std::optional<std::chrono::system_clock::time_point> ordered_at_;
+  /**
+   * @brief Whether the broker stated only the time of day, and the date in `ordered_at_` is the day the
+   *   adapter read the row (a Kiwoom working order). Such a row is no evidence of the day it was placed.
+   */
+  bool ordered_date_assumed_{false};
   /** @brief When the order was cancelled, if the broker reports it. */
   std::optional<std::chrono::system_clock::time_point> canceled_at_;
   /** @brief What has filled and what it cost; see `OrderExecution` before testing a fill. */

@@ -237,6 +237,12 @@ placement's own send window, since some brokers reuse order numbers on another d
 reused, an older placement of the same shape that recorded it makes such a row `ambiguous`: you
 reconcile it.
 
+**A row whose day nobody stated proves no day.** Kiwoom's working-order listing gives a time of day and
+no date; the adapter dates it today and says so (`OrderSnapshot::ordered_date_assumed_`), and the demo
+server has listed the previous day's order after midnight. A sweep takes the day from the order's own
+history row when the history it reads has one; until then the row neither matches an order nor lets
+one be found absent (`ambiguous`), and the later search for an order still owed ignores it.
+
 **A placement is matched against order history, not against the open-orders listing.** This is the
 subtlest thing in the whole design. Both brokers' working-order inquiry returns only what is still
 *resting*: Toss maps it to its `OPEN` scope, KIS to the modifiable set. A market or aggressive limit

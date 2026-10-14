@@ -3396,11 +3396,11 @@ private:
     order.quantity_ = detail::required_magnitude(row, "ord_qty");
     order.price_ = positive(detail::magnitude(row, "ord_pric"));
     order.trigger_price_ = reported_trigger(row, "stop_pric");
-    // `tm` is `HHmmss` with no date. The calendar day is today in Seoul, which is sound *for this
-    // endpoint*: `ka10075` 미체결 lists the orders still unfilled, and a KRX day order does not
-    // outlive its session, so an unfilled order was placed today. The history path takes its date
-    // from the request instead, because there the row can be any day's.
+    // `tm` is `HHmmss` with no date. The calendar day is today in Seoul, and only assumed: the demo
+    // server has listed an order of the previous day after midnight. The history path takes its date
+    // from the request, and a sweep dates this row from it when both carry the order.
     order.ordered_at_ = detail::seoul_timestamp(today_in_seoul(), detail::text_field(row, "tm"));
+    order.ordered_date_assumed_ = true;
     order.execution_.filled_quantity_ = detail::required_magnitude(row, "cntr_qty");
     resolve_open_status(open_order.amendable_quantity_, order);
     return open_order;

@@ -244,19 +244,23 @@ inline Evidence trigger_evidence(
  * A row with no time is judged on its other attributes (`CONFIRMS` here), because every KIS
  * working-order row lacks a date. So an identical order placed through another channel, while this
  * runner's own order is not listed, can be matched to it; when both are listed the result is
- * `AMBIGUOUS`.
+ * `AMBIGUOUS`. A row whose date the adapter assumed (`OrderSnapshot::ordered_date_assumed_`) may be
+ * another day's order at the same time of day, so it establishes nothing (`ABSENT`).
  *
  * @param instruction The instruction.
  * @param row The row.
  * @param window The allowances.
- * @return `CONFIRMS` if the row has no time or its time is inside the widened send window;
- *   otherwise `CONTRADICTS`.
+ * @return `CONFIRMS` if the row has no time or its time is inside the widened send window; `ABSENT`
+ *   if its date was assumed; otherwise `CONTRADICTS`.
  */
 inline Evidence time_evidence(
   const OpenInstruction& instruction, const OrderSnapshot& row, const MatchWindow& window
 ) {
   if (!row.ordered_at_) {
     return Evidence::CONFIRMS;
+  }
+  if (row.ordered_date_assumed_) {
+    return Evidence::ABSENT;
   }
   const auto begin = instruction.opened_at_ - window.clock_skew_;
   const auto end = instruction_sent_by(instruction, window) + window.clock_skew_;
@@ -1046,7 +1050,9 @@ inline bool exact_copy(const OrderSnapshot& a, const OrderSnapshot& b) {
  * @brief Adds history rows to a working-order listing, dropping only established copies
  *   (`exact_copy`); for brokers whose history is read one date at a time (Kiwoom).
  *
- * An uncertain row is kept, at the cost of a possible `AMBIGUOUS`. An adapter should stamp
+ * A listing row whose date was assumed (`OrderSnapshot::ordered_date_assumed_`) first takes the date of
+ * a history row of the same order id and instrument at the same time of day, whose date is not
+ * assumed. An uncertain row is kept, at the cost of a possible `AMBIGUOUS`. An adapter should stamp
  * `ordered_at_` the same way on working and history rows of one order, or both are kept.
  *
  * @param into The listing, extended in place.
@@ -1057,6 +1063,24 @@ inline void merge_dated_history(
   const std::vector<OrderSnapshot>& rows
 ) {
   const auto listed = into.size();
+  for (std::size_t at = 0; at < listed; ++at) {
+    auto& assumed = into[at];
+    if (!assumed.ordered_date_assumed_ || !assumed.ordered_at_ || assumed.order_id_.empty()) {
+      continue;
+    }
+    for (const auto& row : rows) {
+      if (row.ordered_date_assumed_ || !row.ordered_at_ || row.order_id_ != assumed.order_id_ ||
+          !(row.instrument_ == assumed.instrument_)) {
+        continue;
+      }
+      // Both stamped from a date and the same `HHmmss` in one zone, so the same order differs by whole days.
+      if ((*assumed.ordered_at_ - *row.ordered_at_) % std::chrono::hours(24) == std::chrono::hours(0)) {
+        assumed.ordered_at_ = row.ordered_at_;
+        assumed.ordered_date_assumed_ = false;
+        break;
+      }
+    }
+  }
   for (const auto& row : rows) {
     bool known = false;
     for (std::size_t at = 0; at < listed; ++at) {

@@ -1336,6 +1336,56 @@ TEST_CASE("a Kiwoom order refusal outside the recognized replies stays an unknow
   }
 }
 
+TEST_CASE("a working-order row's date is assumed until the day's history states it", "[kiwoom][orders][history]") {
+  // ka10075 states `tm` and no date: the demo server has listed the previous day's order after midnight.
+  const auto listed = kiwoom::KiwoomClientTestAccess::open_order(
+    json::parse(
+      R"({"ord_no":"0000050","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
+          "ord_qty":"10","ord_pric":"70000","oso_qty":"10","orig_ord_no":"0000000",
+          "io_tp_nm":"+매수","trde_tp":"보통","tm":"130543","cntr_qty":"0","stex_tp":"1"})"
+    ).as_object()
+  ).order_;
+  REQUIRE(listed.ordered_at_.has_value());
+  CHECK(listed.ordered_date_assumed_);
+
+  const auto history = [](const Date& date, const char* time) {
+    return kiwoom::KiwoomClientTestAccess::history_row(
+      json::parse(
+        std::string(R"({"ord_no":"0000050","stk_cd":"A005930","trde_tp":"지정가","ord_qty":"0000000010",
+          "ord_uv":"0000070000","stk_nm":"삼성전자","io_tp_nm":"현금매수","dmst_stex_tp":"KRX","ord_tm":")") +
+        time + R"(","acpt_tp":"접수","cntr_qty":"0","ord_remnq":"10"})"
+      ).as_object(),
+      date
+    );
+  };
+  const auto today = kiwoom::today_in_seoul();
+  CHECK_FALSE(history(today, "13:05:43").ordered_date_assumed_);
+
+  const auto merged = [&](const OrderSnapshot& row) {
+    std::vector<OrderSnapshot> rows{listed};
+    runner::merge_dated_history(rows, {row});
+    return rows;
+  };
+  SECTION("today's history row of the order: one row, dated") {
+    const auto rows = merged(history(today, "13:05:43"));
+    REQUIRE(rows.size() == 1);
+    CHECK_FALSE(rows.front().ordered_date_assumed_);
+    CHECK(rows.front().time_in_force_ == TimeInForce::DAY);
+  }
+  SECTION("an earlier day's row of the order at the same time: the listing row takes its date") {
+    const auto earlier = history(Date{2026, 3, 25}, "13:05:43");
+    const auto rows = merged(earlier);
+    REQUIRE(rows.size() == 1);
+    CHECK_FALSE(rows.front().ordered_date_assumed_);
+    CHECK(rows.front().ordered_at_ == earlier.ordered_at_);
+  }
+  SECTION("another time of day under that number is another order: nothing is established") {
+    const auto rows = merged(history(today, "13:05:44"));
+    REQUIRE(rows.size() == 2);
+    CHECK(rows.front().ordered_date_assumed_);
+  }
+}
+
 TEST_CASE("a history row's state comes from two columns, not one", "[kiwoom][history]") {
   const auto date = Date{2026, 3, 25};
   const auto base = std::string(
