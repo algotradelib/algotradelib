@@ -1414,7 +1414,7 @@ public:
 private:
   // Puts the sellable-convention probe's verdict in the report, when it reached one.
   //
-  // The probe answers a question neither broker's documentation does -- whether the sellable figure
+  // The probe answers a question no broker's documentation is known to -- whether the sellable figure
   // already excludes resting sells -- and it answers it as a by-product of ordinary polling. An
   // operator should not have to write code to read that, so a run that learned something says so,
   // with the counts behind it because one observation is evidence rather than proof.

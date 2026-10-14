@@ -1343,7 +1343,8 @@ private:
   // than being inferred from the presence of a delisting date — a future delisting
   // date belongs to an instrument that is still trading.
   //
-  // `price_rule_` is the library's own grid, because no broker publishes tick size.
+  // `price_rule_` is the library's own grid: the quote's `aspr_unit` is the tick at one price, not
+  // the ladder.
   static Result<Instrument> parse_instrument(
     InstrumentId requested,
     Result<network::HttpResponse> result
@@ -4406,10 +4407,10 @@ private:
 
   // Corrects this connection's pacing from a KIS rate-limit refusal.
   //
-  // The two KIS limit layers call for different corrections. A ledger refusal is
-  // a cap shared with every other customer, so the budget was not the problem and
-  // only a wait helps. A personal refusal means this key's own allowance was
-  // exceeded, but KIS reports no number to correct to; so both only hold admission.
+  // KIS has two limit layers. A ledger refusal is a cap shared with every other
+  // customer, so the budget was not the problem and only a wait helps. A personal
+  // refusal means this key's own allowance was exceeded, but KIS reports no number
+  // to correct to; so both only hold admission.
   void note_rate_limit(const BrokerError& error) {
     if (error.category_ != ErrorCategory::RATE_LIMIT) {
       return;

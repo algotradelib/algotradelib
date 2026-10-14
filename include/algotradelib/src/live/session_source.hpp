@@ -578,8 +578,8 @@ private:
     // every checked sell would refuse at both shipped adapters. It is assigned, not merged, for the
     // same reason `positions_` is: this is one read, and its figures mean what this read says.
     portfolio.sellable_basis_ = result.value().sellable_basis_;
-    // When the snapshot arrived, which is the best the two brokers allow: neither timestamps a
-    // holdings answer, so `received_at_` is this machine's clock at parse time. The loop's staleness
+    // When the snapshot arrived, which is the best the adapters can do: none gets a time from the
+    // broker for a holdings answer, so `received_at_` is this machine's clock at parse time. The loop's staleness
     // gate therefore measures time since arrival, and understates the age of the figures by the
     // request's own latency.
     portfolio.as_of_ = result.value().received_at_;

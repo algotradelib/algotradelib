@@ -51,8 +51,10 @@ that is the following midnight.
 
 ## The price grid is the library's own
 
-**No broker publishes tick size anywhere in its API.** `PriceRule` is therefore
-a table this library maintains, carried on `Instrument::price_rule_`. It records its
+**No adapter builds the grid from the broker.** A broker states at most the tick at
+one price (KIS's quote carries `aspr_unit`; Toss's refusal of an off-tick price names
+the tick it wanted), not the whole ladder, so `PriceRule` is a table this library
+maintains, carried on `Instrument::price_rule_`. It records its
 own `source_` so a stale table is visible rather than assumed, and it is data a caller
 can replace.
 
@@ -75,8 +77,8 @@ three states:
 | `UNCONSTRAINED` | the market quotes in free decimals | returns the price unchanged |
 | `UNKNOWN` | this library has no table for the instrument | **returns nothing** |
 
-KRX prices funds and notes on a different ladder from cash equities and no broker
-publishes either, so an ETF or ETN arrives with `UNKNOWN` rather than the equity table.
+KRX prices funds and notes on a different ladder from cash equities and this library
+carries no table for it, so an ETF or ETN arrives with `UNKNOWN` rather than the equity table.
 Attaching the equity grid would be worse than attaching none: it would round onto a
 ladder the exchange does not use and the order would be rejected, with the library
 having confidently produced the price. A default-constructed rule is `UNKNOWN` too, so

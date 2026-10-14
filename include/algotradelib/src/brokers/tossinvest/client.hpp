@@ -1070,8 +1070,8 @@ private:
   // The identity comes from the instrument the caller asked about rather than from
   // the response's symbol, so the country and venue the caller stated survive.
   //
-  // `price_rule_` is the library's own grid, not Toss's: no broker publishes tick
-  // size, so the rule is chosen from the market rather than normalized from a field.
+  // `price_rule_` is the library's own grid, not Toss's: Toss names a tick only when it refuses an
+  // off-tick price, so the rule is chosen from the market rather than normalized from a field.
   static Result<Instrument> parse_instrument(
     InstrumentId requested,
     Result<network::HttpResponse> result
