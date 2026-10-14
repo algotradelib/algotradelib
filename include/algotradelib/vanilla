@@ -8,8 +8,8 @@
  * weight) rather than a quantity to trade, so after a restart it does not need to remember whether it
  * already entered: reconciliation compares it with the portfolio and the working orders. Each states its warm-up requirement and emits nothing before it is met.
  *
- * `BuyAndHold` and `TimedLiquidation` read no series and are available in every build; the rest
- * compute indicators and need a linear-algebra backend.
+ * `BuyAndHold` and `TimedLiquidation` read no series and are available in every build; the rest sit
+ * in headers that include `<algotradelib/analytics>`, and so need a linear-algebra backend.
  */
 
 #include "src/strategy/vanilla/buy_and_hold.hpp"

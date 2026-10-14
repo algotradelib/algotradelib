@@ -29,7 +29,7 @@ disagree about what a broker response means.
 
 Binding a broker is a `BrokerTraits<Client>` specialization, which lives in that
 broker's own directory. Core headers include no broker header, and adding a
-broker edits no shared file — `tests/mock_broker.hpp` adds a third broker
+broker edits no shared file — `tests/mock_broker.hpp` adds a broker of its own
 entirely within itself. One check tells an adapter author their traits are
 complete, `ATL_ASSERT_BROKER(Client)`; assert it once, in any source file of the
 adapter's own (a test is the natural place):

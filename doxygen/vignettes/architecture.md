@@ -88,8 +88,9 @@ Two other edges are worth reading off the picture:
   optional — but turning it off reaches further than that one box. With `ATL_USE_EIGEN=OFF`,
   `<algotradelib/analytics>` is a deliberate `#error` naming the option, `backtest::summarize` and
   `backtest::Report` are gone, and `<algotradelib/vanilla>` ships only `BuyAndHold` and
-  `TimedLiquidation`, because every other vanilla computes an indicator. The replay engine itself
-  still runs, so such a build can execute a strategy; it cannot score one.
+  `TimedLiquidation`, because every other vanilla sits in a header that needs
+  `<algotradelib/analytics>`. The replay engine itself still runs, so such a build can execute a
+  strategy; it cannot score one.
 
 ## The dependency rule, and the rule underneath it
 
@@ -226,7 +227,7 @@ graph TD
 ```
 
 Core headers include no broker header, and adding a broker edits no shared file:
-`tests/mock_broker.hpp` adds a third broker entirely within itself, which is the only evidence worth
+`tests/mock_broker.hpp` adds a broker of its own entirely within itself, which is the only evidence worth
 having for that claim. `ATL_ASSERT_BROKER(Client)`, asserted once in the adapter's own tests, compiles
 every verb the capabilities claim and reads every capability constant (see
 [the broker port](the-broker-port.md)). These checks are for safety at build time, not for speed: they
@@ -275,7 +276,7 @@ graph LR
   P["an order price<br/><b>strategy::Price</b>"]
 
   W -- "to_scalar<br/>(total)" --> A
-  A -- "round_scalar_to_tick<br/><i>optional — refuses a<br/>non-finite value, and refuses<br/>an unknown tick ladder</i>" --> P
+  A -- "round_scalar_to_tick, then Price::checked<br/><i>optional — refuses a<br/>non-finite value, and refuses<br/>an unknown tick ladder</i>" --> P
   P --> W
 
   classDef pure fill:#e8f4ea,stroke:#4a7a55,color:#123
@@ -284,8 +285,9 @@ graph LR
 
 Prices, quantities and money stay in `Decimal64` anywhere they cross the wire or are reconciled,
 because binary floating point cannot hold them exactly and a reconciliation compares for equality.
-Analytics needs a float, so it gets one — and the two meet at exactly two named, tested functions in
-`analytics/conversion.hpp`.
+Analytics needs a float, so it gets one — and the two meet at three named, tested functions in
+`analytics/conversion.hpp`: `to_scalar` one way, and `to_decimal` (for a computed quantity or weight) and
+`round_scalar_to_tick` (for a price, whose result still goes through `Price::checked`) back.
 
 **The return path is the narrow one.** `strategy::Price` has no public constructor. The only routes in
 validate against the instrument's `PriceRule`, so an indicator value cannot reach the wire as an

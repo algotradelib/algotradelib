@@ -326,7 +326,7 @@ published (Toss does; KIS publishes none for domestic stock, and
 `backtest::commission_model_from(schedule, country, date)` remains for the older one-date shape) or
 one you state from your own fee page.
 
-Three things to know before you rely on it:
+Five things to know before you rely on it:
 
 - **The venue is asserted, never observed.** A replay cannot know where a fill executed — a bar does
   not say, and the broker fields that would are undocumented. `ReportCaveats::asserted_venue_`
@@ -395,9 +395,9 @@ Korean ETFs and ETNs pay no transaction tax — need a replay of their own witho
 
 ## Annualizing, and the trap in it
 
-`summarize` takes `periods_per_year` and has no default, which is the same reason
-`analytics::annualize_ratio` does. The number is **245** for daily bars on KRX and **95,550** for minute
-bars over the same year.
+`summarize`'s `periods_per_year` defaults to none, which leaves the annualized Sharpe ratio unobserved,
+and `analytics::annualize_ratio` requires one: neither guesses your bar frequency. The number is **245**
+for daily bars on KRX and **95,550** for minute bars over the same year.
 
 `backtest::periods_per_year(interval, session, trading_days)` derives it. A calendar interval — weekly,
 monthly — returns nothing rather than a plausible constant, because a week's divisor depends on the

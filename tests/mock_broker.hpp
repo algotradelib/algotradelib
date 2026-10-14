@@ -20,7 +20,7 @@
 #include <vector>
 
 /**
- * A third broker that exists only in memory.
+ * A broker that exists only in memory, beside the three the library ships.
  *
  * Its purpose is twofold. It proves that binding a new broker to the port needs
  * no edit to any core or existing broker header — everything below lives in this
