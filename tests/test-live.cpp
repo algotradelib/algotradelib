@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <tuple>
 #include <vector>
 
 using namespace algotradelib;
@@ -5231,6 +5232,56 @@ TEST_CASE("the startup read refuses a page saying more from a broker with no cur
   CHECK(source.read_order_list(live_runner) == runner::PollOutcome::FAILED);
   REQUIRE(source.last_error());
   CHECK(source.last_error()->broker_code_ == "history_not_continued");
+}
+
+struct RangedHistoryNoListing : strategy::NoCaps {
+  static constexpr bool has_working_orders = false;
+  static constexpr bool history_requires_range = true;
+};
+
+struct DatedHistoryNoListing : strategy::NoCaps {
+  static constexpr bool has_working_orders = false;
+  static constexpr bool history_requires_range = false;
+};
+
+/** A placement owed beside a torn line that named nothing; returns the history inquiries the sweep made. */
+template <typename Caps>
+std::vector<OrderHistoryQuery> history_beside_a_nameless_tail() {
+  FakeSession<Caps> session;
+  session.history_by_query_ = [](const OrderHistoryQuery&) { return OrderPage{}; };
+  runner::MemoryJournal journal;
+  journal.append(journaled_placement());
+  // What a reader's replay holds for a torn tail that named no instrument: no time, so the epoch.
+  journal.append(runner::unattributable_journal_entry(R"({"id":"run-2","ac)"));
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live_runner.context().set_now(swept_at());
+  live_runner.ledger().mark(samsung(), "an order request failed in transit");
+  live::SessionSource<FakeSession<Caps>, runner::MemoryJournal> source(session, {samsung()});
+  source.set_journal(journal);
+  source.read_order_list(live_runner);
+  return session.history_queries();
+}
+
+TEST_CASE("an operator-only instruction sets no bound on the history a sweep reads", "[history]") {
+  // Counted, the nameless entry's epoch would start the inquiry on 1969-12-31, not the day before the
+  // placement: decades of history in one range, or a date read for every day between.
+  for (const auto& queries :
+       {history_beside_a_nameless_tail<RangedHistoryNoListing>(),
+        history_beside_a_nameless_tail<DatedHistoryNoListing>()}) {
+    // The startup read states no date; the sweep's own inquiries do.
+    // No earlier than the day before the placement was journaled (100 days after the epoch).
+    const auto floor = runner::date_of(journaled_at() - std::chrono::hours(24));
+    std::size_t dated = 0;
+    for (const auto& query : queries) {
+      if (query.from_) {
+        ++dated;
+        CHECK(std::tie(query.from_->year_, query.from_->month_, query.from_->day_) >=
+              std::tie(floor.year_, floor.month_, floor.day_));
+      }
+    }
+    CHECK(dated > 0);
+    CHECK(dated < 10);
+  }
 }
 
 TEST_CASE("the startup read follows a declared cursor", "[history]") {

@@ -1205,8 +1205,19 @@ private:
   // where the broker requires one, and cursor paging where the broker offers one. The page cap is a
   // guard against a cursor that never terminates, and exhausting it is reported as a failure for the
   // same reason -- a truncated listing is a listing with holes in it.
-  bool read_history(const std::vector<runner::OpenInstruction>& open,
+  bool read_history(const std::vector<runner::OpenInstruction>& all,
     std::vector<OrderSnapshot>& into) {
+    // **An operator-only instruction sets no bound.** A sweep cannot resolve it, and one salvaged from a
+    // torn line carries no time, which reads as the epoch: counted, it would ask for every day since 1970.
+    std::vector<runner::OpenInstruction> open;
+    for (const auto& instruction : all) {
+      if (!instruction.entry_.requires_operator_) {
+        open.push_back(instruction);
+      }
+    }
+    if (open.empty()) {
+      return true;
+    }
     if constexpr (Caps::history_requires_range) {
       return read_history_in(runner::history_range_for(open, window_), into);
     } else {
