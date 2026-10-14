@@ -279,8 +279,8 @@ int main() {
     << "believe a ranking.\n";
 #else
   // No backend, so there is no `Report` to print and no vanilla to compare against either: every
-  // vanilla but `BuyAndHold` and `TimedLiquidation` computes an indicator, so `<algotradelib/vanilla>`
-  // does not ship them here. The replay engine itself needs no backend at all, which is worth showing
+  // vanilla but `BuyAndHold` and `TimedLiquidation` sits in a header that needs `<algotradelib/analytics>`,
+  // so `<algotradelib/vanilla>` does not ship them here. The replay engine itself needs no backend at all, which is worth showing
   // rather than asserting -- so the strategy is still run, and what it did is still counted.
   const auto engine = replay(MyStrategy{});
   std::cout << "MyStrategy replayed " << engine.result().bars_ << " bars and filled "

@@ -139,8 +139,8 @@ any release.
 `ATL_USE_EIGEN=OFF` does not make analytics slower — it removes them.
 `<algotradelib/analytics>` becomes a deliberate `#error` naming the option to set,
 `backtest::summarize` and `backtest::Report` are gone, and `<algotradelib/vanilla>` ships only
-`BuyAndHold` and `TimedLiquidation`, since every other vanilla computes an indicator. The replay
-engine itself runs either way, so a build without a backend can still execute a strategy; it just
+`BuyAndHold` and `TimedLiquidation`, since every other vanilla sits in a header that needs
+`<algotradelib/analytics>`. The replay engine itself runs either way, so a build without a backend can still execute a strategy; it just
 cannot score one.
 
 To build and run the library's own checks:
