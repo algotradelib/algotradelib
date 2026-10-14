@@ -461,14 +461,106 @@ inline std::string unresolvable_reason(const JournalEntry& entry) {
 }
 
 /**
+ * @brief Returns the placements a journal records an order id for, each with the span of its send.
+ *
+ * The id is the one an `ACCEPTED` line (the broker's reply) or a `RESOLVED` line (a sweep's name)
+ * records. The span runs from the placement's first line to the line that answered the send
+ * (`ACCEPTED`, `REJECTED` or `INDETERMINATE`). A placement with no such id, a refused one and an
+ * operator-only one are left out.
+ *
+ * @param replay The journal's contents.
+ * @return The placements, with `entry_.order_id_` set to the recorded id.
+ */
+inline std::vector<OpenInstruction> recorded_placements(const JournalReplay& replay) {
+  std::vector<OpenInstruction> found;
+  std::unordered_map<std::string, std::size_t> found_at;
+  std::vector<std::string> refused;
+  for (const auto& entry : replay.entries_) {
+    if (entry.action_ != JournalAction::PLACE || entry.requires_operator_) {
+      continue;
+    }
+    auto known = found_at.find(entry.id_);
+    if (known == found_at.end()) {
+      OpenInstruction placement;
+      placement.entry_ = entry;
+      placement.entry_.order_id_.clear();
+      placement.opened_at_ = entry.recorded_at_;
+      known = found_at.emplace(entry.id_, found.size()).first;
+      found.push_back(std::move(placement));
+    }
+    auto& placement = found[known->second];
+    if (entry.outcome_ == JournalOutcome::REJECTED) {
+      refused.push_back(entry.id_);
+    }
+    const bool answers_the_send = entry.outcome_ == JournalOutcome::ACCEPTED ||
+      entry.outcome_ == JournalOutcome::REJECTED || entry.outcome_ == JournalOutcome::INDETERMINATE;
+    if (answers_the_send && !placement.closed_at_) {
+      placement.closed_at_ = entry.recorded_at_;
+    }
+    const bool names_the_order = entry.outcome_ == JournalOutcome::ACCEPTED || entry.outcome_ == JournalOutcome::RESOLVED;
+    if (names_the_order && !entry.order_id_.empty() && placement.entry_.order_id_.empty()) {
+      placement.entry_.order_id_ = entry.order_id_;
+    }
+  }
+  found.erase(
+    std::remove_if(
+      found.begin(), found.end(),
+      [&](const OpenInstruction& placement) {
+        return placement.entry_.order_id_.empty() ||
+          std::find(refused.begin(), refused.end(), placement.entry_.id_) != refused.end();
+      }
+    ),
+    found.end()
+  );
+  return found;
+}
+
+/**
+ * @brief Returns the recorded placement whose order a row is: the row carries the order id the journal
+ *   records for it and fits that placement's own send (`row_corresponds` or `row_might_correspond`).
+ *
+ * The send window matters because some brokers reuse order numbers on another day.
+ *
+ * @param instruction The instruction being matched, which is never its own rival.
+ * @param row The row.
+ * @param recorded The placements with recorded ids (`recorded_placements`).
+ * @param window The allowances.
+ * @return The placement, or `nullptr`.
+ */
+inline const OpenInstruction* recorded_owner(
+  const OpenInstruction& instruction,
+  const OrderSnapshot& row,
+  const std::vector<OpenInstruction>& recorded,
+  const MatchWindow& window
+) {
+  if (row.order_id_.empty()) {
+    return nullptr;
+  }
+  for (const auto& other : recorded) {
+    if (other.entry_.id_ == instruction.entry_.id_ || other.entry_.order_id_ != row.order_id_) {
+      continue;
+    }
+    if (row_corresponds(other, row, window) || row_might_correspond(other, row, window)) {
+      return &other;
+    }
+  }
+  return nullptr;
+}
+
+/**
  * @brief Decides what a broker listing says about one instruction of unknown outcome.
  *
  * A cancellation is matched by the broker order id it names (`AMBIGUOUS` only if two rows carry that
  * id); a placement by attributes (`row_corresponds`, `row_might_correspond`). An operator-only or
  * unresolvable (`unresolvable_reason`) instruction is `NEEDS_OPERATOR`.
  *
+ * For a placement, a row that fits it but is the order of another placement in `recorded`
+ * (`recorded_owner`) is no candidate, and makes the verdict `AMBIGUOUS` whatever else fits: an
+ * operator decides, because the record may itself be a sweep's mistaken name.
+ *
  * @param instruction The instruction.
  * @param rows The listing (working orders and history).
+ * @param recorded The journal's placements with a recorded order id (`recorded_placements`).
  * @param now The current instant.
  * @param window The allowances.
  * @return The verdict.
@@ -476,6 +568,7 @@ inline std::string unresolvable_reason(const JournalEntry& entry) {
 inline OrderMatch match_against(
   const OpenInstruction& instruction,
   const std::vector<OrderSnapshot>& rows,
+  const std::vector<OpenInstruction>& recorded,
   std::chrono::system_clock::time_point now,
   const MatchWindow& window = {}
 ) {
@@ -511,6 +604,9 @@ inline OrderMatch match_against(
 
   const OrderSnapshot* found = nullptr;
   std::size_t unreadable = 0;
+  std::size_t claimed = 0;
+  const OrderSnapshot* claimed_row = nullptr;
+  const OpenInstruction* claimant = nullptr;
   if (instruction.entry_.action_ == JournalAction::CANCEL) {
     for (const auto& row : rows) {
       if (!instruction.entry_.order_id_.empty() && row.order_id_ == instruction.entry_.order_id_) {
@@ -520,21 +616,46 @@ inline OrderMatch match_against(
     }
   } else {
     for (const auto& row : rows) {
-      if (row_corresponds(instruction, row, window)) {
+      const bool fits = row_corresponds(instruction, row, window);
+      // Counted separately, because these are not candidates for a *match* -- the
+      // library could not read their shape, so it cannot claim one is this order.
+      // They are candidates against concluding the order does not exist.
+      const bool might_fit = row_might_correspond(instruction, row, window);
+      if (!fits && !might_fit) {
+        continue;
+      }
+      // Another placement's order by the journal's own record: neither this order nor evidence
+      // that this order is missing.
+      if (const auto* owner = recorded_owner(instruction, row, recorded, window)) {
+        ++claimed;
+        claimed_row = &row;
+        claimant = owner;
+        continue;
+      }
+      if (fits) {
         ++match.candidates_;
         found = &row;
       }
-    }
-    // Counted separately, because these are not candidates for a *match* -- the
-    // library could not read their shape, so it cannot claim one is this order.
-    // They are candidates against concluding the order does not exist.
-    for (const auto& row : rows) {
-      if (row_might_correspond(instruction, row, window)) {
+      if (might_fit) {
         ++unreadable;
       }
     }
   }
 
+  if (claimed > 0) {
+    // Not `MATCHED`: the row is another placement's. Not `NOT_PLACED` either, even when nothing else
+    // fits, and not `MATCHED` on another row that fits: the record may be a sweep's mistaken name,
+    // and then the claimed row is this order and the other row is the claimant's.
+    match.verdict_ = MatchVerdict::AMBIGUOUS;
+    const auto others = match.candidates_ + unreadable;
+    match.candidates_ = others + claimed;
+    match.detail_ = "order " + claimed_row->order_id_ + " in the broker's listing fits this instruction, and the "
+      "journal records it for another placement (" + claimant->entry_.id_ + ")" +
+      (claimed > 1 ? ", as it does " + std::to_string(claimed - 1) + " more such row(s)" : std::string()) +
+      (others > 0 ? "; " + std::to_string(others) + " other row(s) fit as well" : std::string()) +
+      "; nothing was resolved";
+    return match;
+  }
   if (match.candidates_ > 1) {
     match.verdict_ = MatchVerdict::AMBIGUOUS;
     match.detail_ = std::to_string(match.candidates_) +
@@ -586,6 +707,28 @@ inline OrderMatch match_against(
     "the order named by the cancellation is no longer in the broker's listing" :
     "no matching order was found among the rows read, within the matching window";
   return match;
+}
+
+/**
+ * @brief Decides what a broker listing says about one instruction, with no other placement's
+ *   recorded order to set aside: every row that fits is a candidate.
+ *
+ * For a listing already filtered of other placements' rows. A sweep over the journal's open
+ * instructions should pass `recorded_placements` (the other overload), as `reconcile_against` does.
+ *
+ * @param instruction The instruction.
+ * @param rows The listing (working orders and history).
+ * @param now The current instant.
+ * @param window The allowances.
+ * @return The verdict.
+ */
+inline OrderMatch match_against(
+  const OpenInstruction& instruction,
+  const std::vector<OrderSnapshot>& rows,
+  std::chrono::system_clock::time_point now,
+  const MatchWindow& window = {}
+) {
+  return match_against(instruction, rows, {}, now, window);
 }
 
 /**
@@ -719,10 +862,12 @@ inline JournalEntry resolution_entry(
  *
  * An instrument is cleared only when every instruction for it is `MATCHED` or `NOT_PLACED`, and
  * only after the resolution is written. Ledger entries the journal knows nothing about are left.
+ * A row the journal records as another placement's order is set aside (`match_against`).
  *
  * @tparam Journal The journal type.
  * @param open The unresolved instructions.
  * @param rows The listing, which must be complete.
+ * @param replay The journal's contents, which `open` was taken from.
  * @param now The current instant.
  * @param ledger The ledger to clear.
  * @param journal The journal to record resolutions in.
@@ -735,6 +880,7 @@ template <typename Journal>
 ReconcileReport reconcile_against(
   const std::vector<OpenInstruction>& open,
   const std::vector<OrderSnapshot>& rows,
+  const JournalReplay& replay,
   std::chrono::system_clock::time_point now,
   IndeterminacyLedger& ledger,
   Journal& journal,
@@ -743,11 +889,12 @@ ReconcileReport reconcile_against(
 ) {
   ReconcileReport report;
   report.matches_.reserve(open.size());
+  const auto recorded = recorded_placements(replay);
 
   std::vector<InstrumentId> undecided;
   std::vector<InstrumentId> seen;
   for (const auto& instruction : open) {
-    auto match = match_against(instruction, rows, now, window);
+    auto match = match_against(instruction, rows, recorded, now, window);
     const auto instrument = match.instrument_;
     if (match.verdict_ == MatchVerdict::AMBIGUOUS) {
       report.ambiguous_ = true;
@@ -800,6 +947,32 @@ ReconcileReport reconcile_against(
     report.resolved_.push_back(instrument);
   }
   return report;
+}
+
+/**
+ * @brief Resolves what a broker listing settles, reading the journal's contents from `journal`; see
+ *   the other overload.
+ * @tparam Journal The journal type; it must provide `replay()`.
+ * @param open The unresolved instructions.
+ * @param rows The listing, which must be complete.
+ * @param now The current instant.
+ * @param ledger The ledger to clear.
+ * @param journal The journal to read and to record resolutions in.
+ * @param window The allowances.
+ * @param unplaced_note Text added to the journal detail of a placement found `NOT_PLACED`.
+ * @return The report.
+ */
+template <typename Journal>
+ReconcileReport reconcile_against(
+  const std::vector<OpenInstruction>& open,
+  const std::vector<OrderSnapshot>& rows,
+  std::chrono::system_clock::time_point now,
+  IndeterminacyLedger& ledger,
+  Journal& journal,
+  const MatchWindow& window = {},
+  std::string_view unplaced_note = {}
+) {
+  return reconcile_against(open, rows, journal.replay(), now, ledger, journal, window, unplaced_note);
 }
 
 /**

@@ -151,7 +151,7 @@ the source reads. `runner::match_verdict_name` prints these:
 | --- | --- | --- |
 | `matched` | exactly one row corresponds | resolved; the ledger lets the instrument go, and the runner counts the order until holdings account for it |
 | `not_placed` | no row, and the window has closed | resolved: no order was found. A runner that overlaps orders forgets the placement; a serialized runner keeps it owed (below) |
-| `ambiguous` | more than one row could be it | **nothing is resolved**; you decide |
+| `ambiguous` | more than one row could be it, or a row that fits is one the journal records for another of your placements | **nothing is resolved**; you decide |
 | `undecided` | no row yet, window still open | wait for the next sweep |
 | `needs_operator` | the entry came from a damaged line | **only you can resolve it** |
 
@@ -226,6 +226,17 @@ offers that on a recovery path:
 So placements are matched on attributes — instrument, side, type, quantity, price, and a timestamp
 inside the window — on both brokers. That is a heuristic, and `ambiguous` is how it tells you so.
 
+**A row the journal already gives to another placement is not this one's.** Two orders of the same
+shape sent within the window — the first accepted with its number, the second's request lost — leave
+the first order's row inside the second's window. The sweep does not name the lost order with that
+number: the row is the other placement's by its accepted line (or by an earlier sweep's name), so the
+verdict is `ambiguous`, never `matched` and never `not_placed`, and a serialized run stops for the
+order at the owed-order limit. A number counts as the other placement's only on a row inside that
+placement's own send window, since some brokers reuse order numbers on another day. A row with no time
+(every KIS real-account working order) cannot be placed outside that window, so where a number is
+reused, an older placement of the same shape that recorded it makes such a row `ambiguous`: you
+reconcile it.
+
 **A placement is matched against order history, not against the open-orders listing.** This is the
 subtlest thing in the whole design. Both brokers' working-order inquiry returns only what is still
 *resting*: Toss maps it to its `OPEN` scope, KIS to the modifiable set. A market or aggressive limit
@@ -254,6 +265,9 @@ the first is unresolved.
 
 ## What this does not do yet
 
+- **Tell apart two of your own lost orders of one shape.** Two placements of the same instrument, side,
+  type, quantity and price whose replies were both lost can both be matched to one row. Only a runner
+  that overlaps orders (`Runner::allow_overlapping_orders`) can have two such orders open at once.
 - **Compaction or rotation.** The file is append-only and grows. One trading day is small; a year is
   not. Rotate it yourself, and note that recovery reads what it is given — a journal rotated away is a
   journal that remembers nothing. The end of a session is not enough: rotate only once every order the

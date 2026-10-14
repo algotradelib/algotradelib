@@ -7341,6 +7341,60 @@ TEST_CASE("the later search never takes an order this runner sent just before fo
   CHECK(rig.lines(JournalOutcome::RESOLVED).size() == 1);
 }
 
+TEST_CASE("the first sweep never names an order with the number of one this runner sent just before",
+          "[serialized][unfound]") {
+  // A is accepted and accounted for; B, of the same shape, is sent within the matching window and its
+  // request is lost. A's row is the only one in the history the sweep reads.
+  using runner::JournalOutcome;
+
+  SECTION("serialized: B stays owed without a name, which the run stops for") {
+    SerialRig rig({
+      serial_line("p-1", JournalOutcome::PENDING),
+      serial_line("p-1", JournalOutcome::ACCEPTED, "A"),
+      serial_line("p-1", JournalOutcome::CONFIRMED, "A", "10"),
+      serial_line("p-2", JournalOutcome::PENDING, "", "10"),
+      serial_line("p-2", JournalOutcome::INDETERMINATE, "", "10"),
+    });
+    REQUIRE(rig.owed() == runner::ObligationState::UNNAMED);
+    rig.show(polled(0, "10", {}));
+    auto source = source_over(rig, page_of({market_row("A", at_hour(-1))}));
+    rig.runner_instance.set_observed_at(at_hour(1));
+    REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+    REQUIRE(source.last_reconcile().matches_.size() == 1);
+    CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::AMBIGUOUS);
+    CHECK(rig.lines(JournalOutcome::RESOLVED).empty());
+    CHECK(rig.owed() == runner::ObligationState::UNNAMED);
+    CHECK(rig.runner_instance.ledger().requires_reconcile(samsung()));
+    // Nothing is sent for the instrument meanwhile.
+    rig.bar(2, {target_of("20")});
+    CHECK(rig.session.placed().empty());
+  }
+
+  SECTION("overlapping: B is neither named nor forgotten") {
+    SerialRig rig({}, /*recover=*/false);
+    rig.runner_instance.allow_overlapping_orders();
+    for (const auto& line : {
+           serial_line("p-1", JournalOutcome::PENDING, "", nullptr),
+           serial_line("p-1", JournalOutcome::ACCEPTED, "A", nullptr),
+           serial_line("p-2", JournalOutcome::PENDING, "", nullptr),
+           serial_line("p-2", JournalOutcome::INDETERMINATE, "", nullptr),
+         }) {
+      rig.journal.append(line);
+    }
+    runner::recover_runner(rig.runner_instance, rig.journal);
+    REQUIRE(rig.runner_instance.ledger().requires_reconcile(samsung()));
+    auto source = source_over(rig, page_of({market_row("A", at_hour(-1))}));
+    rig.runner_instance.set_observed_at(at_hour(1));
+    REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
+    REQUIRE(source.last_reconcile().matches_.size() == 1);
+    CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::AMBIGUOUS);
+    CHECK(rig.lines(JournalOutcome::RESOLVED).empty());
+    CHECK(rig.runner_instance.ledger().requires_reconcile(samsung()));
+    rig.bar(2, {target_of("20")});
+    CHECK(rig.session.placed().empty());
+  }
+}
+
 TEST_CASE("an order sent hours before, of the same shape, does not keep the later search from naming one",
           "[serialized][unfound]") {
   using runner::JournalOutcome;

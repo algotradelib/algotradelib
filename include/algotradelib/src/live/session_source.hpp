@@ -1002,7 +1002,7 @@ private:
     const auto open = runner::unresolved_instructions(replay);
     if (open.empty()) {
       reconcile_ = runner::ReconcileReport{};
-    } else if (!sweep(runner_instance, open, rows)) {
+    } else if (!sweep(runner_instance, replay, open, rows)) {
       return;
     }
     search_again(runner_instance, replay, open, rows);
@@ -1031,8 +1031,8 @@ private:
   // further may be concluded from this read (the history did not arrive, or a resolution could not be
   // written).
   template <typename Runner>
-  bool sweep(Runner& runner_instance, const std::vector<runner::OpenInstruction>& open,
-    const std::vector<OrderSnapshot>& rows) {
+  bool sweep(Runner& runner_instance, const runner::JournalReplay& replay,
+    const std::vector<runner::OpenInstruction>& open, const std::vector<OrderSnapshot>& rows) {
     auto candidates = rows;
     if (runner::any_placement(open)) {
       // **An open-orders listing cannot answer the placement question.** Both brokers' working-order
@@ -1064,6 +1064,7 @@ private:
     reconcile_ = runner::reconcile_against(
       open,
       candidates,
+      replay,
       sweep_instant(runner_instance),
       runner_instance.ledger(),
       *journal_,

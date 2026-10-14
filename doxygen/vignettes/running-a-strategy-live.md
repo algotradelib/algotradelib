@@ -1046,6 +1046,12 @@ with `GuardReason::VALUE_NOT_KNOWN` until you register it.
   and a target can send the order twice.
 - **Release an order nobody can find.** A serialized runner's order whose request never reached the
   broker is owed until you release it (above); no rule ends it at the close of its session.
+- **Identify a KIS protective stop's history row from a listing with no time.** A target waiting for its stop to end
+  is released by the stop's own history row, found within an hour of the time its listing showed. KIS's
+  real-account listing shows no time, so there the row is found by order number and instrument alone,
+  and if KIS reuses a number across days, the previous day's cancelled order can release the target
+  before today's stop is in the history. The second sell is then one the broker should refuse for want
+  of shares.
 - **Stream.** It polls; streaming would plug into the same source seam.
 - **Run more than one loop.** One loop, one thread.
 - **Tell you whether the sellable figure already excludes your resting orders.** Neither broker
