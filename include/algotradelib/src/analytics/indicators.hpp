@@ -537,9 +537,12 @@ inline math::Vector rolling_corr(
       result[row] = math::undefined();
       continue;
     }
-    // Two roots rather than the root of a product: the product of two finite squared sums can underflow
-    // to zero (tiny dispersions) or overflow (large ones) where each root is fine.
-    result[row] = left_centred.dot(right_centred) / (std::sqrt(squared_left) * std::sqrt(squared_right));
+    // The root of the product, which keeps a collinear pair at exactly 1 or -1; two roots only where the
+    // product of two finite squared sums underflows (tiny dispersions) or overflows (large ones).
+    const Scalar product = squared_left * squared_right;
+    const Scalar denominator =
+      std::isnormal(product) ? std::sqrt(product) : std::sqrt(squared_left) * std::sqrt(squared_right);
+    result[row] = left_centred.dot(right_centred) / denominator;
   }
   return result;
 }

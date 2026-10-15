@@ -705,8 +705,8 @@ TEST_CASE("a trailing correlation is bounded because it uses one sample for all 
   // at exactly minus one. These are the values that a mismatched sample would overshoot.
   const math::Vector doubled = series({2.0, 4.0, 6.0, 8.0});
   const math::Vector negated = series({-1.0, -2.0, -3.0, -4.0});
-  REQUIRE(analytics::rolling_corr(left, doubled, 3)[3] == Catch::Approx(1.0));
-  REQUIRE(analytics::rolling_corr(left, negated, 3)[3] == Catch::Approx(-1.0));
+  REQUIRE(analytics::rolling_corr(left, doubled, 3)[3] == 1.0);
+  REQUIRE(analytics::rolling_corr(left, negated, 3)[3] == -1.0);
 }
 
 TEST_CASE("beta is the covariance over the market's own variance") {
@@ -857,7 +857,7 @@ TEST_CASE("a dispersion whose sample variance underflows is not a constant windo
   CHECK(analytics::rolling_corr(tiny, tiny, 5)[4] == Catch::Approx(1.0));
 }
 
-TEST_CASE("a correlation's denominator neither underflows nor overflows where its parts do not", "[analytics]") {
+TEST_CASE("a correlation's denominator neither underflows nor overflows where its parts do not") {
   // Each squared sum is finite; their product is not (about 1e600 here). The root of each, multiplied,
   // is. (At the other end, subnormal dispersions lose precision in the sums themselves; only the
   // underflow of the product is avoided, as in the self-correlation above.)
@@ -869,6 +869,10 @@ TEST_CASE("a correlation's denominator neither underflows nor overflows where it
   REQUIRE(observed(expected));
   CHECK(analytics::rolling_corr(large, large_other, 4)[3] == Catch::Approx(expected));
   CHECK(analytics::rolling_corr(large, large, 4)[3] == Catch::Approx(1.0));
+  // An ordinary self-correlation is exactly 1, even where the root of a squared sum, squared, is not
+  // the sum (3 here): the product's root is taken, and the bound holds.
+  const math::Vector lone = series({0.0, 0.0, 0.0, 2.0});
+  CHECK(analytics::rolling_corr(lone, lone, 4)[3] == 1.0);
 }
 
 TEST_CASE("a window of values one ulp apart keeps its dispersion") {
