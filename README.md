@@ -7,8 +7,10 @@
 <!-- badges: end -->
 
 <!-- multilingual: start -->
-[![en](https://img.shields.io/badge/lang-en-red.svg?style=plastic)](README.md)
-[![ko-kr](https://img.shields.io/badge/lang-ko--kr-green.svg?style=plastic)](README.ko-kr.md)
+<p align="left">
+  <b>English</b> &middot
+  <a href="README.ko-kr.md">한국어</a>
+</p>
 <!-- multilingual: end -->
 
 A C++ library for algorithmic trading through Korean broker APIs

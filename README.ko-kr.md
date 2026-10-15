@@ -7,8 +7,10 @@
 <!-- badges: end -->
 
 <!-- multilingual: start -->
-[![en](https://img.shields.io/badge/lang-en-red.svg?style=plastic)](README.md)
-[![ko-kr](https://img.shields.io/badge/lang-ko--kr-green.svg?style=plastic)](README.ko-kr.md)
+<p align="left">
+  <a href="README.md">English</a> &middot
+  <b>한국어</b>
+</p>
 <!-- multilingual: end -->
 
 <!--
