@@ -421,7 +421,8 @@ public:
    * @brief Sets the current wall-clock instant, used to measure the age of holdings and price bands.
    *
    * `PollingLoop` sets it each iteration. Without it, age is measured against `Context::now()`, which
-   * for a daily bar is its period end and understates age.
+   * for a daily bar is its period end and understates age. The epoch (`time_point{}`) is reserved for
+   * "no reading": a clock of your own should not start there (`ManualClock{}` does; give it a start).
    *
    * @param at The instant.
    */
