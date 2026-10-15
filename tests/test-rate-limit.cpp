@@ -6,6 +6,7 @@
 
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ssl/context.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
@@ -148,6 +149,69 @@ TEST_CASE(
   REQUIRE(stats->group(RateLimitGroup::MARKET_DATA).admitted_ == 3);
   REQUIRE(stats->group(RateLimitGroup::MARKET_DATA).delayed_ == 2);
   REQUIRE(stats->group(RateLimitGroup::MARKET_DATA).waited_ > std::chrono::nanoseconds::zero());
+}
+
+TEST_CASE(
+  "a trading request admitted ahead of a waiting poll is not charged the poll's wait",
+  "[rate-limit][tls][pacing]"
+) {
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+
+  // A burst of two, one of it reserved for trading, one request a second: the first poll goes at once,
+  // the second waits, and a trading request arriving meanwhile goes on the reserve.
+  network::HttpClientOptions options;
+  options.rate_limit_ = RateLimitBudget{2, 1, 1};
+  auto client = std::make_shared<network::AsyncHttpClient>(
+    ioc.get_executor(), context, "localhost", server.port(), options
+  );
+  using SteadyClock = std::chrono::steady_clock;
+  const auto send = [&client](const std::string& target, RateLimitGroup group, auto handler) {
+    network::HttpRequest request;
+    request.target_ = target;
+    request.group_ = group;
+    client->async_request(std::move(request), std::move(handler));
+  };
+
+  // The trading request is arranged only once the scenario stands: the first poll has completed (so the
+  // connection is up and no request is on the wire) and, 300ms later, the second is still waiting.
+  net::steady_timer later(ioc);
+  SteadyClock::time_point trading_sent{};
+  SteadyClock::time_point second_done{};
+  send("/first-poll", RateLimitGroup::MARKET_DATA, [&](Result<network::HttpResponse> result) {
+    REQUIRE(result);
+    later.expires_after(std::chrono::milliseconds(300));
+    later.async_wait([&](beast::error_code ec) {
+      REQUIRE_FALSE(ec);
+      const auto& waiting = client->rate_limits()->stats().group(RateLimitGroup::MARKET_DATA);
+      REQUIRE(waiting.admitted_ == 1);
+      REQUIRE(client->admission_waits() >= 1);
+      trading_sent = SteadyClock::now();
+      send("/order", RateLimitGroup::TRADING, [](Result<network::HttpResponse> sent) { REQUIRE(sent); });
+    });
+  });
+  send("/second-poll", RateLimitGroup::MARKET_DATA, [&](Result<network::HttpResponse> result) {
+    REQUIRE(result);
+    second_done = SteadyClock::now();
+  });
+  ioc.run();
+
+  const auto* stats = client->rate_limits() ? &client->rate_limits()->stats() : nullptr;
+  REQUIRE(stats != nullptr);
+  const auto& trading = stats->group(RateLimitGroup::TRADING);
+  const auto& polling = stats->group(RateLimitGroup::MARKET_DATA);
+  REQUIRE(trading.admitted_ == 1);
+  REQUIRE(polling.admitted_ == 2);
+  // The reserve worked: the trading request did not wait, and is not recorded as having waited.
+  CHECK(trading.delayed_ == 0);
+  CHECK(trading.waited_ == std::chrono::nanoseconds::zero());
+  // The poll waited once, from just after the first poll completed. It completes after it is admitted, so
+  // `second_done - trading_sent` exceeds any wait restarted when the trading request left; a wait counted
+  // from its start, about 300ms before that send, exceeds it by 300ms less the poll's round trip.
+  CHECK(polling.delayed_ == 1);
+  CHECK(polling.waited_ > second_done - trading_sent);
 }
 
 TEST_CASE(
