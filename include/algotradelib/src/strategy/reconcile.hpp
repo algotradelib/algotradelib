@@ -48,9 +48,9 @@ enum class RejectReason {
    * @brief Rounding the limit onto the grid, in the cautious direction, would move it out of the
    *   day's band: no tick lies between the band's bound and the limit (clamped into the band).
    *
-   * Only a band narrower than one tick, at a price of a few won on KRX, does this. A limit the
-   * strategy itself set beyond the band (a buy below the lower bound, a sell above the upper) is
-   * left alone, as without a band.
+   * It takes a band with no tick on that side of the limit; on KRX, for example, only a band
+   * narrower than one tick, at a price of a few won. A limit the strategy itself set beyond the band
+   * (a buy below the lower bound, a sell above the upper) is left alone, as without a band.
    */
   NO_PERMITTED_PRICE,
   /** @brief The broker refused the instruction (a request was sent). */
