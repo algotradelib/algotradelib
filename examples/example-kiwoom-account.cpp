@@ -13,10 +13,25 @@
 #include <exception>
 #include <memory>
 #include <iostream>
+#include <string>
+#include <string_view>
 #include <utility>
 
 namespace net = boost::asio;
 namespace ssl = net::ssl;
+
+namespace {
+
+/** @brief Masks all but the last four digits, so the output can be shared. */
+std::string mask_account_number(std::string_view account_number) {
+  if (account_number.size() <= 4) {
+    return std::string(account_number.size(), '*');
+  }
+  return std::string(account_number.size() - 4, '*') +
+    std::string(account_number.substr(account_number.size() - 4));
+}
+
+} // namespace
 
 int main(int argc, char** argv) {
   using algotradelib::BlockingSession;
@@ -59,7 +74,7 @@ int main(int argc, char** argv) {
       return 1;
     }
     for (const auto& account : accounts.value()) {
-      std::cout << "account: " << account.display_number_ << '\n';
+      std::cout << "account: " << mask_account_number(account.display_number_) << '\n';
     }
 
     // **The normalized `session.holdings()` verb refuses while the scope is unstated**, because
