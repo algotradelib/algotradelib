@@ -686,6 +686,12 @@ TEST_CASE(
   REQUIRE(std::string_view(live.rest_host()) == "openapi.koreainvestment.com");
 
   for (const char* junk : {"true", "false", "yes", "", " 1", "1 ", "01", "2"}) {
+#ifdef _WIN32
+    // Windows has no empty variable: setting "" removes it, which is the unset case above.
+    if (*junk == '\0') {
+      continue;
+    }
+#endif
     demo.set(junk);
     kis::KisConfig refused;
     const auto message = refusal_of([&] { refused.from_env(); });
@@ -734,6 +740,12 @@ TEST_CASE(
   REQUIRE(std::string_view(live.rest_host()) == "api.kiwoom.com");
 
   for (const char* junk : {"true", "no", "", "0 ", "1.0"}) {
+#ifdef _WIN32
+    // Windows has no empty variable: setting "" removes it, which is the unset case above.
+    if (*junk == '\0') {
+      continue;
+    }
+#endif
     demo.set(junk);
     kiwoom::KiwoomConfig refused;
     const auto message = refusal_of([&] { refused.from_env(); });

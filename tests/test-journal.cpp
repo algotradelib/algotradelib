@@ -1042,6 +1042,8 @@ TEST_CASE("a journal must name an account", "[journal][file]") {
   REQUIRE_FALSE(journal.rejection().empty());
 }
 
+// The one-writer lock is `flock`, taken on POSIX only: FileJournal takes no lock on Windows.
+#if !defined(_WIN32)
 TEST_CASE("one journal has one writer: a second opener is refused while the first is open", "[journal][file]") {
   const TempJournal path("one-writer");
   {
@@ -1071,7 +1073,6 @@ TEST_CASE("a moved journal keeps its writer's lock", "[journal][file]") {
   REQUIRE(moved.append(sample_entry()));
 }
 
-#if !defined(_WIN32)
 TEST_CASE("a journal another process holds is refused", "[journal][file]") {
   const TempJournal path("one-writer-process");
   int ready[2];
