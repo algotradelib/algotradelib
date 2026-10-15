@@ -9,12 +9,12 @@ namespace algotradelib {
 namespace runner {
 
 /**
- * @brief Routes `SIGINT` and `SIGTERM` to a `StopSource` as a quiesce, and ignores `SIGHUP`; only
- *   when `install` is called.
+ * @brief Routes `SIGINT` and `SIGTERM` to a `StopSource` as a quiesce, and ignores `SIGHUP` where it
+ *   exists (POSIX); only when `install` is called.
  *
  * Both signals mean `StopIntent::QUIESCE`, never a flatten, since they arrive for routine reasons
  * (a reboot, a deploy, `Ctrl+C`). `SIGHUP` is ignored so a dropped SSH session does not stop a
- * process holding positions.
+ * process holding positions; Windows has no `SIGHUP`.
  *
  * | Situation | What arrives |
  * | --- | --- |
@@ -30,8 +30,8 @@ namespace runner {
 class SignalStop {
 public:
   /**
-   * @brief Installs the handlers: `SIGINT` and `SIGTERM` request a quiesce on `source`; `SIGHUP` is
-   *   ignored.
+   * @brief Installs the handlers: `SIGINT` and `SIGTERM` request a quiesce on `source`; `SIGHUP`, where it
+   *   exists, is ignored.
    *
    * Only one source can be installed at a time.
    *
@@ -41,19 +41,19 @@ public:
     slot().store(&source, std::memory_order_release);
     std::signal(SIGINT, &SignalStop::handle);
     std::signal(SIGTERM, &SignalStop::handle);
+#ifdef SIGHUP
     // Ignored: SIGHUP's default disposition would terminate the process.
-	#ifdef SIGHUP
     std::signal(SIGHUP, SIG_IGN);
-	#endif
+#endif
   }
 
-  /** @brief Restores the default disposition of `SIGINT`, `SIGTERM` and `SIGHUP`, and forgets the source. */
+  /** @brief Restores the default disposition of `SIGINT`, `SIGTERM` and (POSIX) `SIGHUP`, and forgets the source. */
   static void uninstall() noexcept {
     std::signal(SIGINT, SIG_DFL);
     std::signal(SIGTERM, SIG_DFL);
-	#ifdef SIGHUP
+#ifdef SIGHUP
     std::signal(SIGHUP, SIG_DFL);
-	#endif
+#endif
     slot().store(nullptr, std::memory_order_release);
   }
 
