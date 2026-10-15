@@ -279,8 +279,10 @@ inline std::optional<BrokerError> unsupported_bar_interval(BarInterval) { return
  *   stocks.
  *
  * It requests an access token when first needed and shares one refresh among concurrent requests.
- * Sends `custtype P`, which KIS's reference defines as 개인 (an individual customer); `custtype B` (법인),
- * which requires `personalseckey` (제휴사 회원 관리를 위한 고객식별키), is not supported. Create it with `std::make_shared`. Each completion runs on
+ * Sends `custtype P`. KIS's field reference reads `B : 법인 / P : 개인`, and its token guide
+ * (접근토큰발급) groups 일반개인고객 and 일반법인고객 under the one-day client-credentials token, apart
+ * from 제휴법인 (a three-month token by authorization code, and `personalseckey`, 제휴사 회원 관리를 위한
+ * 고객식별키). The partner-corporation flow (`custtype B`) is not supported. Create it with `std::make_shared`. Each completion runs on
  * the handler's associated executor, or on the client's strand if it has none. A blocking wrapper is
  * `KisBlockingClient`.
  */
