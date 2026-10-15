@@ -89,7 +89,10 @@ private:
     // parse_expiry(doc->at("access_token_token_expired").as_string().c_str()) 	:
     // std::chrono::system_clock::now() + std::chrono::seconds(86400);
     if (ec || !jv.is_object()) {
-      throw std::runtime_error("Token authentication failed: " + resp);
+      // Not the body: a token reply that did not parse may still hold the token.
+      throw std::runtime_error(
+        "Token authentication failed: the reply is not a JSON object (" + std::to_string(resp.size()) + " bytes)"
+      );
     }
     rest_resp_.from_json(jv.as_object());
   }
@@ -116,7 +119,11 @@ private:
     // ws_resp_.approval_key = doc->at("approval_key").as_string().c_str();
     // ws_resp_.last_auth_time = std::chrono::system_clock::now();
     if (ec || !jv.is_object()) {
-      throw std::runtime_error("Token authentication failed: " + resp);
+      // Not the body: an approval reply that did not parse may still hold the key.
+      throw std::runtime_error(
+        "WebSocket authentication failed: the reply is not a JSON object (" + std::to_string(resp.size()) +
+        " bytes)"
+      );
     }
     ws_resp_.from_json(jv.as_object());
   }

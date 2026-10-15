@@ -69,7 +69,10 @@ private:
     boost::system::error_code ec;
     const auto jv = json::parse(resp, ec);
     if (ec || !jv.is_object()) {
-      throw std::runtime_error("Kiwoom authentication failed: " + resp);
+      // Not the body: a token reply that did not parse may still hold the token.
+      throw std::runtime_error(
+        "Kiwoom authentication failed: the reply is not a JSON object (" + std::to_string(resp.size()) + " bytes)"
+      );
     }
     // Kiwoom states a business failure in the body of an HTTP 200, so a successful status is not
     // a successful token. The classification lives in `kiwoom_declared_error` and is shared with

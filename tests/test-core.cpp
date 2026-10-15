@@ -4323,6 +4323,40 @@ TEST_CASE("a KIS real-server refusal is recognized under the same conditions as 
   }
 }
 
+TEST_CASE("an HTTP error carries at most the start of its reply body", "[broker]") {
+  const auto limit = broker_detail::reply_excerpt_limit;
+  REQUIRE(limit == 512);
+
+  // A broker's error envelope fits and is carried whole.
+  const std::string envelope = R"({"rt_cd":"1","msg_cd":"EGW00201","msg1":"초당 거래건수를 초과하였습니다."})";
+  const auto small = json_response(envelope, 500);
+  REQUIRE(small);
+  CHECK(broker_detail::http_error(small.value()).message_ == envelope);
+
+  // A long body is cut at the limit and says how much was left out.
+  const auto long_reply = json_response(std::string(limit + 100, 'x'), 502);
+  REQUIRE(long_reply);
+  const auto cut = broker_detail::http_error(long_reply.value());
+  CHECK(cut.http_status_ == 502);
+  CHECK(cut.message_ == std::string(limit, 'x') + "... (100 more bytes)");
+
+  // Exactly at the limit is whole.
+  CHECK(broker_detail::reply_excerpt(std::string(limit, 'y')) == std::string(limit, 'y'));
+
+  // A three-byte Korean character straddling the limit is left out whole rather than split.
+  const std::string korean = std::string(limit - 1, 'z') + "초과";  // 511 + 3 + 3 bytes
+  const auto excerpt = broker_detail::reply_excerpt(korean);
+  CHECK(excerpt == std::string(limit - 1, 'z') + "... (6 more bytes)");
+
+  // A four-byte character ending one byte past the limit is left out whole, three bytes back.
+  const std::string emoji = std::string(limit - 3, 'e') + "\xF0\x9F\x98\x80" + "tail";
+  CHECK(broker_detail::reply_excerpt(emoji) == std::string(limit - 3, 'e') + "... (8 more bytes)");
+
+  // A body that is not UTF-8 keeps its prefix: the cut moves back at most three bytes.
+  const std::string not_utf8 = "A" + std::string(600, '\x80');
+  CHECK(broker_detail::reply_excerpt(not_utf8) == "A" + std::string(limit - 4, '\x80') + "... (92 more bytes)");
+}
+
 TEST_CASE("a reply whose body is not a JSON object keeps its HTTP status", "[broker][order]") {
   const auto unreadable = [](const auto& result, int status) {
     return !result && result.error().category_ == ErrorCategory::PROTOCOL && result.error().reached_broker_ &&

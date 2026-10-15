@@ -64,7 +64,10 @@ private:
     boost::system::error_code ec;
     const auto jv = json::parse(resp, ec);
     if (ec || !jv.is_object()) {
-      throw std::runtime_error("Token authentication failed: " + resp);
+      // Not the body: a token reply that did not parse may still hold the token.
+      throw std::runtime_error(
+        "Token authentication failed: the reply is not a JSON object (" + std::to_string(resp.size()) + " bytes)"
+      );
     }
     rest_resp_.from_json(jv.as_object());
   }
