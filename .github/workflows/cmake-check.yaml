@@ -25,6 +25,9 @@ jobs:
   build:
     runs-on: ${{ matrix.os }}
 
+    # Paused until the first release: hosted runner minutes. Remove this line then.
+    if: github.event_name == 'workflow_dispatch'
+
     strategy:
       fail-fast: false
       matrix:
