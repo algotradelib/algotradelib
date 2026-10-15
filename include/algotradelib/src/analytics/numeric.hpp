@@ -36,8 +36,8 @@ namespace constant_detail {
 // Whether a deviation computed about `mean` over `count` observations is small enough to be
 // rounding alone. Equal observations that are not exact binary fractions have a computed mean an
 // ulp or so away from them (the mean of {0.1, 0.1, 0.1} is not 0.1), so their deviation comes out a
-// few ulps of the mean rather than zero. The bound is generous: `count` ulps of the mean's
-// magnitude for the summation, times eight. Only a window this close to zero needs `all_equal`.
+// few ulps of the mean rather than zero. The bound is a generous relative one, `8 * count * epsilon`
+// of the mean's magnitude, against a summation error of about `count * epsilon / 2`.
 inline bool within_rounding(Scalar deviation, Scalar mean, std::size_t count) {
   return deviation <=
     std::abs(mean) * static_cast<Scalar>(count) * Scalar{8} * std::numeric_limits<Scalar>::epsilon();
@@ -67,9 +67,10 @@ inline bool all_equal(
   return true;
 }
 
-// Whether a window whose deviation about `mean` came out as `deviation` holds equal observations:
-// exactly zero, or rounding-small and checked value by value.
-inline bool constant(
+// Whether a window whose deviation about `mean` came out rounding-small holds equal observations,
+// checked value by value. Each caller keeps its own exact-zero test beside it: this one never
+// reads a zero as equality by itself, since a positive dispersion can underflow to a zero deviation.
+inline bool rounded_constant(
   Scalar deviation,
   Scalar mean,
   std::size_t count,
@@ -78,8 +79,7 @@ inline bool constant(
   math::Index first,
   math::Index length
 ) {
-  return deviation == Scalar{0} ||
-    (within_rounding(deviation, mean, count) && all_equal(values, present, first, length));
+  return within_rounding(deviation, mean, count) && all_equal(values, present, first, length);
 }
 
 } // namespace constant_detail

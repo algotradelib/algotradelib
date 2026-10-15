@@ -849,6 +849,15 @@ TEST_CASE("equal values that are not binary fractions are still a constant windo
   CHECK(math::is_undefined(analytics::beta(moving, still, 3)[3]));
 }
 
+TEST_CASE("a dispersion whose sample variance underflows is not a constant window") {
+  // The squared deviations sum to a positive subnormal, and dividing it by `count - 1` rounds to zero;
+  // the values differ, so beta of the series with itself is still 1. (Correlation is not undefined
+  // either; its denominator multiplies two such sums and underflows on its own, as it always has.)
+  const math::Vector tiny = series({-2e-162, 0.0, 0.0, 0.0, 2e-162});
+  CHECK(analytics::beta(tiny, tiny, 5)[4] == 1.0);
+  CHECK_FALSE(math::is_undefined(analytics::rolling_corr(tiny, tiny, 5)[4]));
+}
+
 TEST_CASE("a window of values one ulp apart keeps its dispersion") {
   // Not every rounding-small deviation is a constant window: these values differ, so the statistics
   // exist (however large), and the exact check says so.

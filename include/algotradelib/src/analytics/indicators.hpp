@@ -168,7 +168,8 @@ inline math::Vector zscore(
     if (!spread.reported_) {
       continue;
     }
-    if (constant_detail::constant(
+    if (spread.deviation_ == Scalar{0} ||
+        constant_detail::rounded_constant(
           spread.deviation_, spread.mean_, spread.count_, parts.values_, parts.present_, first, row - first + 1
         )) {
       // The data was there and the statistic does not exist for it, which is a different
@@ -525,10 +526,11 @@ inline math::Vector rolling_corr(
     const auto spread = [&](Scalar squared) {
       return std::sqrt(squared / static_cast<Scalar>(reduced.count_ - 1));
     };
-    if (constant_detail::constant(
+    if (squared_left == Scalar{0} || squared_right == Scalar{0} ||
+        constant_detail::rounded_constant(
           spread(squared_left), reduced.mean_left_, reduced.count_, paired.left_, paired.present_, first, length
         ) ||
-        constant_detail::constant(
+        constant_detail::rounded_constant(
           spread(squared_right), reduced.mean_right_, reduced.count_, paired.right_, paired.present_, first, length
         )) {
       // A constant series. Correlation with it is undefined, not zero.
@@ -592,7 +594,8 @@ inline math::Vector beta(
       paired.right_, paired.present_, first, length, reduced.mean_right_
     );
     const Scalar squared_market = market_centred.squaredNorm();
-    if (constant_detail::constant(
+    if (squared_market == Scalar{0} ||
+        constant_detail::rounded_constant(
           std::sqrt(squared_market / static_cast<Scalar>(reduced.count_ - 1)),
           reduced.mean_right_,
           reduced.count_,
