@@ -1,9 +1,9 @@
 # algotradelib <img src="doxygen/figures/logo.png" align="right" height="139" alt="" />
 
 <!-- badges: start -->
+[![cmake-check](https://github.com/ygeunkim/algotradelib/actions/workflows/cmake-check.yaml/badge.svg?branch=main)](https://github.com/ygeunkim/algotradelib/actions/workflows/cmake-check.yaml?query=branch%3Amain)
 [![codecov](https://codecov.io/gh/ygeunkim/algotradelib/graph/badge.svg?token=NH7U8WQOHA)](https://codecov.io/gh/ygeunkim/algotradelib)
-![License](https://img.shields.io/badge/license-MIT-blue.svg?style=plastic)
-[![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg?style=plastic)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
+[![Release](https://img.shields.io/github/v/release/ygeunkim/algotradelib)](https://github.com/ygeunkim/algotradelib/releases/latest)
 <!-- badges: end -->
 
 <!-- multilingual: start -->
