@@ -168,9 +168,13 @@ inline math::Vector zscore(
     if (!spread.reported_) {
       continue;
     }
-    if (spread.deviation_ == Scalar{0}) {
+    if (spread.deviation_ == Scalar{0} ||
+        constant_detail::rounded_constant(
+          spread.deviation_, spread.mean_, spread.count_, parts.values_, parts.present_, first, row - first + 1
+        )) {
       // The data was there and the statistic does not exist for it, which is a different
-      // answer from "no data yet" and now says so.
+      // answer from "no data yet" and now says so. Equal values that are not binary fractions
+      // leave a deviation of a few ulps rather than zero; dividing by it would not be a z-score.
       result[row] = math::undefined();
       continue;
     }
@@ -519,7 +523,16 @@ inline math::Vector rolling_corr(
     );
     const Scalar squared_left = left_centred.squaredNorm();
     const Scalar squared_right = right_centred.squaredNorm();
-    if (squared_left == Scalar{0} || squared_right == Scalar{0}) {
+    const auto spread = [&](Scalar squared) {
+      return std::sqrt(squared / static_cast<Scalar>(reduced.count_ - 1));
+    };
+    if (squared_left == Scalar{0} || squared_right == Scalar{0} ||
+        constant_detail::rounded_constant(
+          spread(squared_left), reduced.mean_left_, reduced.count_, paired.left_, paired.present_, first, length
+        ) ||
+        constant_detail::rounded_constant(
+          spread(squared_right), reduced.mean_right_, reduced.count_, paired.right_, paired.present_, first, length
+        )) {
       // A constant series. Correlation with it is undefined, not zero.
       result[row] = math::undefined();
       continue;
@@ -581,7 +594,16 @@ inline math::Vector beta(
       paired.right_, paired.present_, first, length, reduced.mean_right_
     );
     const Scalar squared_market = market_centred.squaredNorm();
-    if (squared_market == Scalar{0}) {
+    if (squared_market == Scalar{0} ||
+        constant_detail::rounded_constant(
+          std::sqrt(squared_market / static_cast<Scalar>(reduced.count_ - 1)),
+          reduced.mean_right_,
+          reduced.count_,
+          paired.right_,
+          paired.present_,
+          first,
+          length
+        )) {
       // No market movement to attribute the asset's movement to.
       result[row] = math::undefined();
       continue;
