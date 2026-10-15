@@ -3381,16 +3381,27 @@ private:
     return !value || (value->is_string() && value->as_string().empty());
   }
 
-  // Tests whether `code` is a refusal this client recognizes for `operation` from the demo server
-  // (`demo`) or the real one. Each code is recognized from the server it was seen from only.
-  static bool recognized_refusal_code(OrderOperation operation, std::string_view code, bool demo) {
+  // Returns the `rt_cd` a refusal this client recognizes carries, for `code` answering `operation`
+  // from the demo server (`demo`) or the real one, or nothing if `code` is not such a refusal. Each
+  // code is recognized from the server it was seen from only, with the `rt_cd` it was seen with.
+  static std::optional<std::string_view> recognized_refusal_status(
+    OrderOperation operation,
+    std::string_view code,
+    bool demo
+  ) {
     if (!demo) {
-      return operation == OrderOperation::PLACE && code == "APBK3061";
+      if (operation == OrderOperation::PLACE && code == "APBK3061") {
+        return std::string_view("7");
+      }
+      return std::nullopt;
     }
-    if (operation == OrderOperation::PLACE) {
-      return code == "40240000" || code == "40570000" || code == "40580000";
+    if (operation == OrderOperation::PLACE && (code == "40240000" || code == "40570000" || code == "40580000")) {
+      return std::string_view("1");
     }
-    return operation == OrderOperation::CANCEL && code == "40330000";
+    if (operation == OrderOperation::CANCEL && code == "40330000") {
+      return std::string_view("1");
+    }
+    return std::nullopt;
   }
 
   // Returns the refusal a cash-order reply states, for the replies this client recognizes as one.
@@ -3404,7 +3415,7 @@ private:
   // is a rate limit).
   //
   // Each code is recognized from the server it was seen from only. The reply must be HTTP 200 with
-  // `rt_cd` `"1"`, the code, a message, and none of the fields an acknowledgement carries (`output`
+  // the code, the `rt_cd` it was seen with (`"1"` from the demo server, `"7"` for `APBK3061`), a message, and none of the fields an acknowledgement carries (`output`
   // absent, or an object whose `ODNO`, `KRX_FWDG_ORD_ORGNO` and `ORD_TMD` are absent or empty): a
   // reply acknowledging an order is never read as a refusal. A refused cancellation says only that the cancellation did nothing, not what
   // became of the order it named.
@@ -3420,9 +3431,12 @@ private:
     const auto status = document.if_contains("rt_cd");
     const auto code = document.if_contains("msg_cd");
     const auto message = document.if_contains("msg1");
-    if (!status || !status->is_string() || status->as_string() != "1" || !code || !code->is_string() ||
-        !recognized_refusal_code(operation, std::string_view(code->as_string()), demo) || !message ||
-        !message->is_string() || message->as_string().empty()) {
+    if (!code || !code->is_string()) {
+      return std::nullopt;
+    }
+    const auto expected = recognized_refusal_status(operation, std::string_view(code->as_string()), demo);
+    if (!expected || !status || !status->is_string() || std::string_view(status->as_string()) != *expected ||
+        !message || !message->is_string() || message->as_string().empty()) {
       return std::nullopt;
     }
     const std::string stated(code->as_string());

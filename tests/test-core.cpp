@@ -3777,6 +3777,11 @@ std::string kis_refusal_body(const std::string& code, const std::string& message
   return R"({"rt_cd":"1","msg_cd":")" + code + R"(","msg1":")" + message + "\"" + extra + "}";
 }
 
+/** A KIS real-server refusal body: the real server stated `APBK3061` with `rt_cd` `"7"`. */
+std::string kis_real_refusal_body(const std::string& code, const std::string& message, const std::string& extra = "") {
+  return R"({"rt_cd":"7","msg_cd":")" + code + R"(","msg1":")" + message + "\"" + extra + "}";
+}
+
 /** Whether an order reply is read as the recognized refusal `code`. */
 bool kis_recognized(const Result<kis::KisOrderAck>& result, const std::string& code) {
   return !result && result.error().category_ == ErrorCategory::INVALID_ARGUMENT &&
@@ -4139,7 +4144,7 @@ Result<kis::KisOrderAck> kis_call(bool demo, KisCall call, const std::string& re
 
 TEST_CASE("a KIS order reply is read with the operation and environment of the call that sent it", "[broker][kis][order]") {
   test::LocalHttpsServer server;
-  const std::string after_market = kis_refusal_body("APBK3061", KIS_AFTER_MARKET_ONLY);
+  const std::string after_market = kis_real_refusal_body("APBK3061", KIS_AFTER_MARKET_ONLY);
   const std::string nothing_held = kis_refusal_body("40240000", KIS_NOTHING_HELD);
   const std::string nothing_to_cancel = kis_refusal_body("40330000", KIS_NOTHING_TO_CANCEL);
 
@@ -4208,7 +4213,7 @@ TEST_CASE("a KIS real-server refusal is recognized under the same conditions as 
     return !result && result.error().category_ == ErrorCategory::PROTOCOL &&
       runner::outcome_of(result.error()) == runner::SendOutcome::INDETERMINATE;
   };
-  const std::string place = kis_refusal_body("APBK3061", KIS_AFTER_MARKET_ONLY);
+  const std::string place = kis_real_refusal_body("APBK3061", KIS_AFTER_MARKET_ONLY);
 
   SECTION("the row, with the empty acknowledgement a refusal may carry") {
     const auto result = kis::KisClientTestAccess::parse_order_ack(json_response(place), KisOperation::PLACE, false);
@@ -4229,7 +4234,7 @@ TEST_CASE("a KIS real-server refusal is recognized under the same conditions as 
       CAPTURE(extra);
       CHECK(kis_recognized(
         kis::KisClientTestAccess::parse_order_ack(
-          json_response(kis_refusal_body("APBK3061", KIS_AFTER_MARKET_ONLY, extra)), KisOperation::PLACE, false
+          json_response(kis_real_refusal_body("APBK3061", KIS_AFTER_MARKET_ONLY, extra)), KisOperation::PLACE, false
         ),
         "APBK3061"
       ));
@@ -4249,14 +4254,14 @@ TEST_CASE("a KIS real-server refusal is recognized under the same conditions as 
       CAPTURE(code);
       CHECK(unknown(
         kis::KisClientTestAccess::parse_order_ack(
-          json_response(kis_refusal_body(code, KIS_AFTER_MARKET_ONLY)), KisOperation::PLACE, false
+          json_response(kis_real_refusal_body(code, KIS_AFTER_MARKET_ONLY)), KisOperation::PLACE, false
         )
       ));
     }
     // The code in the message, under another code.
     CHECK(unknown(
       kis::KisClientTestAccess::parse_order_ack(
-        json_response(kis_refusal_body("APBK0919", "APBK3061")), KisOperation::PLACE, false
+        json_response(kis_real_refusal_body("APBK0919", "APBK3061")), KisOperation::PLACE, false
       )
     ));
   }
@@ -4274,13 +4279,15 @@ TEST_CASE("a KIS real-server refusal is recognized under the same conditions as 
       CHECK(result.error().category_ == ErrorCategory::PROTOCOL);
       CHECK(result.error().broker_code_ == "invalid_order_response");
     }
+    // The demo server's refusal status, `"1"`, is not the status the real server stated this code with.
     for (const char* body : {
-           R"({"rt_cd":"7","msg_cd":"APBK3061","msg1":"m"})",
-           R"({"rt_cd":" 1","msg_cd":"APBK3061","msg1":"m"})",
-           R"({"rt_cd":"1","msg_cd":["APBK3061"],"msg1":"m"})",
-           R"({"rt_cd":"1","msg_cd":"APBK3061"})",
-           R"({"rt_cd":"1","msg_cd":"APBK3061","msg1":""})",
-           R"({"rt_cd":"1","msg_cd":"APBK3061","msg1":null})",
+           R"({"rt_cd":"1","msg_cd":"APBK3061","msg1":"m"})",
+           R"({"rt_cd":" 7","msg_cd":"APBK3061","msg1":"m"})",
+           R"({"rt_cd":"7 ","msg_cd":"APBK3061","msg1":"m"})",
+           R"({"rt_cd":"7","msg_cd":["APBK3061"],"msg1":"m"})",
+           R"({"rt_cd":"7","msg_cd":"APBK3061"})",
+           R"({"rt_cd":"7","msg_cd":"APBK3061","msg1":""})",
+           R"({"rt_cd":"7","msg_cd":"APBK3061","msg1":null})",
          }) {
       CAPTURE(body);
       CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(body), KisOperation::PLACE, false)));
@@ -4300,7 +4307,7 @@ TEST_CASE("a KIS real-server refusal is recognized under the same conditions as 
       CAPTURE(extra);
       CHECK(unknown(
         kis::KisClientTestAccess::parse_order_ack(
-          json_response(kis_refusal_body("APBK3061", KIS_AFTER_MARKET_ONLY, extra)), KisOperation::PLACE, false
+          json_response(kis_real_refusal_body("APBK3061", KIS_AFTER_MARKET_ONLY, extra)), KisOperation::PLACE, false
         )
       ));
     }
