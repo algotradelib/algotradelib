@@ -247,11 +247,12 @@ TEST_CASE(
   test::trustLocalhostCertificate(context);
 
   network::HttpClientOptions options;
-  // Long enough to connect wherever "localhost" is tried first: Windows tries `::1`, where the server
-  // does not listen, and takes about two seconds to give up on it.
+  // Long enough to connect wherever "localhost" is tried first. On GitHub's Windows runner a one-second
+  // timeout failed while connecting, consistent with `::1` (where the server does not listen) being tried
+  // first.
   options.timeout_ = std::chrono::seconds(10);
-  // One request per minute, so the second one cannot start inside a
-  // ten-second deadline however long it waits.
+  // The broker's one-minute hold below starts now, so neither request can start inside a
+  // ten-second deadline.
   options.rate_limit_ = RateLimitBudget{1, 1, 0};
   auto client = std::make_shared<network::AsyncHttpClient>(
     ioc.get_executor(), context, "localhost", server.port(), options
