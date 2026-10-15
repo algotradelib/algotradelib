@@ -59,9 +59,12 @@ target_compile_features(algotradelib INTERFACE cxx_std_17)
 
 if(MSVC)
     target_compile_definitions(algotradelib INTERFACE BOOST_JSON_NO_LIB)
-    # Beast, Asio and the library's templates exceed MSVC's default section limit in one object file (C1128).
-    target_compile_options(algotradelib INTERFACE /bigobj)
 endif()
+
+# Beast, Asio and the library's templates exceed cl.exe's default section limit in one object file (C1128).
+# Decided by the consumer's compiler, not this build's, since an installed package is exported with it; Clang
+# (clang-cl or clang++) needs no flag, and clang++ rejects it.
+target_compile_options(algotradelib INTERFACE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
 
 target_include_directories(algotradelib INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
