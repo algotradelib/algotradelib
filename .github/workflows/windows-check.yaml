@@ -1,0 +1,49 @@
+# Temporary: the Windows legs of cmake-check for ai/windows-portability only. Removed before the branch is merged.
+on:
+  push:
+    branches: ['ai/windows-portability']
+
+name: windows-check
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [msvc, llvm]
+
+    name: windows-latest (${{ matrix.compiler }}-C++17)
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: aminya/setup-cpp@v1
+        with:
+          compiler: ${{ matrix.compiler }}
+          vcvarsall: true
+          cmake: true
+          ninja: true
+
+      - name: OpenSSL (Windows)
+        shell: bash
+        run: echo "OPENSSL_ROOT_DIR=C:/Program Files/OpenSSL;C:/Program Files/OpenSSL/lib/VC/x64/MD" >> "$GITHUB_ENV"
+
+      # -k 0: keep building after a failure, so one run shows every compile error.
+      - uses: threeal/cmake-action@v2.1.0
+        with:
+          run-build: true
+          build-args: -- -k 0
+          generator: Ninja
+          options: |
+            CMAKE_CXX_STANDARD=17
+            ATL_FETCH_DEPS=ON
+            ATL_BUILD_EXAMPLES=ON
+            ATL_BUILD_TESTS=ON
+            ATL_ENABLE_COVERAGE=OFF
+
+      - uses: threeal/ctest-action@v1.1.0
+        with:
+          test-dir: build/tests
+          args: --output-on-failure -j 4 ${{ matrix.compiler == 'msvc' && '-LE compile-fail' || '' }}
