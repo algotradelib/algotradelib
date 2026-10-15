@@ -47,7 +47,10 @@ struct BrokerTraits;
  */
 template <typename Client>
 struct AccountInfo {
-  /** @brief The account number as the broker displays it (usually masked); for display only. */
+  /**
+   * @brief The account number as the broker reports it, for display only. Kiwoom and Toss give the full
+   *   number: mask it before printing output that may be shared (the examples show the last four).
+   */
   std::string display_number_;
   /** @brief The account type as the broker reported it; for display only. */
   std::string type_;

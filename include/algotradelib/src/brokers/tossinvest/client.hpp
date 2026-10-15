@@ -27,7 +27,7 @@ namespace algotradelib::tossinvest {
 
 /** @brief A Toss account, as account discovery (`async_accounts`) returns it. */
 struct TossAccount {
-  /** @brief The account number as Toss displays it, usually masked. */
+  /** @brief The account number as Toss reports it (`accountNo`): the full number, not masked. */
   std::string account_number_;
   /** @brief Toss's account sequence, which every account request names. */
   std::int64_t sequence_{0};

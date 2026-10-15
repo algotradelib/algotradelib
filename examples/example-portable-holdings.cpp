@@ -40,6 +40,15 @@ using algotradelib::BrokerCaps;
 using algotradelib::BrokerError;
 using algotradelib::HoldingsSnapshot;
 
+/** @brief Masks all but the last four characters, so the output can be shared. */
+std::string mask_account_number(std::string_view account_number) {
+  if (account_number.size() <= 4) {
+    return std::string(account_number.size(), '*');
+  }
+  return std::string(account_number.size() - 4, '*') +
+    std::string(account_number.substr(account_number.size() - 4));
+}
+
 /** @brief Prints a structured broker or transport failure. */
 void print_error(std::string_view operation, const BrokerError& error) {
   std::cerr << operation << " failed";
@@ -171,7 +180,7 @@ int report_tossinvest(ssl::context& tls, const char* requested_sequence) {
       return 1;
     }
     for (const auto& account : accounts.value()) {
-      std::cout << "account " << account.display_number_ << "  type=" << account.type_
+      std::cout << "account " << mask_account_number(account.display_number_) << "  type=" << account.type_
         << "  sequence=" << account.selector_ << '\n';
     }
     sequence = accounts.value().front().selector_;
