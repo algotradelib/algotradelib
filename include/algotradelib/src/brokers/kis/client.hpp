@@ -352,9 +352,11 @@ public:
    * @brief Requests bars, reading KIS pages until `count_` bars are collected.
    *
    * Minute bars are stamped at the close, other intervals at the open. Paging stops early after 50
-   * pages, when KIS has no older bars, or (for minutes) at the start of the trading day. A series may
-   * therefore be shorter than `count_` for any interval; then `next_cursor_` is set to continue
-   * from.
+   * pages, when a page returns no bars, or (for minutes) at the start of the trading day. A period page
+   * asks for a date window of 100 bars' worth of calendar days, so an empty one means KIS has no older
+   * bars or none in that window (a halt longer than the window). A series may therefore be shorter
+   * than `count_` for any interval; then, unless it is empty, `next_cursor_` is set to continue from,
+   * since an empty page does not prove the history exhausted.
    *
    * @tparam CompletionToken An Asio completion token.
    * @param query The query.
