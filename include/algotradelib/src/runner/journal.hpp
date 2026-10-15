@@ -204,8 +204,8 @@ inline constexpr bool journal_outcome_is_terminal(JournalOutcome outcome) noexce
  * @brief One journal line: an instruction and what was known about it when the line was written.
  *
  * Every line repeats the whole instruction, so an answering line is readable on its own (with
- * `tail`) and survives the loss of its `PENDING` line. `recorded_at_` is this machine's clock, not
- * the broker's.
+ * `tail`) and survives the loss of its `PENDING` line. `recorded_at_` is the executor's clock (this
+ * machine's, unless one was injected), not the broker's.
  */
 struct JournalEntry {
   /**
@@ -542,7 +542,7 @@ public:
    * @brief Wraps an executor.
    * @param inner The executor to wrap.
    * @param journal The journal; borrowed, and must outlive this executor.
-   * @param clock The clock.
+   * @param clock The clock lines are stamped with; pass a `ClockReference` to share a loop's clock.
    */
   JournalingExecutor(Inner inner, Journal& journal, Clock clock = {})
   : inner_(std::move(inner)), journal_(&journal), clock_(std::move(clock)) {
