@@ -90,13 +90,46 @@ struct AccountRange {
 struct AccountsWithoutValueType {};
 struct AccountsOverLvalueCursor {};
 
+/**
+ * Every constant `BrokerCaps` reads, answered `false`: a traits specialization must answer them all, and
+ * MSVC evaluates every one as soon as `BrokerCaps<Client>` is used, where GCC and Clang evaluate only the
+ * ones read.
+ */
+struct NoCapabilities {
+  static constexpr bool data_only = false;
+  static constexpr bool has_account_discovery = false;
+  static constexpr bool has_client_order_id = false;
+  static constexpr bool has_trigger_price = false;
+  static constexpr bool has_working_orders = false;
+  static constexpr bool has_amendable_quantity = false;
+  static constexpr bool has_order_by_id = false;
+  static constexpr bool has_partial_cancel = false;
+  static constexpr bool history_requires_range = false;
+  static constexpr bool has_history_cursor = false;
+  static constexpr bool has_history_limit = false;
+  static constexpr bool has_history_symbol_filter = false;
+  static constexpr bool has_depth = false;
+  static constexpr bool has_price_limits = false;
+  static constexpr bool has_trade_prints = false;
+  static constexpr bool has_batch_prices = false;
+  static constexpr bool has_buying_power = false;
+  static constexpr bool has_buying_power_quantity = false;
+  static constexpr SellableSource sellable_source = SellableSource::NONE;
+  static constexpr bool has_commission_schedule = false;
+  static constexpr bool has_reference_data = false;
+  static constexpr bool has_batch_reference_data = false;
+  static constexpr bool has_calendar = false;
+  static constexpr bool has_calendar_range = false;
+  static constexpr bool has_calendar_sessions = false;
+};
+
 } // namespace conformance_fakes
 
 namespace algotradelib {
 
 /** Account discovery over a range with no `value_type`: `to_account_info` iterates it fine. */
 template <>
-struct BrokerTraits<conformance_fakes::AccountsWithoutValueType> {
+struct BrokerTraits<conformance_fakes::AccountsWithoutValueType> : conformance_fakes::NoCapabilities {
   using Account = int;
   static constexpr bool blocking = true;
   static constexpr bool has_account_discovery = true;
@@ -110,7 +143,7 @@ struct BrokerTraits<conformance_fakes::AccountsWithoutValueType> {
 
 /** Account discovery over a range whose cursor works only as a named lvalue. */
 template <>
-struct BrokerTraits<conformance_fakes::AccountsOverLvalueCursor> {
+struct BrokerTraits<conformance_fakes::AccountsOverLvalueCursor> : conformance_fakes::NoCapabilities {
   using Account = int;
   static constexpr bool blocking = true;
   static constexpr bool has_account_discovery = true;
