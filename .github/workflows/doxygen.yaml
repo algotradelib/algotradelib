@@ -1,0 +1,41 @@
+# Render doxygen to github page repo
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master, develop]
+
+name: doxygen
+
+jobs:
+  doxygen:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ssciwr/doxygen-install@v2
+        with:
+          version: "1.18.0"
+
+      - name: Install graphviz and OpenSSL
+        run: sudo apt-get install -y graphviz libssl-dev
+    
+      - name: Render doxygen
+        run: |
+          cmake -B build -DATL_FETCH_DEPS=ON
+          cmake --build build --target docs
+
+      - name: Deploy to GitHub pages 🚀
+        if: contains(fromJSON('["main", "master", "develop"]'), github.ref_name)
+        uses: JamesIves/github-pages-deploy-action@v4.6.1
+        with:
+          token: ${{ secrets.ALGOTRADELIB_PAGE_PAT }}
+          repository-name: algotradelib/algotradelib.github.io
+          folder: doxygen/docs/html
+          target-folder: ${{ github.ref_name == 'develop' && 'docs/dev' || 'docs' }}
+          clean: true
+          clean-exclude: dev
