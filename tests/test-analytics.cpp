@@ -828,6 +828,40 @@ TEST_CASE("a statistic that cannot exist says so, distinctly from having no data
   REQUIRE(math::is_undefined(analytics::max_drawdown(series({0.0, 0.0})).magnitude_));
 }
 
+TEST_CASE("equal values that are not binary fractions are still a constant window") {
+  // The computed mean of {0.1, 0.1, 0.1} is an ulp away from 0.1, so a deviation about it is tiny but
+  // not zero. A test for zero alone read it as dispersion: a z-score near -0.8, a Sharpe near 1e15.
+  // (`rolling_stdev` and Bollinger report that tiny deviation as it is; nothing divides by it there.)
+  const math::Vector tenth = series({0.1, 0.1, 0.1});
+  REQUIRE(analytics::rolling_mean(tenth, 3)[2] != 0.1);  // the premise
+  CHECK(math::is_undefined(analytics::zscore(tenth, 3)[2]));
+  CHECK(math::is_undefined(analytics::sharpe(tenth)));
+
+  // A decimal price level, with a gap in the window: the gap's row must not count as a value.
+  const math::Vector level = series({12.34, missing(), 12.34, 12.34});
+  REQUIRE(analytics::rolling_mean(level, 4, 2)[3] != 12.34);  // the premise
+  CHECK(math::is_undefined(analytics::zscore(level, 4, 2)[3]));
+
+  const math::Vector moving = series({0.01, 0.03, 0.02, 0.05});
+  const math::Vector still = series({0.1, 0.1, 0.1, 0.1});
+  CHECK(math::is_undefined(analytics::rolling_corr(moving, still, 3)[3]));
+  CHECK(math::is_undefined(analytics::rolling_corr(still, moving, 3)[3]));
+  CHECK(math::is_undefined(analytics::beta(moving, still, 3)[3]));
+}
+
+TEST_CASE("a window of values one ulp apart keeps its dispersion") {
+  // Not every rounding-small deviation is a constant window: these values differ, so the statistics
+  // exist (however large), and the exact check says so.
+  const Scalar one = 1.0;
+  const Scalar next = std::nextafter(one, 2.0);
+  const math::Vector close = series({one, next, one});
+  CHECK(analytics::rolling_stdev(close, 3)[2] > 0.0);
+  CHECK(observed(analytics::zscore(close, 3)[2]));
+  CHECK(observed(analytics::sharpe(close)));
+  CHECK(observed(analytics::beta(series({0.01, 0.03, 0.02}), close, 3)[2]));
+  CHECK(observed(analytics::rolling_corr(series({0.01, 0.03, 0.02}), close, 3)[2]));
+}
+
 TEST_CASE("the window overloads say what the three-argument form spells out") {
   const math::Vector values = series({1.0, missing(), 3.0, 4.0, 5.0});
 

@@ -24,6 +24,8 @@ struct Summary {
   std::size_t count_{0};
   Scalar mean_{0};
   Scalar squared_{0};
+  // Whether at least two observations are present and all equal (`constant_detail::constant`).
+  bool constant_{false};
 };
 
 /**
@@ -44,6 +46,12 @@ inline Summary summarize(math::SeriesView values) {
   }
   result.mean_ = parts.values_.sum() / count;
   result.squared_ = (parts.values_ - result.mean_ * parts.present_).squaredNorm();
+  if (result.count_ >= 2) {
+    const Scalar deviation = std::sqrt(result.squared_ / static_cast<Scalar>(result.count_ - 1));
+    result.constant_ = constant_detail::constant(
+      deviation, result.mean_, result.count_, parts.values_, parts.present_, 0, parts.values_.size()
+    );
+  }
   return result;
 }
 
@@ -122,7 +130,7 @@ inline Scalar sharpe(math::SeriesView period_returns, Scalar risk_free = Scalar{
   }
   const Scalar deviation =
     std::sqrt(summary.squared_ / static_cast<Scalar>(summary.count_ - 1));
-  if (deviation == Scalar{0}) {
+  if (summary.constant_) {
     // Returns were present and never varied. `undefined()` rather than `missing()`, because a
     // caller ranking strategies should be able to tell this from "not enough history".
     return math::undefined();
