@@ -45,8 +45,12 @@ enum class RejectReason {
   /** @brief The decimal arithmetic did not fit, or the portfolio's rows did not add up. */
   NOT_REPRESENTABLE,
   /**
-   * @brief Reserved for a limit price the day's band leaves no valid tick for; nothing produces it
-   *   yet (a band narrower than one tick is not refused).
+   * @brief Rounding the limit onto the grid, in the cautious direction, would move it out of the
+   *   day's band: no tick lies between the band's bound and the limit (clamped into the band).
+   *
+   * Only a band narrower than one tick, at a price of a few won on KRX, does this. A limit the
+   * strategy itself set beyond the band (a buy below the lower bound, a sell above the upper) is
+   * left alone, as without a band.
    */
   NO_PERMITTED_PRICE,
   /** @brief The broker refused the instruction (a request was sent). */
@@ -358,8 +362,9 @@ inline std::optional<Decimal64> clamp_to_limits(
  * Prepares a limit price: clamped into the band, then rounded onto the grid.
  *
  * In that order, because clamping can land on a price the grid does not carry — a published bound
- * need not be a tick multiple — whereas rounding a price that is already inside the band keeps it
- * inside, since rounding moves it away from the bound it was clamped to.
+ * need not be a tick multiple — whereas rounding moves a price away from the bound it was clamped
+ * to. It can still cross the band's other bound when no tick lies inside the band on that side;
+ * `rounded_out_of_band` finds that case.
  */
 inline std::optional<Decimal64> prepare_price(
   const Decimal64& wanted,
@@ -379,6 +384,28 @@ inline std::optional<Decimal64> prepare_price(
   }
   rounded = !(*on_grid == *within);
   return on_grid;
+}
+
+/**
+ * Returns whether rounding, not the strategy, put a limit price outside the day's band.
+ *
+ * Rounding moves a buy down and a sell up, so the price can leave the band only below its lower
+ * bound (a buy) or above its upper (a sell). That is rounding's doing only if the strategy's own
+ * price, `wanted`, was not already beyond that bound.
+ */
+inline bool rounded_out_of_band(
+  const Decimal64& wanted,
+  const Decimal64& priced,
+  OrderSide side,
+  const std::optional<PriceLimits>& limits
+) {
+  if (!limits) {
+    return false;
+  }
+  if (side == OrderSide::BUY) {
+    return limits->lower_ && decimal_less(priced, *limits->lower_) && !decimal_less(wanted, *limits->lower_);
+  }
+  return limits->upper_ && decimal_less(*limits->upper_, priced) && !decimal_less(*limits->upper_, wanted);
 }
 
 /**
@@ -650,6 +677,9 @@ Plan<Broker> reconcile(
     if (!priced) {
       return reject(RejectReason::UNKNOWN_PRICE_GRID);
     }
+    if (reconcile_detail::rounded_out_of_band(target.limit_->value(), *priced, side, inputs.limits_)) {
+      return reject(RejectReason::NO_PERMITTED_PRICE);
+    }
     order.type_ = OrderType::LIMIT;
     order.price_ = priced;
   } else {
@@ -778,6 +808,9 @@ Plan<Broker> reconcile(
     );
     if (!priced) {
       return reject(RejectReason::UNKNOWN_PRICE_GRID);
+    }
+    if (reconcile_detail::rounded_out_of_band(intent.limit()->value(), *priced, intent.side(), inputs.limits_)) {
+      return reject(RejectReason::NO_PERMITTED_PRICE);
     }
     order.type_ = OrderType::LIMIT;
     order.price_ = priced;

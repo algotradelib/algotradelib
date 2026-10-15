@@ -773,6 +773,69 @@ TEST_CASE("an unknown tick grid refuses a limit order outright") {
   REQUIRE(plan.rejected_[0].reason_ == RejectReason::UNKNOWN_PRICE_GRID);
 }
 
+TEST_CASE("a band with no tick on the cautious side of a clamped limit refuses it") {
+  // At 2,000-5,000 won the KRX tick is 5. A band of 2,002-2,004 holds no tick: a buy clamped down to
+  // 2,004 rounds down to 2,000, below the band, and a sell clamped up to 2,002 rounds up to 2,005,
+  // above it. Either order would be refused by the exchange; the plan refuses it first.
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+  PriceLimits limits;
+  limits.lower_ = Decimal64::parse("2002");
+  limits.upper_ = Decimal64::parse("2004");
+  inputs.limits_ = limits;
+  const auto price = [](const char* value) {
+    auto checked = strategy::Price::checked(Decimal64::parse(value), krx());
+    REQUIRE(checked);
+    return *checked;
+  };
+  const auto refused = [](const auto& plan) {
+    return plan.place_.empty() && plan.rejected_.size() == 1 &&
+      plan.rejected_[0].reason_ == RejectReason::NO_PERMITTED_PRICE;
+  };
+
+  SECTION("a target") {
+    ProbePortfolio flat;
+    CHECK(refused(strategy::reconcile(target("10", price("2010")), flat, inputs)));
+    ProbePortfolio held;
+    held.positions_.push_back(holding("100"));
+    CHECK(refused(strategy::reconcile(target("0", price("1995")), held, inputs)));
+    CHECK(strategy::reject_reason_name(RejectReason::NO_PERMITTED_PRICE) == "no_permitted_price");
+  }
+
+  SECTION("an intent") {
+    ProbePortfolio portfolio;
+    const auto ten = SizeSpec::quantity(Decimal64::parse("10"));
+    CHECK(refused(strategy::reconcile(OrderIntent::limit(samsung(), OrderSide::BUY, ten, price("2010")), portfolio, inputs)));
+    CHECK(refused(strategy::reconcile(OrderIntent::limit(samsung(), OrderSide::SELL, ten, price("1995")), portfolio, inputs)));
+  }
+
+  SECTION("a limit the strategy set beyond the band is still left alone") {
+    ProbePortfolio portfolio;
+    const auto ten = SizeSpec::quantity(Decimal64::parse("10"));
+    const auto buy = strategy::reconcile(OrderIntent::limit(samsung(), OrderSide::BUY, ten, price("1995")), portfolio, inputs);
+    REQUIRE(buy.place_.size() == 1);
+    CHECK(buy.place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("1995")));
+    const auto sell = strategy::reconcile(OrderIntent::limit(samsung(), OrderSide::SELL, ten, price("2010")), portfolio, inputs);
+    REQUIRE(sell.place_.size() == 1);
+    CHECK(sell.place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("2010")));
+  }
+
+  SECTION("a band holding a tick keeps the clamped and rounded price") {
+    limits.lower_ = Decimal64::parse("2002");
+    limits.upper_ = Decimal64::parse("2007");
+    inputs.limits_ = limits;
+    ProbePortfolio portfolio;
+    const auto ten = SizeSpec::quantity(Decimal64::parse("10"));
+    const auto buy = strategy::reconcile(OrderIntent::limit(samsung(), OrderSide::BUY, ten, price("2010")), portfolio, inputs);
+    REQUIRE(buy.place_.size() == 1);
+    CHECK(buy.place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("2005")));
+    const auto sell = strategy::reconcile(OrderIntent::limit(samsung(), OrderSide::SELL, ten, price("1995")), portfolio, inputs);
+    REQUIRE(sell.place_.size() == 1);
+    CHECK(sell.place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("2005")));
+  }
+}
+
 TEST_CASE("a weighted intent needs the portfolio's value and says so when it lacks it") {
   ProbePortfolio portfolio;
   const auto reference = samsung_reference();
