@@ -515,6 +515,10 @@ private:
     // report an unsent request as one the broker may hold. Sticky once set, because a second
     // attempt cannot unsend the first.
     bool sent_{false};
+    // When this request began waiting for rate-limit admission; empty while it is not waiting. Kept
+    // on the request, not the client: a request inserted ahead of a waiting one is admitted on its
+    // own terms, and must neither be charged the other's wait nor restart it.
+    std::optional<std::chrono::steady_clock::time_point> waiting_since_;
 
     Pending(HttpRequest request_value, CompletionHandler completion)
     : request_(std::move(request_value)), handler_(std::move(completion)) {}
@@ -582,7 +586,6 @@ private:
   bool resolve_timed_out_{false};
   std::deque<Pending> queue_;
   std::optional<RateLimitController> limiter_;
-  std::optional<std::chrono::steady_clock::time_point> waiting_since_;
   std::optional<http::request<http::string_body>> active_request_;
   std::optional<http::response_parser<http::string_body>> parser_;
   // When the connection last finished a response and was kept alive; empty while there is none.
@@ -663,7 +666,7 @@ private:
       queue_.front().refreshed_ = true;
       disconnect();
       // The handshake is not admission delay; the wait, if any, is measured again from here.
-      waiting_since_.reset();
+      queue_.front().waiting_since_.reset();
       start_resolve();
       return;
     }
@@ -685,7 +688,6 @@ private:
         limiter_->record_shed(group);
         auto pending = std::move(queue_.front());
         queue_.pop_front();
-        waiting_since_.reset();
         BrokerError error;
         error.category_ = ErrorCategory::CANCELLED;
         // Ordinarily nothing was sent -- admission is evaluated only while the connection is
@@ -698,8 +700,8 @@ private:
         pump();
         return;
       }
-      if (!waiting_since_) {
-        waiting_since_ = std::chrono::steady_clock::now();
+      if (!queue_.front().waiting_since_) {
+        queue_.front().waiting_since_ = std::chrono::steady_clock::now();
       }
       admission_timer_.expires_after(delay);
       admission_timer_.async_wait([self = shared_from_this()](beast::error_code ec) {
@@ -711,14 +713,14 @@ private:
       return;
     }
 
-    if (waiting_since_) {
+    if (auto& waiting_since = queue_.front().waiting_since_) {
       limiter_->record_delay(
         group,
         std::chrono::duration_cast<RateLimitController::Duration>(
-          std::chrono::steady_clock::now() - *waiting_since_
+          std::chrono::steady_clock::now() - *waiting_since
         )
       );
-      waiting_since_.reset();
+      waiting_since.reset();
     }
     admission_timer_.cancel();
     limiter_->acquire(group);
