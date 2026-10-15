@@ -78,7 +78,7 @@ void print_bars(const BarSeries& series) {
       << " open=" << (bar->open_ ? bar->open_->str() : std::string("not reported")) << '\n';
   }
   if (series.next_cursor_) {
-    std::cout << "  more history available from " << *series.next_cursor_ << '\n';
+    std::cout << "  may continue from " << *series.next_cursor_ << '\n';
   }
 }
 

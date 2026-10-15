@@ -1419,8 +1419,9 @@ public:
   }
 
   /**
-   * @brief Closes the client for good: pending and later requests complete with `CANCELLED`. A
-   *   request already being sent has `reached_broker_` set and an unknown outcome.
+   * @brief Closes the client for good: pending requests, and later ones that would send, complete
+   *   with `CANCELLED`. A request already being sent has `reached_broker_` set and an unknown outcome.
+   *   A request refused before sending is still refused.
    */
   void close() { http_->close(); }
 
@@ -2035,7 +2036,7 @@ private:
   // Reads a listing state from `ka10100`'s `auditInfo`.
   //
   // Kiwoom publishes 감리구분 as a Korean phrase — the field lists `정상`, `관리종목`, `거래정지`,
-  // `단기과열`, `투자주의`, `투자경고`, and its example writes `투자주의환기종목` — and publishes no
+  // `단기과열`, `투자주의`, `투자경고`, and the `ka10099` example writes `투자주의환기종목` — and publishes no
   // delisting date and no `SCHEDULED` state at all. Everything it reports is a listed instrument
   // under some degree of supervision (a halt included), so the honest reading is `ACTIVE` for the
   // phrases it publishes and `UNKNOWN` for any other: supervision is not delisting, and inventing a
