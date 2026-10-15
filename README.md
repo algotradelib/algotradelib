@@ -8,7 +8,7 @@
 
 <!-- multilingual: start -->
 <p align="left">
-  <b>English</b> &middot
+  <b>English</b> &middot;
   <a href="README.ko-kr.md">한국어</a>
 </p>
 <!-- multilingual: end -->
