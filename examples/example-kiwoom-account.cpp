@@ -22,7 +22,7 @@ namespace ssl = net::ssl;
 
 namespace {
 
-/** @brief Masks all but the last four digits, so the output can be shared. */
+/** @brief Masks all but the last four characters, so the output can be shared. */
 std::string mask_account_number(std::string_view account_number) {
   if (account_number.size() <= 4) {
     return std::string(account_number.size(), '*');
