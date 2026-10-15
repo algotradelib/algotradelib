@@ -1575,7 +1575,9 @@ private:
   // Returns the error for a non-2xx reply: `broker_detail::http_error`, with Kiwoom's `return_code` read
   // from the whole body into `broker_code_` when the body is an object that carries one (the message
   // keeps only the body's start, so a code past it would otherwise be lost). The category stays what
-  // the HTTP status says: no Kiwoom non-2xx reply has been observed, so its codes are not classified.
+  // the HTTP status says, unlike a 2xx reply's (`kiwoom_declared_error`): on an order, a rate-limit
+  // category would turn an unknown 5xx outcome into a refusal (`kis_http_error` keeps orders out of its
+  // mapping for that reason), and no Kiwoom non-2xx reply has been observed.
   static BrokerError kiwoom_http_error(const network::HttpResponse& response) {
     auto error = broker_detail::http_error(response);
     boost::system::error_code ec;
