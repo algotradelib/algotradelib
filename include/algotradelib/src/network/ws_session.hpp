@@ -36,6 +36,7 @@ public:
 private:
   template <typename, typename>
   friend class WebSocketSessionBase;
+  friend struct WebSocketSessionTestAccess;
   using Stream = websocket::stream<beast::tcp_stream>;
 
   void do_connect() {
@@ -50,6 +51,9 @@ private:
   void on_connect(beast::error_code error, tcp::resolver::results_type::endpoint_type endpoint) {
     if (error) {
       fail("connect", error);
+      return;
+    }
+    if (abandon_if_closing()) {
       return;
     }
     host_header_ = host_ + ":" + std::to_string(endpoint.port());

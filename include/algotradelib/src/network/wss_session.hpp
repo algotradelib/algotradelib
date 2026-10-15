@@ -72,6 +72,7 @@ public:
 private:
   template <typename, typename>
   friend class WebSocketSessionBase;
+  friend struct WebSocketSessionTestAccess;
   using Stream = websocket::stream<ssl::stream<beast::tcp_stream>>;
 
   ssl::context& context_;
@@ -98,6 +99,9 @@ private:
       fail("connect", error);
       return;
     }
+    if (abandon_if_closing()) {
+      return;
+    }
     host_header_ = host_ + ":" + std::to_string(endpoint.port());
     beast::get_lowest_layer(*ws_).expires_after(options_.operation_timeout_);
     ws_->next_layer().async_handshake(
@@ -109,6 +113,9 @@ private:
   void on_ssl_handshake(beast::error_code error) {
     if (error) {
       fail("ssl_handshake", error);
+      return;
+    }
+    if (abandon_if_closing()) {
       return;
     }
     start_ws_handshake();

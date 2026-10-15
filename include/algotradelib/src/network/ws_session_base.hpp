@@ -44,7 +44,9 @@ struct WebSocketSessionOptions {
   std::map<std::string, std::string> headers_;
   /**
    * @brief The deadline for the TCP connect and (for `WssSession`) the TLS handshake. The DNS lookup
-   *   has no deadline, and the WebSocket upgrade uses Beast's suggested client timeouts.
+   *   has no deadline, and the WebSocket upgrade uses Beast's suggested client timeouts. Those set no
+   *   idle timeout, so the session sends no keep-alive ping: a connection that goes silent without
+   *   closing is noticed only when TCP reports it.
    */
   std::chrono::seconds operation_timeout_{30};
   /** @brief Whether to reconnect after a failure or a close not requested with `close()`. */
@@ -226,9 +228,7 @@ protected:
    */
   void start_ws_handshake() {
     beast::get_lowest_layer(*ws_).expires_never();
-    auto timeout = websocket::stream_base::timeout::suggested(beast::role_type::client);
-    timeout.keep_alive_pings = true;
-    ws_->set_option(timeout);
+    ws_->set_option(websocket::stream_base::timeout::suggested(beast::role_type::client));
     ws_->set_option(websocket::stream_base::decorator([this](websocket::request_type& request) {
       request.set(http::field::user_agent, "algotradelib");
       for (const auto& header : options_.headers_) {
@@ -240,6 +240,30 @@ protected:
       options_.target_,
       beast::bind_front_handler(&WebSocketSessionBase::on_handshake, shared_derived())
     );
+  }
+
+  /**
+   * @brief Ends a connect that `close()` interrupted, if it did; called first by each connect stage
+   *   that completed without an error.
+   *
+   * `close()` cancels the stage in progress, but a stage whose completion was already queued arrives
+   * without an error. Going on would open a session whose `close()` is spent: `on_closed` would never
+   * be called, and a later `close()` would return early because one is in progress.
+   *
+   * @return `true` if the session was closing: it is torn down and `on_closed` has been called.
+   */
+  bool abandon_if_closing() {
+    if (!closing_) {
+      return false;
+    }
+    connecting_ = false;
+    closing_ = false;
+    if (ws_) {
+      beast::error_code ignored;
+      beast::get_lowest_layer(*ws_).socket().close(ignored);
+    }
+    on_closed();
+    return true;
   }
 
   /**
@@ -266,9 +290,14 @@ protected:
   }
 
 private:
+  friend struct WebSocketSessionTestAccess;
+
   void on_resolve(beast::error_code error, tcp::resolver::results_type endpoints) {
     if (error) {
       fail("resolve", error);
+      return;
+    }
+    if (abandon_if_closing()) {
       return;
     }
     beast::get_lowest_layer(*ws_).expires_after(options_.operation_timeout_);
@@ -280,6 +309,9 @@ private:
   void on_handshake(beast::error_code error) {
     if (error) {
       fail("handshake", error);
+      return;
+    }
+    if (abandon_if_closing()) {
       return;
     }
     connecting_ = false;
