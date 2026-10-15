@@ -59,6 +59,8 @@ target_compile_features(algotradelib INTERFACE cxx_std_17)
 
 if(MSVC)
     target_compile_definitions(algotradelib INTERFACE BOOST_JSON_NO_LIB)
+    # Beast, Asio and the library's templates exceed MSVC's default section limit in one object file (C1128).
+    target_compile_options(algotradelib INTERFACE /bigobj)
 endif()
 
 target_include_directories(algotradelib INTERFACE
