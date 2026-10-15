@@ -42,18 +42,21 @@ inline std::optional<std::int64_t> integer_header(
   return number;
 }
 
-// The most of a reply body an error message carries. A broker's error envelope (a code, a message, a
-// request id) fits easily; whatever else arrives is not copied whole into logs and journals.
+// The most of a reply body an error message carries. The error envelopes seen so far (a code, a
+// message, a request id) fit; whatever else arrives is not copied whole into logs and journals. It is
+// an excerpt, not redaction.
 inline constexpr std::size_t reply_excerpt_limit = 512;
 
 // Returns `body` whole if it fits in `limit` bytes; otherwise its first `limit` bytes, cut back so no
-// UTF-8 character is split (KIS and Kiwoom write Korean), and how many bytes were left out.
+// UTF-8 character is split (KIS and Kiwoom write Korean), then how many bytes were left out. A UTF-8
+// character is at most four bytes, so the cut moves back at most three: a body that is not UTF-8
+// keeps its prefix rather than losing it to a run of continuation bytes.
 inline std::string reply_excerpt(std::string_view body, std::size_t limit = reply_excerpt_limit) {
   if (body.size() <= limit) {
     return std::string(body);
   }
   std::size_t cut = limit;
-  while (cut > 0 && (static_cast<unsigned char>(body[cut]) & 0xC0U) == 0x80U) {
+  while (cut > 0 && limit - cut < 3 && (static_cast<unsigned char>(body[cut]) & 0xC0U) == 0x80U) {
     --cut;
   }
   return std::string(body.substr(0, cut)) + "... (" + std::to_string(body.size() - cut) + " more bytes)";

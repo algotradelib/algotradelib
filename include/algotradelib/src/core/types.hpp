@@ -730,8 +730,10 @@ struct BrokerError {
   /**
    * @brief A human-readable description, for logs; do not parse it.
    *
-   * For an HTTP error it carries the reply's body, at most its first 512 bytes. A successful reply
-   * the adapter cannot read is described, never copied (a token reply holds the token).
+   * For an HTTP error from KIS or Kiwoom it carries the start of the reply's body (at most 512 bytes,
+   * then the count of bytes left out); that is an excerpt, not redaction. A broker's declared error
+   * carries its own message field. A whole successful reply the adapter cannot read is not copied
+   * (a token reply holds the token).
    */
   std::string message_;
   /**

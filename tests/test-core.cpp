@@ -4347,6 +4347,14 @@ TEST_CASE("an HTTP error carries at most the start of its reply body", "[broker]
   const std::string korean = std::string(limit - 1, 'z') + "초과";  // 511 + 3 + 3 bytes
   const auto excerpt = broker_detail::reply_excerpt(korean);
   CHECK(excerpt == std::string(limit - 1, 'z') + "... (6 more bytes)");
+
+  // A four-byte character ending one byte past the limit is left out whole, three bytes back.
+  const std::string emoji = std::string(limit - 3, 'e') + "\xF0\x9F\x98\x80" + "tail";
+  CHECK(broker_detail::reply_excerpt(emoji) == std::string(limit - 3, 'e') + "... (8 more bytes)");
+
+  // A body that is not UTF-8 keeps its prefix: the cut moves back at most three bytes.
+  const std::string not_utf8 = "A" + std::string(600, '\x80');
+  CHECK(broker_detail::reply_excerpt(not_utf8) == "A" + std::string(limit - 4, '\x80') + "... (92 more bytes)");
 }
 
 TEST_CASE("a reply whose body is not a JSON object keeps its HTTP status", "[broker][order]") {

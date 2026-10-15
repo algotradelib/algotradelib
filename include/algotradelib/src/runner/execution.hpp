@@ -354,7 +354,8 @@ inline constexpr std::string_view obligation_state_name(ObligationState state) n
 /**
  * @brief The broker's own code and message for a refusal, kept for diagnosis.
  *
- * The runner keeps only the latest one. `message_` is the broker's text, unedited and of any length.
+ * The runner keeps only the latest one. `message_` is the adapter's `BrokerError::message_`: the broker's own
+ * text for a declared refusal, of any length, or the start of the body for an HTTP error.
  */
 struct BrokerRefusal {
   /** @brief The broker's error code, if it gave one. */
