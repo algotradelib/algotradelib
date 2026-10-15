@@ -51,7 +51,10 @@ struct Normalizers {
   /** @brief Kiwoom publishes recent executions, through `ka10003`. */
   static constexpr bool has_trade_prints = true;
 
-  /** @brief Every Kiwoom market-data endpoint takes one `stk_cd`. */
+  /**
+   * @brief `false`: this adapter requests one `stk_cd` at a time. Kiwoom's `ka10095` takes several,
+   *   `|`-separated, and is not used.
+   */
   static constexpr bool has_batch_prices = false;
 
   /** @brief Kiwoom answers what may be spent, in won, from `kt00001` 예수금상세현황요청. */

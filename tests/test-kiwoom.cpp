@@ -950,6 +950,25 @@ TEST_CASE("reference data normalizes Kiwoom's market code", "[kiwoom][reference]
   CHECK(etn.value().segment_.other_.str() == "60");
 }
 
+TEST_CASE("every 감리구분 phrase Kiwoom publishes reads as listed", "[kiwoom][reference]") {
+  const auto status = [](const std::string& audit) {
+    auto result = kiwoom::KiwoomClientTestAccess::instrument(
+      samsung(), ok_body(R"({"return_code":0,"name":"x","marketCode":"0","auditInfo":")" + audit + "\"}")
+    );
+    REQUIRE(result);
+    return result.value().status_;
+  };
+  for (const char* audit : {"정상", "관리종목", "거래정지", "단기과열", "투자주의", "투자경고", "투자주의환기종목"}) {
+    CAPTURE(audit);
+    CHECK(status(audit) == InstrumentStatus::ACTIVE);
+  }
+  // A phrase Kiwoom does not publish is not guessed at.
+  for (const char* audit : {"상장폐지", "", "정상 "}) {
+    CAPTURE(audit);
+    CHECK(status(audit) == InstrumentStatus::UNKNOWN);
+  }
+}
+
 TEST_CASE("buying power is the credit-free figure, not the orderable one", "[kiwoom][account]") {
   // Kiwoom's own kt00001 example. 주문가능금액 is 85,341 against a 100%종목주문가능금액 of 12,550,
   // on an account holding 3,915,500 of 대용금 -- collateral, not cash. Reporting the larger figure

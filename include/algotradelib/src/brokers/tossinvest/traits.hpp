@@ -358,7 +358,10 @@ struct Capabilities {
   /** @brief `true`: `client_order_id_` is an idempotency key for ten minutes. */
   static constexpr bool has_client_order_id = true;
 
-  /** @brief `false`: Toss has no stop orders; `BrokerSession` refuses a trigger price before sending. */
+  /**
+   * @brief `false`: this client does not place Toss's conditional (trigger) orders, a separate API;
+   *   `BrokerSession` refuses a trigger price before sending.
+   */
   static constexpr bool has_trigger_price = false;
 
   /** @brief `false`: a broker that takes orders; see `BrokerCaps::data_only`. */

@@ -52,10 +52,10 @@ struct Normalizers {
   static constexpr bool has_buying_power = true;
 
   /**
-   * @brief `true`: KIS also answers how many shares are affordable; reach it through
-   *   `session.client()`, since the session asks only for the amount.
+   * @brief `false`: this client asks KIS for the amount only (`PDNO` and `ORD_UNPR` empty), so no
+   *   method returns how many shares are affordable, though KIS answers that per instrument.
    */
-  static constexpr bool has_buying_power_quantity = true;
+  static constexpr bool has_buying_power_quantity = false;
 
   /** @brief The sellable quantity comes with each holdings row (`ord_psbl_qty`), at no extra request. */
   static constexpr SellableSource sellable_source = SellableSource::HOLDINGS;

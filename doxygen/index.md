@@ -322,10 +322,9 @@ flag nor whether a Kiwoom demo account accepts SOR has been seen on an account (
 `SessionExecutor::default_route`). Without a route the adapter refuses each order before sending it. `example-live-program` states KRX. Kiwoom also publishes no trading calendar, so a
 runner's market phase stays unknown and the default limits open no position.
 
-**KIS: own-account customers only.** The library sends `custtype P` (일반), which covers individual
-*and* corporate customers trading their own account. KIS's partner program for licensed firms serving
-third parties (`custtype B`, with `personalseckey`, per-member `phone_number` / `ip_addr` and `gt_uid`)
-is not supported.
+**KIS: individual customers only.** The library sends `custtype P`, which KIS's reference defines as
+개인 (individual). `custtype B` (법인), whose requests need `personalseckey` (고객식별키 for 제휴사 회원
+관리), per-member `phone_number` / `ip_addr` and `gt_uid`, is not supported.
 
 **Order routing across both Korean books is opt-in.** At KIS an order that names no venue routes to
 KRX; `Venue::COMBINED` asks for SOR, and a runner opts in by binding with `Venue::COMBINED` as its

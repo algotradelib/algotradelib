@@ -506,7 +506,7 @@ inline std::string compact_text(const Date& date) {
  * @brief One row of Kiwoom's order-type table: the numeric request code, the Korean names its
  *   listings report, and the normalized shape.
  *
- * Working-order listings (`ka10075`, `ka10076`) and history (`kt00007`, `kt00009`) name some shapes
+ * The unfilled and filled listings (`ka10075` 미체결, `ka10076` 체결) and history (`kt00007`, `kt00009`) name some shapes
  * differently (`보통` vs `지정가`), hence two names. These are the documented names; a server may write
  * another (the demo server's history says `보통가`, which `KiwoomClient` reads on the demo only).
  */
@@ -843,7 +843,10 @@ struct KiwoomMarginTier {
  * rate, which Kiwoom does not select for you.
  */
 struct KiwoomOrderableAmount {
-  /** @brief Every 증거금률 tier Kiwoom answered with, in the order it publishes them. */
+  /**
+   * @brief Always seven 증거금률 tiers: 20, 30, 40, 50, 60 and 100 %, then the 60 % 증거금감면 tier
+   *   (`reduced_`). A tier's figures are empty where Kiwoom sent none.
+   */
   std::vector<KiwoomMarginTier> tiers_;
   /** @brief `ord_alowa` 주문가능현금: the cash available to order with. */
   Decimal64 orderable_cash_;
@@ -2031,14 +2034,18 @@ private:
 
   // Reads a listing state from `ka10100`'s `auditInfo`.
   //
-  // Kiwoom publishes 감리구분 as a Korean phrase — `정상`, `투자주의환기종목`, `관리종목` — and
-  // publishes no delisting date and no `SCHEDULED` state at all. Everything it reports is a listed
-  // instrument under some degree of supervision, so the honest reading is `ACTIVE` for the states
-  // it names and `UNKNOWN` for a phrase this adapter has not seen: supervision is not delisting,
-  // and inventing a `DELISTED` from a warning would be worse than saying nothing.
+  // Kiwoom publishes 감리구분 as a Korean phrase — the field lists `정상`, `관리종목`, `거래정지`,
+  // `단기과열`, `투자주의`, `투자경고`, and its example writes `투자주의환기종목` — and publishes no
+  // delisting date and no `SCHEDULED` state at all. Everything it reports is a listed instrument
+  // under some degree of supervision (a halt included), so the honest reading is `ACTIVE` for the
+  // phrases it publishes and `UNKNOWN` for any other: supervision is not delisting, and inventing a
+  // `DELISTED` from a warning would be worse than saying nothing.
   static InstrumentStatus kiwoom_status(std::string_view audit) {
-    if (audit == "정상" || audit == "투자주의환기종목" || audit == "관리종목") {
-      return InstrumentStatus::ACTIVE;
+    for (const std::string_view listed :
+         {"정상", "관리종목", "거래정지", "단기과열", "투자주의", "투자경고", "투자주의환기종목"}) {
+      if (audit == listed) {
+        return InstrumentStatus::ACTIVE;
+      }
     }
     return InstrumentStatus::UNKNOWN;
   }

@@ -279,8 +279,8 @@ inline std::optional<BrokerError> unsupported_bar_interval(BarInterval) { return
  *   stocks.
  *
  * It requests an access token when first needed and shares one refresh among concurrent requests.
- * Supports ordinary customers (`custtype P`: individuals and corporations trading their own account),
- * not the partner program (`custtype B`). Create it with `std::make_shared`. Each completion runs on
+ * Sends `custtype P`, which KIS's reference defines as 개인 (an individual customer); `custtype B` (법인),
+ * which requires `personalseckey` (제휴사 회원 관리를 위한 고객식별키), is not supported. Create it with `std::make_shared`. Each completion runs on
  * the handler's associated executor, or on the client's strand if it has none. A blocking wrapper is
  * `KisBlockingClient`.
  */
@@ -835,8 +835,10 @@ public:
   }
 
   /**
-   * @brief Closes the client for good: pending and later requests complete with `CANCELLED`. A
-   *   request already being sent has `reached_broker_` set and an unknown outcome.
+   * @brief Closes the client for good: pending requests, and later ones that would send, complete
+   *   with `CANCELLED`. A request already being sent has `reached_broker_` set and an unknown outcome.
+   *   A later calendar request the cache covers is still answered, and a request refused before
+   *   sending is still refused.
    */
   void close() { http_->close(); }
 

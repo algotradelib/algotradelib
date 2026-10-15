@@ -2467,7 +2467,7 @@ private:
       // Left unestablished deliberately: a Toss holdings row carries no sellable quantity at all
       // (`sellable_source` is `INQUIRY`), so this read establishes nothing about a figure it never
       // reported. The inquiry that does report one carries its own basis --
-      // `TossBlockingSession::sellable_inquiry_basis`.
+      // `traits_detail::Normalizers::sellable_inquiry_basis`.
       snapshot.sellable_basis_ = SellableBasis{};
       return Result<HoldingsSnapshot>(std::move(snapshot));
     } catch (const std::exception& exception) {
@@ -2818,15 +2818,16 @@ private:
         return error;
       }
     }
-    // Toss publishes no stop basis and `make_place_order_request` has no field for a trigger, so
-    // one stated here would be dropped and the order acknowledged as a plain limit. The session
-    // refuses it too, but a caller of this client does not go through the session.
+    // Toss's trigger orders are a separate conditional-order API this client does not use, and
+    // `make_place_order_request` has no field for a trigger, so one stated here would be dropped
+    // and the order acknowledged as a plain limit. The session refuses it too, but a caller of
+    // this client does not go through the session.
     if (order.trigger_price_) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.reached_broker_ = false;
       error.broker_code_ = "unsupported_trigger_price";
-      error.message_ = "Toss publishes no stop order and has no field for a trigger price";
+      error.message_ = "this Toss client does not place conditional orders, so it takes no trigger price";
       return error;
     }
     // The shape is judged before the price, because whether a price is required

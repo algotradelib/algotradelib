@@ -143,7 +143,7 @@ struct BrokerCaps {
   /**
    * @brief Whether the broker can also say how many shares are affordable.
    *
-   * `true` for KIS (per instrument and order type), `false` for Toss. The port returns only the
+   * `true` for Kiwoom (per margin tier), `false` for Toss and KIS. The port returns only the
    * amount; reach the quantity through `session.client()`.
    */
   static constexpr bool has_buying_power_quantity = Traits::has_buying_power_quantity;

@@ -289,7 +289,7 @@ ask before you write the call, so one strategy source compiles against all three
 | | Toss | KIS | Kiwoom |
 | --- | --- | --- | --- |
 | `has_buying_power` | yes | yes | yes |
-| `has_buying_power_quantity` | no — an amount only | yes — also how many shares | yes — per margin tier, through `session.client()` |
+| `has_buying_power_quantity` | no — an amount only | no — an amount only (KIS can price a quantity; this client does not ask) | yes — per margin tier, through `session.client()` |
 | `sellable_source` | `INQUIRY` — one request per instrument | `HOLDINGS` — free, on every snapshot | `NONE` — not yet: the session's holdings are refused until you assert `KiwoomConfig::holdings_position_scope_`; the rows then carry `trde_able_qty`, which `RiskGuard` uses only if `holdings_sellable_scope_` is `WHOLE_HOLDING` |
 | `has_commission_schedule` | yes | no | no |
 

@@ -117,10 +117,10 @@ TEST_CASE("capabilities record each broker's real differences") {
     BrokerCaps<tossinvest::TossClient>::has_order_by_id ==
     BrokerCaps<tossinvest::TossBlockingClient>::has_order_by_id
   );
-  // Both answer what may be spent; only KIS prices a quantity as well.
+  // Both answer what may be spent; neither client returns an affordable quantity.
   static_assert(BrokerCaps<kis::KisClient>::has_buying_power);
   static_assert(BrokerCaps<tossinvest::TossClient>::has_buying_power);
-  static_assert(BrokerCaps<kis::KisClient>::has_buying_power_quantity);
+  static_assert(!BrokerCaps<kis::KisClient>::has_buying_power_quantity);
   static_assert(!BrokerCaps<tossinvest::TossClient>::has_buying_power_quantity);
 
   // Only one publishes a commission schedule, and the absent one is absent rather than empty.
