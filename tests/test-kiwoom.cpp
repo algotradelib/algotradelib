@@ -950,6 +950,43 @@ TEST_CASE("reference data normalizes Kiwoom's market code", "[kiwoom][reference]
   CHECK(etn.value().segment_.other_.str() == "60");
 }
 
+TEST_CASE("a Kiwoom HTTP error keeps the return_code from its whole body", "[kiwoom][errors]") {
+  const auto failed = [](http::status status, std::string body) {
+    network::HttpResponse response{status, 11};
+    response.body() = std::move(body);
+    return kiwoom::KiwoomClientTestAccess::quote(samsung(), response);
+  };
+
+  // A number or a string, as Kiwoom writes either; the category stays the status's.
+  const auto numeric = failed(http::status::internal_server_error, R"({"return_code":1700,"return_msg":"m"})");
+  REQUIRE_FALSE(numeric);
+  CHECK(numeric.error().broker_code_ == "1700");
+  CHECK(numeric.error().category_ == ErrorCategory::HTTP);
+  CHECK(numeric.error().http_status_ == 500);
+  const auto text = failed(http::status::too_many_requests, R"({"return_code":"1700","return_msg":"m"})");
+  REQUIRE_FALSE(text);
+  CHECK(text.error().broker_code_ == "1700");
+  CHECK(text.error().category_ == ErrorCategory::RATE_LIMIT);
+
+  // A code after a long message is past the excerpt the message keeps, and still read.
+  const std::string long_message(900, 'x');
+  const auto late = failed(
+    http::status::bad_gateway, R"({"return_msg":")" + long_message + R"(","return_code":8005})"
+  );
+  REQUIRE_FALSE(late);
+  CHECK(late.error().broker_code_ == "8005");
+  CHECK(late.error().message_.find("8005") == std::string::npos);
+
+  // A body that is not an object carrying a code leaves the code empty.
+  for (const char* body : {"<html>bad gateway</html>", R"({"return_msg":"m"})", R"({"return_code":[1]})", R"([1])"}) {
+    CAPTURE(body);
+    const auto none = failed(http::status::bad_gateway, body);
+    REQUIRE_FALSE(none);
+    CHECK(none.error().broker_code_.empty());
+    CHECK(none.error().category_ == ErrorCategory::HTTP);
+  }
+}
+
 TEST_CASE("every 감리구분 phrase Kiwoom publishes reads as listed", "[kiwoom][reference]") {
   const auto status = [](const std::string& audit) {
     auto result = kiwoom::KiwoomClientTestAccess::instrument(
