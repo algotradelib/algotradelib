@@ -42,14 +42,18 @@ public:
     std::signal(SIGINT, &SignalStop::handle);
     std::signal(SIGTERM, &SignalStop::handle);
     // Ignored: SIGHUP's default disposition would terminate the process.
+	#ifdef SIGHUP
     std::signal(SIGHUP, SIG_IGN);
+	#endif
   }
 
   /** @brief Restores the default disposition of `SIGINT`, `SIGTERM` and `SIGHUP`, and forgets the source. */
   static void uninstall() noexcept {
     std::signal(SIGINT, SIG_DFL);
     std::signal(SIGTERM, SIG_DFL);
+	#ifdef SIGHUP
     std::signal(SIGHUP, SIG_DFL);
+	#endif
     slot().store(nullptr, std::memory_order_release);
   }
 

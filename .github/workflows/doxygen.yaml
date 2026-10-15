@@ -16,6 +16,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: ssciwr/doxygen-install@v2
         with:
@@ -36,6 +38,7 @@ jobs:
           token: ${{ secrets.ALGOTRADELIB_PAGE_PAT }}
           repository-name: algotradelib/algotradelib.github.io
           folder: doxygen/docs/html
+          branch: main
           target-folder: ${{ github.ref_name == 'develop' && 'docs/dev' || 'docs' }}
           clean: true
           clean-exclude: dev

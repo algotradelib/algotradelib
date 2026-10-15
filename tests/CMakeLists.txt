@@ -133,8 +133,9 @@ foreach(source IN LISTS ATL_COMPILE_FAIL_SOURCES)
             COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target compile-fail-${probe}
                     --config "$<CONFIG>"
         )
+        # GCC quotes names with ‘’ in a UTF-8 locale; the patterns are written with ASCII quotes.
         set_tests_properties(${probe} PROPERTIES
-            PASS_REGULAR_EXPRESSION "${expect}" TIMEOUT 300 LABELS compile-fail)
+            PASS_REGULAR_EXPRESSION "${expect}" TIMEOUT 300 LABELS compile-fail ENVIRONMENT "LC_ALL=C")
     endforeach()
 endforeach()
 
