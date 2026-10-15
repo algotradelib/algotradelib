@@ -338,9 +338,12 @@ Exit trade(
     return Exit::JOURNAL_REFUSED;
   }
 
+  // One clock for the loop and the journal: lines are stamped, and recovery's sweep asks the broker
+  // about, the times the loop runs at, which are not the wall clock's in a paper run or a test.
+  runner::ClockReference<Clock> shared_clock(clock);
   auto bound = live::bind_journaled(
     session, journal, std::move(strategy_instance), settings.limits_, live::default_series_capacity,
-    settings.default_route_
+    settings.default_route_, shared_clock
   );
 
   const auto recovery = runner::recover_runner(bound, journal);
@@ -384,8 +387,8 @@ Exit trade(
   source.set_journal(journal);
   source.set_bar_query(settings.bar_interval_, settings.bar_count_);
 
-  runner::PollingLoop<decltype(bound), decltype(source), Clock> loop(
-    bound, source, settings.schedule_, std::move(clock)
+  runner::PollingLoop<decltype(bound), decltype(source), runner::ClockReference<Clock>> loop(
+    bound, source, settings.schedule_, shared_clock
   );
   configure(loop, settings);
 

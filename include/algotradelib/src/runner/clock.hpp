@@ -48,6 +48,46 @@ public:
 };
 
 /**
+ * @brief A clock that reads another one, so that two holders (a loop and its journal) read one time.
+ *
+ * Clocks are taken by value, and a copy of a `ManualClock` does not follow the original: a journal
+ * given one copy and a loop given another would stamp lines at the starting time while the loop
+ * moves on. Give both a `ClockReference` to the same clock instead.
+ *
+ * @tparam Clock The clock read; it must outlive every copy of the reference.
+ */
+template <typename Clock>
+class ClockReference {
+public:
+  /**
+   * @brief Refers to a clock.
+   * @param clock The clock; borrowed, and must outlive every copy of this reference.
+   */
+  explicit ClockReference(Clock& clock) noexcept : clock_(&clock) {}
+
+  /**
+   * @brief Returns the referenced clock's wall-clock time.
+   * @return Its `now()`.
+   */
+  std::chrono::system_clock::time_point now() const { return clock_->now(); }
+
+  /**
+   * @brief Returns the referenced clock's monotonic reading.
+   * @return Its `monotonic_now()`.
+   */
+  std::chrono::steady_clock::time_point monotonic_now() const { return clock_->monotonic_now(); }
+
+  /**
+   * @brief Waits on the referenced clock.
+   * @param duration How long.
+   */
+  void wait_for(std::chrono::nanoseconds duration) { clock_->wait_for(duration); }
+
+private:
+  Clock* clock_;
+};
+
+/**
  * @brief A clock for tests: `wait_for` advances it instead of sleeping.
  *
  * A loop under test runs instantly while seeing whatever elapsed time the test chooses. `waits()`

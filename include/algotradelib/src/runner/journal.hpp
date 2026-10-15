@@ -553,9 +553,9 @@ public:
    * @brief Sets the prefix of line ids.
    *
    * Ids are the prefix, a hyphen and a counter starting at one (`<prefix>-1`), and recovery pairs lines by id, so the prefix
-   * must differ between every executor run that shares a journal. The default is the construction
-   * time in microseconds, which is distinct only if no two executors on the journal are made at the
-   * same instant.
+   * must differ between every executor run that shares a journal. The default is the wall-clock
+   * construction time in microseconds (not the injected clock's), which is distinct only if no two
+   * executors on the journal are made at the same instant.
    *
    * @param prefix The prefix.
    */
@@ -797,9 +797,11 @@ private:
   // Returns a line id unique within this process and, by its prefix, across restarts.
   std::string next_id() { return prefix_ + '-' + std::to_string(++sequence_); }
 
-  // Returns a prefix derived from the moment of construction.
+  // Returns a prefix derived from the moment of construction, on the wall clock rather than `clock_`:
+  // the prefix tells process runs apart, and an injected clock (a test's, a replay's) may start two
+  // runs at the same instant.
   std::string default_prefix() const {
-    const auto since = clock_.now().time_since_epoch();
+    const auto since = std::chrono::system_clock::now().time_since_epoch();
     const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(since).count();
     return std::to_string(static_cast<std::int64_t>(micros));
   }

@@ -4578,6 +4578,39 @@ live_program::Settings program_settings(const TempPath& journal, const TempPath&
 
 } // namespace
 
+TEST_CASE("the live program stamps its journal with the loop's clock", "[live][program]") {
+  // A paper run or a test runs the loop on a clock of its own. Its journal must say the same times, or
+  // recovery's history sweep asks the broker about today's real dates instead of the run's. The clock is
+  // a bare `ManualClock`, taken by value: a copy of it would not follow the loop.
+  const TempPath journal("atl-test-program-journal-clock.jsonl");
+  const TempPath control("atl-test-program-journal-clock.stop");
+  ProgramSession session;
+  HoldingsSnapshot holdings;
+  holdings.received_at_ = program_start();
+  session.set_holdings(holdings);
+  BandSession market;
+  market.set_reference(samsung_reference());
+  market.set_bars(two_bars("70000", "71000"));
+  runner::StopSource stop;
+  std::ostringstream out;
+
+  const auto exit = live_program::trade(
+    session, market, one_share(), program_settings(journal, control), stop, out,
+    runner::ManualClock{program_start()}
+  );
+
+  INFO(out.str());
+  REQUIRE(exit == live_program::Exit::CLEAN);
+  REQUIRE(session.placed().size() == 1);
+  const auto replay = runner::read_journal_file(journal.str());
+  REQUIRE(replay.entries_.size() >= 2);  // the order's PENDING line and its answer
+  for (const auto& entry : replay.entries_) {
+    CAPTURE(entry.id_);
+    CHECK(entry.recorded_at_ >= program_start());
+    CHECK(entry.recorded_at_ < program_start() + std::chrono::hours(1));
+  }
+}
+
 TEST_CASE("the live program reads reference data and bars from its market-data session", "[live][program]") {
   // The trading session has no reference data and no bars, as a KIS demo host has no reference data:
   // the run gets past both only by reading them from the second session, and still places through
