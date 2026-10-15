@@ -1531,7 +1531,7 @@ private:
     if (!result) {
       failure = std::move(result.error());
     } else if (result.value().result_int() < 200 || result.value().result_int() >= 300) {
-      failure = broker_detail::http_error(result.value());
+      failure = kiwoom_http_error(result.value());
       failure->category_ = ErrorCategory::AUTHENTICATION;
     } else {
       BrokerError parse_error;
@@ -1572,6 +1572,31 @@ private:
     }
   }
 
+  // Returns the error for a non-2xx reply: `broker_detail::http_error`, with Kiwoom's `return_code` read
+  // from the whole body into `broker_code_` when the body is an object that carries one (the message
+  // keeps only the body's start, so a code past it would otherwise be lost). The category stays what
+  // the HTTP status says, unlike a 2xx reply's (`kiwoom_declared_error`): on an order, a rate-limit
+  // category would turn an unknown 5xx outcome into a refusal (`kis_http_error` keeps orders out of its
+  // mapping for that reason), and no Kiwoom non-2xx reply has been observed.
+  static BrokerError kiwoom_http_error(const network::HttpResponse& response) {
+    auto error = broker_detail::http_error(response);
+    boost::system::error_code ec;
+    const auto document = json::parse(response.body(), ec);
+    if (ec || !document.is_object()) {
+      return error;
+    }
+    if (const auto* code = document.as_object().if_contains("return_code")) {
+      if (code->is_int64()) {
+        error.broker_code_ = std::to_string(code->as_int64());
+      } else if (code->is_uint64()) {
+        error.broker_code_ = std::to_string(code->as_uint64());
+      } else if (code->is_string()) {
+        error.broker_code_ = std::string(code->as_string());
+      }
+    }
+    return error;
+  }
+
   // Returns a response's declared payload, or the error ending it.
   //
   // Applies the HTTP status check, the JSON parse, and Kiwoom's own `return_code` before a parser
@@ -1586,7 +1611,7 @@ private:
       return Result<json::object>(std::move(response.error()));
     }
     if (response.value().result_int() < 200 || response.value().result_int() >= 300) {
-      return Result<json::object>(broker_detail::http_error(response.value()));
+      return Result<json::object>(kiwoom_http_error(response.value()));
     }
     BrokerError parse_error;
     auto parsed = broker_detail::parse_object(response.value(), parse_error);
