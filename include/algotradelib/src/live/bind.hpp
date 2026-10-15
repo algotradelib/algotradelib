@@ -94,13 +94,14 @@ BoundRunner<Strategy, Session> bind(
  * @tparam Strategy The strategy type.
  * @tparam Session The broker session type.
  * @tparam Journal The journal type (such as `runner::FileJournal`).
+ * @tparam Clock The clock journal lines are stamped with.
  */
-template <typename Strategy, typename Session, typename Journal>
+template <typename Strategy, typename Session, typename Journal, typename Clock = runner::SteadyClock>
 using JournaledRunner = runner::Runner<
   Strategy,
   typename Session::Caps,
   typename Session::BrokerTag,
-  runner::JournalingExecutor<SessionExecutor<Session>, Journal>
+  runner::JournalingExecutor<SessionExecutor<Session>, Journal, Clock>
 >;
 
 /**
@@ -119,6 +120,7 @@ using JournaledRunner = runner::Runner<
  * @tparam Strategy The strategy type.
  * @tparam Session The broker session type.
  * @tparam Journal The journal type.
+ * @tparam Clock The clock journal lines are stamped with.
  * @param session The session; borrowed, and must outlive the runner.
  * @param journal The journal; borrowed, and must outlive the runner.
  * @param strategy The strategy.
@@ -126,23 +128,27 @@ using JournaledRunner = runner::Runner<
  * @param series_capacity How many trailing bars each cached series keeps.
  * @param default_route As for `bind`; the journal records the route the order is sent with
  *   (`SessionExecutor::effective_route`, such as KRX for an unspecified KIS order).
+ * @param clock The clock journal lines are stamped with, and recovery's history sweep later asks the
+ *   broker about. Give the loop's clock when it is not the wall clock (a paper broker over stored
+ *   history, a test): through a `runner::ClockReference` unless copies of it read the same time.
  * @return The runner.
  */
-template <typename Strategy, typename Session, typename Journal>
-JournaledRunner<Strategy, Session, Journal> bind_journaled(
+template <typename Strategy, typename Session, typename Journal, typename Clock = runner::SteadyClock>
+JournaledRunner<Strategy, Session, Journal, Clock> bind_journaled(
   Session& session,
   Journal& journal,
   Strategy strategy,
   strategy::RiskLimits limits = {},
   std::size_t series_capacity = default_series_capacity,
-  Venue default_route = Venue::UNSPECIFIED
+  Venue default_route = Venue::UNSPECIFIED,
+  Clock clock = {}
 ) {
-  JournaledRunner<Strategy, Session, Journal> bound(
+  JournaledRunner<Strategy, Session, Journal, Clock> bound(
     std::move(strategy),
     std::move(limits),
     series_capacity,
-    runner::JournalingExecutor<SessionExecutor<Session>, Journal>(
-      SessionExecutor<Session>(session, default_route), journal
+    runner::JournalingExecutor<SessionExecutor<Session>, Journal, Clock>(
+      SessionExecutor<Session>(session, default_route), journal, std::move(clock)
     )
   );
   // As in `bind`: the requirement travels with the executor, not with this factory.

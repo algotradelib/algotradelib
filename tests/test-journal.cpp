@@ -307,6 +307,30 @@ TEST_CASE("an orphaned indeterminate line is still owed", "[journal]") {
   REQUIRE(open.front().entry_.instrument_ == hynix());
 }
 
+TEST_CASE("a journal on a clock reference stamps the time its clock has moved to", "[journal]") {
+  // A loop and its journal given one `ManualClock` by value would each hold a copy; a reference makes
+  // the journal read the clock the loop advances.
+  runner::ManualClock clock{std::chrono::system_clock::time_point{} + std::chrono::hours(500000)};
+  MemoryJournal journal;
+  runner::JournalingExecutor<ObservingExecutor<runner::DryTag>, MemoryJournal, runner::ClockReference<runner::ManualClock>>
+    executor{ObservingExecutor<runner::DryTag>{&journal}, journal, runner::ClockReference<runner::ManualClock>(clock)};
+  executor.set_id_prefix("run");
+
+  clock.wait_for(std::chrono::minutes(5));
+  REQUIRE(executor.place(buy_ten()) == SendOutcome::ACCEPTED);
+  const auto replay = journal.replay();
+  REQUIRE(replay.entries_.size() == 2);
+  for (const auto& entry : replay.entries_) {
+    CHECK(entry.recorded_at_ == clock.now());
+  }
+  // The reference forwards every call a loop makes.
+  runner::ClockReference<runner::ManualClock> shared(clock);
+  shared.wait_for(std::chrono::seconds(1));
+  CHECK(clock.waits() == 2);
+  CHECK(shared.now() == clock.now());
+  CHECK(shared.monotonic_now() == clock.monotonic_now());
+}
+
 TEST_CASE("a placement is journaled before it is attempted", "[journal]") {
   MemoryJournal journal;
   Journaling executor{ObservingExecutor<runner::DryTag>{&journal}, journal, runner::ManualClock{}};
