@@ -12,6 +12,7 @@
 #include <boost/json.hpp>
 
 #include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -41,13 +42,30 @@ inline std::optional<std::int64_t> integer_header(
   return number;
 }
 
+// The most of a reply body an error message carries. A broker's error envelope (a code, a message, a
+// request id) fits easily; whatever else arrives is not copied whole into logs and journals.
+inline constexpr std::size_t reply_excerpt_limit = 512;
+
+// Returns `body` whole if it fits in `limit` bytes; otherwise its first `limit` bytes, cut back so no
+// UTF-8 character is split (KIS and Kiwoom write Korean), and how many bytes were left out.
+inline std::string reply_excerpt(std::string_view body, std::size_t limit = reply_excerpt_limit) {
+  if (body.size() <= limit) {
+    return std::string(body);
+  }
+  std::size_t cut = limit;
+  while (cut > 0 && (static_cast<unsigned char>(body[cut]) & 0xC0U) == 0x80U) {
+    --cut;
+  }
+  return std::string(body.substr(0, cut)) + "... (" + std::to_string(body.size() - cut) + " more bytes)";
+}
+
 inline BrokerError http_error(const network::HttpResponse& response) {
   BrokerError error;
   error.http_status_ = response.result_int();
   error.category_ = response.result() == http::status::too_many_requests ?
     ErrorCategory::RATE_LIMIT :
     ErrorCategory::HTTP;
-  error.message_ = response.body();
+  error.message_ = reply_excerpt(response.body());
   return error;
 }
 
