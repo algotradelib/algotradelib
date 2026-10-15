@@ -851,11 +851,24 @@ TEST_CASE("equal values that are not binary fractions are still a constant windo
 
 TEST_CASE("a dispersion whose sample variance underflows is not a constant window") {
   // The squared deviations sum to a positive subnormal, and dividing it by `count - 1` rounds to zero;
-  // the values differ, so beta of the series with itself is still 1. (Correlation is not undefined
-  // either; its denominator multiplies two such sums and underflows on its own, as it always has.)
+  // the values differ, so beta and correlation of the series with itself are still 1.
   const math::Vector tiny = series({-2e-162, 0.0, 0.0, 0.0, 2e-162});
   CHECK(analytics::beta(tiny, tiny, 5)[4] == 1.0);
-  CHECK_FALSE(math::is_undefined(analytics::rolling_corr(tiny, tiny, 5)[4]));
+  CHECK(analytics::rolling_corr(tiny, tiny, 5)[4] == Catch::Approx(1.0));
+}
+
+TEST_CASE("a correlation's denominator neither underflows nor overflows where its parts do not", "[analytics]") {
+  // Each squared sum is finite; their product is not (about 1e600 here). The root of each, multiplied,
+  // is. (At the other end, subnormal dispersions lose precision in the sums themselves; only the
+  // underflow of the product is avoided, as in the self-correlation above.)
+  const math::Vector large = series({-2e150, 1e150, 0.0, 2e150});
+  const math::Vector large_other = series({-1e150, 3e150, 0.0, 2e150});
+  const math::Vector plain = series({-2.0, 1.0, 0.0, 2.0});
+  const math::Vector plain_other = series({-1.0, 3.0, 0.0, 2.0});
+  const auto expected = analytics::rolling_corr(plain, plain_other, 4)[3];
+  REQUIRE(observed(expected));
+  CHECK(analytics::rolling_corr(large, large_other, 4)[3] == Catch::Approx(expected));
+  CHECK(analytics::rolling_corr(large, large, 4)[3] == Catch::Approx(1.0));
 }
 
 TEST_CASE("a window of values one ulp apart keeps its dispersion") {

@@ -537,7 +537,9 @@ inline math::Vector rolling_corr(
       result[row] = math::undefined();
       continue;
     }
-    result[row] = left_centred.dot(right_centred) / std::sqrt(squared_left * squared_right);
+    // Two roots rather than the root of a product: the product of two finite squared sums can underflow
+    // to zero (tiny dispersions) or overflow (large ones) where each root is fine.
+    result[row] = left_centred.dot(right_centred) / (std::sqrt(squared_left) * std::sqrt(squared_right));
   }
   return result;
 }
