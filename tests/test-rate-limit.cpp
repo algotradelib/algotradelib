@@ -247,14 +247,16 @@ TEST_CASE(
   test::trustLocalhostCertificate(context);
 
   network::HttpClientOptions options;
-  options.timeout_ = std::chrono::seconds(1);
-  // One request per five seconds, so the second one cannot start inside a
-  // one-second deadline however long it waits.
+  // Long enough to connect wherever "localhost" is tried first: Windows tries `::1`, where the server
+  // does not listen, and takes about two seconds to give up on it.
+  options.timeout_ = std::chrono::seconds(10);
+  // One request per minute, so the second one cannot start inside a
+  // ten-second deadline however long it waits.
   options.rate_limit_ = RateLimitBudget{1, 1, 0};
   auto client = std::make_shared<network::AsyncHttpClient>(
     ioc.get_executor(), context, "localhost", server.port(), options
   );
-  client->rate_limits()->shrink(1, 1, std::chrono::seconds(5));
+  client->rate_limits()->shrink(1, 1, std::chrono::seconds(60));
 
   std::vector<BrokerError> errors;
   int succeeded = 0;
