@@ -293,9 +293,10 @@ needs (`ReplayConfig::currency_` is the currency of the *starting cash*, not of 
 replay that opens with won and trades a dollar instrument runs its dollar cash negative from zero,
 because funding it would need a conversion this library does not do. The report still curves one
 currency, so read it as one currency's result rather than the account's.
-`ReportCaveats::other_currency_executions_` counts the executions the curve leaves out; when it equals
-`executions_`, nothing traded is in the curve, and its figures are missing rather than a flat result:
-set `currency_` to the instruments' currency.
+`ReportCaveats::other_currency_executions_` counts the executions the curve leaves out; when it is
+nonzero and equals `executions_`, nothing traded is in the curve, so the total return, Sharpe and
+annualized Sharpe, Sortino and maximum drawdown are missing rather than a flat result (the opening and
+closing equity stay the curve's): set `currency_` to the instruments' currency.
 
 ## Costs, which are the most common way a backtest lies
 

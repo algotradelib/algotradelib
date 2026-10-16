@@ -182,8 +182,9 @@ struct ReportCaveats {
    * @brief Executions in a currency other than the equity curve's (`ReplayConfig::currency_`).
    *
    * The curve and every figure measured from it leave these out, and so does the overdraft check above.
-   * When every execution is one of them, the figures are `math::missing()`: the curve then holds only the
-   * opening cash, which would read as a flat result.
+   * When this is nonzero and every execution is one of them, `Report::total_return_`, `sharpe_`,
+   * `annualized_sharpe_`, `sortino_` and `max_drawdown_` are `math::missing()`: the curve then holds only the
+   * opening cash, which would read as a flat result. The opening and closing equity stay the curve's.
    */
   std::size_t other_currency_executions_{0};
   /** @brief When the lowest cash was reached. */
