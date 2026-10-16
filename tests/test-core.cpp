@@ -3567,6 +3567,65 @@ TEST_CASE(
     REQUIRE(order.shape_code_.view() == "CLS");
   }
 
+  SECTION("an order amount with more digits than Decimal64 holds is rounded, not refused") {
+    // Constructed. A real Toss order list carried an `orderAmount` with twenty fractional digits,
+    // and refusing that one field failed the whole list.
+    const auto amount_of = [](std::string_view amount) {
+      return tossinvest::TossClientTestAccess::parse_orders(
+        json_response(
+          std::string(R"({"result":{"orders":[)"
+          R"({"orderId":"c","symbol":"AAPL","side":"BUY","orderType":"MARKET",)"
+          R"("timeInForce":"DAY","status":"FILLED","price":null,"quantity":"0",)"
+          R"("orderAmount":")") + std::string(amount) +
+          R"(","currency":"USD","orderedAt":"2026-03-29T10:00:00+09:00",)"
+          R"("canceledAt":null,"execution":{"filledQuantity":"0","averageFilledPrice":null,)"
+          R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
+          R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
+        )
+      );
+    };
+    const auto rounded = [&](std::string_view amount) {
+      auto result = amount_of(amount);
+      REQUIRE(result);
+      return *result.value().orders_.front().order_amount_;
+    };
+    CHECK(rounded("4.12345678901234567891") == Decimal64::parse("4.12345678901234568"));
+    CHECK(rounded("4.12345678901234567850") == Decimal64::parse("4.12345678901234568"));
+    // Ties go to even.
+    CHECK(rounded("0.12345678901234567850") == Decimal64::parse("0.123456789012345678"));
+    CHECK(rounded("0.12345678901234567750") == Decimal64::parse("0.123456789012345678"));
+    CHECK(rounded("-0.12345678901234567890") == Decimal64::parse("-0.123456789012345679"));
+    CHECK(rounded("9.99999999999999999999") == Decimal64::parse("10"));
+    // The digits count from the first nonzero one: an amount below one keeps 18 of them.
+    CHECK(rounded("0.00012345678901234567891") == Decimal64::parse("0.000123456789012345679"));
+    CHECK(
+      rounded("0.00000000000000000012345678901234567891") ==
+      Decimal64::parse("0.000000000000000000123456789012345679")
+    );
+    // Only the fraction is rounded: an integer part that does not fit is still refused.
+    CHECK_FALSE(amount_of("12345678901234567890.5"));
+    CHECK_FALSE(amount_of("123456789012345678901"));
+    CHECK_FALSE(amount_of("1.2345678901234567890x"));
+    // A nonzero amount that cannot keep its digits within Decimal64's scale is refused, not made zero.
+    CHECK_FALSE(amount_of("0." + std::string(255, '0') + "1"));
+  }
+
+  SECTION("an order amount sent as a number is refused") {
+    auto result = tossinvest::TossClientTestAccess::parse_orders(
+      json_response(
+        R"({"result":{"orders":[)"
+        R"({"orderId":"c","symbol":"AAPL","side":"BUY","orderType":"MARKET",)"
+        R"("timeInForce":"DAY","status":"FILLED","price":null,"quantity":"0",)"
+        R"("orderAmount":100.5,"currency":"USD","orderedAt":"2026-03-29T10:00:00+09:00",)"
+        R"("canceledAt":null,"execution":{"filledQuantity":"0","averageFilledPrice":null,)"
+        R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
+        R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
+      )
+    );
+    REQUIRE_FALSE(result);
+    CHECK(result.error().broker_code_ == "invalid_orders_response");
+  }
+
   SECTION("a validity code Toss adds later is unknown in both facts, not assumed to be DAY") {
     auto result = tossinvest::TossClientTestAccess::parse_orders(
       json_response(
@@ -5016,6 +5075,56 @@ TEST_CASE("both brokers' calendars normalize to the same trading days") {
     REQUIRE(result);
     REQUIRE(result.value().is_trading_day(Date{2026, 3, 21}) == false);
     REQUIRE(result.value().is_trading_day(Date{2026, 3, 20}) == true);
+  }
+
+  SECTION("Toss's US calendar marks the open day by its regular session") {
+    // Constructed from Toss's published example. The US reply has no `integrated` field, and
+    // reading it reported every US trading day as closed.
+    auto open = tossinvest::TossClientTestAccess::parse_calendar(
+      Country::US,
+      json_response(
+        R"({"result":{"previousBusinessDay":{"date":"2026-03-24"},)"
+        R"("today":{"date":"2026-03-25","dayMarket":{"startTime":"2026-03-25T09:00:00+09:00"},)"
+        R"("preMarket":{"startTime":"2026-03-25T17:00:00+09:00"},)"
+        R"("regularMarket":{"startTime":"2026-03-25T22:30:00+09:00"},)"
+        R"("afterMarket":{"startTime":"2026-03-26T05:00:00+09:00"}},)"
+        R"("nextBusinessDay":{"date":"2026-03-26"}}})"
+      )
+    );
+    REQUIRE(open);
+    CHECK(open.value().is_trading_day(Date{2026, 3, 25}) == true);
+
+    auto holiday = tossinvest::TossClientTestAccess::parse_calendar(
+      Country::US,
+      json_response(
+        R"({"result":{"previousBusinessDay":{"date":"2026-07-02"},)"
+        R"("today":{"date":"2026-07-03","dayMarket":null,"preMarket":null,)"
+        R"("regularMarket":null,"afterMarket":null},)"
+        R"("nextBusinessDay":{"date":"2026-07-06"}}})"
+      )
+    );
+    REQUIRE(holiday);
+    CHECK(holiday.value().is_trading_day(Date{2026, 7, 3}) == false);
+    CHECK(holiday.value().is_trading_day(Date{2026, 7, 6}) == true);
+  }
+
+  SECTION("a Toss today without its market's hours field is refused, not read as closed") {
+    auto us_as_kr = tossinvest::TossClientTestAccess::parse_calendar(
+      Country::US,
+      json_response(
+        R"({"result":{"today":{"date":"2026-03-25","integrated":{"open":"09:00"}}}})"
+      )
+    );
+    REQUIRE_FALSE(us_as_kr);
+    CHECK(us_as_kr.error().broker_code_ == "invalid_calendar_response");
+
+    auto kr_as_us = tossinvest::TossClientTestAccess::parse_calendar(
+      Country::KR,
+      json_response(
+        R"({"result":{"today":{"date":"2026-03-25","regularMarket":{"startTime":"x"}}}})"
+      )
+    );
+    REQUIRE_FALSE(kr_as_us);
   }
 
   SECTION("a Toss day whose date cannot be read produces no row and is counted") {

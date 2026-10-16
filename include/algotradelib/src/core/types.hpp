@@ -1851,7 +1851,9 @@ struct OrderSnapshot {
   /**
    * @brief The money an amount-based order committed (Toss US market orders), if any.
    *
-   * The library does not place such orders, but reports ones placed elsewhere.
+   * The library does not place such orders, but reports ones placed elsewhere. Toss can state the
+   * amount with more digits than `Decimal64` holds; it is then rounded half to even to 18 significant
+   * digits.
    */
   std::optional<Decimal64> order_amount_;
   /** @brief The currency of the row's prices and amounts. */

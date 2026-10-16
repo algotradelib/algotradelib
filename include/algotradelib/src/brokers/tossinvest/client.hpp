@@ -240,7 +240,9 @@ public:
    * @tparam CompletionToken An Asio completion token.
    * @param country The market.
    * @param from The date (empty: Toss's today).
-   * @param token The completion token, called with `Result<TradingCalendar>`.
+   * @param token The completion token, called with `Result<TradingCalendar>`: a reply whose day has
+   *   no hours field for that market (`regularMarket` for US, `integrated` for KR) is refused with
+   *   `invalid_calendar_response` rather than read as closed.
    * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>
@@ -1234,11 +1236,15 @@ private:
 
   // Normalizes Toss's calendar into the three days it reports.
   //
-  // A day is a trading day when Toss reports trading hours for it: it documents the
-  // hours as null "둘 다 휴장이면", when both KRX and NXT are closed. So the presence of
-  // the hours *is* the answer, and the hours themselves are not normalized — only
-  // Toss publishes them. They are dropped here, not exposed (the library does not offer
-  // session hours yet; see `BrokerCaps::has_calendar_sessions`).
+  // A day is a trading day when Toss reports trading hours for it. The two markets name the hours
+  // differently: KR has one `integrated` field, null "둘 다 휴장이면", when both KRX and NXT are
+  // closed; US has four sessions, all null on a holiday, of which `regularMarket` is the exchange's
+  // own. So the presence of those hours *is* the answer, and the hours themselves are not
+  // normalized — only Toss publishes them. They are dropped here, not exposed (the library does not
+  // offer session hours yet; see `BrokerCaps::has_calendar_sessions`).
+  //
+  // A `today` without that field at all is refused, not read as closed: reading the KR field on a
+  // US reply reported every US trading day as closed.
   //
   // The two days either side are reported as business days, which is why they are
   // recorded as open without consulting their hours: Toss has already answered the
@@ -1258,9 +1264,10 @@ private:
       const auto& object = payload.value().as_object();
       TradingCalendar calendar;
       calendar.country_ = country;
-      append_calendar_day(object, "previousBusinessDay", true, calendar);
-      append_calendar_day(object, "today", false, calendar);
-      append_calendar_day(object, "nextBusinessDay", true, calendar);
+      const std::string_view hours = country == Country::US ? "regularMarket" : "integrated";
+      append_calendar_day(object, "previousBusinessDay", hours, true, calendar);
+      append_calendar_day(object, "today", hours, false, calendar);
+      append_calendar_day(object, "nextBusinessDay", hours, true, calendar);
       std::sort(
         calendar.days_.begin(),
         calendar.days_.end(),
@@ -1277,6 +1284,7 @@ private:
   static void append_calendar_day(
     const json::object& object,
     std::string_view key,
+    std::string_view hours_key,
     bool business_day,
     TradingCalendar& calendar
   ) {
@@ -1298,8 +1306,11 @@ private:
     if (business_day) {
       day.open_ = true;
     } else {
-      const auto hours = row.if_contains("integrated");
-      day.open_ = hours && !hours->is_null();
+      const auto hours = row.if_contains(hours_key);
+      if (!hours) {
+        throw std::runtime_error("calendar day has no " + std::string(hours_key) + " field");
+      }
+      day.open_ = !hours->is_null();
     }
     calendar.days_.push_back(day);
   }
@@ -3492,7 +3503,7 @@ private:
     // field off one placed through another channel: without it the snapshot
     // says an order of some quantity and cannot say what was actually
     // committed.
-    order.order_amount_ = nullable_decimal(row, "orderAmount");
+    order.order_amount_ = nullable_rounded_decimal(row, "orderAmount");
     order.currency_ = currency;
     order.ordered_at_ = optional_timestamp(row, "orderedAt");
     order.canceled_at_ = optional_timestamp(row, "canceledAt");
@@ -3602,6 +3613,90 @@ private:
       throw std::runtime_error("invalid decimal field: " + std::string(key));
     }
     return Decimal64::parse(std::string_view(value->as_string()));
+  }
+
+  // Reads a nullable decimal string field that Toss computes, rounding a fraction too long for
+  // `Decimal64`.
+  //
+  // Toss has sent `orderAmount` with twenty fractional digits, which `Decimal64::parse` refuses, and
+  // the refusal failed every order list holding such an order. The fraction is rounded half to even
+  // to the 18 significant digits a `Decimal64` always holds. The integer part is never rounded: a value
+  // whose integer part does not fit is still refused.
+  static std::optional<Decimal64> nullable_rounded_decimal(
+    const json::object& object,
+    std::string_view key
+  ) {
+    const auto value = object.if_contains(key);
+    if (!value || value->is_null()) {
+      return std::nullopt;
+    }
+    if (!value->is_string()) {
+      throw std::runtime_error("invalid decimal field: " + std::string(key));
+    }
+    return rounded_decimal(std::string_view(value->as_string()));
+  }
+
+  // Parses a decimal exactly, or, when only its fraction is too long to fit, to the nearest value
+  // with 18 significant digits (ties to even).
+  //
+  // The digits are counted from the first nonzero one, so the leading zeros of an amount below one
+  // cost no precision. A value that cannot keep 18 significant digits within `Decimal64`'s scale, or
+  // whose integer part does not fit, is refused rather than rounded towards zero.
+  static Decimal64 rounded_decimal(std::string_view text) {
+    try {
+      return Decimal64::parse(text);
+    } catch (const std::out_of_range&) {
+      const auto sign = !text.empty() && (text.front() == '-' || text.front() == '+') ? 1U : 0U;
+      const auto point = text.find('.');
+      if (point == std::string_view::npos) {
+        throw;
+      }
+      auto whole = text.substr(sign, point - sign);
+      const auto fraction = text.substr(point + 1);
+      for (const auto part : {whole, fraction}) {
+        if (part.find_first_not_of("0123456789") != std::string_view::npos) {
+          throw std::invalid_argument("decimal value contains an invalid character");
+        }
+      }
+      const auto significant = whole.find_first_not_of('0');
+      whole = significant == std::string_view::npos ? std::string_view() : whole.substr(significant);
+      constexpr std::size_t digits = 18;
+      if (whole.size() > digits) {
+        throw;
+      }
+      std::size_t kept = 0;
+      if (!whole.empty()) {
+        kept = std::min(fraction.size(), digits - whole.size());
+      } else {
+        const auto leading = fraction.find_first_not_of('0');
+        if (leading == std::string_view::npos) {
+          return Decimal64();
+        }
+        kept = std::min(fraction.size(), leading + digits);
+      }
+      if (kept > std::numeric_limits<std::uint8_t>::max()) {
+        throw std::out_of_range("decimal scale exceeds Decimal64 range");
+      }
+      std::uint64_t magnitude = 0;
+      for (const auto ch : whole) {
+        magnitude = magnitude * 10U + static_cast<std::uint64_t>(ch - '0');
+      }
+      for (const auto ch : fraction.substr(0, kept)) {
+        magnitude = magnitude * 10U + static_cast<std::uint64_t>(ch - '0');
+      }
+      const auto dropped = fraction.substr(kept);
+      if (!dropped.empty()) {
+        const bool beyond_half = dropped.find_first_not_of('0', 1) != std::string_view::npos;
+        if (dropped.front() > '5' || (dropped.front() == '5' && (beyond_half || magnitude % 2U == 1U))) {
+          ++magnitude;
+        }
+      }
+      const auto coefficient = static_cast<std::int64_t>(magnitude);
+      const Decimal64 rounded(
+        sign == 1U && text.front() == '-' ? -coefficient : coefficient, static_cast<std::uint8_t>(kept)
+      );
+      return Decimal64::parse(rounded.str());
+    }
   }
 
   // Reads a nullable decimal string field as an amount in `currency`.
