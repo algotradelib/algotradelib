@@ -5018,6 +5018,56 @@ TEST_CASE("both brokers' calendars normalize to the same trading days") {
     REQUIRE(result.value().is_trading_day(Date{2026, 3, 20}) == true);
   }
 
+  SECTION("Toss's US calendar marks the open day by its regular session") {
+    // Constructed from Toss's published example. The US reply has no `integrated` field, and
+    // reading it reported every US trading day as closed.
+    auto open = tossinvest::TossClientTestAccess::parse_calendar(
+      Country::US,
+      json_response(
+        R"({"result":{"previousBusinessDay":{"date":"2026-03-24"},)"
+        R"("today":{"date":"2026-03-25","dayMarket":{"startTime":"2026-03-25T09:00:00+09:00"},)"
+        R"("preMarket":{"startTime":"2026-03-25T17:00:00+09:00"},)"
+        R"("regularMarket":{"startTime":"2026-03-25T22:30:00+09:00"},)"
+        R"("afterMarket":{"startTime":"2026-03-26T05:00:00+09:00"}},)"
+        R"("nextBusinessDay":{"date":"2026-03-26"}}})"
+      )
+    );
+    REQUIRE(open);
+    CHECK(open.value().is_trading_day(Date{2026, 3, 25}) == true);
+
+    auto holiday = tossinvest::TossClientTestAccess::parse_calendar(
+      Country::US,
+      json_response(
+        R"({"result":{"previousBusinessDay":{"date":"2026-07-02"},)"
+        R"("today":{"date":"2026-07-03","dayMarket":null,"preMarket":null,)"
+        R"("regularMarket":null,"afterMarket":null},)"
+        R"("nextBusinessDay":{"date":"2026-07-06"}}})"
+      )
+    );
+    REQUIRE(holiday);
+    CHECK(holiday.value().is_trading_day(Date{2026, 7, 3}) == false);
+    CHECK(holiday.value().is_trading_day(Date{2026, 7, 6}) == true);
+  }
+
+  SECTION("a Toss today without its market's hours field is refused, not read as closed") {
+    auto us_as_kr = tossinvest::TossClientTestAccess::parse_calendar(
+      Country::US,
+      json_response(
+        R"({"result":{"today":{"date":"2026-03-25","integrated":{"open":"09:00"}}}})"
+      )
+    );
+    REQUIRE_FALSE(us_as_kr);
+    CHECK(us_as_kr.error().broker_code_ == "invalid_calendar_response");
+
+    auto kr_as_us = tossinvest::TossClientTestAccess::parse_calendar(
+      Country::KR,
+      json_response(
+        R"({"result":{"today":{"date":"2026-03-25","regularMarket":{"startTime":"x"}}}})"
+      )
+    );
+    REQUIRE_FALSE(kr_as_us);
+  }
+
   SECTION("a Toss day whose date cannot be read produces no row and is counted") {
     // This used to fail the whole response, which cost `today` whenever a neighbour was damaged.
     auto alone = tossinvest::TossClientTestAccess::parse_calendar(

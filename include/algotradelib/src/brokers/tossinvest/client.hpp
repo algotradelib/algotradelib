@@ -1234,11 +1234,15 @@ private:
 
   // Normalizes Toss's calendar into the three days it reports.
   //
-  // A day is a trading day when Toss reports trading hours for it: it documents the
-  // hours as null "둘 다 휴장이면", when both KRX and NXT are closed. So the presence of
-  // the hours *is* the answer, and the hours themselves are not normalized — only
-  // Toss publishes them. They are dropped here, not exposed (the library does not offer
-  // session hours yet; see `BrokerCaps::has_calendar_sessions`).
+  // A day is a trading day when Toss reports trading hours for it. The two markets name the hours
+  // differently: KR has one `integrated` field, null "둘 다 휴장이면", when both KRX and NXT are
+  // closed; US has four sessions, all null on a holiday, of which `regularMarket` is the exchange's
+  // own. So the presence of those hours *is* the answer, and the hours themselves are not
+  // normalized — only Toss publishes them. They are dropped here, not exposed (the library does not
+  // offer session hours yet; see `BrokerCaps::has_calendar_sessions`).
+  //
+  // A `today` without that field at all is refused, not read as closed: reading the KR field on a
+  // US reply reported every US trading day as closed.
   //
   // The two days either side are reported as business days, which is why they are
   // recorded as open without consulting their hours: Toss has already answered the
@@ -1258,9 +1262,10 @@ private:
       const auto& object = payload.value().as_object();
       TradingCalendar calendar;
       calendar.country_ = country;
-      append_calendar_day(object, "previousBusinessDay", true, calendar);
-      append_calendar_day(object, "today", false, calendar);
-      append_calendar_day(object, "nextBusinessDay", true, calendar);
+      const std::string_view hours = country == Country::US ? "regularMarket" : "integrated";
+      append_calendar_day(object, "previousBusinessDay", hours, true, calendar);
+      append_calendar_day(object, "today", hours, false, calendar);
+      append_calendar_day(object, "nextBusinessDay", hours, true, calendar);
       std::sort(
         calendar.days_.begin(),
         calendar.days_.end(),
@@ -1277,6 +1282,7 @@ private:
   static void append_calendar_day(
     const json::object& object,
     std::string_view key,
+    std::string_view hours_key,
     bool business_day,
     TradingCalendar& calendar
   ) {
@@ -1298,8 +1304,11 @@ private:
     if (business_day) {
       day.open_ = true;
     } else {
-      const auto hours = row.if_contains("integrated");
-      day.open_ = hours && !hours->is_null();
+      const auto hours = row.if_contains(hours_key);
+      if (!hours) {
+        throw std::runtime_error("calendar day has no " + std::string(hours_key) + " field");
+      }
+      day.open_ = !hours->is_null();
     }
     calendar.days_.push_back(day);
   }
