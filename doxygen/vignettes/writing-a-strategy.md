@@ -42,6 +42,7 @@ only `on_bar` and costs nothing for the rest.
 | --- | --- |
 | `on_start(Ctx&)` | before the first event |
 | `on_bar(Ctx&, const BarEvent&)` | a bar has **closed** |
+| `on_bars(Ctx&, const BarSlice&)` | every instrument's bar of a period has closed — instead of `on_bar`, see [below](#several-instruments) |
 | `on_quote(Ctx&, const QuoteEvent&)` | a quote was read |
 | `on_fill(Ctx&, const Fill&)` | one execution happened against an order of yours — **in a backtest only**, see below |
 | `on_order_update(Ctx&, const OrderSnapshot&)` | an order the broker is still listing changed — see below |
@@ -221,6 +222,54 @@ strategy through `runner::dispatch` gets the same check on the inner one.
 A consequence worth knowing before it bites: a strategy declared *inside* a function cannot have
 template members at all, because C++ forbids templates in local classes. Declare strategies at
 namespace scope.
+
+## Several instruments at once: `on_bars` {#several-instruments}
+
+`on_bar` receives one bar at a time, so a strategy deciding on several instruments together — a pair's
+hedge ratio, a ranking across a universe — has to hold each bar until the others of the same period
+arrive. Declare `on_bars` instead and the runner does that: it calls it **once per period end** with a
+`BarSlice` holding every instrument's bar for that period, after all of them are cached.
+
+```cpp
+struct PairSpread {
+  InstrumentId y_;
+  InstrumentId x_;
+
+  template <class Ctx>
+  void on_bars(Ctx& ctx, const BarSlice& slice) {
+    const BarEvent* y = slice.find(y_);
+    const BarEvent* x = slice.find(x_);
+    if (y == nullptr || x == nullptr) {
+      return;  // a leg has no bar this period
+    }
+    // Both series end at this period here, so a hedge ratio can be fitted on them directly.
+    const auto* ys = ctx.bars(y_, slice.interval_);
+    const auto* xs = ctx.bars(x_, slice.interval_);
+    // ...
+  }
+};
+```
+
+- **One or the other.** A strategy declares `on_bar` or `on_bars`; declaring both does not compile, so
+  neither runs in silence beside the other. The rest of the handlers are unaffected.
+- **A missing instrument is absent from the slice**, and `find` returns `nullptr` for it. There is no
+  deadline and no placeholder: what an absent bar means is the strategy's decision.
+- **Several intervals** ending at the same instant (a minute and a day) give one call each, in the
+  order their first bars arrived; each slice holds one interval.
+- **Instruments that close at different instants** (a Korean and a US stock) never share a slice.
+- **In a backtest** a period is delivered when the first later bar arrives, before that bar fills
+  anything, or at a quote at or after it, or at `finish()`. Its orders wait for a later period's bar,
+  as `on_bar`'s do. Feed every bar of a period before anything later: a bar for a period already
+  delivered, an earlier one, or a second bar of one instrument in a period throws
+  `std::invalid_argument` before anything changes.
+- **Live**, each poll's bars are grouped by period; history periods go through
+  `Runner::feed_warmup` as before, and only the newest period can send. A bar that arrives after its
+  period was delivered (a name that missed that period's poll) is cached for its own series but not
+  delivered, and `SessionSource::bars_not_delivered` counts it.
+- **A source of your own** calls `Runner::record` for each bar of a period, then
+  `Runner::feed(const BarSlice&)`; `Runner::feed(const BarEvent&)` does not compile for such a
+  strategy, so a path still feeding single bars cannot skip it.
+- **Without a linear algebra backend** there is no cache: the slice is what the strategy has.
 
 ## Emit a target, not an order
 
