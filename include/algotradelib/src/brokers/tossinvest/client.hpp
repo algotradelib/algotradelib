@@ -3637,6 +3637,10 @@ private:
 
   // Parses a decimal exactly, or, when only its fraction is too long to fit, to the nearest value
   // with 18 significant digits (ties to even).
+  //
+  // The digits are counted from the first nonzero one, so the leading zeros of an amount below one
+  // cost no precision. A value that cannot keep 18 significant digits within `Decimal64`'s scale, or
+  // whose integer part does not fit, is refused rather than rounded towards zero.
   static Decimal64 rounded_decimal(std::string_view text) {
     try {
       return Decimal64::parse(text);
@@ -3648,29 +3652,38 @@ private:
       }
       auto whole = text.substr(sign, point - sign);
       const auto fraction = text.substr(point + 1);
+      for (const auto part : {whole, fraction}) {
+        if (part.find_first_not_of("0123456789") != std::string_view::npos) {
+          throw std::invalid_argument("decimal value contains an invalid character");
+        }
+      }
       const auto significant = whole.find_first_not_of('0');
       whole = significant == std::string_view::npos ? std::string_view() : whole.substr(significant);
       constexpr std::size_t digits = 18;
-      if (whole.size() > digits || fraction.find('.') != std::string_view::npos) {
+      if (whole.size() > digits) {
         throw;
       }
-      const auto kept = std::min(fraction.size(), digits - whole.size());
+      std::size_t kept = 0;
+      if (!whole.empty()) {
+        kept = std::min(fraction.size(), digits - whole.size());
+      } else {
+        const auto leading = fraction.find_first_not_of('0');
+        if (leading == std::string_view::npos) {
+          return Decimal64();
+        }
+        kept = std::min(fraction.size(), leading + digits);
+      }
+      if (kept > std::numeric_limits<std::uint8_t>::max()) {
+        throw std::out_of_range("decimal scale exceeds Decimal64 range");
+      }
       std::uint64_t magnitude = 0;
       for (const auto ch : whole) {
         magnitude = magnitude * 10U + static_cast<std::uint64_t>(ch - '0');
       }
       for (const auto ch : fraction.substr(0, kept)) {
-        if (ch < '0' || ch > '9') {
-          throw std::invalid_argument("decimal value contains an invalid character");
-        }
         magnitude = magnitude * 10U + static_cast<std::uint64_t>(ch - '0');
       }
       const auto dropped = fraction.substr(kept);
-      for (const auto ch : dropped) {
-        if (ch < '0' || ch > '9') {
-          throw std::invalid_argument("decimal value contains an invalid character");
-        }
-      }
       if (!dropped.empty()) {
         const bool beyond_half = dropped.find_first_not_of('0', 1) != std::string_view::npos;
         if (dropped.front() > '5' || (dropped.front() == '5' && (beyond_half || magnitude % 2U == 1U))) {

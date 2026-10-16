@@ -3596,9 +3596,34 @@ TEST_CASE(
     CHECK(rounded("0.12345678901234567750") == Decimal64::parse("0.123456789012345678"));
     CHECK(rounded("-0.12345678901234567890") == Decimal64::parse("-0.123456789012345679"));
     CHECK(rounded("9.99999999999999999999") == Decimal64::parse("10"));
+    // The digits count from the first nonzero one: an amount below one keeps 18 of them.
+    CHECK(rounded("0.00012345678901234567891") == Decimal64::parse("0.000123456789012345679"));
+    CHECK(
+      rounded("0.00000000000000000012345678901234567891") ==
+      Decimal64::parse("0.000000000000000000123456789012345679")
+    );
     // Only the fraction is rounded: an integer part that does not fit is still refused.
     CHECK_FALSE(amount_of("12345678901234567890.5"));
+    CHECK_FALSE(amount_of("123456789012345678901"));
     CHECK_FALSE(amount_of("1.2345678901234567890x"));
+    // A nonzero amount that cannot keep its digits within Decimal64's scale is refused, not made zero.
+    CHECK_FALSE(amount_of("0." + std::string(255, '0') + "1"));
+  }
+
+  SECTION("an order amount sent as a number is refused") {
+    auto result = tossinvest::TossClientTestAccess::parse_orders(
+      json_response(
+        R"({"result":{"orders":[)"
+        R"({"orderId":"c","symbol":"AAPL","side":"BUY","orderType":"MARKET",)"
+        R"("timeInForce":"DAY","status":"FILLED","price":null,"quantity":"0",)"
+        R"("orderAmount":100.5,"currency":"USD","orderedAt":"2026-03-29T10:00:00+09:00",)"
+        R"("canceledAt":null,"execution":{"filledQuantity":"0","averageFilledPrice":null,)"
+        R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
+        R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
+      )
+    );
+    REQUIRE_FALSE(result);
+    CHECK(result.error().broker_code_ == "invalid_orders_response");
   }
 
   SECTION("a validity code Toss adds later is unknown in both facts, not assumed to be DAY") {
