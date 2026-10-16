@@ -3502,7 +3502,7 @@ private:
     // field off one placed through another channel: without it the snapshot
     // says an order of some quantity and cannot say what was actually
     // committed.
-    order.order_amount_ = nullable_decimal(row, "orderAmount");
+    order.order_amount_ = nullable_rounded_decimal(row, "orderAmount");
     order.currency_ = currency;
     order.ordered_at_ = optional_timestamp(row, "orderedAt");
     order.canceled_at_ = optional_timestamp(row, "canceledAt");
@@ -3612,6 +3612,77 @@ private:
       throw std::runtime_error("invalid decimal field: " + std::string(key));
     }
     return Decimal64::parse(std::string_view(value->as_string()));
+  }
+
+  // Reads a nullable decimal string field that Toss computes, rounding a fraction too long for
+  // `Decimal64`.
+  //
+  // Toss has sent `orderAmount` with twenty fractional digits, which `Decimal64::parse` refuses, and
+  // the refusal failed every order list holding such an order. The fraction is rounded half to even
+  // to the 18 significant digits a `Decimal64` always holds. The integer part is never rounded: a value
+  // whose integer part does not fit is still refused.
+  static std::optional<Decimal64> nullable_rounded_decimal(
+    const json::object& object,
+    std::string_view key
+  ) {
+    const auto value = object.if_contains(key);
+    if (!value || value->is_null()) {
+      return std::nullopt;
+    }
+    if (!value->is_string()) {
+      throw std::runtime_error("invalid decimal field: " + std::string(key));
+    }
+    return rounded_decimal(std::string_view(value->as_string()));
+  }
+
+  // Parses a decimal exactly, or, when only its fraction is too long to fit, to the nearest value
+  // with 18 significant digits (ties to even).
+  static Decimal64 rounded_decimal(std::string_view text) {
+    try {
+      return Decimal64::parse(text);
+    } catch (const std::out_of_range&) {
+      const auto sign = !text.empty() && (text.front() == '-' || text.front() == '+') ? 1U : 0U;
+      const auto point = text.find('.');
+      if (point == std::string_view::npos) {
+        throw;
+      }
+      auto whole = text.substr(sign, point - sign);
+      const auto fraction = text.substr(point + 1);
+      const auto significant = whole.find_first_not_of('0');
+      whole = significant == std::string_view::npos ? std::string_view() : whole.substr(significant);
+      constexpr std::size_t digits = 18;
+      if (whole.size() > digits || fraction.find('.') != std::string_view::npos) {
+        throw;
+      }
+      const auto kept = std::min(fraction.size(), digits - whole.size());
+      std::uint64_t magnitude = 0;
+      for (const auto ch : whole) {
+        magnitude = magnitude * 10U + static_cast<std::uint64_t>(ch - '0');
+      }
+      for (const auto ch : fraction.substr(0, kept)) {
+        if (ch < '0' || ch > '9') {
+          throw std::invalid_argument("decimal value contains an invalid character");
+        }
+        magnitude = magnitude * 10U + static_cast<std::uint64_t>(ch - '0');
+      }
+      const auto dropped = fraction.substr(kept);
+      for (const auto ch : dropped) {
+        if (ch < '0' || ch > '9') {
+          throw std::invalid_argument("decimal value contains an invalid character");
+        }
+      }
+      if (!dropped.empty()) {
+        const bool beyond_half = dropped.find_first_not_of('0', 1) != std::string_view::npos;
+        if (dropped.front() > '5' || (dropped.front() == '5' && (beyond_half || magnitude % 2U == 1U))) {
+          ++magnitude;
+        }
+      }
+      const auto coefficient = static_cast<std::int64_t>(magnitude);
+      const Decimal64 rounded(
+        sign == 1U && text.front() == '-' ? -coefficient : coefficient, static_cast<std::uint8_t>(kept)
+      );
+      return Decimal64::parse(rounded.str());
+    }
   }
 
   // Reads a nullable decimal string field as an amount in `currency`.

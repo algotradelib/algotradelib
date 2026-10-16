@@ -3567,6 +3567,40 @@ TEST_CASE(
     REQUIRE(order.shape_code_.view() == "CLS");
   }
 
+  SECTION("an order amount with more digits than Decimal64 holds is rounded, not refused") {
+    // Constructed. A real Toss order list carried an `orderAmount` with twenty fractional digits,
+    // and refusing that one field failed the whole list.
+    const auto amount_of = [](std::string_view amount) {
+      return tossinvest::TossClientTestAccess::parse_orders(
+        json_response(
+          std::string(R"({"result":{"orders":[)"
+          R"({"orderId":"c","symbol":"AAPL","side":"BUY","orderType":"MARKET",)"
+          R"("timeInForce":"DAY","status":"FILLED","price":null,"quantity":"0",)"
+          R"("orderAmount":")") + std::string(amount) +
+          R"(","currency":"USD","orderedAt":"2026-03-29T10:00:00+09:00",)"
+          R"("canceledAt":null,"execution":{"filledQuantity":"0","averageFilledPrice":null,)"
+          R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
+          R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
+        )
+      );
+    };
+    const auto rounded = [&](std::string_view amount) {
+      auto result = amount_of(amount);
+      REQUIRE(result);
+      return *result.value().orders_.front().order_amount_;
+    };
+    CHECK(rounded("4.12345678901234567891") == Decimal64::parse("4.12345678901234568"));
+    CHECK(rounded("4.12345678901234567850") == Decimal64::parse("4.12345678901234568"));
+    // Ties go to even.
+    CHECK(rounded("0.12345678901234567850") == Decimal64::parse("0.123456789012345678"));
+    CHECK(rounded("0.12345678901234567750") == Decimal64::parse("0.123456789012345678"));
+    CHECK(rounded("-0.12345678901234567890") == Decimal64::parse("-0.123456789012345679"));
+    CHECK(rounded("9.99999999999999999999") == Decimal64::parse("10"));
+    // Only the fraction is rounded: an integer part that does not fit is still refused.
+    CHECK_FALSE(amount_of("12345678901234567890.5"));
+    CHECK_FALSE(amount_of("1.2345678901234567890x"));
+  }
+
   SECTION("a validity code Toss adds later is unknown in both facts, not assumed to be DAY") {
     auto result = tossinvest::TossClientTestAccess::parse_orders(
       json_response(
