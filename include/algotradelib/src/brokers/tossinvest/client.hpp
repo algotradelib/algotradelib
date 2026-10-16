@@ -137,7 +137,9 @@ inline std::optional<BrokerError> unsupported_bar_interval(BarInterval interval)
 /**
  * @brief The asynchronous Toss Securities REST client: market data, accounts and orders.
  *
- * It requests an access token when first needed and shares one refresh among concurrent requests.
+ * It requests an access token when first needed, and again after Toss refuses the one it holds (as it
+ * does once another program issues a token with the same key); one refresh is shared among concurrent
+ * requests, and a refused request is not sent again.
  * Create it with `std::make_shared`. Each completion runs on the handler's associated executor, or on
  * the client's strand if it has none. A blocking wrapper is `TossBlockingClient`.
  */
@@ -881,7 +883,7 @@ private:
     request.headers_.emplace_back("Authorization", "Bearer " + token_.access_token_);
 
     ++operation->pages_;
-    http_->async_request(
+    send(
       std::move(request),
       [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
         self->handle_bars_page(operation, std::move(result));
@@ -1219,7 +1221,7 @@ private:
           request.headers_.emplace_back(
             "Authorization", "Bearer " + self->token_.access_token_
           );
-          self->http_->async_request(
+          self->send(
             std::move(request),
             [self, country, completion = std::move(completion)](
               Result<network::HttpResponse> result
@@ -1430,7 +1432,7 @@ private:
           request.headers_.emplace_back(
             "Authorization", "Bearer " + self->token_.access_token_
           );
-          self->http_->async_request(
+          self->send(
             std::move(request),
             [self, instrument = std::move(instrument), completion = std::move(completion), parse](
               Result<network::HttpResponse> result
@@ -1573,7 +1575,7 @@ private:
           request.headers_.emplace_back(
             "Authorization", "Bearer " + self->token_.access_token_
           );
-          self->http_->async_request(
+          self->send(
             std::move(request),
             [self, instruments = std::move(instruments), completion = std::move(completion)](
               Result<network::HttpResponse> result
@@ -1682,7 +1684,7 @@ private:
           request.headers_.emplace_back(
             "Authorization", "Bearer " + self->token_.access_token_
           );
-          self->http_->async_request(
+          self->send(
             std::move(request),
             [self, instrument = std::move(instrument), completion = std::move(completion)](
               Result<network::HttpResponse> result
@@ -1865,7 +1867,7 @@ private:
       {"Authorization", "Bearer " + token_.access_token_},
       {"X-Tossinvest-Account", std::to_string(account_sequence)},
     };
-    http_->async_request(
+    send(
       std::move(request),
       [self = shared_from_this(), completion = std::move(completion)](
         Result<network::HttpResponse> result
@@ -1932,7 +1934,7 @@ private:
       {"Authorization", "Bearer " + token_.access_token_},
       {"X-Tossinvest-Account", std::to_string(account_sequence)},
     };
-    http_->async_request(
+    send(
       std::move(request),
       [self = shared_from_this(), completion = std::move(completion)](
         Result<network::HttpResponse> result
@@ -1982,7 +1984,7 @@ private:
       {"Authorization", "Bearer " + token_.access_token_},
       {"X-Tossinvest-Account", std::to_string(account_sequence)},
     };
-    http_->async_request(
+    send(
       std::move(request),
       [self = shared_from_this(), completion = std::move(completion)](
         Result<network::HttpResponse> result
@@ -2102,7 +2104,7 @@ private:
     request.method_ = http::verb::get;
     request.target_ = "/api/v1/prices?symbols=" + broker_detail::query_encode(instrument.symbol_);
     request.headers_.emplace_back("Authorization", "Bearer " + token_.access_token_);
-    http_->async_request(
+    send(
       std::move(request),
       [
         self = shared_from_this(),
@@ -2133,7 +2135,7 @@ private:
     request.method_ = http::verb::get;
     request.target_ = "/api/v1/accounts";
     request.headers_.emplace_back("Authorization", "Bearer " + token_.access_token_);
-    http_->async_request(
+    send(
       std::move(request),
       [self = shared_from_this(), completion = std::move(completion)](
         Result<network::HttpResponse> result
@@ -2160,7 +2162,7 @@ private:
       {"Authorization", "Bearer " + token_.access_token_},
       {"X-Tossinvest-Account", std::to_string(account_sequence)},
     };
-    http_->async_request(
+    send(
       std::move(request),
       [self = shared_from_this(), completion = std::move(completion)](
         Result<network::HttpResponse> result
@@ -3206,7 +3208,7 @@ private:
 
   // Sends an order-writing request and dispatches its parsed acknowledgement.
   void request_order_ack(network::HttpRequest request, OrderAckHandler completion) {
-    http_->async_request(
+    send(
       std::move(request),
       [self = shared_from_this(), completion = std::move(completion)](
         Result<network::HttpResponse> result
@@ -3271,7 +3273,7 @@ private:
             return;
           }
           auto request = make_orders_request(self->token_.access_token_, query);
-          self->http_->async_request(
+          self->send(
             std::move(request),
             [self, completion = std::move(completion)](
               Result<network::HttpResponse> result
@@ -3319,7 +3321,7 @@ private:
           auto request = make_order_request(
             account_sequence, self->token_.access_token_, order_id
           );
-          self->http_->async_request(
+          self->send(
             std::move(request),
             [self, completion = std::move(completion)](
               Result<network::HttpResponse> result
@@ -3764,7 +3766,49 @@ private:
     return std::string(buffer);
   }
 
-  // Dispatches an order acknowledgement through its associated executor.
+  // Sends a request that carries the access token, and forgets that token if Toss refuses it.
+  //
+  // Toss answers 401 to a token that has expired or been revoked, and issuing a token revokes the
+  // one issued before it with the same key ("새로 발급된 토큰으로 대체되어 더 이상 유효하지 않은
+  // 토큰입니다"), so another program using the key ends this one's token. Kept, it would be sent
+  // until its stated expiry and every request would fail; forgotten, the next request asks for a new
+  // one. The refused request is not sent again. Only the token the request carried is forgotten: a
+  // late refusal of an older token leaves a newer one alone, so a token one program takes refuses the
+  // other's requests that carry the old token and starts no chain of refreshes.
+  template <typename Handler>
+  void send(network::HttpRequest request, Handler handler) {
+    std::string authorization;
+    for (const auto& [name, value] : request.headers_) {
+      if (name == "Authorization") {
+        authorization = value;
+      }
+    }
+    http_->async_request(
+      std::move(request),
+      [
+        self = shared_from_this(),
+        authorization = std::move(authorization),
+        handler = std::move(handler)
+      ](Result<network::HttpResponse> result) mutable {
+        if (result && result.value().result_int() == 401) {
+          // Queued before the handler runs; every operation starts with a post to the strand, so
+          // the next one finds the token gone.
+          net::post(self->strand_, [self, authorization = std::move(authorization)] {
+            self->forget_refused_token(authorization);
+          });
+        }
+        std::move(handler)(std::move(result));
+      }
+    );
+  }
+
+  // Forgets the held token if it is the one a refused request carried (its `Authorization` value).
+  void forget_refused_token(const std::string& authorization) {
+    if (!token_.access_token_.empty() && authorization == "Bearer " + token_.access_token_) {
+      token_ = TossRest{};
+    }
+  }
+
   // Dispatches one result through its associated executor, exactly once.
   //
   // Every operation's result passes through here, which makes it the one place a

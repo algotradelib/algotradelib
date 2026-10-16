@@ -132,6 +132,11 @@ cmake --build build --target example-tossinvest-account
 ./build/bin/example-tossinvest-account 123456
 ```
 
+A Toss key holds one access token at a time: issuing a token revokes the one issued before it. Two
+programs running with the same key therefore revoke each other's token. When Toss refuses a token
+(HTTP 401), the request fails, and `TossClient` asks for a new token on the next request. The refused
+request is not sent again.
+
 ## Order clients
 
 Both brokers expose order placement, modification, cancellation, and order
