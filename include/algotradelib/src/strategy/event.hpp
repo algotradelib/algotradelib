@@ -7,6 +7,7 @@
 #include <optional>
 #include <ratio>
 #include <string>
+#include <vector>
 
 namespace algotradelib {
 namespace strategy {
@@ -240,6 +241,100 @@ inline BarEvent make_bar_event(
   event.bar_ = std::move(bar);
   return event;
 }
+
+/**
+ * @brief Every instrument's bar of one interval for one period end, delivered to `on_bars`.
+ *
+ * A runner calls `on_bars` once per period end and interval, after every bar of that period has been
+ * fed: cached (with a linear algebra backend, so `ctx.bars(id, interval_)` ends at `period_end_` for each
+ * instrument here), priced and clocked. An instrument with no bar for the period is absent; there is no
+ * deadline and no placeholder. Several intervals ending at the same instant give one slice each.
+ *
+ * The slice is valid only during the call.
+ */
+struct BarSlice {
+  /** @brief When the period ended, shared by every bar in `bars_`. */
+  std::chrono::system_clock::time_point period_end_{};
+  /** @brief The period length every bar in `bars_` covers. */
+  BarInterval interval_{BarInterval::ONE_DAY};
+  /** @brief The bars, one per instrument, in the order they were fed. */
+  std::vector<BarEvent> bars_;
+
+  /**
+   * @brief Finds an instrument's bar.
+   * @param id The instrument.
+   * @return Its bar, or `nullptr` if it has none for this period.
+   */
+  const BarEvent* find(const InstrumentId& id) const noexcept {
+    for (const auto& event : bars_) {
+      if (event.instrument_ == id) {
+        return &event;
+      }
+    }
+    return nullptr;
+  }
+};
+
+/// \cond ATL_SLICE_DETAIL
+namespace slice_detail {
+
+/**
+ * Every bar fed with one period end, split into one slice per interval in the order each interval was
+ * first seen. Used by the runner's sources to group bars before `on_bars`.
+ */
+class Bucket {
+public:
+  /** Whether the bucket holds no bar. */
+  bool empty() const noexcept { return slices_.empty(); }
+
+  /** The period end of the bars held; meaningless when empty. */
+  std::chrono::system_clock::time_point period_end() const noexcept { return period_end_; }
+
+  /** Whether `event` would be the second bar of its instrument and interval here. */
+  bool holds(const BarEvent& event) const noexcept {
+    for (const auto& slice : slices_) {
+      if (slice.interval_ == event.interval_) {
+        return slice.find(event.instrument_) != nullptr;
+      }
+    }
+    return false;
+  }
+
+  /** Adds a bar; the caller has checked `holds` and that its period end matches a non-empty bucket. */
+  void add(const BarEvent& event) {
+    if (slices_.empty()) {
+      period_end_ = event.period_end_;
+    }
+    for (auto& slice : slices_) {
+      if (slice.interval_ == event.interval_) {
+        slice.bars_.push_back(event);
+        return;
+      }
+    }
+    BarSlice slice;
+    slice.period_end_ = event.period_end_;
+    slice.interval_ = event.interval_;
+    slice.bars_.push_back(event);
+    slices_.push_back(std::move(slice));
+  }
+
+  /** Takes the slices out, leaving the bucket empty. */
+  std::vector<BarSlice> take() {
+    std::vector<BarSlice> slices = std::move(slices_);
+    slices_.clear();
+    return slices;
+  }
+
+  /** Drops every bar held. */
+  void clear() noexcept { slices_.clear(); }
+
+private:
+  std::chrono::system_clock::time_point period_end_{};
+  std::vector<BarSlice> slices_;
+};
+
+} // namespace slice_detail
+/// \endcond
 
 /** @brief A quote the runner has just read, delivered to `on_quote`. */
 struct QuoteEvent {

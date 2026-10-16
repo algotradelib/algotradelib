@@ -317,6 +317,13 @@ public:
     strategy::strategy_detail::declares_on_fill<Strategy>;
 
   /**
+   * @brief `true` when the strategy declares `on_bars`: bars are then fed with `record` and delivered with
+   *   `feed(const strategy::BarSlice&)` (or `feed_warmup` of one), and the single-bar `feed` and
+   *   `feed_warmup` do not compile.
+   */
+  static constexpr bool takes_bar_slices = strategy::strategy_detail::declares_on_bars<Strategy>;
+
+  /**
    * @brief `true` when this runner keeps each order it sends in `Portfolio::working_` until a broker
    *   listing accounts for it: a live runner whose broker lists working orders (every shipped
    *   binding).
@@ -1508,6 +1515,10 @@ public:
   /**
    * @brief Feeds one bar: caches it, sets the last price and the clock to the bar's period end, calls
    *   `on_bar`, and settles what the strategy asked for.
+   *
+   * Does not compile for a strategy declaring `on_bars` (`takes_bar_slices`): use `record` and
+   * `feed(const strategy::BarSlice&)`.
+   *
    * @param event The bar.
    * @return The pass's report.
    * @throws std::invalid_argument (with a linear algebra backend) if the bar is not later than the
@@ -1535,6 +1546,9 @@ public:
    * instruments. A newest bar that ties or trails one (a suspended name, or one a bar behind) is
    * history too, or an order could be decided on a stale cross-section at today's price.
    *
+   * Does not compile for a strategy declaring `on_bars`: use `record` and `feed_warmup(const
+   * strategy::BarSlice&)`.
+   *
    * @param event The bar.
    * @throws std::invalid_argument (with a linear algebra backend) if the bar is not later than the
    *   cached series' newest bar.
@@ -1546,6 +1560,74 @@ public:
     context_.set_last_price(event.instrument_, event.bar_.close_);
     context_.set_now(event.period_end_);
     dispatch::bar(strategy_, context_, event);
+    warmup_instructions_discarded_ += context_.drain().size();
+  }
+
+  /**
+   * @brief Prepares one bar for a slice: caches it (with a linear algebra backend) and sets the last price
+   *   and the clock to the bar's period end, without calling a handler or settling.
+   *
+   * For a strategy declaring `on_bars`, a source records every bar of a period, then delivers the period
+   * with `feed(const strategy::BarSlice&)`.
+   *
+   * @param event The bar.
+   * @throws std::invalid_argument (with a linear algebra backend) if the bar is not later than the
+   *   cached series' newest bar.
+   */
+  void record(const strategy::BarEvent& event) {
+#if defined(ATL_HAS_EIGEN)
+    context_.record_bar(event);
+#endif
+    context_.set_last_price(event.instrument_, event.bar_.close_);
+    context_.set_now(event.period_end_);
+  }
+
+  /**
+   * @brief Caches one bar without moving the last price or the clock, and without calling a handler.
+   *
+   * For a bar that arrives after its period was already delivered: its own series stays complete, while
+   * a newer price or a later clock is not overwritten by an older bar. Does nothing without a linear
+   * algebra backend.
+   *
+   * @param event The bar.
+   * @throws std::invalid_argument (with a linear algebra backend) if the bar is not later than the
+   *   cached series' newest bar.
+   */
+  void record_history_only(const strategy::BarEvent& event) {
+#if defined(ATL_HAS_EIGEN)
+    context_.record_bar(event);
+#else
+    static_cast<void>(event);
+#endif
+  }
+
+  /**
+   * @brief Delivers one period's bars to `on_bars` and settles what the strategy asked for.
+   *
+   * Every bar in the slice must have been passed to `record` first; nothing here caches, prices or
+   * clocks. `on_bars` then sees `ctx.bars(id, slice.interval_)` end at the slice's period for every
+   * instrument in it.
+   *
+   * @param slice The period's bars.
+   * @return The pass's report.
+   */
+  Report feed(const strategy::BarSlice& slice) {
+    confirm_reservations();
+    dispatch::bars(strategy_, context_, slice);
+    return settle();
+  }
+
+  /**
+   * @brief Delivers one period's bars as history: like `feed(const strategy::BarSlice&)`, but whatever
+   *   the strategy asks for is discarded (counted in `warmup_instructions_discarded`).
+   *
+   * Every bar in the slice must have been passed to `record` first. See `feed_warmup(const
+   * strategy::BarEvent&)` for which bars are history.
+   *
+   * @param slice The period's bars.
+   */
+  void feed_warmup(const strategy::BarSlice& slice) {
+    dispatch::bars(strategy_, context_, slice);
     warmup_instructions_discarded_ += context_.drain().size();
   }
 

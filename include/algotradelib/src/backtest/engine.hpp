@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -464,12 +465,20 @@ public:
    * (calling `on_phase` on a change), then call `on_bar`, whose orders wait for a later bar. After a
    * halt it does nothing.
    *
+   * For a strategy declaring `on_bars`, the bar is cached instead and held with the rest of its period;
+   * the period goes to `on_bars` (one call per interval) when the first later bar arrives, before that
+   * bar settles, or at a quote at or after it, or at `finish`. Its orders wait for a later period's
+   * bar, as `on_bar`'s do. Such a strategy is fed every bar of a period before anything later.
+   *
    * @param event The bar; feed bars in timestamp order across instruments. Within one instrument
    *   and interval each bar's timestamp must be later than the last.
    * @param trading_day Whether the bar's date trades, for the phase; empty gives `UNKNOWN`.
    * @throws std::invalid_argument (with a linear algebra backend) if `series_capacity_` is zero, or
    *   the bar is not later than the previous bar of its instrument and interval. The exception
    *   propagates after the bar was counted and settled; it does not set `ReplayResult::halted_`.
+   * @throws std::invalid_argument (for a strategy declaring `on_bars`, with or without a linear algebra
+   *   backend) if the bar's period was already delivered, it is earlier than bars already fed, or its
+   *   instrument and interval already have a bar for that period; thrown before anything changes.
    */
   void feed(const strategy::BarEvent& event, std::optional<bool> trading_day = true) {
     // **A halted replay consumes nothing further.** `feed` keeps returning `void` so no caller has to
@@ -478,7 +487,20 @@ public:
     // callback into the strategy. That is API compatibility, which is not the same as invisibility,
     // and it is why the halt is stated on the result and first in the report.
     if (result_.halted_) {
+      pending_.clear();
       return;
+    }
+    if constexpr (Runner::takes_bar_slices) {
+      // **Checked before anything is counted, settled, marked or cached**, so a refused bar leaves the
+      // replay as it was. The pending period is delivered here, before this bar's settlement, exactly
+      // where `on_bar` would have run for that period's last bar.
+      check_slice_order(event);
+      if (!pending_.empty() && pending_.period_end() < event.period_end_) {
+        deliver_pending();
+        if (result_.halted_) {
+          return;
+        }
+      }
     }
     ++result_.bars_;
     if (previous_ && !ReplayClock::contiguous(*previous_, event)) {
@@ -560,8 +582,14 @@ public:
       runner_.context().set_phase(clock_.phase());
     }
 
-    install_portfolio();
-    drain_reports(runner_.feed(event));
+    if constexpr (Runner::takes_bar_slices) {
+      // Cached, priced and clocked now; the strategy sees it with the rest of its period.
+      runner_.record(event);
+      pending_.add(event);
+    } else {
+      install_portfolio();
+      drain_reports(runner_.feed(event));
+    }
     // **After the dispatch, not before it**, so an order this bar's `on_bar` or `on_phase` placed is
     // reported. Before it would report only what settlement had already changed.
     publish_order_updates();
@@ -581,13 +609,37 @@ public:
    * @param event The quote; feed it in timestamp order with the bars, since the clock follows
    *   whatever instant it is given, even backwards.
    * @param trading_day Whether the quote's date trades; empty gives `UNKNOWN`.
+   * @throws std::invalid_argument for a strategy declaring `on_bars`, if the quote is earlier than bars
+   *   already fed; a quote at or after a pending period first delivers that period to `on_bars`.
    */
   void feed(const strategy::QuoteEvent& event, std::optional<bool> trading_day = true) {
     // The same rule `feed(const BarEvent&)` opens with: a halted replay consumes nothing further,
     // because a strategy told about anything after the halt decides on a run that has stopped being
     // able to cost what it asks for.
     if (result_.halted_) {
+      pending_.clear();
       return;
+    }
+    if constexpr (Runner::takes_bar_slices) {
+      // A quote at or after the pending period comes after it: the period is delivered while its own
+      // price, clock and phase are still installed, before this quote changes any of them.
+      const auto at = event.quote_.received_at_;
+      if (!pending_.empty() && at < pending_.period_end()) {
+        throw std::invalid_argument(
+          "a quote earlier than bars already fed: with on_bars, feed quotes and bars in time order"
+        );
+      }
+      if (pending_.empty() && delivered_through_ && at < *delivered_through_) {
+        throw std::invalid_argument(
+          "a quote earlier than a period already delivered: with on_bars, feed quotes and bars in time order"
+        );
+      }
+      if (!pending_.empty()) {
+        deliver_pending();
+        if (result_.halted_) {
+          return;
+        }
+      }
     }
     ++result_.quotes_;
     // Dated before anything can place an order, so a decision made here is not credited a price from
@@ -632,6 +684,8 @@ public:
    * @brief Ends the replay: calls `on_stop` (with the current portfolio, including orders from the
    *   last bar), settles what it asked for, and counts the orders still queued.
    *
+   * For a strategy declaring `on_bars`, the last period's bars are delivered first.
+   *
    * After a halt it does nothing; `on_stop` is not called.
    */
   void finish() {
@@ -641,7 +695,18 @@ public:
       // stopped being able to cost one would either fill uncosted or be silently dropped. Neither is
       // a shutdown a reader could interpret, so nothing runs: the queue was cleared at the halt and
       // `aborted_` says how much was in it. The report states that the strategy never saw a stop.
+      pending_.clear();
       return;
+    }
+    if constexpr (Runner::takes_bar_slices) {
+      // The last period has no later bar to deliver it: it goes before `on_stop` and before `unfilled_`
+      // is counted, so both see what it placed.
+      if (!pending_.empty()) {
+        deliver_pending();
+        if (result_.halted_) {
+          return;
+        }
+      }
     }
     install_portfolio();
     drain_reports(runner_.stop());
@@ -652,6 +717,59 @@ public:
   }
 
 private:
+  // Refuses a bar a strategy declaring `on_bars` cannot be shown consistently: one for a period already
+  // delivered (it would start a second slice for that period, and could meet an order decided on the
+  // first), one earlier than the pending period, or a second bar of one instrument and interval in a
+  // period. Throws before anything changes.
+  void check_slice_order(const strategy::BarEvent& event) const {
+    if (delivered_through_ && !(*delivered_through_ < event.period_end_)) {
+      throw std::invalid_argument(
+        "a bar for a period already delivered to on_bars: feed every bar of a period before anything "
+        "later (a bar of the next period, a quote at or after it, or finish)"
+      );
+    }
+    if (pending_.empty()) {
+      return;
+    }
+    if (event.period_end_ < pending_.period_end()) {
+      throw std::invalid_argument(
+        "a bar earlier than bars already fed: with on_bars, feed bars in period-end order across "
+        "instruments"
+      );
+    }
+    if (event.period_end_ == pending_.period_end() && pending_.holds(event)) {
+      throw std::invalid_argument(
+        "a second bar of one instrument and interval for the same period end: on_bars receives one bar "
+        "per instrument"
+      );
+    }
+  }
+
+  // Delivers the pending period to `on_bars`, one slice per interval in the order each was first fed.
+  //
+  // Each slice is decided at the period end, exact if any of its bars states its end and nominal only
+  // if all of them derive it (see `period_end_is_exact`): a nominal bar fed last must not weaken an
+  // exact one. The portfolio is installed before each slice, because an `on_order_update` published
+  // after the last bar, or an earlier slice, may have changed the queue.
+  void deliver_pending() {
+    const auto end = pending_.period_end();
+    auto slices = pending_.take();
+    delivered_through_ = end;
+    for (const auto& slice : slices) {
+      if (result_.halted_) {
+        return;
+      }
+      bool exact = false;
+      for (const auto& bar : slice.bars_) {
+        exact = exact || period_end_is_exact(bar);
+      }
+      runner_.executor().deciding_at(end, exact);
+      install_portfolio();
+      drain_reports(runner_.feed(slice));
+      publish_order_updates();
+    }
+  }
+
   // Clears every order still queued after a halt, counting them.
   //
   // They are withdrawn rather than left outstanding so that nothing downstream reads a terminal
@@ -1300,6 +1418,10 @@ private:
   // Whether a bar since the last equity point went unvalued, so the next point carries no return.
   bool equity_gap_{false};
   std::optional<strategy::BarEvent> previous_;
+  // For a strategy declaring `on_bars`: the bars of the period not yet delivered, and the period end of
+  // the last one delivered. A later bar may not join a delivered period, so nothing is decided twice.
+  strategy::slice_detail::Bucket pending_;
+  std::optional<std::chrono::system_clock::time_point> delivered_through_;
 };
 
 } // namespace backtest

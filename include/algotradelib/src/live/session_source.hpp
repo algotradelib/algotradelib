@@ -84,16 +84,30 @@ inline BrokerError history_page_limit(int pages) {
 
 namespace session_source_detail {
 
-// Whether `Runner` can be fed a bar as history, which every `runner::Runner` can. Required by
-// `poll_bars`: a runner without it would send what was decided on a cold start's history.
+// Whether `Runner` delivers bars in slices (`Runner::takes_bar_slices`, a strategy declaring `on_bars`).
+// A runner of one's own without the constant takes bars one at a time, as before.
 template <typename Runner, typename = void>
-struct feeds_warmup : std::false_type {};
+struct takes_slices : std::false_type {};
 
 template <typename Runner>
-struct feeds_warmup<
-  Runner,
-  std::void_t<decltype(std::declval<Runner&>().feed_warmup(std::declval<const strategy::BarEvent&>()))>
+struct takes_slices<Runner, std::enable_if_t<Runner::takes_bar_slices>> : std::true_type {};
+
+// Whether `Runner` can be fed `Event` as history.
+template <typename Runner, typename Event, typename = void>
+struct feeds_warmup_of : std::false_type {};
+
+template <typename Runner, typename Event>
+struct feeds_warmup_of<
+  Runner, Event, std::void_t<decltype(std::declval<Runner&>().feed_warmup(std::declval<const Event&>()))>
 > : std::true_type {};
+
+// Whether `Runner` can be fed history on the route it takes, which every `runner::Runner` can: a slice
+// for a strategy declaring `on_bars`, a bar otherwise. Required by `poll_bars`: a runner without it would
+// send what was decided on a cold start's history.
+template <typename Runner>
+struct feeds_warmup : feeds_warmup_of<
+  Runner, std::conditional_t<takes_slices<Runner>::value, strategy::BarSlice, strategy::BarEvent>
+> {};
 
 } // namespace session_source_detail
 
@@ -111,6 +125,11 @@ struct feeds_warmup<
  * tie is history; instruments' newest bars are not compared with each other). The rest go through
  * `Runner::feed_warmup`, so a restart does not act on the history it reads. This does not make the
  * newest bar recent.
+ *
+ * For a strategy declaring `on_bars`, the same bars are recorded in the same order and each period's
+ * bars are delivered together (`Runner::feed` or `feed_warmup` of a `strategy::BarSlice`, one per
+ * interval) before a later period's. A bar arriving after its period was delivered is cached but not
+ * delivered; see `bars_not_delivered`.
  *
  * Requests are tagged by kind, so a client budget with a trading reserve
  * (`network::RateLimitBudget::trading_reserve_`) keeps capacity for orders. A kind the broker does not offer compiles to no request and returns `UNCHANGED`.
@@ -251,6 +270,19 @@ public:
    * @return The count over the source's life.
    */
   std::size_t bars_fed_as_warmup() const noexcept { return bars_fed_as_warmup_; }
+
+  /**
+   * @brief Returns how many bars a strategy declaring `on_bars` was not shown.
+   *
+   * A bar whose period was already delivered (a name that missed its period's poll and reported in a
+   * later one) is cached for its own series, without moving the last price or the clock, and not
+   * delivered: a second slice for that period, or an older one after a newer, would decide twice or
+   * backwards. A second bar of one instrument and interval for one period is skipped. Zero for a
+   * strategy with `on_bar`.
+   *
+   * @return The count over the source's life (each bar counted once).
+   */
+  std::size_t bars_not_delivered() const noexcept { return bars_not_delivered_; }
 
   /**
    * @brief Sets the bars each poll requests.
@@ -524,17 +556,66 @@ private:
     if (collected.empty()) {
       outcome = runner::PollOutcome::UNCHANGED;
     }
-    for (const auto& item : collected) {
-      const auto& instrument = universe_[item.instrument_];
-      if (!item.newest_ || (latest_history && !(*latest_history < item.event_.period_end_))) {
-        runner_instance.feed_warmup(item.event_);
-        ++bars_fed_as_warmup_;
-        last_bar_[instrument.symbol_] = item.event_.bar_.timestamp_;
-        continue;
+    if constexpr (session_source_detail::takes_slices<Runner>::value) {
+      // **One delivery per period end and interval.** The bars are in period-end order, so a period is
+      // complete when a later one starts. Within one read a period is all history or all live (a newest
+      // bar tying a history bar is history), so the whole bucket goes one way.
+      strategy::slice_detail::Bucket bucket;
+      bool bucket_is_history = false;
+      const auto deliver = [&] {
+        if (bucket.empty()) {
+          return;
+        }
+        delivered_through_ = bucket.period_end();
+        for (const auto& slice : bucket.take()) {
+          if (bucket_is_history) {
+            runner_instance.feed_warmup(slice);
+          } else {
+            runner_instance.feed(slice);
+          }
+        }
+      };
+      for (const auto& item : collected) {
+        const auto& instrument = universe_[item.instrument_];
+        const auto& event = item.event_;
+        last_bar_[instrument.symbol_] = event.bar_.timestamp_;
+        // **A period already delivered is not reopened.** The bar keeps its own series complete, but an
+        // older bar must not overwrite a newer price or turn the clock back.
+        if (delivered_through_ && !(*delivered_through_ < event.period_end_)) {
+          runner_instance.record_history_only(event);
+          ++bars_not_delivered_;
+          continue;
+        }
+        if (!bucket.empty() && bucket.period_end() < event.period_end_) {
+          deliver();
+        }
+        if (bucket.holds(event)) {
+          ++bars_not_delivered_;
+          continue;
+        }
+        const bool history =
+          !item.newest_ || (latest_history && !(*latest_history < event.period_end_));
+        runner_instance.record(event);
+        bucket.add(event);
+        bucket_is_history = history;
+        if (history) {
+          ++bars_fed_as_warmup_;
+        }
       }
-      runner_instance.context().set_last_price(instrument, item.event_.bar_.close_);
-      runner_instance.feed(item.event_);
-      last_bar_[instrument.symbol_] = item.event_.bar_.timestamp_;
+      deliver();
+    } else {
+      for (const auto& item : collected) {
+        const auto& instrument = universe_[item.instrument_];
+        if (!item.newest_ || (latest_history && !(*latest_history < item.event_.period_end_))) {
+          runner_instance.feed_warmup(item.event_);
+          ++bars_fed_as_warmup_;
+          last_bar_[instrument.symbol_] = item.event_.bar_.timestamp_;
+          continue;
+        }
+        runner_instance.context().set_last_price(instrument, item.event_.bar_.close_);
+        runner_instance.feed(item.event_);
+        last_bar_[instrument.symbol_] = item.event_.bar_.timestamp_;
+      }
     }
     last_error_.reset();
     return outcome;
@@ -1402,6 +1483,10 @@ private:
   int count_{100};
   std::size_t bars_not_yet_closed_{0};
   std::size_t bars_fed_as_warmup_{0};
+  // For a strategy declaring `on_bars`: bars not delivered (a period already delivered, or a second bar
+  // of one instrument in a period), and the last period end delivered, over the source's life.
+  std::size_t bars_not_delivered_{0};
+  std::optional<std::chrono::system_clock::time_point> delivered_through_;
   std::map<std::string, std::optional<std::chrono::system_clock::time_point>> held_bar_;
   int history_limit_{100};
   std::map<std::string, std::optional<std::chrono::system_clock::time_point>> last_bar_;

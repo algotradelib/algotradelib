@@ -3012,3 +3012,461 @@ TEST_CASE("an order-update watch reports what a row-by-row scan of the listings 
   CHECK(scanning.contradicted_rows() > 20);
   CHECK(scanning.untracked_rows() > 20);
 }
+
+// ---------------------------------------------------------------------------
+// on_bars: one call per period end and interval, with every instrument's bar
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** A bar of `id` stamped at `at`, opening at `open` and closing at `close`. */
+strategy::BarEvent slice_bar(
+  const InstrumentId& id,
+  Clock::time_point at,
+  BarInterval interval,
+  const char* open,
+  const char* close,
+  BarStamp stamp = BarStamp::CLOSE
+) {
+  Bar bar;
+  bar.timestamp_ = at;
+  bar.open_ = Decimal64::parse(open);
+  const auto o = Decimal64::parse(open);
+  const auto c = Decimal64::parse(close);
+  bar.high_ = decimal_less(o, c) ? c : o;
+  bar.low_ = decimal_less(o, c) ? o : c;
+  bar.close_ = c;
+  bar.volume_ = Decimal64::parse("1000");
+  return strategy::make_bar_event(id, interval, stamp, bar);
+}
+
+backtest::ReplayConfig pair_config() {
+  auto config = replay_config();
+  config.instruments_ = {samsung_reference(), hynix_reference()};
+  return config;
+}
+
+/** Records every slice it is given, and buys ten of `buy_` on the slice numbered `buy_on_`. */
+struct RecordsSlices {
+  struct Seen {
+    Clock::time_point end_;
+    BarInterval interval_{BarInterval::ONE_DAY};
+    std::vector<std::string> symbols_;
+    Clock::time_point now_;
+    bool cached_to_its_bar_{true};
+    std::size_t working_{0};
+  };
+  std::vector<Seen> seen_;
+  std::vector<std::string> events_;
+  std::optional<InstrumentId> buy_;
+  std::size_t buy_on_{0};
+  std::vector<Decimal64> fill_prices_;
+
+  template <class Ctx>
+  void on_bars(Ctx& ctx, const strategy::BarSlice& slice) {
+    Seen seen;
+    seen.end_ = slice.period_end_;
+    seen.interval_ = slice.interval_;
+    seen.now_ = ctx.now();
+    seen.working_ = ctx.portfolio().working_.size();
+    for (const auto& event : slice.bars_) {
+      seen.symbols_.push_back(event.instrument_.symbol_);
+#if defined(ATL_HAS_EIGEN)
+      const auto* series = ctx.bars(event.instrument_, slice.interval_);
+      seen.cached_to_its_bar_ = seen.cached_to_its_bar_ && series != nullptr &&
+        series->newest_instant() == event.bar_.timestamp_;
+#endif
+    }
+    if (buy_ && seen_.size() == buy_on_) {
+      ctx.submit(strategy::OrderIntent::market(
+        *buy_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
+      ).with_tag("slice"));
+    }
+    seen_.push_back(std::move(seen));
+    events_.push_back("bars");
+  }
+
+  template <class Ctx>
+  void on_quote(Ctx&, const strategy::QuoteEvent&) {
+    events_.push_back("quote");
+  }
+
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill& fill) {
+    fill_prices_.push_back(fill.price_);
+  }
+};
+
+strategy::QuoteEvent quote_at(const InstrumentId& id, Clock::time_point at, const char* price) {
+  strategy::QuoteEvent event;
+  event.quote_.instrument_ = id;
+  event.quote_.last_price_ = Decimal64::parse(price);
+  event.quote_.received_at_ = at;
+  return event;
+}
+
+} // namespace
+
+TEST_CASE("on_bars receives each period once with every instrument's bar") {
+  backtest::Backtester<RecordsSlices> engine(RecordsSlices{}, pair_config());
+  const auto d1 = utc(2026, 3, 10, 6, 30);
+  const auto d2 = utc(2026, 3, 11, 6, 30);
+  const auto d3 = utc(2026, 3, 12, 6, 30);
+  engine.feed(slice_bar(samsung(), d1, BarInterval::ONE_DAY, "100", "101"));
+  engine.feed(slice_bar(hynix(), d1, BarInterval::ONE_DAY, "200", "201"));
+  // Nothing is delivered while the period may still receive bars.
+  CHECK(engine.strategy().seen_.empty());
+  engine.feed(slice_bar(samsung(), d2, BarInterval::ONE_DAY, "102", "103"));
+  // A later period delivered the first, with both instruments.
+  REQUIRE(engine.strategy().seen_.size() == 1);
+  // The second period has no bar for one instrument, so that instrument is absent.
+  engine.feed(slice_bar(samsung(), d3, BarInterval::ONE_DAY, "104", "105"));
+  engine.feed(slice_bar(hynix(), d3, BarInterval::ONE_DAY, "204", "205"));
+  engine.finish();
+
+  const auto& seen = engine.strategy().seen_;
+  REQUIRE(seen.size() == 3);
+  CHECK(seen[0].end_ == d1);
+  CHECK(seen[0].symbols_ == std::vector<std::string>{"005930", "000660"});
+  CHECK(seen[1].end_ == d2);
+  CHECK(seen[1].symbols_ == std::vector<std::string>{"005930"});
+  CHECK(seen[2].end_ == d3);
+  CHECK(seen[2].symbols_ == std::vector<std::string>{"005930", "000660"});
+  for (const auto& one : seen) {
+    // The clock stands at the period, and each instrument's cached series ends at its bar.
+    CHECK(one.now_ == one.end_);
+    CHECK(one.cached_to_its_bar_);
+  }
+}
+
+TEST_CASE("an order decided in on_bars fills on a later period and never on a bar of its own") {
+  RecordsSlices strategy;
+  strategy.buy_ = hynix();
+  backtest::Backtester<RecordsSlices> engine(std::move(strategy), pair_config());
+  // The order for the second instrument is decided after that instrument's bar of the same period was
+  // settled, so the first price it can meet is the next period's open.
+  engine.feed(slice_bar(samsung(), utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "100", "101"));
+  engine.feed(slice_bar(hynix(), utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "200", "210"));
+  engine.feed(slice_bar(samsung(), utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "102", "103"));
+  engine.feed(slice_bar(hynix(), utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "220", "230"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("220"));
+}
+
+TEST_CASE("the last period reaches on_bars at finish before on_stop counts what is left") {
+  RecordsSlices strategy;
+  strategy.buy_ = samsung();
+  strategy.buy_on_ = 1;
+  backtest::Backtester<RecordsSlices> engine(std::move(strategy), pair_config());
+  engine.feed(slice_bar(samsung(), utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "100", "101"));
+  engine.feed(slice_bar(samsung(), utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "102", "103"));
+  REQUIRE(engine.strategy().seen_.size() == 1);
+  engine.finish();
+  // Delivered once, and the order it placed is the one still queued.
+  CHECK(engine.strategy().seen_.size() == 2);
+  CHECK(engine.result().unfilled_ == 1);
+}
+
+TEST_CASE("intervals ending at one instant give one slice each in the order first fed") {
+  const auto t = utc(2026, 3, 13, 6, 30);
+  const auto run = [&](bool minute_first) {
+    backtest::Backtester<RecordsSlices> engine(RecordsSlices{}, pair_config());
+    for (const auto& id : {samsung(), hynix()}) {
+      if (minute_first) {
+        engine.feed(slice_bar(id, t, BarInterval::ONE_MINUTE, "100", "101"));
+        engine.feed(slice_bar(id, t, BarInterval::ONE_DAY, "99", "101"));
+      } else {
+        engine.feed(slice_bar(id, t, BarInterval::ONE_DAY, "99", "101"));
+        engine.feed(slice_bar(id, t, BarInterval::ONE_MINUTE, "100", "101"));
+      }
+    }
+    engine.finish();
+    return engine.strategy().seen_;
+  };
+  for (const bool minute_first : {true, false}) {
+    const auto seen = run(minute_first);
+    REQUIRE(seen.size() == 2);
+    CHECK(seen[0].interval_ == (minute_first ? BarInterval::ONE_MINUTE : BarInterval::ONE_DAY));
+    CHECK(seen[1].interval_ == (minute_first ? BarInterval::ONE_DAY : BarInterval::ONE_MINUTE));
+    for (const auto& one : seen) {
+      CHECK(one.symbols_ == std::vector<std::string>{"005930", "000660"});
+      CHECK(one.cached_to_its_bar_);
+    }
+  }
+}
+
+TEST_CASE("a slice's order does not meet a same-instant bar of another interval fed after it") {
+  // A close-stamped weekly bar has no start the replay can derive, so an order already queued when it
+  // settled could fill at its open, days in the past. Every bar ending at the instant settles before
+  // the period is delivered, so the minute slice's order waits for the next minute.
+  RecordsSlices strategy;
+  strategy.buy_ = samsung();
+  backtest::Backtester<RecordsSlices> engine(std::move(strategy), replay_config());
+  const auto t = utc(2026, 3, 13, 6, 30);
+  engine.feed(slice_bar(samsung(), t, BarInterval::ONE_MINUTE, "100", "101"));
+  engine.feed(slice_bar(samsung(), t, BarInterval::ONE_WEEK, "50", "101"));
+  engine.feed(slice_bar(samsung(), t + std::chrono::minutes(1), BarInterval::ONE_MINUTE, "120", "121"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("120"));
+}
+
+TEST_CASE("a quote after a period comes after its on_bars which sees the period's own state") {
+  backtest::Backtester<RecordsSlices> engine(RecordsSlices{}, pair_config());
+  const auto t = utc(2026, 3, 10, 6, 30);
+  engine.feed(slice_bar(samsung(), t, BarInterval::ONE_DAY, "100", "101"));
+  engine.feed(slice_bar(hynix(), t, BarInterval::ONE_DAY, "200", "201"));
+  engine.feed(quote_at(samsung(), t + std::chrono::minutes(30), "999"));
+  engine.finish();
+
+  CHECK(engine.strategy().events_ == std::vector<std::string>{"bars", "quote"});
+  REQUIRE(engine.strategy().seen_.size() == 1);
+  CHECK(engine.strategy().seen_[0].now_ == t);
+}
+
+TEST_CASE("on_bars refuses a bar it could not show consistently before anything changes") {
+  const auto t = utc(2026, 3, 10, 6, 30);
+
+  SECTION("a bar for a period a same-instant quote already delivered") {
+    backtest::Backtester<RecordsSlices> engine(RecordsSlices{}, pair_config());
+    engine.feed(slice_bar(samsung(), t, BarInterval::ONE_DAY, "100", "101"));
+    engine.feed(quote_at(samsung(), t, "101"));
+    REQUIRE(engine.strategy().seen_.size() == 1);
+    const auto bars_before = engine.result().bars_;
+    CHECK_THROWS_AS(
+      engine.feed(slice_bar(hynix(), t, BarInterval::ONE_DAY, "200", "201")), std::invalid_argument
+    );
+    CHECK(engine.result().bars_ == bars_before);
+    engine.finish();
+    CHECK(engine.strategy().seen_.size() == 1);
+  }
+
+  SECTION("a bar earlier than the period being collected") {
+    backtest::Backtester<RecordsSlices> engine(RecordsSlices{}, pair_config());
+    engine.feed(slice_bar(samsung(), t, BarInterval::ONE_DAY, "100", "101"));
+    CHECK_THROWS_AS(
+      engine.feed(slice_bar(hynix(), t - std::chrono::hours(24), BarInterval::ONE_DAY, "200", "201")),
+      std::invalid_argument
+    );
+    CHECK(engine.result().bars_ == 1);
+  }
+
+  SECTION("a second bar of one instrument and interval for the same period end") {
+    // An open-stamped daily bar ends a day after its stamp, so it can share a period end with a
+    // close-stamped one of the same instrument.
+    backtest::Backtester<RecordsSlices> engine(RecordsSlices{}, replay_config());
+    engine.feed(slice_bar(
+      samsung(), t - std::chrono::hours(24), BarInterval::ONE_DAY, "100", "101", BarStamp::OPEN
+    ));
+    CHECK_THROWS_AS(
+      engine.feed(slice_bar(samsung(), t, BarInterval::ONE_DAY, "100", "101")), std::invalid_argument
+    );
+    CHECK(engine.result().bars_ == 1);
+  }
+
+  SECTION("a quote earlier than the period being collected") {
+    backtest::Backtester<RecordsSlices> engine(RecordsSlices{}, pair_config());
+    engine.feed(slice_bar(samsung(), t, BarInterval::ONE_DAY, "100", "101"));
+    CHECK_THROWS_AS(
+      engine.feed(quote_at(samsung(), t - std::chrono::minutes(1), "100")), std::invalid_argument
+    );
+    CHECK(engine.result().quotes_ == 0);
+  }
+}
+
+TEST_CASE("a slice with a bar stating its end is decided at that end and not at a nominal one") {
+  // The first instrument's open-stamped daily bar ends nominally at `t`; the second's close-stamped bar
+  // states `t`. The slice holds both, so its decision is exact whichever came first: an order may not
+  // fill at the open of a bar that began before `t`.
+  const auto t = utc(2026, 3, 10, 6, 30);
+  for (const bool exact_first : {true, false}) {
+    RecordsSlices strategy;
+    strategy.buy_ = samsung();
+    backtest::Backtester<RecordsSlices> engine(std::move(strategy), pair_config());
+    const auto nominal = slice_bar(
+      samsung(), t - std::chrono::hours(24), BarInterval::ONE_DAY, "100", "101", BarStamp::OPEN
+    );
+    const auto exact = slice_bar(hynix(), t, BarInterval::ONE_DAY, "200", "201");
+    if (exact_first) {
+      engine.feed(exact);
+      engine.feed(nominal);
+    } else {
+      engine.feed(nominal);
+      engine.feed(exact);
+    }
+    // Began an hour before the decision: not eligible.
+    engine.feed(slice_bar(
+      samsung(), t - std::chrono::hours(1), BarInterval::ONE_DAY, "150", "151", BarStamp::OPEN
+    ));
+    engine.feed(slice_bar(
+      samsung(), t + std::chrono::hours(23), BarInterval::ONE_DAY, "170", "171", BarStamp::OPEN
+    ));
+    engine.finish();
+    REQUIRE(engine.strategy().fill_prices_.size() == 1);
+    CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("170"));
+  }
+}
+
+TEST_CASE("an all-nominal monthly slice's order fills in the next month and not the one after") {
+  // An open-stamped month's end is nominal (31 days), so February's runs five days into March; an
+  // order decided on it must still meet March's bar.
+  RecordsSlices strategy;
+  strategy.buy_ = samsung();
+  strategy.buy_on_ = 1;
+  backtest::Backtester<RecordsSlices> engine(std::move(strategy), replay_config());
+  engine.feed(slice_bar(samsung(), utc(2026, 1, 1, 0, 0), BarInterval::ONE_MONTH, "100", "101", BarStamp::OPEN));
+  engine.feed(slice_bar(samsung(), utc(2026, 2, 1, 0, 0), BarInterval::ONE_MONTH, "110", "111", BarStamp::OPEN));
+  engine.feed(slice_bar(samsung(), utc(2026, 3, 1, 0, 0), BarInterval::ONE_MONTH, "120", "121", BarStamp::OPEN));
+  engine.feed(slice_bar(samsung(), utc(2026, 4, 1, 0, 0), BarInterval::ONE_MONTH, "130", "131", BarStamp::OPEN));
+  engine.finish();
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("120"));
+}
+
+namespace {
+
+/** Rests a limit buy from `on_phase`, withdraws it from `on_order_update`, and records what `on_bars` sees. */
+struct WithdrawsBeforeTheSlice {
+  bool placed_{false};
+  bool withdrawn_{false};
+  std::vector<std::size_t> working_seen_;
+
+  template <class Ctx>
+  void on_phase(Ctx& ctx, const strategy::MarketPhase&) {
+    if (placed_) {
+      return;
+    }
+    placed_ = true;
+    ctx.submit(strategy::OrderIntent::limit(
+      samsung(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")), far_below()
+    ).with_tag("rests"));
+  }
+
+  template <class Ctx>
+  void on_order_update(Ctx& ctx, const OrderSnapshot&) {
+    if (withdrawn_) {
+      return;
+    }
+    for (const auto& working : ctx.portfolio().working_) {
+      withdrawn_ = true;
+      ctx.cancel(working.ref_, "withdraw");
+    }
+  }
+
+  template <class Ctx>
+  void on_bars(Ctx& ctx, const strategy::BarSlice&) {
+    working_seen_.push_back(ctx.portfolio().working_.size());
+  }
+};
+
+} // namespace
+
+TEST_CASE("on_bars sees the queue an order update left and not the one before it") {
+  backtest::Backtester<WithdrawsBeforeTheSlice> engine(WithdrawsBeforeTheSlice{}, replay_config());
+  engine.feed(slice_bar(samsung(), utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "100", "101"));
+  engine.finish();
+  REQUIRE(engine.strategy().placed_);
+  REQUIRE(engine.strategy().withdrawn_);
+  REQUIRE(engine.strategy().working_seen_.size() == 1);
+  CHECK(engine.strategy().working_seen_[0] == 0);
+  CHECK(engine.result().unfilled_ == 0);
+}
+
+#if defined(ATL_HAS_EIGEN)
+TEST_CASE("a halt drops the period being collected and finish does not deliver it") {
+  RecordsSlices strategy;
+  strategy.buy_ = samsung();
+  backtest::Backtester<RecordsSlices> engine(std::move(strategy), pair_config());
+  engine.feed(slice_bar(samsung(), utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(slice_bar(samsung(), utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  // The third period's first bar is collected; the second halts the replay at its mark.
+  engine.feed(slice_bar(hynix(), utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "200", "201"));
+  engine.feed(slice_bar(
+    samsung(), utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "9223372036854775807"
+  ));
+  REQUIRE(engine.result().halted_);
+  const auto delivered = engine.strategy().seen_.size();
+  engine.finish();
+  CHECK(engine.strategy().seen_.size() == delivered);
+}
+#endif
+
+namespace {
+
+/** Holds ten of the first instrument while it closes above the second: the pair rule, by single bars. */
+struct PairRuleByBar {
+  std::optional<std::pair<Clock::time_point, Decimal64>> first_;
+  std::optional<std::pair<Clock::time_point, Decimal64>> second_;
+  std::optional<Clock::time_point> decided_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (bar.instrument_ == samsung()) {
+      first_ = std::make_pair(bar.period_end_, bar.bar_.close_);
+    } else if (bar.instrument_ == hynix()) {
+      second_ = std::make_pair(bar.period_end_, bar.bar_.close_);
+    }
+    if (!first_ || !second_ || !(first_->first == second_->first) || decided_ == first_->first) {
+      return;
+    }
+    decided_ = first_->first;
+    decide(ctx, first_->second, second_->second);
+  }
+
+  template <class Ctx>
+  static void decide(Ctx& ctx, const Decimal64& first, const Decimal64& second) {
+    strategy::TargetPosition target;
+    target.instrument_ = samsung();
+    target.tag_ = "pair";
+    target.target_quantity_ = decimal_less(second, first) ? Decimal64::parse("10") : Decimal64::parse("0");
+    ctx.submit(target);
+  }
+};
+
+/** The same rule with `on_bars`: no bookkeeping. */
+struct PairRuleBySlice {
+  template <class Ctx>
+  void on_bars(Ctx& ctx, const strategy::BarSlice& slice) {
+    const auto* first = slice.find(samsung());
+    const auto* second = slice.find(hynix());
+    if (first == nullptr || second == nullptr) {
+      return;
+    }
+    PairRuleByBar::decide(ctx, first->bar_.close_, second->bar_.close_);
+  }
+};
+
+template <typename Strategy>
+std::vector<backtest::Execution> pair_rule_executions() {
+  backtest::Backtester<Strategy> engine(Strategy{}, pair_config());
+  const std::array<std::array<const char*, 2>, 6> closes{{
+    {"100", "90"}, {"95", "99"}, {"110", "100"}, {"108", "109"}, {"120", "100"}, {"121", "100"}
+  }};
+  for (std::size_t day = 0; day < closes.size(); ++day) {
+    const auto at = utc(2026, 3, 9 + static_cast<int>(day), 6, 30);
+    engine.feed(slice_bar(samsung(), at, BarInterval::ONE_DAY, closes[day][0], closes[day][0]));
+    engine.feed(slice_bar(hynix(), at, BarInterval::ONE_DAY, closes[day][1], closes[day][1]));
+  }
+  engine.finish();
+  return engine.result().executions_;
+}
+
+} // namespace
+
+TEST_CASE("the same pair rule trades identically through on_bar and on_bars") {
+  const auto by_bar = pair_rule_executions<PairRuleByBar>();
+  const auto by_slice = pair_rule_executions<PairRuleBySlice>();
+  REQUIRE(by_bar.size() >= 2);
+  REQUIRE(by_bar.size() == by_slice.size());
+  for (std::size_t i = 0; i < by_bar.size(); ++i) {
+    CHECK(by_bar[i].fill_.instrument_ == by_slice[i].fill_.instrument_);
+    CHECK(by_bar[i].fill_.side_ == by_slice[i].fill_.side_);
+    CHECK(by_bar[i].fill_.quantity_ == by_slice[i].fill_.quantity_);
+    CHECK(by_bar[i].fill_.price_ == by_slice[i].fill_.price_);
+    CHECK(by_bar[i].fill_.at_ == by_slice[i].fill_.at_);
+  }
+}

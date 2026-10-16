@@ -28,7 +28,7 @@ namespace strategy {
  *   Params params_;
  *
  *   template <class Ctx> void on_start(Ctx& ctx);
- *   template <class Ctx> void on_bar(Ctx& ctx, const BarEvent& bar);
+ *   template <class Ctx> void on_bar(Ctx& ctx, const BarEvent& bar);     // or on_bars, not both
  *   template <class Ctx> void on_quote(Ctx& ctx, const QuoteEvent& quote);
  *   template <class Ctx> void on_fill(Ctx& ctx, const Fill& fill);
  *   template <class Ctx> void on_order_update(Ctx& ctx, const OrderSnapshot& order);
@@ -36,6 +36,12 @@ namespace strategy {
  *   template <class Ctx> void on_stop(Ctx& ctx);
  * };
  * ```
+ *
+ * `on_bar` receives one bar at a time. A strategy that decides on several instruments together (a pair's
+ * hedge ratio, a ranking across a universe) declares instead
+ * `template <class Ctx> void on_bars(Ctx& ctx, const BarSlice& slice);`, called once per period end and
+ * interval with every instrument's bar for it, after all of them are cached. A strategy declares one of
+ * the two; declaring both does not compile, so neither runs in silence beside the other.
  *
  * Because the handlers are templates, the same strategy runs under every runner: a dry run, a
  * live session with any broker, and a backtest. Take the context by reference; a context cannot
@@ -78,6 +84,7 @@ namespace strategy_detail {
 ATL_DETECT_DECLARED(on_start);
 ATL_DETECT_DECLARED(on_stop);
 ATL_DETECT_DECLARED(on_bar);
+ATL_DETECT_DECLARED(on_bars);
 ATL_DETECT_DECLARED(on_quote);
 ATL_DETECT_DECLARED(on_fill);
 ATL_DETECT_DECLARED(on_order_update);
@@ -88,8 +95,8 @@ ATL_DETECT_DECLARED(on_phase);
 /** Whether `S` declares any handler at all. */
 template <typename S>
 constexpr bool declares_any_handler =
-  declares_on_start<S> || declares_on_stop<S> || declares_on_bar<S> || declares_on_quote<S> ||
-  declares_on_fill<S> || declares_on_order_update<S> || declares_on_phase<S>;
+  declares_on_start<S> || declares_on_stop<S> || declares_on_bar<S> || declares_on_bars<S> ||
+  declares_on_quote<S> || declares_on_fill<S> || declares_on_order_update<S> || declares_on_phase<S>;
 
 /** Whether `S`'s handler names can be looked up: a class, and not `final`. */
 template <typename S>
@@ -102,6 +109,19 @@ void require_readable_names() {
     names_can_be_read<S>,
     "a final strategy cannot be checked for a handler the runner would skip, because its member names "
     "cannot be looked up; remove `final` from the strategy class"
+  );
+}
+
+/**
+ * Refuses a strategy that declares both bar handlers. A runner delivers bars one way or the other, so the
+ * second handler would never run, or both would and every decision would be taken twice.
+ */
+template <typename S>
+void require_one_bar_handler() {
+  static_assert(
+    !(declares_on_bar<S> && declares_on_bars<S>),
+    "a strategy declares on_bar or on_bars, not both: on_bar receives each bar, on_bars every "
+    "instrument's bar of a period at once; keep the one this strategy decides with"
   );
 }
 
@@ -158,6 +178,9 @@ void stop(S& strategy, Ctx& context) {
 /**
  * @brief Calls `strategy.on_bar(context, event)` if the strategy declares `on_bar`; otherwise does nothing.
  *
+ * Does not compile for a strategy that declares `on_bars`: its bars go through `bars`, so a path that
+ * still delivers one `BarEvent` at a time fails to build instead of skipping the strategy in silence.
+ *
  * @tparam S The strategy type; a class that is not `final`.
  * @tparam Ctx The context type.
  * @param strategy The strategy.
@@ -167,12 +190,40 @@ void stop(S& strategy, Ctx& context) {
 template <typename S, typename Ctx>
 void bar(S& strategy, Ctx& context, const BarEvent& event) {
   strategy_detail::require_readable_names<S>();
+  strategy_detail::require_one_bar_handler<S>();
+  static_assert(
+    strategy_detail::declares_on_bar<S> || !strategy_detail::declares_on_bars<S>,
+    "this strategy declares on_bars, so its bars are delivered in slices: feed it through "
+    "Runner::record and Runner::feed(const BarSlice&), not one BarEvent at a time"
+  );
   if constexpr (strategy_detail::declares_on_bar<S>) {
     strategy.on_bar(context, event);
   } else {
     static_cast<void>(strategy);
     static_cast<void>(context);
     static_cast<void>(event);
+  }
+}
+
+/**
+ * @brief Calls `strategy.on_bars(context, slice)` if the strategy declares `on_bars`; otherwise does nothing.
+ *
+ * @tparam S The strategy type; a class that is not `final`.
+ * @tparam Ctx The context type.
+ * @param strategy The strategy.
+ * @param context The context passed to the handler.
+ * @param slice The slice passed to the handler.
+ */
+template <typename S, typename Ctx>
+void bars(S& strategy, Ctx& context, const BarSlice& slice) {
+  strategy_detail::require_readable_names<S>();
+  strategy_detail::require_one_bar_handler<S>();
+  if constexpr (strategy_detail::declares_on_bars<S>) {
+    strategy.on_bars(context, slice);
+  } else {
+    static_cast<void>(strategy);
+    static_cast<void>(context);
+    static_cast<void>(slice);
   }
 }
 
@@ -268,12 +319,19 @@ namespace strategy_detail {
 /** Makes every call a runner makes to `S` with context `Ctx`. Compiled by `StrategyConformance`, never run. */
 template <typename S, typename Ctx>
 void call_every_handler(
-  S& strategy, Ctx& context, const BarEvent& bar, const QuoteEvent& quote, const Fill& fill,
-  const OrderSnapshot& order, const MarketPhase& phase
+  S& strategy, Ctx& context, const BarEvent& bar, const BarSlice& slice, const QuoteEvent& quote,
+  const Fill& fill, const OrderSnapshot& order, const MarketPhase& phase
 ) {
   dispatch::start(strategy, context);
   dispatch::stop(strategy, context);
-  dispatch::bar(strategy, context, bar);
+  // The bar route the runner takes: slices for a strategy declaring `on_bars`, single bars otherwise.
+  if constexpr (declares_on_bars<S>) {
+    static_cast<void>(bar);
+    dispatch::bars(strategy, context, slice);
+  } else {
+    static_cast<void>(slice);
+    dispatch::bar(strategy, context, bar);
+  }
   dispatch::quote(strategy, context, quote);
   dispatch::fill(strategy, context, fill);
   dispatch::order_update(strategy, context, order);
@@ -620,8 +678,13 @@ struct StrategyConformance {
   );
   static_assert(
     strategy_detail::declares_any_handler<S>,
-    "This type declares no strategy handler. Expected at least one of on_start, on_bar, on_quote, "
-    "on_fill, on_order_update, on_phase, or on_stop"
+    "This type declares no strategy handler. Expected at least one of on_start, on_bar, on_bars, "
+    "on_quote, on_fill, on_order_update, on_phase, or on_stop"
+  );
+  static_assert(
+    !(strategy_detail::declares_on_bar<S> && strategy_detail::declares_on_bars<S>),
+    "a strategy declares on_bar or on_bars, not both: on_bar receives each bar, on_bars every "
+    "instrument's bar of a period at once; keep the one this strategy decides with"
   );
 
   /** @brief Always `true`; reading it compiles every handler call the runner makes with `Ctx`. */
@@ -634,7 +697,7 @@ struct StrategyConformance {
  * Checks that:
  * - `S` is a class and not `final`;
  * - `Ctx` cannot be copied, so a handler taking it by value does not compile;
- * - `S` declares at least one handler;
+ * - `S` declares at least one handler, and not both `on_bar` and `on_bars`;
  * - every handler `S` declares can be called the way a runner calls it with `Ctx`. Each handler's
  *   body is compiled for `Ctx`, including handlers for events the program never feeds.
  *
