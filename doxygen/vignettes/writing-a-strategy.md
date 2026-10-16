@@ -265,7 +265,9 @@ struct PairSpread {
 - **Live**, each poll's bars are grouped by period; history periods go through
   `Runner::feed_warmup` as before, and only the newest period can send. A bar that arrives after its
   period was delivered (a name that missed that period's poll) is cached for its own series but not
-  delivered, and `SessionSource::bars_not_delivered` counts it.
+  delivered, and `SessionSource::bars_not_delivered` counts it. An exception during such a poll (a
+  handler that throws, a bar the cache refuses) stops the source: later bar polls throw
+  `std::logic_error`, and the program starts again with a new source.
 - **A source of your own** calls `Runner::record` for each bar of a period, then
   `Runner::feed(const BarSlice&)`; `Runner::feed(const BarEvent&)` does not compile for such a
   strategy, so a path still feeding single bars cannot skip it.
