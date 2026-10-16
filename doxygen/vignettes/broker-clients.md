@@ -316,8 +316,9 @@ one on the way out.
 ### Not supported yet
 
 Toss amount-based order *placement*, which is also how Toss buys a fraction — an
-amount-based order is read back with its amount (`OrderSnapshot::order_amount_`, rounded to 18
-significant digits when Toss states more), and placing one is outstanding.
+amount-based order is read back with its amount (`OrderSnapshot::order_amount_`, rounded half to
+even to 18 significant digits when Toss states more than a `Decimal64` holds), and placing one is
+outstanding.
 A fractional quantity is placed only where Toss accepts one: a US market sell, to
 six decimal places, during the regular session until an hour before the close. Toss conditional
 orders. KIS credit, reserved and overseas orders. KIS's 시간외 단일가 (`07`):
