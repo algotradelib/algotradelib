@@ -240,7 +240,9 @@ public:
    * @tparam CompletionToken An Asio completion token.
    * @param country The market.
    * @param from The date (empty: Toss's today).
-   * @param token The completion token, called with `Result<TradingCalendar>`.
+   * @param token The completion token, called with `Result<TradingCalendar>`: a reply whose day has
+   *   no hours field for that market (`regularMarket` for US, `integrated` for KR) is refused with
+   *   `invalid_calendar_response` rather than read as closed.
    * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>

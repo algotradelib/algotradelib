@@ -40,7 +40,9 @@ producing twenty errors about missing types.
 
 `Decimal64` holds what a broker said, exactly: a 64-bit integer coefficient and a decimal
 scale. `70000.50` is the *value* seventy thousand and a half, held without binary floating
-point, and it stays that through a round trip, a reconciliation, and a comparison.
+point, and it stays that through a round trip, a reconciliation, and a comparison. One field is
+the exception: Toss can state an order's amount with more digits than a `Decimal64` holds, and
+`OrderSnapshot::order_amount_` is then rounded to 18 significant digits.
 
 What it does **not** preserve is the broker's formatting. `parse` normalizes away trailing
 zeros, so `parse("70000.50")` is the coefficient `700005` at scale `1`, the same
