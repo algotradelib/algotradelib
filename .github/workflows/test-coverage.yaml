@@ -61,7 +61,8 @@ jobs:
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
         with:
-          fail_ci_if_error: true
+          # A fork has no Codecov token, so a failed upload fails only this repository's runs.
+          fail_ci_if_error: ${{ !github.event.repository.fork }}
           token: ${{ secrets.CODECOV_TOKEN }}
           codecov_yml_path: codecov.yml
 

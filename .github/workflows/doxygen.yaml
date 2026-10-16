@@ -24,7 +24,7 @@ jobs:
           version: "1.18.0"
 
       - name: Install graphviz and OpenSSL
-        run: sudo apt-get install -y graphviz libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y graphviz libssl-dev
     
       - name: Render doxygen
         run: |
@@ -32,7 +32,8 @@ jobs:
           cmake --build build --target docs
 
       - name: Deploy to GitHub pages 🚀
-        if: contains(fromJSON('["main", "master", "develop"]'), github.ref_name)
+        # A fork has no token for the pages repository; it renders the docs and stops here.
+        if: ${{ !github.event.repository.fork && contains(fromJSON('["main", "master", "develop"]'), github.ref_name) }}
         uses: JamesIves/github-pages-deploy-action@v4.6.1
         with:
           token: ${{ secrets.ALGOTRADELIB_PAGE_PAT }}
