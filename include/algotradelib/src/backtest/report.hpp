@@ -178,6 +178,15 @@ struct ReportCaveats {
   std::optional<std::chrono::system_clock::time_point> first_overdrawn_;
   /** @brief The lowest cash an execution left, if it went below zero. */
   std::optional<Money> lowest_cash_;
+  /**
+   * @brief Executions in a currency other than the equity curve's (`ReplayConfig::currency_`).
+   *
+   * The curve and every figure measured from it leave these out, and so does the overdraft check above.
+   * When this is nonzero and every execution is one of them, `Report::total_return_`, `sharpe_`,
+   * `annualized_sharpe_`, `sortino_` and `max_drawdown_` are `math::missing()`: the curve then holds only the
+   * opening cash, which would read as a flat result. The opening and closing equity stay the curve's.
+   */
+  std::size_t other_currency_executions_{0};
   /** @brief When the lowest cash was reached. */
   std::optional<std::chrono::system_clock::time_point> lowest_cash_at_;
   /** @brief The sale tax given to the fill model; absent if none was modelled. */
@@ -203,7 +212,8 @@ struct Report {
   Decimal64 closing_equity_;
   /**
    * @brief The total return over the replay, as a fraction; `math::undefined()` when the opening equity is
-   *   zero or negative (a replay may start with negative cash).
+   *   zero or negative (a replay may start with negative cash), `math::missing()` when every execution was
+   *   in another currency than the curve's (`ReportCaveats::other_currency_executions_`).
    */
   math::Scalar total_return_{0};
 
@@ -446,6 +456,11 @@ inline Report summarize(
     report.tax_paid_ = report.tax_by_currency_.front().amount_;
   }
   report.caveats_.multiple_instruments_ = seen.size() > 1;
+  for (const auto& execution : result.executions_) {
+    if (!(execution.currency_ == result.currency_)) {
+      ++report.caveats_.other_currency_executions_;
+    }
+  }
 
   if (result.equity_.empty()) {
     // Nothing to measure. Every figure stays unobserved rather than becoming zero, which would read as
@@ -494,19 +509,22 @@ inline Report summarize(
     analytics::annualize_ratio(report.sharpe_, *periods_per_year) :
     math::missing();
 
+  // Every trade outside the curve: it holds only the opening cash, and its figures describe no trading.
+  const auto outside = report.caveats_.other_currency_executions_;
+  if (outside > 0 && outside == result.executions_.size()) {
+    report.total_return_ = math::missing();
+    report.sharpe_ = math::missing();
+    report.annualized_sharpe_ = math::missing();
+    report.sortino_ = math::missing();
+    report.max_drawdown_ = math::missing();
+  }
+
   // Turnover from the executions rather than from a weight matrix, because a replay knows what it
   // actually traded. One-way, matching `analytics::one_way_turnover`: the fraction of equity that
   // changed hands.
   // Same money on both sides, or no figure at all.
-  bool one_currency = true;
-  for (const auto& execution : result.executions_) {
-    if (!(execution.currency_ == result.currency_)) {
-      one_currency = false;
-      break;
-    }
-  }
   report.total_turnover_ = !(opening > math::Scalar{0}) ? math::undefined() : math::Scalar{0};
-  if (!one_currency) {
+  if (outside > 0) {
     report.total_turnover_ = math::missing();
   }
   if (math::observed(report.total_turnover_)) {
