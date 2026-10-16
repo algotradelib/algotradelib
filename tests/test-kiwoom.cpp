@@ -987,7 +987,7 @@ TEST_CASE("a Kiwoom HTTP error keeps the return_code from its whole body", "[kiw
   }
 }
 
-TEST_CASE("every 감리구분 phrase Kiwoom publishes reads as listed", "[kiwoom][reference]") {
+TEST_CASE("every auditInfo phrase Kiwoom publishes reads as listed", "[kiwoom][reference]") {
   const auto status = [](const std::string& audit) {
     auto result = kiwoom::KiwoomClientTestAccess::instrument(
       samsung(), ok_body(R"({"return_code":0,"name":"x","marketCode":"0","auditInfo":")" + audit + "\"}")
