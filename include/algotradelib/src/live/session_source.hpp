@@ -132,8 +132,8 @@ struct feeds_warmup : feeds_warmup_of<
  * interval) before a later period's. A bar arriving after its period was delivered is cached but not
  * delivered; see `bars_not_delivered`. An exception during such a poll (a bar the cache refuses, a handler
  * that throws) stops the source: its period may be partly recorded and partly delivered, so every later
- * bar poll throws `std::logic_error`, and a program starts again with a new source, whose first read is fed
- * as history.
+ * bar poll throws `std::logic_error`. Restart the program with a fresh runner and source: older periods
+ * warm up the strategy, and the newest eligible period may trade.
  *
  * Requests are tagged by kind, so a client budget with a trading reserve
  * (`network::RateLimitBudget::trading_reserve_`) keeps capacity for orders. A kind the broker does not offer compiles to no request and returns `UNCHANGED`.
@@ -452,8 +452,8 @@ private:
       if (interrupted_) {
         throw std::logic_error(
           "a bar poll for on_bars was interrupted by an exception (" + *interrupted_ + "); its period may be "
-          "partly recorded and partly delivered, so this source does not continue: start again with a new "
-          "source, whose first read is fed as history"
+          "partly recorded and partly delivered, so this source does not continue: restart the program with a "
+          "fresh runner and source; older periods warm up the strategy, and the newest eligible period may trade"
         );
       }
     }
@@ -577,7 +577,7 @@ private:
       // **An exception stops the source** (a bar the cache refuses, a handler that throws). The period
       // being collected may then be partly recorded and partly delivered, and resuming it in a later poll
       // would have to reconcile it with that poll's history and order; every later poll throws instead,
-      // so nothing is lost or delivered twice in silence. A new source starts with a read fed as history.
+      // so nothing is lost or delivered twice in silence. A restart builds a fresh runner and source.
       strategy::slice_detail::Bucket bucket;
       bool bucket_is_history = false;
       try {
