@@ -2243,6 +2243,59 @@ TEST_CASE("slippage in two currencies is kept apart like every other cost") {
   REQUIRE(at_home.slippage_paid_);
   CHECK(at_home.slippage_paid_->coefficient() > 0);
 }
+
+TEST_CASE("a replay whose every trade is outside its curve reports no figures and counts them") {
+  // The curve is in `currency_` only. A won replay of a dollar stock that rose by half used to report a
+  // total return of zero: the curve held the opening cash and nothing else, which read as a flat result.
+  backtest::ReplayConfig config;
+  config.cash_ = Decimal64::parse("100000000");
+  config.instruments_ = {samsung_reference(), apple_reference()};
+  config.limits_.permitted_phases_ = std::nullopt;
+  const auto apple = apple_reference().id_;
+
+  backtest::Backtester<HoldsTen> abroad(HoldsTen{}, config);
+  abroad.feed(bar_for(apple, utc(2026, 3, 10, 6, 31), "200"));
+  abroad.feed(bar_for(apple, utc(2026, 3, 11, 6, 31), "250"));
+  abroad.feed(bar_for(apple, utc(2026, 3, 12, 6, 31), "300"));
+  abroad.finish();
+  const auto report = backtest::summarize(abroad.result(), abroad.fills(), 252.0);
+  REQUIRE(report.executions_ == 1);
+  CHECK(report.caveats_.other_currency_executions_ == 1);
+  CHECK_FALSE(math::observed(report.total_return_));
+  CHECK_FALSE(math::observed(report.sharpe_));
+  CHECK_FALSE(math::observed(report.annualized_sharpe_));
+  CHECK_FALSE(math::observed(report.sortino_));
+  CHECK_FALSE(math::observed(report.max_drawdown_));
+  CHECK_FALSE(math::observed(report.total_turnover_));
+
+  // With a trade in the curve's currency too, the figures are the curve's, and the count says what they omit.
+  backtest::Backtester<HoldsTen> mixed(HoldsTen{}, config);
+  mixed.feed(bar_for(samsung(), utc(2026, 3, 10, 6, 30), "70000"));
+  mixed.feed(bar_for(apple, utc(2026, 3, 10, 6, 31), "200"));
+  mixed.feed(bar_for(samsung(), utc(2026, 3, 11, 6, 30), "77000"));
+  mixed.feed(bar_for(apple, utc(2026, 3, 11, 6, 31), "250"));
+  mixed.feed(bar_for(samsung(), utc(2026, 3, 12, 6, 30), "84000"));
+  mixed.feed(bar_for(apple, utc(2026, 3, 12, 6, 31), "300"));
+  mixed.finish();
+  const auto both = backtest::summarize(mixed.result(), mixed.fills());
+  REQUIRE(both.executions_ == 2);
+  CHECK(both.caveats_.other_currency_executions_ == 1);
+  CHECK(math::observed(both.total_return_));
+  CHECK(both.total_return_ > 0);
+  CHECK_FALSE(math::observed(both.total_turnover_));
+
+  // In its own currency the same dollar replay has its figures and nothing to count.
+  config.currency_ = Currency::usd();
+  config.cash_ = Decimal64::parse("100000");
+  backtest::Backtester<HoldsTen> home(HoldsTen{}, config);
+  home.feed(bar_for(apple, utc(2026, 3, 10, 6, 31), "200"));
+  home.feed(bar_for(apple, utc(2026, 3, 11, 6, 31), "250"));
+  home.feed(bar_for(apple, utc(2026, 3, 12, 6, 31), "300"));
+  home.finish();
+  const auto at_home = backtest::summarize(home.result(), home.fills());
+  CHECK(at_home.caveats_.other_currency_executions_ == 0);
+  CHECK(at_home.total_return_ > 0);
+}
 #endif
 
 namespace {
