@@ -226,6 +226,12 @@ TEST_CASE("a refusal through an erased strand executor completes on that strand"
   while ((completions < 2 || !moved->has_value()) && std::chrono::steady_clock::now() < deadline) {
     io.run_one_for(std::chrono::milliseconds(100));
   }
+  // The system executor's thread hands each refusal to the strand and destroys its tracked copy of the
+  // executor afterwards, possibly after the handler has run. Run until that work is released, or `io`
+  // could be destroyed under it.
+  guard.reset();
+  io.run_for(std::chrono::seconds(5));
+  CHECK(io.stopped());
   CHECK(completions == 2);
   CHECK(on_strand);
   REQUIRE(moved->has_value());
