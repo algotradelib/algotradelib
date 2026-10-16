@@ -45,6 +45,15 @@ jobs:
           # Drop macOS-gcc until the first release.
           - os: macos-latest
             compiler: gcc
+          # While the repository is private: C++20 and C++23 on Ubuntu only.
+          - os: macos-latest
+            cxx_std: 20
+          - os: macos-latest
+            cxx_std: 23
+          - os: windows-latest
+            cxx_std: 20
+          - os: windows-latest
+            cxx_std: 23
         # test-coverage builds and runs the tests in this configuration; this job builds the examples only.
         include:
           - os: ubuntu-latest
@@ -90,7 +99,7 @@ jobs:
           options: |
             CMAKE_CXX_STANDARD=${{ matrix.cxx_std }}
             ATL_FETCH_DEPS=ON
-            ATL_BUILD_EXAMPLES=ON
+            ATL_BUILD_EXAMPLES=${{ matrix.os == 'ubuntu-latest' && 'ON' || 'OFF' }}
             ATL_BUILD_TESTS=${{ matrix.tests || 'ON' }}
             ATL_ENABLE_COVERAGE=OFF
 
