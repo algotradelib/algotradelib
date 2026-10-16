@@ -38,6 +38,7 @@ jobs:
       - name: Install OpenSSL
         run: sudo apt-get update && sudo apt-get install -y libssl-dev
 
+      # cmake-check skips its tests for Ubuntu GCC C++17 because this job runs them: keep the standard pinned.
       - uses: threeal/cmake-action@v2.1.0
         with:
           run-build: true
@@ -45,6 +46,7 @@ jobs:
           options: |
             CMAKE_BUILD_TYPE=Debug
             CMAKE_CXX_FLAGS_DEBUG=-g0
+            CMAKE_CXX_STANDARD=17
             ATL_FETCH_DEPS=ON
             ATL_BUILD_EXAMPLES=OFF
             ATL_BUILD_TESTS=ON

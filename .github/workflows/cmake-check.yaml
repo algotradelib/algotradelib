@@ -25,9 +25,6 @@ jobs:
   build:
     runs-on: ${{ matrix.os }}
 
-    # Paused until the first release: hosted runner minutes. Remove this line then.
-    if: github.event_name == 'workflow_dispatch'
-
     strategy:
       fail-fast: false
       matrix:
@@ -45,7 +42,16 @@ jobs:
             compiler: gcc
           - os: macos-latest
             compiler: msvc
-    
+          # Drop macOS-gcc until the first release.
+          - os: macos-latest
+            compiler: gcc
+        # test-coverage builds and runs the tests in this configuration; this job builds the examples only.
+        include:
+          - os: ubuntu-latest
+            compiler: gcc
+            cxx_std: 17
+            tests: 'OFF'
+
     name: ${{ matrix.os }} (${{ matrix.compiler }}-C++${{ matrix.cxx_std }})
 
     steps:
@@ -85,10 +91,11 @@ jobs:
             CMAKE_CXX_STANDARD=${{ matrix.cxx_std }}
             ATL_FETCH_DEPS=ON
             ATL_BUILD_EXAMPLES=ON
-            ATL_BUILD_TESTS=ON
+            ATL_BUILD_TESTS=${{ matrix.tests || 'ON' }}
             ATL_ENABLE_COVERAGE=OFF
 
       - uses: threeal/ctest-action@v1.1.0
+        if: matrix.tests != 'OFF'
         with:
           test-dir: build/tests
           args: --output-on-failure -j 4 ${{ matrix.compiler == 'msvc' && '-LE compile-fail' || '' }}
