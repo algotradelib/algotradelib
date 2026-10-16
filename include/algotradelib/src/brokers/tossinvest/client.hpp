@@ -3773,8 +3773,8 @@ private:
   // 토큰입니다"), so another program using the key ends this one's token. Kept, it would be sent
   // until its stated expiry and every request would fail; forgotten, the next request asks for a new
   // one. The refused request is not sent again. Only the token the request carried is forgotten: a
-  // late refusal of an older token leaves a newer one alone, so two programs sharing a key cost each
-  // other one refused request per new token, not a chain of them.
+  // late refusal of an older token leaves a newer one alone, so a token one program takes refuses the
+  // other's requests that carry the old token and starts no chain of refreshes.
   template <typename Handler>
   void send(network::HttpRequest request, Handler handler) {
     std::string authorization;
