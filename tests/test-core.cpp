@@ -420,6 +420,21 @@ struct TossClientTestAccess {
   static Result<OrderSnapshot> parse_order(Result<network::HttpResponse> response) {
     return TossClient::parse_order(std::move(response));
   }
+
+  static void connect(TossClient& client, ssl::context& context, const std::string& port) {
+    client.http_ = std::make_shared<network::AsyncHttpClient>(client.strand_, context, "localhost", port);
+  }
+
+  static void hold_token(TossClient& client, std::string token) {
+    client.token_.access_token_ = std::move(token);
+    client.token_.expires_at_ = std::chrono::system_clock::now() + std::chrono::hours(24);
+  }
+
+  static bool holds_token(const TossClient& client) { return client.token_.valid(); }
+
+  static void forget_refused_token(TossClient& client, const std::string& authorization) {
+    client.forget_refused_token(authorization);
+  }
 };
 } // namespace algotradelib::tossinvest
 
@@ -1433,6 +1448,70 @@ TEST_CASE(
   REQUIRE(result.value().size() == 2);
   REQUIRE(result.value()[0].sequence_ == 1);
   REQUIRE(result.value()[1].account_type_ == "FUTURE_ACCOUNT_TYPE");
+}
+
+TEST_CASE(
+  "Toss asks for a new token after refusing the one it holds",
+  "[broker][toss][auth]"
+) {
+  // Issuing a token with the same key revokes the one held; the code and message are the ones Toss
+  // returned to a running program on 2026-10-17.
+  test::LocalHttpsServer server;
+  server.scriptSequence("/oauth2/token", {
+    {200, R"({"access_token":"first","token_type":"Bearer","expires_in":86400})", {}},
+    {200, R"({"access_token":"second","token_type":"Bearer","expires_in":86400})", {}},
+  });
+  server.scriptSequence("/api/v1/accounts", {
+    {
+      401,
+      R"({"error":{"requestId":"r1","code":"token-revoked","message":"새로 발급된 토큰으로 대체되어 더 이상 유효하지 않은 토큰입니다. 최신 토큰으로 다시 시도해 주세요."}})",
+      {}
+    },
+    {200, R"({"result":[{"accountNo":"12345678901","accountSeq":1,"accountType":"BROKERAGE"}]})", {}},
+  });
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  auto client =
+    std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
+  tossinvest::TossClientTestAccess::connect(*client, context, server.port());
+
+  auto refused = client->async_accounts(net::use_future);
+  ioc.run();
+  const auto first = refused.get();
+  REQUIRE_FALSE(first);
+  REQUIRE(first.error().http_status_ == 401);
+  REQUIRE(first.error().broker_code_ == "token-revoked");
+  REQUIRE(server.lastHeader("/api/v1/accounts", "Authorization") == "Bearer first");
+  REQUIRE_FALSE(tossinvest::TossClientTestAccess::holds_token(*client));
+
+  ioc.restart();
+  auto retried = client->async_accounts(net::use_future);
+  ioc.run();
+  const auto second = retried.get();
+  REQUIRE(second);
+  REQUIRE(second.value().size() == 1);
+  REQUIRE(server.scriptedCount("/oauth2/token") == 2);
+  // The refused request was not sent again: one refusal, then the caller's own second call.
+  REQUIRE(server.scriptedCount("/api/v1/accounts") == 2);
+  REQUIRE(server.lastHeader("/api/v1/accounts", "Authorization") == "Bearer second");
+}
+
+TEST_CASE(
+  "Toss keeps a newer token when a request carrying an older one is refused",
+  "[broker][toss][auth]"
+) {
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  auto client =
+    std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
+  tossinvest::TossClientTestAccess::hold_token(*client, "second");
+
+  tossinvest::TossClientTestAccess::forget_refused_token(*client, "Bearer first");
+  REQUIRE(tossinvest::TossClientTestAccess::holds_token(*client));
+
+  tossinvest::TossClientTestAccess::forget_refused_token(*client, "Bearer second");
+  REQUIRE_FALSE(tossinvest::TossClientTestAccess::holds_token(*client));
 }
 
 TEST_CASE(
