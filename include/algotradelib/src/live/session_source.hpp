@@ -12,6 +12,7 @@
 #include <iterator>
 #include <map>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -129,7 +130,10 @@ struct feeds_warmup : feeds_warmup_of<
  * For a strategy declaring `on_bars`, the same bars are recorded in the same order and each period's
  * bars are delivered together (`Runner::feed` or `feed_warmup` of a `strategy::BarSlice`, one per
  * interval) before a later period's. A bar arriving after its period was delivered is cached but not
- * delivered; see `bars_not_delivered`.
+ * delivered; see `bars_not_delivered`. An exception during such a poll (a bar the cache refuses, a handler
+ * that throws) stops the source: its period may be partly recorded and partly delivered, so every later
+ * bar poll throws `std::logic_error`, and a program starts again with a new source, whose first read is fed
+ * as history.
  *
  * Requests are tagged by kind, so a client budget with a trading reserve
  * (`network::RateLimitBudget::trading_reserve_`) keeps capacity for orders. A kind the broker does not offer compiles to no request and returns `UNCHANGED`.
@@ -444,6 +448,15 @@ private:
   // `Runner::feed_warmup`).
   template <typename Runner>
   runner::PollOutcome poll_bars(Runner& runner_instance) {
+    if constexpr (session_source_detail::takes_slices<Runner>::value) {
+      if (interrupted_) {
+        throw std::logic_error(
+          "a bar poll for on_bars was interrupted by an exception (" + *interrupted_ + "); its period may be "
+          "partly recorded and partly delivered, so this source does not continue: start again with a new "
+          "source, whose first read is fed as history"
+        );
+      }
+    }
     // Nothing configured is nothing read: `last_error()` is left as it was, as the other polls leave it.
     if (universe_.empty()) {
       return runner::PollOutcome::UNCHANGED;
@@ -561,42 +574,50 @@ private:
       // complete when a later one starts. Within one read a period is all history or all live (a newest
       // bar tying a history bar is history), so the whole bucket goes one way.
       //
-      // **A bar counts as read only once it is recorded**, and the period being collected outlives the
-      // poll, so an exception (a bar the cache refuses, a handler that throws) loses nothing: the next
-      // poll reads the unrecorded bar again and delivers what was recorded. The `on_bar` route behaves
-      // the same way, advancing each watermark only after its bar was fed.
-      for (const auto& item : collected) {
-        const auto& instrument = universe_[item.instrument_];
-        const auto& event = item.event_;
-        // **A period already delivered is not reopened.** The bar keeps its own series complete, but an
-        // older bar must not overwrite a newer price or turn the clock back.
-        if (delivered_through_ && !(*delivered_through_ < event.period_end_)) {
-          runner_instance.record_history_only(event);
+      // **An exception stops the source** (a bar the cache refuses, a handler that throws). The period
+      // being collected may then be partly recorded and partly delivered, and resuming it in a later poll
+      // would have to reconcile it with that poll's history and order; every later poll throws instead,
+      // so nothing is lost or delivered twice in silence. A new source starts with a read fed as history.
+      strategy::slice_detail::Bucket bucket;
+      bool bucket_is_history = false;
+      try {
+        for (const auto& item : collected) {
+          const auto& instrument = universe_[item.instrument_];
+          const auto& event = item.event_;
+          // **A period already delivered is not reopened.** The bar keeps its own series complete, but an
+          // older bar must not overwrite a newer price or turn the clock back.
+          if (delivered_through_ && !(*delivered_through_ < event.period_end_)) {
+            runner_instance.record_history_only(event);
+            last_bar_[instrument.symbol_] = event.bar_.timestamp_;
+            ++bars_not_delivered_;
+            continue;
+          }
+          if (!bucket.empty() && bucket.period_end() < event.period_end_) {
+            deliver(runner_instance, bucket, bucket_is_history);
+          }
+          if (bucket.holds(event)) {
+            last_bar_[instrument.symbol_] = event.bar_.timestamp_;
+            ++bars_not_delivered_;
+            continue;
+          }
+          const bool history =
+            !item.newest_ || (latest_history && !(*latest_history < event.period_end_));
+          runner_instance.record(event);
+          bucket.add(event);
+          bucket_is_history = history;
           last_bar_[instrument.symbol_] = event.bar_.timestamp_;
-          ++bars_not_delivered_;
-          continue;
+          if (history) {
+            ++bars_fed_as_warmup_;
+          }
         }
-        if (!pending_.empty() && pending_.period_end() < event.period_end_) {
-          deliver_pending(runner_instance);
-        }
-        if (pending_.holds(event)) {
-          last_bar_[instrument.symbol_] = event.bar_.timestamp_;
-          ++bars_not_delivered_;
-          continue;
-        }
-        const bool history =
-          !item.newest_ || (latest_history && !(*latest_history < event.period_end_));
-        runner_instance.record(event);
-        // A period carried over from an interrupted poll joins this one's classification: history if
-        // either says so, so nothing decided on history sends.
-        pending_is_history_ = pending_.empty() ? history : (pending_is_history_ || history);
-        pending_.add(event);
-        last_bar_[instrument.symbol_] = event.bar_.timestamp_;
-        if (history) {
-          ++bars_fed_as_warmup_;
-        }
+        deliver(runner_instance, bucket, bucket_is_history);
+      } catch (const std::exception& error) {
+        interrupted_ = error.what();
+        throw;
+      } catch (...) {
+        interrupted_ = "an unknown exception";
+        throw;
       }
-      deliver_pending(runner_instance);
     } else {
       for (const auto& item : collected) {
         const auto& instrument = universe_[item.instrument_];
@@ -615,15 +636,13 @@ private:
     return outcome;
   }
 
-  // Delivers the period being collected, one slice at a time. A slice is taken out before its handler
-  // runs, so a handler that throws is not called again for it, while the slices after it stay for the
-  // next delivery.
+  // Delivers one period's slices, one interval at a time, as history or live.
   template <typename Runner>
-  void deliver_pending(Runner& runner_instance) {
-    while (!pending_.empty()) {
-      auto slice = pending_.take_first();
+  void deliver(Runner& runner_instance, strategy::slice_detail::Bucket& bucket, bool history) {
+    while (!bucket.empty()) {
+      auto slice = bucket.take_first();
       delivered_through_ = slice.period_end_;
-      if (pending_is_history_) {
+      if (history) {
         runner_instance.feed_warmup(slice);
       } else {
         runner_instance.feed(slice);
@@ -1497,8 +1516,8 @@ private:
   // of one instrument in a period), and the last period end delivered, over the source's life.
   std::size_t bars_not_delivered_{0};
   std::optional<std::chrono::system_clock::time_point> delivered_through_;
-  strategy::slice_detail::Bucket pending_;
-  bool pending_is_history_{false};
+  // Set by an exception during a bar poll for `on_bars`; every later bar poll then throws.
+  std::optional<std::string> interrupted_;
   std::map<std::string, std::optional<std::chrono::system_clock::time_point>> held_bar_;
   int history_limit_{100};
   std::map<std::string, std::optional<std::chrono::system_clock::time_point>> last_bar_;
