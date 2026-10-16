@@ -22,7 +22,8 @@ reconciliation obligation, and a stop control. The loop exists to own them for y
 
 The whole production path — journal, recovery, loop, stops and the report — is
 [`examples/example-live-program.cpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/example-live-program.cpp) with
-[`examples/live_program.hpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/live_program.hpp); copy that. The loop at its centre:
+[`examples/live_program.hpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/live_program.hpp); copy those, with the two
+credential headers the program includes (`examples/kis_credentials.hpp`, `examples/kiwoom_credentials.hpp`). The loop at its centre:
 
 ```cpp
 runner::FileJournal journal(path, scope);                     // one journal per account

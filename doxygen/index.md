@@ -199,8 +199,10 @@ bars, and prints:
   DonchianBreakout(5)    12.17 %      0.383     4.82 %      3
 ```
 
-**Run it live.** Copy [`examples/example-live-program.cpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/example-live-program.cpp) and
-[`examples/live_program.hpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/live_program.hpp), and replace the strategy — `BuyAndHold` of one
+**Run it live.** Copy [`examples/example-live-program.cpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/example-live-program.cpp) with
+the three headers it includes ([`live_program.hpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/live_program.hpp),
+[`kis_credentials.hpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/kis_credentials.hpp) and
+[`kiwoom_credentials.hpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/kiwoom_credentials.hpp)), and replace the strategy — `BuyAndHold` of one
 share — with yours. It is the production path, for KIS and Toss (on Kiwoom it observes, and places
 nothing until you state what its holdings inquiry covers and give the runner a trading calendar, since
 Kiwoom publishes none; lifting the market-phase limit instead would send a daily strategy's decisions

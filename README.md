@@ -38,6 +38,7 @@ Requires a C++17 compiler, CMake 3.10, Boost 1.87 (`json`), OpenSSL 3.0 and,
 for the analytics layer (on by default), Eigen 3.4.
 Boost and OpenSSL are linked even by a program that never touches the network.
 Use OpenSSL 3.5 (long-term support), or a distribution package that still gets security fixes, for anything that trades.
+Where the system Boost is older (Ubuntu 24.04 has 1.83), `-DATL_FETCH_DEPS=ON` downloads it into the build tree; the [main page](doxygen/index.md) has the details.
 
 As a submodule:
 
@@ -83,7 +84,7 @@ struct MyStrategy {
 
 [`examples/example-backtest-compare.cpp`](examples/example-backtest-compare.cpp) replays a strategy against history, offline.
 To run one live, copy [`examples/example-live-program.cpp`](examples/example-live-program.cpp)
-and [`examples/live_program.hpp`](examples/live_program.hpp) and replace the strategy with yours.
+with the three headers it includes ([`live_program.hpp`](examples/live_program.hpp), [`kis_credentials.hpp`](examples/kis_credentials.hpp) and [`kiwoom_credentials.hpp`](examples/kiwoom_credentials.hpp)) and replace the strategy with yours.
 The examples build in a checkout of this repository:
 
 ```sh
