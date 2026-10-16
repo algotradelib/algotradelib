@@ -345,10 +345,53 @@ struct PhaseByConstRef {
 
 } // namespace
 
+namespace {
+
+/** Decides on whole periods. */
+struct SliceOnly {
+  std::size_t slices_{0};
+  template <class Ctx> void on_bars(Ctx&, const strategy::BarSlice&) { ++slices_; }
+};
+
+/** `on_bars` inherited publicly, which is declared and callable. */
+struct InheritsSliceOnly : SliceOnly {};
+
+} // namespace
+
+ATL_ASSERT_STRATEGY(SliceOnly, MinimalContext);
+ATL_ASSERT_STRATEGY(SliceOnly, FullContext);
+ATL_ASSERT_STRATEGY(InheritsSliceOnly, MinimalContext);
 ATL_ASSERT_STRATEGY(InheritsBarOnly, MinimalContext);
 ATL_ASSERT_STRATEGY(OverloadedFill, MinimalContext);
 ATL_ASSERT_STRATEGY(EventsByValue, MinimalContext);
 ATL_ASSERT_STRATEGY(PhaseByConstRef, MinimalContext);
+
+TEST_CASE("a slice handler is found by name and called through dispatch") {
+  namespace detail = strategy::strategy_detail;
+  STATIC_REQUIRE(detail::declares_on_bars<SliceOnly>);
+  STATIC_REQUIRE(detail::declares_on_bars<InheritsSliceOnly>);
+  STATIC_REQUIRE_FALSE(detail::declares_on_bar<SliceOnly>);
+  STATIC_REQUIRE_FALSE(detail::declares_on_bars<BarOnly>);
+
+  SliceOnly strategy;
+  MinimalContext context;
+  strategy::BarSlice slice;
+  strategy::dispatch::bars(strategy, context, slice);
+  CHECK(strategy.slices_ == 1);
+  // A strategy without `on_bars` is skipped, as for every other handler.
+  BarOnly bars_only;
+  strategy::dispatch::bars(bars_only, context, slice);
+}
+
+TEST_CASE("a slice finds an instrument's bar and nothing for one it lacks") {
+  strategy::BarSlice slice;
+  strategy::BarEvent event;
+  event.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+  slice.bars_.push_back(event);
+  REQUIRE(slice.find(event.instrument_) != nullptr);
+  CHECK(slice.find(event.instrument_)->instrument_.symbol_ == "005930");
+  CHECK(slice.find(InstrumentId{Country::KR, Venue::COMBINED, "000660"}) == nullptr);
+}
 
 TEST_CASE("a declared handler is found by name, whatever its signature") {
   namespace detail = strategy::strategy_detail;

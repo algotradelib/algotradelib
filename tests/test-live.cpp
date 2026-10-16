@@ -2708,6 +2708,76 @@ TEST_CASE("a name one bar behind waits, whatever order the universe lists it in"
   }
 }
 
+namespace {
+
+/** Buys one of the first instrument on every slice, and records which instruments each slice held. */
+struct BuysOnEverySlice {
+  std::vector<std::vector<std::string>> seen_;
+  template <class Ctx>
+  void on_bars(Ctx& ctx, const strategy::BarSlice& slice) {
+    std::vector<std::string> names;
+    for (const auto& event : slice.bars_) {
+      names.push_back(event.instrument_.symbol_);
+    }
+    seen_.push_back(std::move(names));
+    ctx.submit(strategy::OrderIntent::market(
+      slice.bars_.front().instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
+    ));
+  }
+};
+
+} // namespace
+
+TEST_CASE("on_bars gets a cold start's history as slices and sends only the newest period", "[warmup]") {
+  WarmupRig<BuysOnEverySlice> rig({samsung(), hynix()});
+  rig.session.set_bars(history_bars(4));
+  rig.loop.run(rig.stop, 1);
+  const auto& seen = rig.live_runner.strategy().seen_;
+  REQUIRE(seen.size() == 4);
+  for (const auto& names : seen) {
+    CHECK(names == std::vector<std::string>{samsung().symbol_, hynix().symbol_});
+  }
+  // Three periods were history, so what they asked for was discarded; the newest one sent.
+  CHECK(rig.session.placed().size() == 1);
+  CHECK(rig.live_runner.warmup_instructions_discarded() == 3);
+  CHECK(rig.source.bars_fed_as_warmup() == 6);
+  CHECK(rig.source.bars_not_delivered() == 0);
+}
+
+TEST_CASE("a bar arriving after its period was delivered is cached and not delivered", "[warmup]") {
+  // Hynix misses the newest session in the first read, so that period is delivered with Samsung alone.
+  // Its bar for that session arrives in the next read: delivering it would decide the period twice.
+  WarmupRig<BuysOnEverySlice> rig({samsung(), hynix()});
+  rig.session.set_bars_for(samsung().symbol_, history_bars(6));
+  rig.session.set_bars_for(hynix().symbol_, history_bars(5));
+  rig.loop.run(rig.stop, 1);
+  const auto& seen = rig.live_runner.strategy().seen_;
+  REQUIRE(seen.size() == 6);
+  CHECK(seen.back() == std::vector<std::string>{samsung().symbol_});
+  const auto placed = rig.session.placed().size();
+
+  // A newer price for Hynix, as a quote would set it; the late bar must not overwrite it.
+  rig.live_runner.context().set_last_price(hynix(), Decimal64::parse("99999"));
+  rig.session.set_bars_for(hynix().symbol_, history_bars(6));
+  rig.loop.run(rig.stop, 1);
+  CHECK(seen.size() == 6);
+  CHECK(rig.session.placed().size() == placed);
+  CHECK(rig.source.bars_not_delivered() == 1);
+  REQUIRE(rig.live_runner.context().last_price(hynix()));
+  CHECK(*rig.live_runner.context().last_price(hynix()) == Decimal64::parse("99999"));
+#if defined(ATL_HAS_EIGEN)
+  // Its own series is complete all the same.
+  const auto* series = rig.live_runner.context().bars(hynix(), BarInterval::ONE_DAY);
+  REQUIRE(series != nullptr);
+  CHECK(series->size() == 6);
+#endif
+
+  // Read again: counted once, cached once.
+  rig.loop.run(rig.stop, 1);
+  CHECK(rig.source.bars_not_delivered() == 1);
+  CHECK(seen.size() == 6);
+}
+
 TEST_CASE("a bar fed as history changes the strategy and no counter or reservation", "[warmup]") {
   runner::DryRunner<BuysOne> dry;
   dry.context().set_instrument(samsung_reference());
@@ -4629,6 +4699,51 @@ TEST_CASE("the live program stamps its journal with the loop's clock", "[live][p
     CHECK(entry.recorded_at_ > program_start());
     CHECK(entry.recorded_at_ < program_start() + std::chrono::hours(1));
   }
+}
+
+namespace {
+
+/** Wants one share, decided on whole periods: the program's own strategy, written with `on_bars`. */
+struct HoldsOneBySlice {
+  std::size_t slices_{0};
+  template <class Ctx>
+  void on_bars(Ctx& ctx, const strategy::BarSlice& slice) {
+    ++slices_;
+    if (slice.find(samsung()) == nullptr) {
+      return;
+    }
+    strategy::TargetPosition target;
+    target.instrument_ = samsung();
+    target.target_quantity_ = Decimal64::parse("1");
+    ctx.submit(target);
+  }
+};
+
+} // namespace
+
+TEST_CASE("the live program runs a strategy that decides on whole periods", "[live][program]") {
+  // The generic entry point builds the source, the journal binding and the loop around the strategy;
+  // with `on_bars` they take the slice route, and the one order goes out once.
+  const TempPath journal("atl-test-program-slices.jsonl");
+  const TempPath control("atl-test-program-slices.stop");
+  ProgramSession session;
+  HoldingsSnapshot holdings;
+  holdings.received_at_ = program_start();
+  session.set_holdings(holdings);
+  BandSession market;
+  market.set_reference(samsung_reference());
+  market.set_bars(two_bars("70000", "71000"));
+  runner::StopSource stop;
+  std::ostringstream out;
+
+  const auto exit = live_program::trade(
+    session, market, HoldsOneBySlice{}, program_settings(journal, control), stop, out,
+    runner::ManualClock{program_start()}
+  );
+
+  INFO(out.str());
+  CHECK(exit == live_program::Exit::CLEAN);
+  CHECK(session.placed().size() == 1);
 }
 
 TEST_CASE("the live program reads reference data and bars from its market-data session", "[live][program]") {
