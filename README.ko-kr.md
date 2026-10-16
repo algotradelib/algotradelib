@@ -14,7 +14,7 @@
 <!-- multilingual: end -->
 
 <!--
-  영어 README.md aceae8b 기준. 요약한 절: 첫 소개와 경고, "Brokers and accounts", "Install",
+  영어 README.md 097b4ad 기준. 요약한 절: 첫 소개와 경고, "Brokers and accounts", "Install",
   "Using it"의 실행 예시, "Documentation", "Acknowledgements", "Disclaimer". 이 절들이
   바뀌면 이 문서도 함께 고칩니다. 키움 설정과 빌드 옵션 같은 자세한 내용은 doxygen/index.md에 있으므로,
   그 페이지의 같은 절이 바뀔 때도 이 문서를 확인합니다.
@@ -28,6 +28,7 @@ algotradelib은 한국투자증권 (KIS), 키움증권, 토스증권 Open API로
 
 ## 유의사항
 
+- 이 라이브러리는 실제 계좌에 실제 주문을 보냅니다. 아직 개발 중인 버전(`0.0.0.9000`)이며 배포 버전은 없습니다.
 - KIS와 키움 모의투자 계좌에서는 주문을 넣어 확인했지만, 실전투자 계좌에서 전체 과정을 검증한 적은 없습니다. 모의투자로 먼저 확인하세요.
 - KIS와 키움은 기본적으로 모의투자 서버에 연결됩니다. 실전투자는 `KIS_DEMO=0`, `KIWOOM_DEMO=0`처럼 직접 지정해야 합니다 (인증 정보 파일이라면 `"demo": false`). 모의투자 서버는 실전 앱키를 받지 않으므로, 설정을 빠뜨려도 실전 주문은 나가지 않고 요청이 거부됩니다.
 - KIS 모의투자 서버는 종목 정보와 휴장일 조회를 지원하지 않습니다 (`EGW02006`).
@@ -50,6 +51,10 @@ algotradelib은 한국투자증권 (KIS), 키움증권, 토스증권 Open API로
 
 ## 시작하기
 
+C++17 컴파일러, CMake 3.10, Boost 1.87, OpenSSL 3.0, Eigen 3.4(분석 기능용)가 필요합니다.
+실거래에는 OpenSSL 3.5(장기 지원 버전)나 보안 업데이트를 받는 배포판 패키지를 쓰세요.
+Boost가 1.87보다 낮다면 (Ubuntu 24.04는 1.83) `-DATL_FETCH_DEPS=ON`으로 빌드 폴더에 내려받을 수 있습니다.
+
 프로젝트에 서브모듈로 추가합니다.
 
 ```sh
@@ -68,11 +73,12 @@ add_executable(my_alpha src/main.cpp)
 target_link_libraries(my_alpha PRIVATE algotradelib::algotradelib)
 ```
 
-예제를 KIS 모의투자로 실행해 보려면 다음과 같이 합니다.
+예제는 이 저장소에서 빌드합니다. 백테스트 예제는 인증 정보와 네트워크 없이 실행되고, 나머지는 KIS 모의투자로 실행합니다.
 
 ```sh
 cmake -S . -B build -DATL_BUILD_EXAMPLES=ON
 cmake --build build
+./build/bin/example-backtest-compare # 백테스트: 인증 정보와 네트워크 불필요
 export KIS_APP_KEY=... KIS_APP_SECRET=... KIS_CANO=... KIS_DEMO=1
 ./build/bin/example-live-program kis 005930 # 조회만 하고 주문하지 않음
 ./build/bin/example-live-program kis 005930 --live # 주문 실행(저널에 기록)
@@ -80,6 +86,7 @@ export KIS_APP_KEY=... KIS_APP_SECRET=... KIS_CANO=... KIS_DEMO=1
 
 환경 변수만으로 실행하면 모의투자 서버가 종목 정보 조회를 지원하지 않아 그 단계에서 멈춥니다.
 인증 정보 폴더로 시세와 종목 정보를 따로 조회하는 방법은 예제 파일 (`examples/example-live-program.cpp`) 첫 부분의 설명을 참고하세요.
+직접 실거래 프로그램을 만들 때는 이 파일과 함께 포함된 헤더 세 개(`live_program.hpp`, `kis_credentials.hpp`, `kiwoom_credentials.hpp`)를 복사하고 전략만 바꾸면 됩니다.
 
 ## 용어
 
