@@ -3462,11 +3462,10 @@ private:
 
     OrderSnapshot order;
     order.order_id_ = broker_detail::json_string(row, "orderId");
-    // `instrument_venue`, not `UNSPECIFIED`. This wrote `UNSPECIFIED` while
-    // `parse_position` wrote `COMBINED` for the same Korean instrument, so an
-    // order and its holding were never the same `InstrumentId` and
-    // `Portfolio::working_quantity` found nothing for a Korean Toss order. That
-    // was a defect, fixed here together with its KIS half.
+    // `instrument_venue`, not `UNSPECIFIED`: `parse_position` writes `COMBINED`
+    // for the same Korean instrument, and an order and its holding must be the
+    // same `InstrumentId`, or `Portfolio::working_quantity` finds nothing for a
+    // Korean Toss order.
     order.instrument_ = InstrumentId{
       country,
       instrument_venue(country),

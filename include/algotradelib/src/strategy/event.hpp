@@ -77,7 +77,7 @@ struct SessionWindow {
   /** @brief The market's offset from UTC. */
   std::chrono::minutes utc_offset_{std::chrono::hours(9)};
   /** @brief A description of where the window came from, for reports. */
-  std::string source_{"KRX regular session, 09:00-15:30 KST (operator-stated)"};
+  std::string source_{"KRX regular session, 09:00-15:30 KST (library default)"};
 
   /**
    * @brief Returns the KRX regular session, 09:00-15:30 KST.
