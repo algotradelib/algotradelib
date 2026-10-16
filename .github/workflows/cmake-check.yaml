@@ -23,52 +23,36 @@ name: cmake-check
 
 jobs:
   build:
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.config.os }}
 
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        cxx_std: [17, 20, 23]
-        compiler: [llvm, gcc, msvc, apple-clang]
-        exclude:
-          - os: ubuntu-latest
-            compiler: msvc
-          - os: ubuntu-latest
-            compiler: apple-clang
-          - os: windows-latest
-            compiler: apple-clang
-          - os: windows-latest
-            compiler: gcc
-          - os: macos-latest
-            compiler: msvc
-          # Drop macOS-gcc until the first release.
-          - os: macos-latest
-            compiler: gcc
-          # While the repository is private: C++20 and C++23 on Ubuntu only.
-          - os: macos-latest
-            cxx_std: 20
-          - os: macos-latest
-            cxx_std: 23
-          - os: windows-latest
-            cxx_std: 20
-          - os: windows-latest
-            cxx_std: 23
-        # test-coverage builds and runs the tests in this configuration; this job builds the examples only.
-        include:
-          - os: ubuntu-latest
-            compiler: gcc
-            cxx_std: 17
-            tests: 'OFF'
+        config:
+          - {os: ubuntu-latest, cxx_std: 17, compiler: 'llvm'}
+          # test-coverage builds and runs the tests in this configuration; this job builds the examples only.
+          - {os: ubuntu-latest, cxx_std: 17, compiler: 'gcc', tests: 'OFF'}
+          - {os: ubuntu-latest, cxx_std: 20, compiler: 'llvm'}
+          - {os: ubuntu-latest, cxx_std: 20, compiler: 'gcc'}
+          - {os: ubuntu-latest, cxx_std: 23, compiler: 'llvm'}
+          - {os: ubuntu-latest, cxx_std: 23, compiler: 'gcc'}
 
-    name: ${{ matrix.os }} (${{ matrix.compiler }}-C++${{ matrix.cxx_std }})
+          - {os: macos-latest, cxx_std: 17, compiler: 'apple-clang'}
+          - {os: macos-latest, cxx_std: 17, compiler: 'llvm'}
+          # Drop macOS-gcc until the first release.
+          # - {os: macos-latest, cxx_std: 17, compiler: 'gcc'}
+
+          - {os: windows-latest, cxx_std: 17, compiler: 'msvc'}
+          - {os: windows-latest, cxx_std: 17, compiler: 'llvm'}
+
+    name: ${{ matrix.config.os }} (${{ matrix.config.compiler }}-C++${{ matrix.config.cxx_std }})
 
     steps:
       - uses: actions/checkout@v7
 
       - uses: aminya/setup-cpp@v1
         with:
-          compiler: ${{ matrix.compiler }}
+          compiler: ${{ matrix.config.compiler }}
           vcvarsall: ${{ runner.os == 'Windows' }}
           cmake: true
           ninja: true
@@ -97,14 +81,14 @@ jobs:
           run-build: true
           generator: Ninja
           options: |
-            CMAKE_CXX_STANDARD=${{ matrix.cxx_std }}
+            CMAKE_CXX_STANDARD=${{ matrix.config.cxx_std }}
             ATL_FETCH_DEPS=ON
-            ATL_BUILD_EXAMPLES=${{ matrix.os == 'ubuntu-latest' && 'ON' || 'OFF' }}
-            ATL_BUILD_TESTS=${{ matrix.tests || 'ON' }}
+            ATL_BUILD_EXAMPLES=${{ matrix.config.os == 'ubuntu-latest' && 'ON' || 'OFF' }}
+            ATL_BUILD_TESTS=${{ matrix.config.tests || 'ON' }}
             ATL_ENABLE_COVERAGE=OFF
 
       - uses: threeal/ctest-action@v1.1.0
-        if: matrix.tests != 'OFF'
+        if: matrix.config.tests != 'OFF'
         with:
           test-dir: build/tests
-          args: --output-on-failure -j 4 ${{ matrix.compiler == 'msvc' && '-LE compile-fail' || '' }}
+          args: --output-on-failure -j 4 ${{ matrix.config.compiler == 'msvc' && '-LE compile-fail' || '' }}
