@@ -318,6 +318,13 @@ public:
     slices_.push_back(std::move(slice));
   }
 
+  /** Takes the first slice out; the bucket must not be empty. */
+  BarSlice take_first() {
+    BarSlice slice = std::move(slices_.front());
+    slices_.erase(slices_.begin());
+    return slice;
+  }
+
   /** Takes the slices out, leaving the bucket empty. */
   std::vector<BarSlice> take() {
     std::vector<BarSlice> slices = std::move(slices_);

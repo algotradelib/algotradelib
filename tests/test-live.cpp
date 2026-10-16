@@ -2756,10 +2756,14 @@ TEST_CASE("a bar arriving after its period was delivered is cached and not deliv
   CHECK(seen.back() == std::vector<std::string>{samsung().symbol_});
   const auto placed = rig.session.placed().size();
 
-  // A newer price for Hynix, as a quote would set it; the late bar must not overwrite it.
+  // A newer price for Hynix, as a quote would set it; the late bar must not overwrite it, nor turn the
+  // context's clock back to its period. Polled directly, so nothing but the source moves either.
   rig.live_runner.context().set_last_price(hynix(), Decimal64::parse("99999"));
+  const auto later = rig.live_runner.context().now() + std::chrono::hours(48);
+  rig.live_runner.context().set_now(later);
   rig.session.set_bars_for(hynix().symbol_, history_bars(6));
-  rig.loop.run(rig.stop, 1);
+  rig.source.poll(runner::PollKind::BARS, rig.live_runner);
+  CHECK(rig.live_runner.context().now() == later);
   CHECK(seen.size() == 6);
   CHECK(rig.session.placed().size() == placed);
   CHECK(rig.source.bars_not_delivered() == 1);
@@ -2776,6 +2780,70 @@ TEST_CASE("a bar arriving after its period was delivered is cached and not deliv
   rig.loop.run(rig.stop, 1);
   CHECK(rig.source.bars_not_delivered() == 1);
   CHECK(seen.size() == 6);
+}
+
+namespace {
+
+/** Records each slice's period, and throws on the first slice it is given. */
+struct ThrowsOnFirstSlice {
+  std::vector<std::chrono::system_clock::time_point> seen_;
+  std::vector<std::size_t> sizes_;
+  template <class Ctx>
+  void on_bars(Ctx&, const strategy::BarSlice& slice) {
+    seen_.push_back(slice.period_end_);
+    sizes_.push_back(slice.bars_.size());
+    if (seen_.size() == 1) {
+      throw std::runtime_error("the first slice fails");
+    }
+  }
+};
+
+BarSeries no_bars() {
+  BarSeries series;
+  series.interval_ = BarInterval::ONE_DAY;
+  series.stamp_ = BarStamp::CLOSE;
+  return series;
+}
+
+} // namespace
+
+#if defined(ATL_HAS_EIGEN)
+TEST_CASE("a bar the cache refuses is read again and the period's recorded bars are not lost", "[warmup]") {
+  // Hynix's bar is already cached, so recording it again throws. Samsung's bar of the same period was
+  // recorded first; it must not be counted as read and then dropped with the poll.
+  WarmupRig<BuysOnEverySlice> rig({samsung(), hynix()});
+  rig.session.set_bars(history_bars(1));
+  rig.live_runner.record(strategy::make_bar_event(
+    hynix(), BarInterval::ONE_DAY, BarStamp::CLOSE, history_bars(1).bars_.front()
+  ));
+  CHECK_THROWS_AS(rig.source.poll(runner::PollKind::BARS, rig.live_runner), std::invalid_argument);
+  const auto& seen = rig.live_runner.strategy().seen_;
+  CHECK(seen.empty());
+  // Read again, the refused bar fails again: the error is not swallowed into an unchanged poll.
+  CHECK_THROWS_AS(rig.source.poll(runner::PollKind::BARS, rig.live_runner), std::invalid_argument);
+  CHECK(seen.empty());
+  // Once the bar no longer comes back, the period is delivered with what was recorded.
+  rig.session.set_bars_for(hynix().symbol_, no_bars());
+  rig.source.poll(runner::PollKind::BARS, rig.live_runner);
+  REQUIRE(seen.size() == 1);
+  CHECK(seen[0] == std::vector<std::string>{samsung().symbol_});
+  CHECK(rig.source.bars_not_delivered() == 0);
+}
+#endif
+
+TEST_CASE("a slice whose handler throws is not delivered again and the later ones still are", "[warmup]") {
+  WarmupRig<ThrowsOnFirstSlice> rig({samsung(), hynix()});
+  rig.session.set_bars(history_bars(3));
+  CHECK_THROWS_AS(rig.source.poll(runner::PollKind::BARS, rig.live_runner), std::runtime_error);
+  const auto& seen = rig.live_runner.strategy().seen_;
+  REQUIRE(seen.size() == 1);
+  rig.source.poll(runner::PollKind::BARS, rig.live_runner);
+  // The two later periods arrive once each, with both instruments, and the first is not repeated.
+  REQUIRE(seen.size() == 3);
+  CHECK(seen[0] < seen[1]);
+  CHECK(seen[1] < seen[2]);
+  CHECK(rig.live_runner.strategy().sizes_ == std::vector<std::size_t>{2, 2, 2});
+  CHECK(rig.source.bars_not_delivered() == 0);
 }
 
 TEST_CASE("a bar fed as history changes the strategy and no counter or reservation", "[warmup]") {

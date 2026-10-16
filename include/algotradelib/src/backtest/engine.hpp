@@ -777,6 +777,8 @@ private:
   // because "the data ran out with this resting" and "the replay stopped while this was resting"
   // are different facts about a run.
   void abort_queue() {
+    // A period still being collected is never delivered after a halt.
+    pending_.clear();
     std::vector<OrderRef<Tag>> remaining;
     remaining.reserve(runner_.executor().queued().size());
     for (const auto& entry : runner_.executor().queued()) {

@@ -3055,16 +3055,24 @@ struct RecordsSlices {
     Clock::time_point now_;
     bool cached_to_its_bar_{true};
     std::size_t working_{0};
+    std::optional<Decimal64> first_price_;
   };
   std::vector<Seen> seen_;
   std::vector<std::string> events_;
   std::optional<InstrumentId> buy_;
   std::size_t buy_on_{0};
   std::vector<Decimal64> fill_prices_;
+  std::optional<std::size_t> slices_at_stop_;
+
+  template <class Ctx>
+  void on_stop(Ctx&) {
+    slices_at_stop_ = seen_.size();
+  }
 
   template <class Ctx>
   void on_bars(Ctx& ctx, const strategy::BarSlice& slice) {
     Seen seen;
+    seen.first_price_ = ctx.last_price(slice.bars_.front().instrument_);
     seen.end_ = slice.period_end_;
     seen.interval_ = slice.interval_;
     seen.now_ = ctx.now();
@@ -3164,8 +3172,9 @@ TEST_CASE("the last period reaches on_bars at finish before on_stop counts what 
   engine.feed(slice_bar(samsung(), utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "102", "103"));
   REQUIRE(engine.strategy().seen_.size() == 1);
   engine.finish();
-  // Delivered once, and the order it placed is the one still queued.
+  // Delivered once, before on_stop, and the order it placed is the one still queued.
   CHECK(engine.strategy().seen_.size() == 2);
+  CHECK(engine.strategy().slices_at_stop_ == std::optional<std::size_t>(2));
   CHECK(engine.result().unfilled_ == 1);
 }
 
@@ -3225,6 +3234,9 @@ TEST_CASE("a quote after a period comes after its on_bars which sees the period'
   CHECK(engine.strategy().events_ == std::vector<std::string>{"bars", "quote"});
   REQUIRE(engine.strategy().seen_.size() == 1);
   CHECK(engine.strategy().seen_[0].now_ == t);
+  // The period's own close, not the quote's price.
+  CHECK(engine.strategy().seen_[0].first_price_ == std::optional<Decimal64>(Decimal64::parse("101")));
+  CHECK(engine.result().quotes_ == 1);
 }
 
 TEST_CASE("on_bars refuses a bar it could not show consistently before anything changes") {
@@ -3265,6 +3277,37 @@ TEST_CASE("on_bars refuses a bar it could not show consistently before anything 
       engine.feed(slice_bar(samsung(), t, BarInterval::ONE_DAY, "100", "101")), std::invalid_argument
     );
     CHECK(engine.result().bars_ == 1);
+  }
+
+  SECTION("a bar of another interval at an instant a quote already delivered") {
+    backtest::Backtester<RecordsSlices> engine(RecordsSlices{}, replay_config());
+    engine.feed(slice_bar(samsung(), t, BarInterval::ONE_MINUTE, "100", "101"));
+    engine.feed(quote_at(samsung(), t, "101"));
+    CHECK_THROWS_AS(
+      engine.feed(slice_bar(samsung(), t, BarInterval::ONE_WEEK, "50", "101")), std::invalid_argument
+    );
+    CHECK(engine.result().bars_ == 1);
+  }
+
+  SECTION("a quote earlier than a period already delivered") {
+    backtest::Backtester<RecordsSlices> engine(RecordsSlices{}, pair_config());
+    engine.feed(slice_bar(samsung(), t, BarInterval::ONE_DAY, "100", "101"));
+    engine.feed(slice_bar(samsung(), t + std::chrono::hours(24), BarInterval::ONE_DAY, "102", "103"));
+    REQUIRE(engine.strategy().seen_.size() == 1);
+    engine.finish();
+    CHECK_THROWS_AS(engine.feed(quote_at(samsung(), t, "100")), std::invalid_argument);
+    CHECK(engine.result().quotes_ == 0);
+  }
+
+  SECTION("a bar for a period finish already delivered") {
+    backtest::Backtester<RecordsSlices> engine(RecordsSlices{}, pair_config());
+    engine.feed(slice_bar(samsung(), t, BarInterval::ONE_DAY, "100", "101"));
+    engine.finish();
+    REQUIRE(engine.strategy().seen_.size() == 1);
+    CHECK_THROWS_AS(
+      engine.feed(slice_bar(hynix(), t, BarInterval::ONE_DAY, "200", "201")), std::invalid_argument
+    );
+    CHECK(engine.strategy().seen_.size() == 1);
   }
 
   SECTION("a quote earlier than the period being collected") {

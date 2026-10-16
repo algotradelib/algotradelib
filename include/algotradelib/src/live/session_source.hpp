@@ -560,49 +560,43 @@ private:
       // **One delivery per period end and interval.** The bars are in period-end order, so a period is
       // complete when a later one starts. Within one read a period is all history or all live (a newest
       // bar tying a history bar is history), so the whole bucket goes one way.
-      strategy::slice_detail::Bucket bucket;
-      bool bucket_is_history = false;
-      const auto deliver = [&] {
-        if (bucket.empty()) {
-          return;
-        }
-        delivered_through_ = bucket.period_end();
-        for (const auto& slice : bucket.take()) {
-          if (bucket_is_history) {
-            runner_instance.feed_warmup(slice);
-          } else {
-            runner_instance.feed(slice);
-          }
-        }
-      };
+      //
+      // **A bar counts as read only once it is recorded**, and the period being collected outlives the
+      // poll, so an exception (a bar the cache refuses, a handler that throws) loses nothing: the next
+      // poll reads the unrecorded bar again and delivers what was recorded. The `on_bar` route behaves
+      // the same way, advancing each watermark only after its bar was fed.
       for (const auto& item : collected) {
         const auto& instrument = universe_[item.instrument_];
         const auto& event = item.event_;
-        last_bar_[instrument.symbol_] = event.bar_.timestamp_;
         // **A period already delivered is not reopened.** The bar keeps its own series complete, but an
         // older bar must not overwrite a newer price or turn the clock back.
         if (delivered_through_ && !(*delivered_through_ < event.period_end_)) {
           runner_instance.record_history_only(event);
+          last_bar_[instrument.symbol_] = event.bar_.timestamp_;
           ++bars_not_delivered_;
           continue;
         }
-        if (!bucket.empty() && bucket.period_end() < event.period_end_) {
-          deliver();
+        if (!pending_.empty() && pending_.period_end() < event.period_end_) {
+          deliver_pending(runner_instance);
         }
-        if (bucket.holds(event)) {
+        if (pending_.holds(event)) {
+          last_bar_[instrument.symbol_] = event.bar_.timestamp_;
           ++bars_not_delivered_;
           continue;
         }
         const bool history =
           !item.newest_ || (latest_history && !(*latest_history < event.period_end_));
         runner_instance.record(event);
-        bucket.add(event);
-        bucket_is_history = history;
+        // A period carried over from an interrupted poll joins this one's classification: history if
+        // either says so, so nothing decided on history sends.
+        pending_is_history_ = pending_.empty() ? history : (pending_is_history_ || history);
+        pending_.add(event);
+        last_bar_[instrument.symbol_] = event.bar_.timestamp_;
         if (history) {
           ++bars_fed_as_warmup_;
         }
       }
-      deliver();
+      deliver_pending(runner_instance);
     } else {
       for (const auto& item : collected) {
         const auto& instrument = universe_[item.instrument_];
@@ -619,6 +613,22 @@ private:
     }
     last_error_.reset();
     return outcome;
+  }
+
+  // Delivers the period being collected, one slice at a time. A slice is taken out before its handler
+  // runs, so a handler that throws is not called again for it, while the slices after it stay for the
+  // next delivery.
+  template <typename Runner>
+  void deliver_pending(Runner& runner_instance) {
+    while (!pending_.empty()) {
+      auto slice = pending_.take_first();
+      delivered_through_ = slice.period_end_;
+      if (pending_is_history_) {
+        runner_instance.feed_warmup(slice);
+      } else {
+        runner_instance.feed(slice);
+      }
+    }
   }
 
   // Fetches a quote per instrument and feeds each one.
@@ -1487,6 +1497,8 @@ private:
   // of one instrument in a period), and the last period end delivered, over the source's life.
   std::size_t bars_not_delivered_{0};
   std::optional<std::chrono::system_clock::time_point> delivered_through_;
+  strategy::slice_detail::Bucket pending_;
+  bool pending_is_history_{false};
   std::map<std::string, std::optional<std::chrono::system_clock::time_point>> held_bar_;
   int history_limit_{100};
   std::map<std::string, std::optional<std::chrono::system_clock::time_point>> last_bar_;
