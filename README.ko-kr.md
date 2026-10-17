@@ -1,9 +1,9 @@
 # algotradelib <img src="doxygen/figures/logo.png" align="right" height="139" alt="" />
 
 <!-- badges: start -->
-[![cmake-check](https://github.com/ygeunkim/algotradelib/actions/workflows/cmake-check.yaml/badge.svg?branch=main)](https://github.com/ygeunkim/algotradelib/actions/workflows/cmake-check.yaml?query=branch%3Amain)
-[![codecov](https://codecov.io/gh/ygeunkim/algotradelib/graph/badge.svg?token=NH7U8WQOHA)](https://codecov.io/gh/ygeunkim/algotradelib)
-[![Release](https://img.shields.io/github/v/release/ygeunkim/algotradelib)](https://github.com/ygeunkim/algotradelib/releases/latest)
+[![cmake-check](https://github.com/algotradelib/algotradelib/actions/workflows/cmake-check.yaml/badge.svg?branch=main)](https://github.com/algotradelib/algotradelib/actions/workflows/cmake-check.yaml?query=branch%3Amain)
+[![codecov](https://codecov.io/gh/algotradelib/algotradelib/graph/badge.svg)](https://codecov.io/gh/algotradelib/algotradelib)
+[![Release](https://img.shields.io/github/v/release/algotradelib/algotradelib)](https://github.com/algotradelib/algotradelib/releases/latest)
 <!-- badges: end -->
 
 <!-- multilingual: start -->
@@ -12,13 +12,6 @@
   <b>한국어</b>
 </p>
 <!-- multilingual: end -->
-
-<!--
-  영어 README.md 097b4ad 기준. 요약한 절: 첫 소개와 경고, "Brokers and accounts", "Install",
-  "Using it"의 실행 예시, "Documentation", "Acknowledgements", "Disclaimer". 이 절들이
-  바뀌면 이 문서도 함께 고칩니다. 키움 설정과 빌드 옵션 같은 자세한 내용은 doxygen/index.md에 있으므로,
-  그 페이지의 같은 절이 바뀔 때도 이 문서를 확인합니다.
--->
 
 > 이 문서는 [README](README.md)를 짧게 요약한 안내입니다.
 > 두 문서의 내용이 다르면 영어 README를 따르세요.
@@ -58,7 +51,7 @@ Boost가 1.87보다 낮다면 (Ubuntu 24.04는 1.83) `-DATL_FETCH_DEPS=ON`으로
 프로젝트에 서브모듈로 추가합니다.
 
 ```sh
-git submodule add https://github.com/ygeunkim/algotradelib.git libs/algotradelib
+git submodule add https://github.com/algotradelib/algotradelib.git libs/algotradelib
 git submodule update --init --recursive
 ```
 

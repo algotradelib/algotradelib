@@ -144,7 +144,7 @@ set(ALGOTRADELIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libs/algotradelib"
 if(NOT EXISTS "${ALGOTRADELIB_DIR}/CMakeLists.txt")
     message(FATAL_ERROR
         "No algotradelib checkout at ${ALGOTRADELIB_DIR}. Add it as a submodule:\n"
-        "    git submodule add https://github.com/ygeunkim/algotradelib.git libs/algotradelib\n"
+        "    git submodule add https://github.com/algotradelib/algotradelib.git libs/algotradelib\n"
         "    git submodule update --init --recursive\n"
         "or configure with -DALGOTRADELIB_DIR=/path/to/algotradelib.")
 endif()
@@ -178,7 +178,7 @@ GITEOF
 cat > "$TARGET/README.md" <<MDEOF
 # $NAME
 
-A strategy built on [algotradelib](https://github.com/ygeunkim/algotradelib), replayed beside the library's own.
+A strategy built on [algotradelib](https://github.com/algotradelib/algotradelib), replayed beside the library's own.
 
 ## Build and run
 
@@ -229,7 +229,7 @@ if [ "$MODE" = submodule ]; then
     cat <<DONEEOF
   cd $QUOTED_TARGET
   git init .
-  git submodule add https://github.com/ygeunkim/algotradelib.git libs/algotradelib
+  git submodule add https://github.com/algotradelib/algotradelib.git libs/algotradelib
   cmake -S . -B build && cmake --build build && ./build/$NAME
 DONEEOF
 else

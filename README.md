@@ -1,9 +1,9 @@
 # algotradelib <img src="doxygen/figures/logo.png" align="right" height="139" alt="" />
 
 <!-- badges: start -->
-[![cmake-check](https://github.com/ygeunkim/algotradelib/actions/workflows/cmake-check.yaml/badge.svg?branch=main)](https://github.com/ygeunkim/algotradelib/actions/workflows/cmake-check.yaml?query=branch%3Amain)
-[![codecov](https://codecov.io/gh/ygeunkim/algotradelib/graph/badge.svg?token=NH7U8WQOHA)](https://codecov.io/gh/ygeunkim/algotradelib)
-[![Release](https://img.shields.io/github/v/release/ygeunkim/algotradelib)](https://github.com/ygeunkim/algotradelib/releases/latest)
+[![cmake-check](https://github.com/algotradelib/algotradelib/actions/workflows/cmake-check.yaml/badge.svg?branch=main)](https://github.com/algotradelib/algotradelib/actions/workflows/cmake-check.yaml?query=branch%3Amain)
+[![codecov](https://codecov.io/gh/algotradelib/algotradelib/graph/badge.svg)](https://codecov.io/gh/algotradelib/algotradelib)
+[![Release](https://img.shields.io/github/v/release/algotradelib/algotradelib)](https://github.com/algotradelib/algotradelib/releases/latest)
 <!-- badges: end -->
 
 <!-- multilingual: start -->
@@ -43,7 +43,7 @@ Where the system Boost is older (Ubuntu 24.04 has 1.83), `-DATL_FETCH_DEPS=ON` d
 As a submodule:
 
 ```sh
-git submodule add https://github.com/ygeunkim/algotradelib.git libs/algotradelib
+git submodule add https://github.com/algotradelib/algotradelib.git libs/algotradelib
 git submodule update --init --recursive
 ```
 

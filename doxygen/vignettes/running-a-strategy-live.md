@@ -21,8 +21,8 @@ At that moment you own four things you probably did not mean to: a cadence, a ra
 reconciliation obligation, and a stop control. The loop exists to own them for you.
 
 The whole production path — journal, recovery, loop, stops and the report — is
-[`examples/example-live-program.cpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/example-live-program.cpp) with
-[`examples/live_program.hpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/live_program.hpp); copy those, with the two
+[`examples/example-live-program.cpp`](https://github.com/algotradelib/algotradelib/blob/main/examples/example-live-program.cpp) with
+[`examples/live_program.hpp`](https://github.com/algotradelib/algotradelib/blob/main/examples/live_program.hpp); copy those, with the two
 credential headers the program includes (`examples/kis_credentials.hpp`, `examples/kiwoom_credentials.hpp`). The loop at its centre:
 
 ```cpp
@@ -962,7 +962,7 @@ short sends no placement" is always true; "it sends nothing" only where no worki
 target's way.
 
 What a cash account can do is buy a fund that moves against an index.
-[`examples/example-inverse-fund.cpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/example-inverse-fund.cpp)
+[`examples/example-inverse-fund.cpp`](https://github.com/algotradelib/algotradelib/blob/main/examples/example-inverse-fund.cpp)
 is a strategy that reads one instrument for its signal and states an ordinary long target for an
 inverse fund, by the fund's own name, with the fund's own prices, lot and bars. The library does not
 translate a negative target into such a purchase, and should not be asked to: the two are different

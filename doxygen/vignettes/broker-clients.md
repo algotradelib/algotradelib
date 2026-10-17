@@ -44,7 +44,7 @@ client->async_quote(
 ioc.run();
 ```
 
-[`examples/example-kis-quote.cpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/example-kis-quote.cpp) is the
+[`examples/example-kis-quote.cpp`](https://github.com/algotradelib/algotradelib/blob/main/examples/example-kis-quote.cpp) is the
 complete runnable version. It reads `KIS_APP_KEY`, `KIS_APP_SECRET`, and
 `KIS_DEMO` from the environment: unset or `1` is the 모의투자 endpoints, `0` is live,
 and anything else refuses to load. The default symbol is Samsung
@@ -56,7 +56,7 @@ cmake --build build --target example-kis-quote
 ./build/bin/example-kis-quote 005930
 ```
 
-[`examples/example-tossinvest-quote.cpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/example-tossinvest-quote.cpp) provides the same workflow for Toss Securities. It reads `TOSS_CLIENT_ID` and `TOSS_CLIENT_SECRET` from the environment.
+[`examples/example-tossinvest-quote.cpp`](https://github.com/algotradelib/algotradelib/blob/main/examples/example-tossinvest-quote.cpp) provides the same workflow for Toss Securities. It reads `TOSS_CLIENT_ID` and `TOSS_CLIENT_SECRET` from the environment.
 
 ```sh
 cmake -S . -B build -DATL_BUILD_EXAMPLES=ON
@@ -70,7 +70,7 @@ HTTP connection between sequential calls.
 
 ## Account and holdings clients
 
-[`examples/example-kis-account.cpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/example-kis-account.cpp) loads
+[`examples/example-kis-account.cpp`](https://github.com/algotradelib/algotradelib/blob/main/examples/example-kis-account.cpp) loads
 KIS credentials from `KIS_APP_KEY` and `KIS_APP_SECRET`, selects the live or
 demo environment with `KIS_DEMO` (demo unless it is `0`), and selects an account using
 `KIS_CANO` plus optional `KIS_ACNT_PRDT_CD` (default `01`). It requests and
@@ -120,7 +120,7 @@ refused. The adapter calls domestic-stock endpoints only, so a US account's key 
 requests answer as Kiwoom answers them for that account. Toss trading still reads its environment variables, and
 `example-live-program` refuses `--credentials` for it.
 
-[`examples/example-tossinvest-account.cpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/example-tossinvest-account.cpp)
+[`examples/example-tossinvest-account.cpp`](https://github.com/algotradelib/algotradelib/blob/main/examples/example-tossinvest-account.cpp)
 loads `TOSS_CLIENT_ID` and `TOSS_CLIENT_SECRET`, discovers brokerage accounts,
 prints masked account numbers, and requests holdings for the first account. To
 select another discovered account, pass its displayed sequence as the first
@@ -238,7 +238,7 @@ Read these before using the order clients.
 
 ### Order inquiries
 
-[`examples/example-kis-orders.cpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/example-kis-orders.cpp) is
+[`examples/example-kis-orders.cpp`](https://github.com/algotradelib/algotradelib/blob/main/examples/example-kis-orders.cpp) is
 read-only. It lists every modifiable or cancellable order with its amendable
 quantity and branch code, then prints today's orders and executions. It uses
 the same environment variables as the KIS account example.
@@ -248,7 +248,7 @@ cmake --build build --target example-kis-orders
 ./build/bin/example-kis-orders
 ```
 
-[`examples/example-tossinvest-orders.cpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/example-tossinvest-orders.cpp)
+[`examples/example-tossinvest-orders.cpp`](https://github.com/algotradelib/algotradelib/blob/main/examples/example-tossinvest-orders.cpp)
 is also read-only. It prints each open order on one line, then requests only
 the first page of closed orders and reports whether another cursor is
 available. It does not automatically exhaust closed-order history because both
@@ -265,7 +265,7 @@ cmake --build build --target example-tossinvest-orders
 
 ### Order request dry-run
 
-[`examples/example-kis-place-order.cpp`](https://github.com/ygeunkim/algotradelib/blob/main/examples/example-kis-place-order.cpp)
+[`examples/example-kis-place-order.cpp`](https://github.com/algotradelib/algotradelib/blob/main/examples/example-kis-place-order.cpp)
 only constructs and prints an `OrderRequest`. It never creates a client, loads
 credentials, reads environment variables, or performs network I/O, so it
 cannot submit an order. Every argument is optional and positional:
