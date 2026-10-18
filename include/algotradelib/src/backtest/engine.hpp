@@ -127,14 +127,45 @@ public:
     if (order.session_ != OrderSession::REGULAR) {
       return false;
     }
-    // A stop the model can release: both prices, and a day order (the only stop KIS and Kiwoom offer).
-    if (order.type_ == OrderType::STOP_LIMIT) {
-      return order.trigger_price_.has_value() && order.price_.has_value() &&
-        order.time_in_force_ == TimeInForce::DAY;
+    switch (order.type_) {
+      case OrderType::STOP_LIMIT:
+        // A stop the model can release: both prices, and a day order (the only stop KIS and Kiwoom offer).
+        return order.trigger_price_.has_value() && order.price_.has_value() &&
+          order.time_in_force_ == TimeInForce::DAY;
+      case OrderType::LIMIT:
+      case OrderType::MARKET:
+        // A trigger on a limit or market order would be ignored; refuse it.
+        return models_time_in_force(order.time_in_force_) && !order.trigger_price_;
+      case OrderType::UNKNOWN:
+      case OrderType::CONDITIONAL_LIMIT:
+      case OrderType::BEST_LIMIT:
+      case OrderType::PRIMARY_LIMIT:
+      case OrderType::MID_PRICE:
+      case OrderType::CLOSING_PRICE:
+        return false;
     }
-    const bool priceable = order.type_ == OrderType::LIMIT || order.type_ == OrderType::MARKET;
-    // A trigger on a limit or market order would be ignored; refuse it.
-    return priceable && !order.trigger_price_;
+    return false;
+  }
+
+  /**
+   * @brief Tests whether the replay models a limit or market order's time in force.
+   *
+   * A day order rests on later bars until the session ends; every other condition is filled or not on
+   * the next bar and not kept after it (`NextBarFillModel::rests_unfilled`), which is how an `UNKNOWN`
+   * one is replayed too.
+   *
+   * @param condition The condition.
+   * @return `true` for every condition today.
+   */
+  static constexpr bool models_time_in_force(TimeInForce condition) noexcept {
+    switch (condition) {
+      case TimeInForce::UNKNOWN:
+      case TimeInForce::DAY:
+      case TimeInForce::IMMEDIATE_OR_CANCEL:
+      case TimeInForce::FILL_OR_KILL:
+        return true;
+    }
+    return false;
   }
 
   /**
@@ -947,7 +978,7 @@ private:
       // session, as a market order decided there fills at the next open: one session, shifted, never
       // the several a resting order had before. Recorded here, beside the one `may_fill` call, so
       // `unchecked_fill_causality_` still counts each order once per bar.
-      if (!entry.session_ && entry.order_.time_in_force_ == TimeInForce::DAY) {
+      if (!entry.session_ && time_in_force_expires_at_close(entry.order_.time_in_force_)) {
         first_session.push_back(entry.ref_);
       }
     }
@@ -1074,7 +1105,7 @@ private:
     std::vector<OrderRef<Tag>> expired;
     for (const auto& entry : runner_.executor().queued()) {
       if (!(entry.order_.instrument_ == event.instrument_) || !entry.session_ ||
-          entry.order_.time_in_force_ != TimeInForce::DAY) {
+          !time_in_force_expires_at_close(entry.order_.time_in_force_)) {
         continue;
       }
       if (*entry.session_ < bar_date || (*entry.session_ == bar_date && ends_session)) {

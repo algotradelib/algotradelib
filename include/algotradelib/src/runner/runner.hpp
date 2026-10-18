@@ -918,10 +918,7 @@ public:
         continue;
       }
       const auto owed = state_of(entry);
-      if (owed == ObligationState::OPERATOR) {
-        return owed;
-      }
-      if (owed == ObligationState::UNNAMED || state == ObligationState::NONE) {
+      if (obligation_weight(state) < obligation_weight(owed)) {
         state = owed;
       }
     }
@@ -1254,7 +1251,7 @@ public:
         const auto gap = held ? decimal_subtract(*held, entry.held_) : std::nullopt;
         // A weight is planned again as the position it states, against the holding at release, so
         // the book it was decided against does not bind it.
-        const bool weight = entry.intent_.size().kind() == strategy::SizeKind::TARGET_WEIGHT;
+        const bool weight = strategy::size_kind_is_target(entry.intent_.size().kind());
         const bool same_book = weight || (gap && gap->coefficient() == 0);
         const bool stop_now_rests = entry.intent_.trigger() && stop_listed(entry.intent_.instrument());
         if (!same_book || stop_now_rests) {
@@ -1682,9 +1679,9 @@ public:
     // A DAY order does not outlive its session, whatever its history row says afterwards: a broker may
     // leave an expired order's remainder on the row (KIS reads it from `rmn_qty`), so the row's filled
     // quantity is taken as final once the session has closed (`confirm_from_history`).
-    if (phase == strategy::MarketPhase::CLOSED || phase == strategy::MarketPhase::POST_CLOSE) {
+    if (strategy::market_phase_session_ended(phase)) {
       for (auto& entry : unconfirmed_) {
-        if (entry.row_.order_.time_in_force_ == TimeInForce::DAY) {
+        if (time_in_force_expires_at_close(entry.row_.order_.time_in_force_)) {
           entry.session_ended_ = true;
         }
       }
@@ -2040,9 +2037,7 @@ private:
       // that stayed at zero through every one of them would be silent in the case it exists for.
       // `REFUSED_LOCALLY` and `UNAVAILABLE` do not: nothing was sent. This is the same division
       // `note_sent` already makes, for the same reason.
-      if (decision.admitted_outside_phase_ &&
-          (outcome == SendOutcome::ACCEPTED || outcome == SendOutcome::REJECTED ||
-           outcome == SendOutcome::INDETERMINATE)) {
+      if (decision.admitted_outside_phase_ && send_outcome_reached_broker(outcome)) {
         ++sends_outside_permitted_phase_;
       }
       // **Split on whether a broker was asked, which is the division `send_outcome_reached_broker`
@@ -2064,7 +2059,7 @@ private:
       // After every send, not only after a refusal. A terminal journal write that fails leaves the
       // broker's own outcome intact -- the send happened, and saying otherwise would be a lie -- but
       // it still means the journal is broken, and the runner must stop.
-      note_executor_failure(outcome == SendOutcome::UNAVAILABLE);
+      note_executor_failure(send_outcome_is_local_failure(outcome));
       switch (outcome) {
         case SendOutcome::ACCEPTED:
           // Counted against the rate limit only once the instruction actually went, so an order a
@@ -2565,7 +2560,23 @@ private:
   // Whether a history row's status ends the original order, so its filled quantity is final.
   // `CANCEL_REJECTED` and `REPLACE_REJECTED` say a request about it failed, not that it ended.
   static bool ends_the_order(OrderStatus status) noexcept {
-    return status == OrderStatus::FILLED || status == OrderStatus::CANCELED || status == OrderStatus::REJECTED;
+    switch (status) {
+      case OrderStatus::FILLED:
+      case OrderStatus::CANCELED:
+      case OrderStatus::REJECTED:
+        return true;
+      // Not an end of this order: a replacement or a refused change leaves it, or its successor, to settle.
+      case OrderStatus::UNKNOWN:
+      case OrderStatus::PENDING:
+      case OrderStatus::PENDING_CANCEL:
+      case OrderStatus::PENDING_REPLACE:
+      case OrderStatus::PARTIAL_FILLED:
+      case OrderStatus::CANCEL_REJECTED:
+      case OrderStatus::REPLACE_REJECTED:
+      case OrderStatus::REPLACED:
+        return false;
+    }
+    return false;
   }
 
   // The rows that are `entry`'s own order: its number, instrument and side, dated within the tolerance of
@@ -2702,7 +2713,7 @@ private:
     line.order_id_ = entry.ref_.primary_;
     line.baseline_ = std::move(holding);
     line.detail_ = std::move(detail);
-    line.requires_operator_ = outcome == JournalOutcome::HELD;
+    line.requires_operator_ = journal_outcome_requires_operator(outcome);
     return line;
   }
 
@@ -2781,7 +2792,7 @@ private:
       if (line.action_ != JournalAction::PLACE || line.instrument_.symbol_.empty()) {
         continue;
       }
-      const bool closing = line.outcome_ == JournalOutcome::CONFIRMED || line.outcome_ == JournalOutcome::HELD;
+      const bool closing = journal_outcome_is_closing_account(line.outcome_);
       const auto known = fold_of.find(line.id_);
       auto fold = known == fold_of.end() ? folds.end() : folds.begin() + static_cast<std::ptrdiff_t>(known->second);
       if (fold == folds.end()) {
@@ -2800,7 +2811,7 @@ private:
           fold->sent_at_ = line.recorded_at_;
         }
       }
-      if (line.requires_operator_ && line.outcome_ != JournalOutcome::HELD) {
+      if (line.requires_operator_ && !journal_outcome_requires_operator(line.outcome_)) {
         fold->operator_only_ = true;
         fold->why_ = line.detail_.empty() ? std::string("a damaged journal line") : line.detail_;
       }
@@ -2809,7 +2820,8 @@ private:
         case JournalOutcome::RESOLVED:
           if (!line.order_id_.empty()) {
             fold->name_ = line.order_id_;
-            fold->accepted_ = line.outcome_ == JournalOutcome::ACCEPTED;
+            // The broker's reply named it (`ACCEPTED`), not a sweep (`RESOLVED`).
+            fold->accepted_ = journal_outcome_answers_send(line.outcome_);
           }
           break;
         case JournalOutcome::CONFIRMED:
@@ -4042,7 +4054,7 @@ private:
       return;
     }
     const auto outcome = executor_.cancel(*working);
-    note_executor_failure(outcome == SendOutcome::UNAVAILABLE);
+    note_executor_failure(send_outcome_is_local_failure(outcome));
     // Switched over rather than tested one outcome at a time, deliberately. Three different outcomes
     // once fell through to `would_cancel_` -- the bucket that says the
     // broker withdrew the order -- because each fix handled the case it was told about and left the
@@ -4167,7 +4179,7 @@ private:
         // order it would buy the whole allocation again at every rebalance, which is what
         // `SizeKind::TARGET_WEIGHT` promises it does not do; as a target it is diffed against the
         // position and the working orders, like any target.
-        if (intent->size().kind() == strategy::SizeKind::TARGET_WEIGHT) {
+        if (strategy::size_kind_is_target(intent->size().kind())) {
           return plan_weight(*intent, inputs);
         }
         return strategy::reconcile(*intent, context_.portfolio(), inputs);

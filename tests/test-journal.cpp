@@ -279,6 +279,61 @@ TEST_CASE("a placement is found by its id whatever was written about it since", 
   CHECK(runner::placements_of(replay, {}).empty());
 }
 
+TEST_CASE("each journal outcome pairs with an open line as recovery reads it", "[journal]") {
+  struct Expected {
+    JournalOutcome outcome;
+    std::size_t open_after_pending;
+    std::size_t open_alone;
+    std::size_t placements_after_pending;
+    std::size_t placements_alone;
+    bool answered;
+  };
+  // Written out per outcome. PENDING appends another open line; INDETERMINATE answers the open one and keeps
+  // it owed; every other outcome settles it. An orphaned line is owed only for PENDING and INDETERMINATE.
+  const Expected expected[] = {
+    {JournalOutcome::PENDING, 2, 1, 1, 1, false},
+    {JournalOutcome::ACCEPTED, 0, 0, 1, 0, false},
+    {JournalOutcome::REJECTED, 0, 0, 1, 0, false},
+    {JournalOutcome::INDETERMINATE, 1, 1, 1, 1, true},
+    {JournalOutcome::RESOLVED, 0, 0, 1, 0, false},
+    {JournalOutcome::CONFIRMED, 0, 0, 1, 0, false},
+    {JournalOutcome::HELD, 0, 0, 1, 0, false},
+  };
+  REQUIRE(std::size(expected) == runner::all_journal_outcomes.size());
+  for (const auto& row : expected) {
+    INFO(runner::journal_outcome_name(row.outcome));
+    auto answer = line("a-1", row.outcome);
+    answer.recorded_at_ += std::chrono::seconds(7);
+    runner::JournalReplay paired;
+    paired.entries_ = {line("a-1", JournalOutcome::PENDING), answer};
+    const auto open = runner::unresolved_instructions(paired);
+    REQUIRE(open.size() == row.open_after_pending);
+    if (row.outcome == JournalOutcome::INDETERMINATE) {
+      CHECK(open.front().answered_);
+      CHECK(open.front().closed_at_ == answer.recorded_at_);
+    }
+    if (row.outcome == JournalOutcome::PENDING) {
+      // The first open line stays first; the second is appended, and neither is answered.
+      CHECK(open[0].opened_at_ == utc(2026, 3, 30, 0, 30));
+      CHECK(open[1].opened_at_ == answer.recorded_at_);
+      CHECK_FALSE(open[0].answered_);
+      CHECK_FALSE(open[1].answered_);
+    }
+    runner::JournalReplay alone;
+    alone.entries_ = {answer};
+    CHECK(runner::unresolved_instructions(alone).size() == row.open_alone);
+
+    const auto found = runner::placements_of(paired, {"a-1"});
+    REQUIRE(found.size() == row.placements_after_pending);
+    CHECK(found.front().answered_ == row.answered);
+    CHECK(found.front().opened_at_ == utc(2026, 3, 30, 0, 30));
+    if (row.answered) {
+      CHECK(found.front().closed_at_ == answer.recorded_at_);
+    }
+    CHECK(runner::placements_of(alone, {"a-1"}).size() == row.placements_alone);
+  }
+}
+
 TEST_CASE("an orphaned indeterminate line is still owed", "[journal]") {
   // A journal whose beginning was rotated or edited away. An orphaned `ACCEPTED` carries its own
   // answer; an orphaned `INDETERMINATE` carries the absence of one.

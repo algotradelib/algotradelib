@@ -651,10 +651,46 @@ TEST_CASE("stop intents are ordered by how much they do", "[loop][stop]") {
   // trusted: inserting a new intent in the wrong place would silently break escalation.
   CHECK(runner::stop_intent_covers(StopIntent::FLATTEN, StopIntent::QUIESCE));
   CHECK(runner::stop_intent_covers(StopIntent::FLATTEN, StopIntent::WITHDRAW));
+  CHECK(runner::stop_intent_covers(StopIntent::FLATTEN, StopIntent::FLATTEN));
   CHECK(runner::stop_intent_covers(StopIntent::WITHDRAW, StopIntent::QUIESCE));
+  CHECK(runner::stop_intent_covers(StopIntent::WITHDRAW, StopIntent::WITHDRAW));
   CHECK(runner::stop_intent_covers(StopIntent::QUIESCE, StopIntent::QUIESCE));
   CHECK_FALSE(runner::stop_intent_covers(StopIntent::QUIESCE, StopIntent::WITHDRAW));
+  CHECK_FALSE(runner::stop_intent_covers(StopIntent::QUIESCE, StopIntent::FLATTEN));
   CHECK_FALSE(runner::stop_intent_covers(StopIntent::WITHDRAW, StopIntent::FLATTEN));
+  // What each intent asks of the closing pass.
+  CHECK_FALSE(runner::stop_intent_closes(StopIntent::QUIESCE));
+  CHECK(runner::stop_intent_closes(StopIntent::WITHDRAW));
+  CHECK(runner::stop_intent_closes(StopIntent::FLATTEN));
+  CHECK_FALSE(runner::stop_intent_closes_positions(StopIntent::QUIESCE));
+  CHECK_FALSE(runner::stop_intent_closes_positions(StopIntent::WITHDRAW));
+  CHECK(runner::stop_intent_closes_positions(StopIntent::FLATTEN));
+}
+
+TEST_CASE("a stop source keeps the strongest intent it was asked for", "[loop][stop]") {
+  StopSource source;
+  CHECK_FALSE(source.requested());
+  CHECK_FALSE(source.intent().has_value());
+  // The weakest intent is still a request.
+  source.request(StopIntent::QUIESCE);
+  CHECK(source.requested());
+  CHECK(source.intent() == StopIntent::QUIESCE);
+  source.request(StopIntent::WITHDRAW);
+  CHECK(source.intent() == StopIntent::WITHDRAW);
+  source.request(StopIntent::QUIESCE);
+  CHECK(source.intent() == StopIntent::WITHDRAW);
+  source.request(StopIntent::WITHDRAW);
+  CHECK(source.intent() == StopIntent::WITHDRAW);
+  source.request(StopIntent::FLATTEN);
+  CHECK(source.intent() == StopIntent::FLATTEN);
+  source.request(StopIntent::WITHDRAW);
+  source.request(StopIntent::QUIESCE);
+  CHECK(source.intent() == StopIntent::FLATTEN);
+  source.clear();
+  CHECK_FALSE(source.requested());
+  CHECK_FALSE(source.intent().has_value());
+  source.request(StopIntent::FLATTEN);
+  CHECK(source.intent() == StopIntent::FLATTEN);
 }
 
 TEST_CASE("intent names round-trip through the control-file spelling", "[loop][stop]") {

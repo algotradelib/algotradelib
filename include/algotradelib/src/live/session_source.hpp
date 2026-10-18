@@ -32,7 +32,7 @@ namespace live {
  * @return `RATE_LIMITED` for `ErrorCategory::RATE_LIMIT`, otherwise `FAILED`.
  */
 inline runner::PollOutcome poll_outcome_of(const BrokerError& error) noexcept {
-  return error.category_ == ErrorCategory::RATE_LIMIT ?
+  return error_category_is_rate_limit(error.category_) ?
     runner::PollOutcome::RATE_LIMITED :
     runner::PollOutcome::FAILED;
 }

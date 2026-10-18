@@ -4432,7 +4432,7 @@ private:
   // refusal means this key's own allowance was exceeded, but KIS reports no number
   // to correct to; so both only hold admission.
   void note_rate_limit(const BrokerError& error) {
-    if (error.category_ != ErrorCategory::RATE_LIMIT) {
+    if (!error_category_is_rate_limit(error.category_)) {
       return;
     }
     auto* limiter = http_->rate_limits();

@@ -749,7 +749,7 @@ struct BrokerTraits<kiwoom::KiwoomClient>
    */
   template <typename Token>
   static auto holdings(Client& client, const Account& account, Token&& token) {
-    if (client.config().holdings_position_scope_ == kiwoom::KiwoomPositionScope::UNSPECIFIED) {
+    if (!kiwoom::kiwoom_position_scope_asserted(client.config().holdings_position_scope_)) {
       static_cast<void>(account);
       return net::async_initiate<Token, void(Result<HoldingsSnapshot>)>(
         [strand = client.get_executor()](auto&& handler) mutable {
@@ -995,7 +995,7 @@ struct BrokerTraits<kiwoom::KiwoomBlockingClient>
    * @return The result, or an error.
    */
   static Result<HoldingsSnapshot> holdings(Client& client, const Account& account) {
-    if (client.config().holdings_position_scope_ == kiwoom::KiwoomPositionScope::UNSPECIFIED) {
+    if (!kiwoom::kiwoom_position_scope_asserted(client.config().holdings_position_scope_)) {
       static_cast<void>(account);
       return refuse_holdings();
     }

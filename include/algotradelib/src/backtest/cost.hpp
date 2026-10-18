@@ -116,7 +116,7 @@ inline Result<CommissionModel> commission_model_from(
   const auto& rate = selection.rate_;
   auto model = CommissionModel::of(rate->rate_);
   // A caller's stated schedule stays the caller's: the report says where the rate it charged came from.
-  model.from_broker_ = schedule.origin_ == CommissionOrigin::BROKER_PUBLISHED;
+  model.from_broker_ = commission_origin_is_broker(schedule.origin_);
   return Result<CommissionModel>(std::move(model));
 }
 
@@ -213,7 +213,7 @@ public:
     VenueKey asserted,
     Country dating_market
   ) {
-    if (schedule.origin_ == CommissionOrigin::CALLER_STATED && schedule.tariff_.empty()) {
+    if (commission_origin_names_tariff(schedule.origin_) && schedule.tariff_.empty()) {
       return Result<CommissionPolicy>(refusal(
         "commission_tariff_unnamed",
         "a caller-stated commission schedule must name the tariff it was read from, because the "

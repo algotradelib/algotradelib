@@ -70,6 +70,25 @@ inline constexpr std::string_view market_phase_name(MarketPhase phase) noexcept 
   return "";
 }
 
+/**
+ * @brief Tests whether a phase means the day's session is over (or never opened), so a day order no
+ *   longer works.
+ * @param phase The phase.
+ * @return `true` for `CLOSED` and `POST_CLOSE`; `false` for `UNKNOWN`, `PRE_OPEN` and `OPEN`.
+ */
+inline constexpr bool market_phase_session_ended(MarketPhase phase) noexcept {
+  switch (phase) {
+    case MarketPhase::CLOSED:
+    case MarketPhase::POST_CLOSE:
+      return true;
+    case MarketPhase::UNKNOWN:
+    case MarketPhase::PRE_OPEN:
+    case MarketPhase::OPEN:
+      return false;
+  }
+  return false;
+}
+
 static_assert(
   lists_every_value(all_market_phases, [](MarketPhase phase) { return !market_phase_name(phase).empty(); }),
   "all_market_phases must list every MarketPhase"

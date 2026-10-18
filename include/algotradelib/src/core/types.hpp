@@ -714,6 +714,27 @@ enum class ErrorCategory {
 };
 
 /**
+ * @brief Tests whether an error of this category is a broker asking the caller to slow down, so the
+ *   request may be tried again later and the pacer should hold.
+ * @param category The category.
+ * @return `true` for `RATE_LIMIT` only.
+ */
+inline constexpr bool error_category_is_rate_limit(ErrorCategory category) noexcept {
+  switch (category) {
+    case ErrorCategory::RATE_LIMIT:
+      return true;
+    case ErrorCategory::CANCELLED:
+    case ErrorCategory::TRANSPORT:
+    case ErrorCategory::HTTP:
+    case ErrorCategory::AUTHENTICATION:
+    case ErrorCategory::PROTOCOL:
+    case ErrorCategory::INVALID_ARGUMENT:
+      return false;
+  }
+  return false;
+}
+
+/**
  * @brief The error a broker or transport operation returns.
  *
  * Branch on `category_`; the other fields are for diagnosis and logs.
@@ -937,7 +958,24 @@ struct SellableBasis {
    * @return `true` if the coverage is `WHOLE_HOLDING` and the treatment is stated.
    */
   constexpr bool is_enforceable() const noexcept {
-    return coverage_ == Coverage::WHOLE_HOLDING && resting_ != RestingTreatment::UNESTABLISHED;
+    bool covers = false;
+    switch (coverage_) {
+      case Coverage::WHOLE_HOLDING:
+        covers = true;
+        break;
+      case Coverage::UNESTABLISHED:
+      case Coverage::PARTIAL:
+        break;
+    }
+    bool treated = false;
+    switch (resting_) {
+      case RestingTreatment::DEDUCT:
+        treated = true;
+        break;
+      case RestingTreatment::UNESTABLISHED:
+        break;
+    }
+    return covers && treated;
   }
 };
 
@@ -1341,6 +1379,36 @@ enum class CommissionOrigin {
 };
 
 /**
+ * @brief Tests whether commission rates of this origin came from the broker.
+ * @param origin The origin.
+ * @return `true` for `BROKER_PUBLISHED`.
+ */
+inline constexpr bool commission_origin_is_broker(CommissionOrigin origin) noexcept {
+  switch (origin) {
+    case CommissionOrigin::BROKER_PUBLISHED:
+      return true;
+    case CommissionOrigin::CALLER_STATED:
+      return false;
+  }
+  return false;
+}
+
+/**
+ * @brief Tests whether a schedule of this origin must name the tariff it was read from.
+ * @param origin The origin.
+ * @return `true` for `CALLER_STATED`: nothing else says which channel's published table it is.
+ */
+inline constexpr bool commission_origin_names_tariff(CommissionOrigin origin) noexcept {
+  switch (origin) {
+    case CommissionOrigin::CALLER_STATED:
+      return true;
+    case CommissionOrigin::BROKER_PUBLISHED:
+      return false;
+  }
+  return true;
+}
+
+/**
  * @brief Returns a lowercase name for an origin, such as `"caller_stated"`, for reports.
  * @param origin The origin.
  * @return The name.
@@ -1606,7 +1674,12 @@ struct CommissionSchedule {
   }
 };
 
-/** @brief The side of an order. */
+/**
+ * @brief The side of an order: its economic direction, buy or sell.
+ *
+ * Closed at two values. A short sale is a sell and a cover is a buy; a mark that says which (short,
+ * short-exempt, cover only) is a separate fact this library does not carry yet.
+ */
 enum class OrderSide {
   BUY,
   SELL,
@@ -1614,6 +1687,14 @@ enum class OrderSide {
 
 /** @brief Every `OrderSide`, in declaration order. */
 inline constexpr std::array<OrderSide, 2> all_order_sides{OrderSide::BUY, OrderSide::SELL};
+
+// The direction is closed: about forty sites in the ledger, fills, costs, risk and reconciliation read
+// "not BUY" as SELL. A short-sale or short-exempt mark, or a cover-only constraint, is a separate fact that
+// would travel in its own field through the intent, the request, the journal and recovery.
+static_assert(
+  all_order_sides.size() == 2,
+  "OrderSide is buy or sell: a short-sale mark or a cover belongs in its own field, not in OrderSide"
+);
 
 /**
  * @brief How an order's price is decided (its price basis).
@@ -1665,8 +1746,20 @@ inline constexpr std::array<OrderType, 9> all_order_types{
  * @return `true` for `LIMIT`, `CONDITIONAL_LIMIT` and `STOP_LIMIT`.
  */
 inline constexpr bool carries_caller_price(OrderType type) noexcept {
-  return type == OrderType::LIMIT || type == OrderType::CONDITIONAL_LIMIT ||
-    type == OrderType::STOP_LIMIT;
+  switch (type) {
+    case OrderType::LIMIT:
+    case OrderType::CONDITIONAL_LIMIT:
+    case OrderType::STOP_LIMIT:
+      return true;
+    case OrderType::UNKNOWN:
+    case OrderType::MARKET:
+    case OrderType::BEST_LIMIT:
+    case OrderType::PRIMARY_LIMIT:
+    case OrderType::MID_PRICE:
+    case OrderType::CLOSING_PRICE:
+      return false;
+  }
+  return false;
 }
 
 /**
@@ -1679,7 +1772,20 @@ inline constexpr bool carries_caller_price(OrderType type) noexcept {
  * @return `true` for `STOP_LIMIT` only.
  */
 inline constexpr bool carries_trigger_price(OrderType type) noexcept {
-  return type == OrderType::STOP_LIMIT;
+  switch (type) {
+    case OrderType::STOP_LIMIT:
+      return true;
+    case OrderType::UNKNOWN:
+    case OrderType::LIMIT:
+    case OrderType::MARKET:
+    case OrderType::CONDITIONAL_LIMIT:
+    case OrderType::BEST_LIMIT:
+    case OrderType::PRIMARY_LIMIT:
+    case OrderType::MID_PRICE:
+    case OrderType::CLOSING_PRICE:
+      return false;
+  }
+  return false;
 }
 
 /**
@@ -1705,6 +1811,25 @@ inline constexpr std::array<TimeInForce, 4> all_times_in_force{
   TimeInForce::IMMEDIATE_OR_CANCEL,
   TimeInForce::FILL_OR_KILL,
 };
+
+/**
+ * @brief Tests whether an order with this condition expires at the session's close, so its filled quantity
+ *   is final once the session has ended.
+ * @param condition The condition.
+ * @return `true` for `DAY`; `false` for `IMMEDIATE_OR_CANCEL` and `FILL_OR_KILL` (never resting) and for
+ *   `UNKNOWN`.
+ */
+inline constexpr bool time_in_force_expires_at_close(TimeInForce condition) noexcept {
+  switch (condition) {
+    case TimeInForce::DAY:
+      return true;
+    case TimeInForce::UNKNOWN:
+    case TimeInForce::IMMEDIATE_OR_CANCEL:
+    case TimeInForce::FILL_OR_KILL:
+      return false;
+  }
+  return false;
+}
 
 /**
  * @brief The trading session an order is submitted into.
@@ -1764,6 +1889,31 @@ enum class OrderStatus {
   REPLACE_REJECTED,
   REPLACED,
 };
+
+/**
+ * @brief Tests whether a cancellation of an order in this status is already on its way, so asking again
+ *   can only be refused.
+ * @param status The status.
+ * @return `true` for `PENDING_CANCEL` only.
+ */
+inline constexpr bool order_status_cancel_pending(OrderStatus status) noexcept {
+  switch (status) {
+    case OrderStatus::PENDING_CANCEL:
+      return true;
+    case OrderStatus::UNKNOWN:
+    case OrderStatus::PENDING:
+    case OrderStatus::PENDING_REPLACE:
+    case OrderStatus::PARTIAL_FILLED:
+    case OrderStatus::FILLED:
+    case OrderStatus::CANCELED:
+    case OrderStatus::REJECTED:
+    case OrderStatus::CANCEL_REJECTED:
+    case OrderStatus::REPLACE_REJECTED:
+    case OrderStatus::REPLACED:
+      return false;
+  }
+  return false;
+}
 
 /**
  * @brief An order to place, in broker-neutral form.

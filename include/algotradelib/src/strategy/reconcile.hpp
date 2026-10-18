@@ -541,7 +541,7 @@ Plan<Broker> reconcile(
       if (is_stop(working.order_)) {
         // Withdrawn only when a trade is needed, and not again once its withdrawal is pending: a
         // second request for an order already on its way out can only fail.
-        if (!met && working.order_.status_ != OrderStatus::PENDING_CANCEL) {
+        if (!met && !order_status_cancel_pending(working.order_.status_)) {
           plan.cancel_.push_back(working.ref_);
         }
       } else if (met) {

@@ -169,6 +169,21 @@ struct PriceRule {
   std::string source_;
 
   /**
+   * @brief Tests whether the rule says anything about the grid: a stated one, or none at all.
+   * @return `false` for `UNKNOWN`. A `STATED` and an `UNCONSTRAINED` rule are both read from `bands_`.
+   */
+  constexpr bool grid_known() const noexcept {
+    switch (kind_) {
+      case Kind::STATED:
+      case Kind::UNCONSTRAINED:
+        return true;
+      case Kind::UNKNOWN:
+        return false;
+    }
+    return false;
+  }
+
+  /**
    * @brief Returns the tick size at a price.
    * @param price The price.
    * @return The tick of the band containing `price`, or `std::nullopt` if there are no bands or
@@ -193,7 +208,7 @@ struct PriceRule {
    *   unconstrained rule); otherwise `false`.
    */
   std::optional<bool> on_tick(const Decimal64& price) const {
-    if (kind_ == Kind::UNKNOWN) {
+    if (!grid_known()) {
       return std::nullopt;
     }
     const auto tick = tick_at(price);
@@ -220,7 +235,7 @@ struct PriceRule {
    *   or `std::nullopt` if the grid is unknown or the arithmetic does not fit.
    */
   std::optional<Decimal64> round_to_tick(const Decimal64& price, OrderSide side) const {
-    if (kind_ == Kind::UNKNOWN) {
+    if (!grid_known()) {
       return std::nullopt;
     }
     const auto tick = tick_at(price);
@@ -308,16 +323,23 @@ private:
  * @brief Returns the library's price grid for a kind of security in a country.
  *
  * KRX stocks, foreign stocks, depositary receipts, infrastructure funds and REITs get the equity
- * table; ETFs, ETNs, warrants and unknown types get an `UNKNOWN` rule; other countries are
- * unconstrained.
+ * table; ETFs, ETNs, warrants and unknown types get an `UNKNOWN` rule. US listings are unconstrained,
+ * whatever their type.
  *
  * @param country The listing country.
  * @param type The security type.
  * @return The rule.
  */
 inline PriceRule price_rule_for(Country country, SecurityType type) {
+  switch (country) {
+    case Country::US:
+      return PriceRule::unconstrained();
+    case Country::KR:
+      break;
+  }
   if (country != Country::KR) {
-    return PriceRule::unconstrained();
+    // Not a `Country` (a cast): no grid is known.
+    return PriceRule::unknown("no price grid is known for this market");
   }
   switch (type) {
     case SecurityType::STOCK:
@@ -499,10 +521,23 @@ struct Instrument {
     if (delisted_on_.state() == State::STATED && !(day < delisted_on_.date())) {
       return DateExclusion::EXCLUDED;
     }
-    if (listed_on_.state() == State::UNREADABLE || delisted_on_.state() == State::UNREADABLE) {
+    if (leaves_exclusion_unknown(listed_on_.state()) || leaves_exclusion_unknown(delisted_on_.state())) {
       return DateExclusion::UNREADABLE;
     }
     return DateExclusion::NOT_EXCLUDED;
+  }
+
+private:
+  // Whether a date in this state could rule a day out without saying so: only an unreadable one.
+  static constexpr bool leaves_exclusion_unknown(StatedDate::State state) noexcept {
+    switch (state) {
+      case StatedDate::State::UNREADABLE:
+        return true;
+      case StatedDate::State::NOT_STATED:
+      case StatedDate::State::STATED:
+        return false;
+    }
+    return true;
   }
 };
 

@@ -85,13 +85,68 @@ inline std::optional<StopIntent> stop_intent_from(std::string_view text) noexcep
 }
 
 /**
+ * @brief Returns an intent's strength: a stronger intent does everything a weaker one does.
+ *
+ * Stated per intent rather than read from the declaration order. Async-signal-safe (`StopSource::request`
+ * calls it from a handler).
+ *
+ * @param intent The intent.
+ * @return 0 for `QUIESCE`, 1 for `WITHDRAW`, 2 for `FLATTEN`.
+ */
+inline constexpr int stop_intent_strength(StopIntent intent) noexcept {
+  switch (intent) {
+    case StopIntent::QUIESCE:
+      return 0;
+    case StopIntent::WITHDRAW:
+      return 1;
+    case StopIntent::FLATTEN:
+      return 2;
+  }
+  return 0;
+}
+
+/**
+ * @brief Tests whether a stop intent asks for a closing pass (cancellations, and for `FLATTEN` closing
+ *   orders) after sending stops, and so needs the broker's order list read first.
+ * @param intent The intent.
+ * @return `false` for `QUIESCE`; `true` for `WITHDRAW` and `FLATTEN`.
+ */
+inline constexpr bool stop_intent_closes(StopIntent intent) noexcept {
+  switch (intent) {
+    case StopIntent::QUIESCE:
+      return false;
+    case StopIntent::WITHDRAW:
+    case StopIntent::FLATTEN:
+      return true;
+  }
+  return true;
+}
+
+/**
+ * @brief Tests whether a stop intent closes positions with market orders, after withdrawing the working
+ *   orders.
+ * @param intent The intent.
+ * @return `true` for `FLATTEN`; `false` for `QUIESCE` and `WITHDRAW`.
+ */
+inline constexpr bool stop_intent_closes_positions(StopIntent intent) noexcept {
+  switch (intent) {
+    case StopIntent::FLATTEN:
+      return true;
+    case StopIntent::QUIESCE:
+    case StopIntent::WITHDRAW:
+      return false;
+  }
+  return false;
+}
+
+/**
  * @brief Tests whether one intent does everything another would.
  * @param held The intent in force.
  * @param candidate The intent requested.
  * @return `true` if `held` is at least as strong (`QUIESCE` < `WITHDRAW` < `FLATTEN`).
  */
 inline constexpr bool stop_intent_covers(StopIntent held, StopIntent candidate) noexcept {
-  return static_cast<int>(held) >= static_cast<int>(candidate);
+  return stop_intent_strength(held) >= stop_intent_strength(candidate);
 }
 
 /**
@@ -112,7 +167,8 @@ public:
   void request(StopIntent intent) noexcept {
     const int desired = static_cast<int>(intent);
     int current = requested_.load(std::memory_order_relaxed);
-    while (current < desired) {
+    // A failed exchange reloads `current`, so the held intent's strength is read again each time.
+    while (current < 0 || stop_intent_strength(static_cast<StopIntent>(current)) < stop_intent_strength(intent)) {
       if (requested_.compare_exchange_weak(
             current, desired, std::memory_order_release, std::memory_order_relaxed)) {
         return;

@@ -112,8 +112,11 @@ enum class InstructionClass {
  * @return `true` if `reason` stops `klass`.
  */
 inline constexpr bool halt_blocks(HaltReason reason, InstructionClass klass) noexcept {
-  if (klass == InstructionClass::OPENING) {
-    return true;
+  switch (klass) {
+    case InstructionClass::OPENING:
+      return true;
+    case InstructionClass::WITHDRAWAL:
+      break;
   }
   switch (reason) {
     case HaltReason::OPERATOR:
@@ -548,7 +551,15 @@ std::optional<Decimal64> projected_gross_exposure(
         }
         price = risk_detail::decimal_max(price, *stated);
       }
-      if (contribution == CandidateContribution::QUANTITY_AND_PRICE) {
+      bool adds_quantity = false;
+      switch (contribution) {
+        case CandidateContribution::QUANTITY_AND_PRICE:
+          adds_quantity = true;
+          break;
+        case CandidateContribution::PRICE_ONLY:
+          break;
+      }
+      if (adds_quantity) {
         const auto sum = decimal_add(
           candidate->side_ == OrderSide::BUY ? buys : sells, candidate->quantity_
         );

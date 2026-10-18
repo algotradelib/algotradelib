@@ -1872,7 +1872,7 @@ private:
   // everywhere else. `KiwoomRateLimitLayer` is what tells a caller watching the refusals *which*
   // ceiling to lower.
   void note_rate_limit(const BrokerError& error) {
-    if (error.category_ != ErrorCategory::RATE_LIMIT) {
+    if (!error_category_is_rate_limit(error.category_)) {
       return;
     }
     auto* limiter = http_->rate_limits();
@@ -2472,7 +2472,7 @@ private:
   }
 
   static std::optional<BrokerError> holdings_scope_refusal(KiwoomPositionScope scope) {
-    if (scope == KiwoomPositionScope::UNSPECIFIED) {
+    if (!kiwoom_position_scope_asserted(scope)) {
       return unestablished_holdings_scope();
     }
     return std::nullopt;
