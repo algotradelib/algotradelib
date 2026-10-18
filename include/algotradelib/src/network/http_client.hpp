@@ -644,7 +644,18 @@ private:
 
   // Returns whether the front request has already been committed to the wire.
   bool front_in_flight() const noexcept {
-    return state_ == State::WRITING || state_ == State::READING;
+    switch (state_) {
+      case State::WRITING:
+      case State::READING:
+        return true;
+      case State::DISCONNECTED:
+      case State::RESOLVING:
+      case State::CONNECTING:
+      case State::HANDSHAKING:
+      case State::READY:
+        return false;
+    }
+    return true;
   }
 
   void pump() {

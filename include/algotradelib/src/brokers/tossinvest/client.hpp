@@ -1213,8 +1213,7 @@ private:
           // The calendar is reference data, the lowest-priority traffic there is.
           request.group_ = network::RateLimitGroup::REFERENCE;
           request.method_ = http::verb::get;
-          request.target_ = std::string("/api/v1/market-calendar/") +
-            (country == Country::US ? "US" : "KR");
+          request.target_ = std::string("/api/v1/market-calendar/") + std::string(market_code(country));
           if (from) {
             request.target_ += "?date=" + iso_date(*from);
           }
@@ -1266,7 +1265,7 @@ private:
       const auto& object = payload.value().as_object();
       TradingCalendar calendar;
       calendar.country_ = country;
-      const std::string_view hours = country == Country::US ? "regularMarket" : "integrated";
+      const std::string_view hours = calendar_hours_field(country);
       append_calendar_day(object, "previousBusinessDay", hours, true, calendar);
       append_calendar_day(object, "today", hours, false, calendar);
       append_calendar_day(object, "nextBusinessDay", hours, true, calendar);
@@ -2498,7 +2497,56 @@ private:
   // because those two disagreed, and an `InstrumentId` compares its venue. Toss
   // publishes no per-order venue, so this is about identity only.
   static Venue instrument_venue(Country country) {
-    return country == Country::KR ? Venue::COMBINED : Venue::UNSPECIFIED;
+    switch (country) {
+      case Country::KR:
+        return Venue::COMBINED;
+      case Country::US:
+        return Venue::UNSPECIFIED;
+    }
+    return Venue::UNSPECIFIED;
+  }
+
+  // Whether Toss trades `country`'s listings through this client. Each answer below follows from it.
+  static constexpr bool trades_country(Country country) noexcept {
+    switch (country) {
+      case Country::KR:
+      case Country::US:
+        return true;
+    }
+    return false;
+  }
+
+  // The path segment Toss names a market by (`/api/v1/market-calendar/{KR,US}`).
+  static constexpr std::string_view market_code(Country country) noexcept {
+    switch (country) {
+      case Country::KR:
+        return "KR";
+      case Country::US:
+        return "US";
+    }
+    return "";
+  }
+
+  // The session a calendar day's open and close are read from: KR's integrated session, US's regular one.
+  static constexpr std::string_view calendar_hours_field(Country country) noexcept {
+    switch (country) {
+      case Country::KR:
+        return "integrated";
+      case Country::US:
+        return "regularMarket";
+    }
+    return "";
+  }
+
+  // Whether Toss takes a limit price in `country` only as a whole number of its currency's units (won).
+  static constexpr bool prices_in_whole_units(Country country) noexcept {
+    switch (country) {
+      case Country::KR:
+        return true;
+      case Country::US:
+        return false;
+    }
+    return true;
   }
 
   static HoldingPosition parse_position(const json::object& output) {
@@ -2796,6 +2844,14 @@ private:
 
   // Returns an error when the order cannot be represented as a Toss order.
   static std::optional<BrokerError> validate_order(const OrderRequest& order) {
+    if (!trades_country(order.instrument_.country_)) {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
+      error.broker_code_ = "unsupported_market";
+      error.message_ = "Toss trades Korean and US listings only";
+      return error;
+    }
     if (!broker_detail::valid_symbol(order.instrument_.symbol_)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
@@ -2853,6 +2909,16 @@ private:
         )) {
       return error;
     }
+    // The shape check above refuses every session without a code; this keeps the two from drifting, before
+    // any token is asked for.
+    if (session_code(order.session_)[0] == '\0') {
+      BrokerError error;
+      error.category_ = ErrorCategory::INVALID_ARGUMENT;
+      error.reached_broker_ = false;
+      error.broker_code_ = "unsupported_session";
+      error.message_ = "Toss publishes no order code for this trading session";
+      return error;
+    }
     // Toss's one fractional shape (`createOrder`, `fractionalQuantityUsSellOnly`). Its other rule,
     // the regular session until an hour before the close, is left to Toss's own `422`.
     const bool fraction_allowed = order.instrument_.country_ == Country::US &&
@@ -2863,9 +2929,7 @@ private:
     if (auto error = validate_price(order.type_, order.price_)) {
       return error;
     }
-    if (
-      order.instrument_.country_ == Country::KR && order.price_ && order.price_->scale() != 0
-    ) {
+    if (prices_in_whole_units(order.instrument_.country_) && order.price_ && order.price_->scale() != 0) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.reached_broker_ = false;
@@ -2924,15 +2988,44 @@ private:
   // put the same fact in a different field -- so the mapping to Toss's wire
   // shape happens here, at the adapter boundary, which is where a vendor
   // spelling belongs.
+  //
+  // A session Toss takes no order in has no code (`""`); `validate_order` refuses it before any I/O.
   static const char* session_code(OrderSession session) {
     switch (session) {
+      case OrderSession::REGULAR:
+        return "DAY";
       case OrderSession::CLOSING_AUCTION:
         return "CLS";
       case OrderSession::OPENING_AUCTION:
         return "OPG";
-      default:
-        return "DAY";
+      case OrderSession::UNKNOWN:
+      case OrderSession::PRE_MARKET:
+      case OrderSession::AFTER_HOURS:
+      case OrderSession::AFTER_HOURS_AUCTION:
+      case OrderSession::AFTER_MARKET:
+      case OrderSession::GTP:
+        return "";
     }
+    return "";
+  }
+
+  // The condition of an order Toss lists, from its session. Toss publishes no execution condition of its
+  // own, so every session it names is day-valid; an unread one leaves the condition unknown too.
+  static TimeInForce read_time_in_force(OrderSession session) {
+    switch (session) {
+      case OrderSession::UNKNOWN:
+        return TimeInForce::UNKNOWN;
+      case OrderSession::REGULAR:
+      case OrderSession::OPENING_AUCTION:
+      case OrderSession::CLOSING_AUCTION:
+      case OrderSession::PRE_MARKET:
+      case OrderSession::AFTER_HOURS:
+      case OrderSession::AFTER_HOURS_AUCTION:
+      case OrderSession::AFTER_MARKET:
+      case OrderSession::GTP:
+        return TimeInForce::DAY;
+    }
+    return TimeInForce::UNKNOWN;
   }
 
   // Builds the authenticated Toss order-placement POST request.
@@ -3029,7 +3122,14 @@ private:
     std::string_view access_token,
     const TossOrderQuery& query
   ) {
-    const bool open = query.scope_ == TossOrderScope::OPEN;
+    bool open = false;
+    switch (query.scope_) {
+      case TossOrderScope::OPEN:
+        open = true;
+        break;
+      case TossOrderScope::CLOSED:
+        break;
+    }
     std::string target = "/api/v1/orders?status=";
     target += open ? "OPEN" : "CLOSED";
     if (query.symbol_) {
@@ -3492,8 +3592,7 @@ private:
     // recognizes is day-valid. A `timeInForce` it does not recognize leaves the
     // condition unknown as well as the session, rather than asserting `DAY`
     // about a value this library could not read.
-    order.time_in_force_ =
-      order.session_ == OrderSession::UNKNOWN ? TimeInForce::UNKNOWN : TimeInForce::DAY;
+    order.time_in_force_ = read_time_in_force(order.session_);
     if (const auto code = Code<8>::try_make(time_in_force)) {
       order.shape_code_ = *code;
     }
@@ -3832,7 +3931,7 @@ private:
   // The headers are documented on the refusal rather than promised on every
   // response, so an absent one only holds admission rather than guessing an allowance.
   void note_rate_limit(const BrokerError& error) {
-    if (error.category_ != ErrorCategory::RATE_LIMIT) {
+    if (!error_category_is_rate_limit(error.category_)) {
       return;
     }
     auto* limiter = http_->rate_limits();

@@ -136,8 +136,15 @@ struct RateLimitBudget {
  * @return `burst_` for `TRADING` and `AUTH`; otherwise `burst_ - trading_reserve_`, at least 1.
  */
 inline constexpr int usable_burst(const RateLimitBudget& budget, RateLimitGroup group) noexcept {
-  if (group == RateLimitGroup::TRADING || group == RateLimitGroup::AUTH) {
-    return budget.burst_;
+  switch (group) {
+    // An order, and the token it needs, may use the reserve.
+    case RateLimitGroup::TRADING:
+    case RateLimitGroup::AUTH:
+      return budget.burst_;
+    case RateLimitGroup::ACCOUNT:
+    case RateLimitGroup::MARKET_DATA:
+    case RateLimitGroup::REFERENCE:
+      break;
   }
   const int reserved = budget.burst_ - budget.trading_reserve_;
   return reserved > 0 ? reserved : 1;

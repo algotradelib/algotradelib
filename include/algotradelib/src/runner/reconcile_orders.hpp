@@ -196,6 +196,55 @@ enum class Evidence {
   ABSENT,
 };
 
+/**
+ * @brief Tests whether a piece of evidence confirms the row is the instruction's order.
+ * @param evidence The evidence.
+ * @return `true` for `CONFIRMS` only.
+ */
+inline constexpr bool evidence_confirms(Evidence evidence) noexcept {
+  switch (evidence) {
+    case Evidence::CONFIRMS:
+      return true;
+    case Evidence::CONTRADICTS:
+    case Evidence::ABSENT:
+      return false;
+  }
+  return false;
+}
+
+/**
+ * @brief Tests whether a piece of evidence rules the row out.
+ * @param evidence The evidence.
+ * @return `true` for `CONTRADICTS` only.
+ */
+inline constexpr bool evidence_contradicts(Evidence evidence) noexcept {
+  switch (evidence) {
+    case Evidence::CONTRADICTS:
+      return true;
+    case Evidence::CONFIRMS:
+    case Evidence::ABSENT:
+      return false;
+  }
+  return false;
+}
+
+/**
+ * @brief Tests whether a piece of evidence leaves the question open, so the row might still be the order
+ *   and cannot count toward proving it absent.
+ * @param evidence The evidence.
+ * @return `true` for `ABSENT` only.
+ */
+inline constexpr bool evidence_leaves_open(Evidence evidence) noexcept {
+  switch (evidence) {
+    case Evidence::ABSENT:
+      return true;
+    case Evidence::CONFIRMS:
+    case Evidence::CONTRADICTS:
+      return false;
+  }
+  return true;
+}
+
 /** @brief `Evidence`, under the name used for the route comparison. */
 using RouteEvidence = Evidence;
 
@@ -350,7 +399,7 @@ inline bool row_corresponds(
          route_evidence(instruction, row),
          time_evidence(instruction, row, window),
        }) {
-    if (evidence != Evidence::CONFIRMS) {
+    if (!evidence_confirms(evidence)) {
       return false;
     }
   }
@@ -387,18 +436,18 @@ inline bool row_might_correspond(
          route_evidence(instruction, row),
          time_evidence(instruction, row, window),
        }) {
-    if (evidence == Evidence::CONTRADICTS) {
+    if (evidence_contradicts(evidence)) {
       return false;
     }
   }
 
   const bool anything_silent =
-    attribute_evidence(row.type_, entry.type_) == Evidence::ABSENT ||
-    attribute_evidence(row.time_in_force_, entry.time_in_force_) == Evidence::ABSENT ||
-    attribute_evidence(row.session_, entry.session_) == Evidence::ABSENT ||
-    trigger_evidence(row.trigger_price_, entry.trigger_price_) == Evidence::ABSENT ||
-    route_evidence(instruction, row) == Evidence::ABSENT ||
-    time_evidence(instruction, row, window) == Evidence::ABSENT;
+    evidence_leaves_open(attribute_evidence(row.type_, entry.type_)) ||
+    evidence_leaves_open(attribute_evidence(row.time_in_force_, entry.time_in_force_)) ||
+    evidence_leaves_open(attribute_evidence(row.session_, entry.session_)) ||
+    evidence_leaves_open(trigger_evidence(row.trigger_price_, entry.trigger_price_)) ||
+    evidence_leaves_open(route_evidence(instruction, row)) ||
+    evidence_leaves_open(time_evidence(instruction, row, window));
   if (!anything_silent) {
     // Everything comparable was compared, so `row_corresponds` has already
     // given the definitive answer and this predicate has nothing to add.
@@ -415,7 +464,7 @@ inline bool row_might_correspond(
   // either, because the parser discards it -- but one whose only silence is a
   // route or a timestamp still has both, and a row differing there is plainly
   // another order rather than an ambiguity worth withholding an instrument for.
-  if (attribute_evidence(row.type_, entry.type_) != Evidence::ABSENT) {
+  if (!evidence_leaves_open(attribute_evidence(row.type_, entry.type_))) {
     if (!reconcile_detail::same_value(row.price_, entry.price_)) {
       return false;
     }
@@ -434,7 +483,8 @@ inline bool row_might_correspond(
  * @return The reason, or an empty string if it can be matched.
  */
 inline std::string unresolvable_reason(const JournalEntry& entry) {
-  if (entry.action_ == JournalAction::CANCEL && entry.order_id_.empty()) {
+  const bool by_order_id = journal_action_matches_by_order_id(entry.action_);
+  if (by_order_id && entry.order_id_.empty()) {
     return "a cancellation was journalled without the order id it names, so no row can be "
            "identified as its target; an operator must say what became of it";
   }
@@ -446,7 +496,7 @@ inline std::string unresolvable_reason(const JournalEntry& entry) {
   // without trouble: the shape is copied from the working order, so a
   // reservation carrying an unpriced `LIMIT` or a reported `MARKET` price puts
   // it there without the cancellation caring.
-  if (entry.action_ == JournalAction::PLACE && entry.type_ != OrderType::UNKNOWN) {
+  if (!by_order_id && entry.type_ != OrderType::UNKNOWN) {
     const bool priced = carries_caller_price(entry.type_);
     if (priced && !entry.price_) {
       return "a price-bearing order was journalled without its price, so no row can be matched "
@@ -500,16 +550,13 @@ inline std::vector<OpenInstruction> recorded_placements(const JournalReplay& rep
       found.push_back(std::move(placement));
     }
     auto& placement = found[known->second];
-    if (entry.outcome_ == JournalOutcome::REJECTED) {
+    if (journal_outcome_refuses(entry.outcome_)) {
       refused.push_back(entry.id_);
     }
-    const bool answers_the_send = entry.outcome_ == JournalOutcome::ACCEPTED ||
-      entry.outcome_ == JournalOutcome::REJECTED || entry.outcome_ == JournalOutcome::INDETERMINATE;
-    if (answers_the_send && !placement.closed_at_) {
+    if (journal_outcome_answers_send(entry.outcome_) && !placement.closed_at_) {
       placement.closed_at_ = entry.recorded_at_;
     }
-    const bool names_the_order = entry.outcome_ == JournalOutcome::ACCEPTED || entry.outcome_ == JournalOutcome::RESOLVED;
-    if (names_the_order && !entry.order_id_.empty() && placement.entry_.order_id_.empty()) {
+    if (journal_outcome_names_order(entry.outcome_) && !entry.order_id_.empty() && placement.entry_.order_id_.empty()) {
       placement.entry_.order_id_ = entry.order_id_;
     }
   }
@@ -618,7 +665,8 @@ inline OrderMatch match_against(
   std::size_t claimed = 0;
   const OrderSnapshot* claimed_row = nullptr;
   const OpenInstruction* claimant = nullptr;
-  if (instruction.entry_.action_ == JournalAction::CANCEL) {
+  const bool by_order_id = journal_action_matches_by_order_id(instruction.entry_.action_);
+  if (by_order_id) {
     for (const auto& row : rows) {
       if (!instruction.entry_.order_id_.empty() && row.order_id_ == instruction.entry_.order_id_) {
         ++match.candidates_;
@@ -702,7 +750,7 @@ inline OrderMatch match_against(
   if (match.candidates_ == 1) {
     match.verdict_ = MatchVerdict::MATCHED;
     match.order_id_ = found->order_id_;
-    match.detail_ = instruction.entry_.action_ == JournalAction::CANCEL ?
+    match.detail_ = by_order_id ?
       "the order named by the cancellation is still in the broker's listing" :
       "the broker's listing carries this order";
     return match;
@@ -714,7 +762,7 @@ inline OrderMatch match_against(
     return match;
   }
   match.verdict_ = MatchVerdict::NOT_PLACED;
-  match.detail_ = instruction.entry_.action_ == JournalAction::CANCEL ?
+  match.detail_ = by_order_id ?
     "the order named by the cancellation is no longer in the broker's listing" :
     "no matching order was found among the rows read, within the matching window";
   return match;
@@ -788,7 +836,7 @@ inline void drop_rows_fitting_another_placement(
     if (!on_an_instrument_matched || being_matched) {
       continue;
     }
-    if (entry.outcome_ == JournalOutcome::REJECTED) {
+    if (journal_outcome_refuses(entry.outcome_)) {
       refused.push_back(entry.id_);
     }
     auto known = other_of.find(entry.id_);
@@ -800,9 +848,7 @@ inline void drop_rows_fitting_another_placement(
       others.push_back(std::move(other));
     }
     auto& other = others[known->second];
-    const bool answers_the_send = entry.outcome_ == JournalOutcome::ACCEPTED ||
-      entry.outcome_ == JournalOutcome::REJECTED || entry.outcome_ == JournalOutcome::INDETERMINATE;
-    if (answers_the_send && !other.closed_at_) {
+    if (journal_outcome_answers_send(entry.outcome_) && !other.closed_at_) {
       other.closed_at_ = entry.recorded_at_;
     }
   }
@@ -1077,10 +1123,10 @@ inline bool dates_listed_order(const OrderSnapshot& assumed, const OrderSnapshot
   return row.side_ == assumed.side_ &&
     reconcile_detail::same_value(row.quantity_, assumed.quantity_) &&
     reconcile_detail::same_value(row.price_, assumed.price_) &&
-    attribute_evidence(row.type_, assumed.type_) != Evidence::CONTRADICTS &&
-    attribute_evidence(row.time_in_force_, assumed.time_in_force_) != Evidence::CONTRADICTS &&
-    attribute_evidence(row.session_, assumed.session_) != Evidence::CONTRADICTS &&
-    trigger_evidence(row.trigger_price_, assumed.trigger_price_) != Evidence::CONTRADICTS &&
+    !evidence_contradicts(attribute_evidence(row.type_, assumed.type_)) &&
+    !evidence_contradicts(attribute_evidence(row.time_in_force_, assumed.time_in_force_)) &&
+    !evidence_contradicts(attribute_evidence(row.session_, assumed.session_)) &&
+    !evidence_contradicts(trigger_evidence(row.trigger_price_, assumed.trigger_price_)) &&
     !venues_differ;
 }
 

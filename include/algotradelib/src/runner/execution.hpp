@@ -138,6 +138,31 @@ inline SendOutcome outcome_of(const BrokerError& error) {
 }
 
 /**
+ * @brief Tests whether a request that was never sent may be tried again on a later pass, by its error's
+ *   category.
+ *
+ * Only a client's own validation (`INVALID_ARGUMENT`) would refuse it again; every other category may
+ * clear (a connection, a token, a pacing hold).
+ *
+ * @param category The category.
+ * @return `false` for `INVALID_ARGUMENT`; `true` otherwise.
+ */
+inline constexpr bool error_retries_when_unsent(ErrorCategory category) noexcept {
+  switch (category) {
+    case ErrorCategory::INVALID_ARGUMENT:
+      return false;
+    case ErrorCategory::CANCELLED:
+    case ErrorCategory::TRANSPORT:
+    case ErrorCategory::HTTP:
+    case ErrorCategory::AUTHENTICATION:
+    case ErrorCategory::RATE_LIMIT:
+    case ErrorCategory::PROTOCOL:
+      return true;
+  }
+  return false;
+}
+
+/**
  * @brief Tests whether an error means the broker could not be reached (as opposed to the binding
  *   refusing the instruction itself).
  *
@@ -149,7 +174,7 @@ inline SendOutcome outcome_of(const BrokerError& error) {
  * @return `true` if nothing was sent and the category is not `INVALID_ARGUMENT`.
  */
 inline bool broker_unreachable(const BrokerError& error) noexcept {
-  return !error.reached_broker_ && error.category_ != ErrorCategory::INVALID_ARGUMENT;
+  return !error.reached_broker_ && error_retries_when_unsent(error.category_);
 }
 
 /**
@@ -163,7 +188,7 @@ inline bool broker_unreachable(const BrokerError& error) noexcept {
  * @return `true` if the request reached the broker and the category is `RATE_LIMIT`.
  */
 inline bool broker_rate_limited(const BrokerError& error) noexcept {
-  return error.reached_broker_ && error.category_ == ErrorCategory::RATE_LIMIT;
+  return error.reached_broker_ && error_category_is_rate_limit(error.category_);
 }
 
 /**
@@ -172,7 +197,35 @@ inline bool broker_rate_limited(const BrokerError& error) noexcept {
  * @return `false` for `UNAVAILABLE` and `REFUSED_LOCALLY`; `true` otherwise.
  */
 inline constexpr bool send_outcome_reached_broker(SendOutcome outcome) noexcept {
-  return outcome != SendOutcome::UNAVAILABLE && outcome != SendOutcome::REFUSED_LOCALLY;
+  switch (outcome) {
+    case SendOutcome::ACCEPTED:
+    case SendOutcome::REJECTED:
+    case SendOutcome::INDETERMINATE:
+      return true;
+    case SendOutcome::UNAVAILABLE:
+    case SendOutcome::REFUSED_LOCALLY:
+      return false;
+  }
+  return true;
+}
+
+/**
+ * @brief Tests whether an outcome means the runner's own machinery failed (not the broker, and not a
+ *   check that refused the order), which stops it from sending until someone looks.
+ * @param outcome The outcome.
+ * @return `true` for `UNAVAILABLE` only.
+ */
+inline constexpr bool send_outcome_is_local_failure(SendOutcome outcome) noexcept {
+  switch (outcome) {
+    case SendOutcome::UNAVAILABLE:
+      return true;
+    case SendOutcome::ACCEPTED:
+    case SendOutcome::REJECTED:
+    case SendOutcome::INDETERMINATE:
+    case SendOutcome::REFUSED_LOCALLY:
+      return false;
+  }
+  return true;
 }
 
 namespace runner_detail {
@@ -328,6 +381,62 @@ enum class ObligationState {
   /** @brief An order only an operator may account for (`Runner::release_obligations`). */
   OPERATOR,
 };
+
+/**
+ * @brief Returns how much an obligation state weighs when one instrument owes several orders: the
+ *   instrument reports the heaviest.
+ * @param state The state.
+ * @return 0 for `NONE`, 1 for `NAMED`, 2 for `UNNAMED`, 3 for `OPERATOR`.
+ */
+inline constexpr int obligation_weight(ObligationState state) noexcept {
+  switch (state) {
+    case ObligationState::NONE:
+      return 0;
+    case ObligationState::NAMED:
+      return 1;
+    case ObligationState::UNNAMED:
+      return 2;
+    case ObligationState::OPERATOR:
+      return 3;
+  }
+  return 3;
+}
+
+/**
+ * @brief Tests whether an order in this state counts toward the loop's owed-order time limit
+ *   (`PollingLoop::set_owed_order_limit`).
+ * @param state The state.
+ * @return `true` for `UNNAMED` and `OPERATOR`: an order nobody can account for without help.
+ */
+inline constexpr bool obligation_is_unaccounted(ObligationState state) noexcept {
+  switch (state) {
+    case ObligationState::UNNAMED:
+    case ObligationState::OPERATOR:
+      return true;
+    case ObligationState::NONE:
+    case ObligationState::NAMED:
+      return false;
+  }
+  return true;
+}
+
+/**
+ * @brief Tests whether only an operator can settle an obligation in this state, so no read of the
+ *   broker's lists can.
+ * @param state The state.
+ * @return `true` for `OPERATOR` only.
+ */
+inline constexpr bool obligation_needs_operator(ObligationState state) noexcept {
+  switch (state) {
+    case ObligationState::OPERATOR:
+      return true;
+    case ObligationState::NONE:
+    case ObligationState::NAMED:
+    case ObligationState::UNNAMED:
+      return false;
+  }
+  return true;
+}
 
 /** @brief One order a serialized runner still owes (`Runner::obligations`). */
 struct Obligation {

@@ -113,6 +113,22 @@ enum class SizeKind {
 };
 
 /**
+ * @brief Tests whether a size states a holding to reach (a target), rather than an amount to trade.
+ * @param kind The kind.
+ * @return `true` for `TARGET_WEIGHT`; `false` for `QUANTITY` and `NOTIONAL`.
+ */
+inline constexpr bool size_kind_is_target(SizeKind kind) noexcept {
+  switch (kind) {
+    case SizeKind::TARGET_WEIGHT:
+      return true;
+    case SizeKind::QUANTITY:
+    case SizeKind::NOTIONAL:
+      return false;
+  }
+  return false;
+}
+
+/**
  * @brief How much an `OrderIntent` trades: a quantity, a notional amount, or a target weight.
  *
  * The runner converts a notional or a weight into a quantity, using a price and the portfolio.

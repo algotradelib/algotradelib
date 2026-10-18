@@ -1925,7 +1925,7 @@ private:
       // Once a stop is waiting, on the wait's own floor: a read that failed is not asked again at
       // every tick. The iteration that takes the stop up reads as any other.
       const bool on_the_floor = !closing_ || !asked_within_floor(PollKind::WORKING_ORDERS);
-      if (intent && *intent != StopIntent::QUIESCE && !order_list_read_ && may_read && on_the_floor &&
+      if (intent && stop_intent_closes(*intent) && !order_list_read_ && may_read && on_the_floor &&
           !runner_->guard().halted(strategy::HaltReason::LOCAL_FAILURE)) {
         hold(strategy::HaltReason::STOPPING);
         read_order_list_once(at, report);
@@ -2148,10 +2148,19 @@ private:
       }
       return;
     }
-    // A rate-limit refusal is the limiter working, and nothing new is the normal case between bars.
-    // Neither resets the counter either: a kind alternating failure and refusal is still broken.
-    if (outcome != PollOutcome::RATE_LIMITED) {
-      consecutive_failures_[at] = 0;
+    switch (outcome) {
+      case PollOutcome::FAILED:
+        // Counted above.
+        return;
+      case PollOutcome::RATE_LIMITED:
+        // The limiter working says nothing either way, so the count stands: a kind alternating
+        // failure and refusal is still broken.
+        return;
+      case PollOutcome::UPDATED:
+      case PollOutcome::UNCHANGED:
+        // A poll that answered, with something new or with nothing new, ends a run of failures.
+        consecutive_failures_[at] = 0;
+        return;
     }
   }
 
@@ -2210,7 +2219,7 @@ private:
       report.closing_waited_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
         clock_.monotonic_now() - closing_->began_);
     }
-    if (intent != StopIntent::QUIESCE) {
+    if (stop_intent_closes(intent)) {
       report.closing_interrupted_ = true;
       report.notes_.push_back(
         std::string("the run was abandoned for failing polls with a ") + std::string(stop_intent_name(intent)) +
@@ -2224,7 +2233,7 @@ private:
     report.closing_waited_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
       clock_.monotonic_now() - closing_->began_);
     closing_->reads_wanted_ = false;
-    if (intent == StopIntent::QUIESCE) {
+    if (!stop_intent_closes(intent)) {
       return;
     }
     // **Whatever a strategy queued without settling goes nowhere.** The closing instructions below are
@@ -2261,7 +2270,7 @@ private:
     // listing or holdings explain is exposure this pass cannot withdraw or size around.
     report.closing_unconfirmed_ = runner_->obligations_unexplained();
     const auto& portfolio = runner_->context().portfolio();
-    if (intent == StopIntent::WITHDRAW) {
+    if (!stop_intent_closes_positions(intent)) {
       for (const auto& working : portfolio.working_) {
         // Already withdrawn by this runner, and the broker took the request: asked again it refuses.
         if (runner_->withdrawal_accepted_for(working)) {
@@ -2597,7 +2606,7 @@ private:
       return oldest;
     }
     for (auto& owed : runner_->obligations()) {
-      if (owed.state_ != ObligationState::UNNAMED && owed.state_ != ObligationState::OPERATOR) {
+      if (!obligation_is_unaccounted(owed.state_)) {
         continue;
       }
       if (at - owed.sent_at_ > owed_order_limit_ && (!oldest || owed.sent_at_ < oldest->sent_at_)) {
@@ -2640,7 +2649,7 @@ private:
   // `STOPPING` is held throughout (`begin_stop`, `gate_for`), so the loop only reads meanwhile: what a
   // strategy asks for is refused. See `set_closing_wait` for what it waits for and what it does not.
   bool closing_should_wait(StopIntent intent, LoopReport& report) {
-    if (intent == StopIntent::QUIESCE || closing_wait_ <= std::chrono::nanoseconds::zero()) {
+    if (!stop_intent_closes(intent) || closing_wait_ <= std::chrono::nanoseconds::zero()) {
       return false;
     }
     // A source that lists no working orders can never verify the pass, however long the loop reads:
@@ -2681,7 +2690,7 @@ private:
     for (const auto& position : portfolio.positions_) {
       const auto net = portfolio.net_quantity_of(position.instrument_);
       if ((!net || net->coefficient() != 0) && runner_->ledger().requires_reconcile(position.instrument_) &&
-          runner_->obligation_state(position.instrument_) != ObligationState::OPERATOR) {
+          !obligation_needs_operator(runner_->obligation_state(position.instrument_))) {
         return true;
       }
     }
@@ -2916,8 +2925,20 @@ private:
   bool order_list_read_{false};
   // Returns whether `reason` is a condition this loop computes, and may therefore hold.
   static constexpr bool owns(strategy::HaltReason reason) noexcept {
-    return reason != strategy::HaltReason::OPERATOR &&
-      reason != strategy::HaltReason::LOCAL_FAILURE;
+    switch (reason) {
+      // A person's hold and a local failure are released by their owners, never by the loop.
+      case strategy::HaltReason::OPERATOR:
+      case strategy::HaltReason::LOCAL_FAILURE:
+        return false;
+      case strategy::HaltReason::STOPPING:
+      case strategy::HaltReason::ORDER_LIST_UNREAD:
+      case strategy::HaltReason::PORTFOLIO_ABSENT:
+      case strategy::HaltReason::PORTFOLIO_STALE:
+      case strategy::HaltReason::BUYING_POWER_UNREAD:
+      case strategy::HaltReason::POLL_FAILING:
+        return true;
+    }
+    return false;
   }
 
   // When the working-order picture was last refreshed, or nothing while it never has been.

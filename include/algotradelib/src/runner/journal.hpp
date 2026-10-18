@@ -58,6 +58,23 @@ static_assert(
 );
 
 /**
+ * @brief Tests whether recovery matches an instruction of this action by the broker's order id it names,
+ *   rather than by its attributes.
+ * @param action The action.
+ * @return `true` for `CANCEL` (it names the order it cancels); `false` for `PLACE` (matched by instrument,
+ *   side, shape, quantity and time).
+ */
+inline constexpr bool journal_action_matches_by_order_id(JournalAction action) noexcept {
+  switch (action) {
+    case JournalAction::CANCEL:
+      return true;
+    case JournalAction::PLACE:
+      return false;
+  }
+  return false;
+}
+
+/**
  * @brief Parses an action's name.
  * @param text The name.
  * @return The action, or `std::nullopt` if `text` names none.
@@ -194,7 +211,143 @@ inline constexpr JournalOutcome journal_outcome_of(SendOutcome outcome) noexcept
  * @return `true` for every outcome but `PENDING`.
  */
 inline constexpr bool journal_outcome_is_terminal(JournalOutcome outcome) noexcept {
-  return outcome != JournalOutcome::PENDING;
+  switch (outcome) {
+    case JournalOutcome::PENDING:
+      return false;
+    case JournalOutcome::ACCEPTED:
+    case JournalOutcome::REJECTED:
+    case JournalOutcome::INDETERMINATE:
+    case JournalOutcome::RESOLVED:
+    case JournalOutcome::CONFIRMED:
+    case JournalOutcome::HELD:
+      return true;
+  }
+  return true;
+}
+
+/**
+ * @brief Tests whether a line with this outcome answers the send itself (the broker's reply, or its
+ *   absence), rather than a later account of it.
+ * @param outcome The outcome.
+ * @return `true` for `ACCEPTED`, `REJECTED` and `INDETERMINATE`.
+ */
+inline constexpr bool journal_outcome_answers_send(JournalOutcome outcome) noexcept {
+  switch (outcome) {
+    case JournalOutcome::ACCEPTED:
+    case JournalOutcome::REJECTED:
+    case JournalOutcome::INDETERMINATE:
+      return true;
+    case JournalOutcome::PENDING:
+    case JournalOutcome::RESOLVED:
+    case JournalOutcome::CONFIRMED:
+    case JournalOutcome::HELD:
+      return false;
+  }
+  return false;
+}
+
+/**
+ * @brief Tests whether a line with this outcome may carry the broker's id for the order.
+ * @param outcome The outcome.
+ * @return `true` for `ACCEPTED` and `RESOLVED`.
+ */
+inline constexpr bool journal_outcome_names_order(JournalOutcome outcome) noexcept {
+  switch (outcome) {
+    case JournalOutcome::ACCEPTED:
+    case JournalOutcome::RESOLVED:
+      return true;
+    case JournalOutcome::PENDING:
+    case JournalOutcome::REJECTED:
+    case JournalOutcome::INDETERMINATE:
+    case JournalOutcome::CONFIRMED:
+    case JournalOutcome::HELD:
+      return false;
+  }
+  return false;
+}
+
+/**
+ * @brief Tests whether a line with this outcome says the instruction was refused, so it does not exist.
+ * @param outcome The outcome.
+ * @return `true` for `REJECTED` only.
+ */
+inline constexpr bool journal_outcome_refuses(JournalOutcome outcome) noexcept {
+  switch (outcome) {
+    case JournalOutcome::REJECTED:
+      return true;
+    case JournalOutcome::PENDING:
+    case JournalOutcome::ACCEPTED:
+    case JournalOutcome::INDETERMINATE:
+    case JournalOutcome::RESOLVED:
+    case JournalOutcome::CONFIRMED:
+    case JournalOutcome::HELD:
+      return false;
+  }
+  return false;
+}
+
+/**
+ * @brief Tests whether a line with this outcome is a serialized runner's closing account of a placement
+ *   (it confirmed it, or held it for an operator), which repeats none of the instruction's shape.
+ * @param outcome The outcome.
+ * @return `true` for `CONFIRMED` and `HELD`.
+ */
+inline constexpr bool journal_outcome_is_closing_account(JournalOutcome outcome) noexcept {
+  switch (outcome) {
+    case JournalOutcome::CONFIRMED:
+    case JournalOutcome::HELD:
+      return true;
+    case JournalOutcome::PENDING:
+    case JournalOutcome::ACCEPTED:
+    case JournalOutcome::REJECTED:
+    case JournalOutcome::INDETERMINATE:
+    case JournalOutcome::RESOLVED:
+      return false;
+  }
+  return false;
+}
+
+/**
+ * @brief Tests whether a line with this outcome is written with `requires_operator_` by design, so the flag
+ *   is not damage.
+ * @param outcome The outcome.
+ * @return `true` for `HELD` only.
+ */
+inline constexpr bool journal_outcome_requires_operator(JournalOutcome outcome) noexcept {
+  switch (outcome) {
+    case JournalOutcome::HELD:
+      return true;
+    case JournalOutcome::PENDING:
+    case JournalOutcome::ACCEPTED:
+    case JournalOutcome::REJECTED:
+    case JournalOutcome::INDETERMINATE:
+    case JournalOutcome::RESOLVED:
+    case JournalOutcome::CONFIRMED:
+      return false;
+  }
+  return false;
+}
+
+/**
+ * @brief Tests whether a line with this outcome leaves its instruction's fate unknown, so recovery must
+ *   still settle it.
+ * @param outcome The outcome.
+ * @return `true` for `PENDING` (not answered yet) and `INDETERMINATE` (answered, outcome unknown);
+ *   `false` for every outcome that settles it.
+ */
+inline constexpr bool journal_outcome_leaves_open(JournalOutcome outcome) noexcept {
+  switch (outcome) {
+    case JournalOutcome::PENDING:
+    case JournalOutcome::INDETERMINATE:
+      return true;
+    case JournalOutcome::ACCEPTED:
+    case JournalOutcome::REJECTED:
+    case JournalOutcome::RESOLVED:
+    case JournalOutcome::CONFIRMED:
+    case JournalOutcome::HELD:
+      return false;
+  }
+  return true;
 }
 
 /**
@@ -328,7 +481,16 @@ struct JournalReplay {
    * @brief Tests whether the file could be read.
    * @return `false` only for `UNREADABLE`.
    */
-  bool readable() const noexcept { return status_ != JournalReadStatus::UNREADABLE; }
+  bool readable() const noexcept {
+    switch (status_) {
+      case JournalReadStatus::MISSING:
+      case JournalReadStatus::READ:
+        return true;
+      case JournalReadStatus::UNREADABLE:
+        return false;
+    }
+    return false;
+  }
 
   /**
    * @brief Tests whether everything was read.
@@ -390,7 +552,7 @@ inline std::vector<OpenInstruction> unresolved_instructions(const JournalReplay&
         continue;
       }
       paired = true;
-      if (entry.outcome_ == JournalOutcome::INDETERMINATE) {
+      if (journal_outcome_leaves_open(entry.outcome_)) {
         at->answered_ = true;
         at->closed_at_ = entry.recorded_at_;
         at->detail_ = entry.detail_;
@@ -401,7 +563,7 @@ inline std::vector<OpenInstruction> unresolved_instructions(const JournalReplay&
       }
       break;
     }
-    if (!paired && entry.outcome_ == JournalOutcome::INDETERMINATE) {
+    if (!paired && journal_outcome_leaves_open(entry.outcome_)) {
       OpenInstruction instruction;
       instruction.entry_ = entry;
       instruction.opened_at_ = entry.recorded_at_;
@@ -431,7 +593,7 @@ inline std::vector<OpenInstruction> placements_of(const JournalReplay& replay, c
   std::vector<OpenInstruction> found;
   for (const auto& entry : replay.entries_) {
     if (entry.action_ != JournalAction::PLACE || entry.requires_operator_ ||
-        (entry.outcome_ != JournalOutcome::PENDING && entry.outcome_ != JournalOutcome::INDETERMINATE) ||
+        !journal_outcome_leaves_open(entry.outcome_) ||
         std::find(ids.begin(), ids.end(), entry.id_) == ids.end()) {
       continue;
     }
@@ -446,7 +608,7 @@ inline std::vector<OpenInstruction> placements_of(const JournalReplay& replay, c
       found.push_back(std::move(instruction));
       known = std::prev(found.end());
     }
-    if (entry.outcome_ == JournalOutcome::INDETERMINATE) {
+    if (journal_outcome_is_terminal(entry.outcome_)) {
       known->answered_ = true;
       known->closed_at_ = entry.recorded_at_;
       known->detail_ = entry.detail_;
@@ -808,10 +970,16 @@ private:
   // Detected rather than required, because `RecordingExecutor` has no references to report and must
   // still be wrappable — it is what every journal test runs against.
   std::string accepted_order_id(SendOutcome outcome) const {
-    if (outcome != SendOutcome::ACCEPTED) {
-      return {};
+    switch (outcome) {
+      case SendOutcome::ACCEPTED:
+        return accepted_order_id_impl(0);
+      case SendOutcome::REJECTED:
+      case SendOutcome::INDETERMINATE:
+      case SendOutcome::UNAVAILABLE:
+      case SendOutcome::REFUSED_LOCALLY:
+        return {};
     }
-    return accepted_order_id_impl(0);
+    return {};
   }
 
   template <typename Executor = Inner>
@@ -825,8 +993,14 @@ private:
 
   // Returns what the inner executor said went wrong, where it says anything.
   std::string failure_detail(SendOutcome outcome) const {
-    if (outcome == SendOutcome::ACCEPTED) {
-      return {};
+    switch (outcome) {
+      case SendOutcome::ACCEPTED:
+        return {};
+      case SendOutcome::REJECTED:
+      case SendOutcome::INDETERMINATE:
+      case SendOutcome::UNAVAILABLE:
+      case SendOutcome::REFUSED_LOCALLY:
+        return failure_detail_impl(0);
     }
     return failure_detail_impl(0);
   }

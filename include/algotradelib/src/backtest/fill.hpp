@@ -143,6 +143,29 @@ public:
   const std::optional<SellTax>& sell_tax() const noexcept { return sell_tax_; }
 
   /**
+   * @brief Tests whether the model prices an order type against its limit (a limit order, and a stop-limit
+   *   once released).
+   * @param type The order type.
+   * @return `true` for `LIMIT` and `STOP_LIMIT`; the model fills every other type it accepts at the open.
+   */
+  static constexpr bool limit_priced(OrderType type) noexcept {
+    switch (type) {
+      case OrderType::LIMIT:
+      case OrderType::STOP_LIMIT:
+        return true;
+      case OrderType::UNKNOWN:
+      case OrderType::MARKET:
+      case OrderType::CONDITIONAL_LIMIT:
+      case OrderType::BEST_LIMIT:
+      case OrderType::PRIMARY_LIMIT:
+      case OrderType::MID_PRICE:
+      case OrderType::CLOSING_PRICE:
+        return false;
+    }
+    return false;
+  }
+
+  /**
    * @brief Tests whether an order that did not fill stays queued for a later bar of its session.
    *
    * Only `DAY` limit and stop-limit orders rest; immediate-or-cancel, fill-or-kill and market orders
@@ -153,11 +176,17 @@ public:
    * @return `true` if it rests.
    */
   static bool rests_unfilled(const strategy::PlannedOrder& order) noexcept {
-    if (order.time_in_force_ != TimeInForce::DAY) {
-      return false;
+    switch (order.time_in_force_) {
+      case TimeInForce::DAY:
+        break;
+      // Filled or not on the next bar, and not kept after it.
+      case TimeInForce::IMMEDIATE_OR_CANCEL:
+      case TimeInForce::FILL_OR_KILL:
+      case TimeInForce::UNKNOWN:
+        return false;
     }
     // A stop rests while dormant and, once released, as the limit it has become.
-    return order.type_ == OrderType::LIMIT || order.type_ == OrderType::STOP_LIMIT;
+    return limit_priced(order.type_);
   }
 
   /**
@@ -199,7 +228,7 @@ public:
     FillDecision decision;
     bool at_open = false;
     std::optional<Decimal64> reference;
-    if (order.type_ == OrderType::STOP_LIMIT && !released) {
+    if (carries_trigger_price(order.type_) && !released) {
       if (!order.trigger_price_ || !order.price_) {
         // Not a stop this model can release (a caller driving the model directly).
         return decision;
@@ -242,7 +271,7 @@ public:
     // A limit fill is credited a price its bar traded and never one through the limit: the bound is a
     // sell's max(low, limit) or a buy's min(high, limit), applied before and after slippage.
     std::optional<Decimal64> bound;
-    const bool limit_basis = order.type_ == OrderType::LIMIT || order.type_ == OrderType::STOP_LIMIT;
+    const bool limit_basis = limit_priced(order.type_);
     if (limit_basis && order.price_) {
       const auto& limit = *order.price_;
       if (order.side_ == OrderSide::SELL) {
@@ -452,18 +481,26 @@ private:
     const auto open = has_open ? *next.bar_.open_ : next.bar_.close_;
 
     // A released stop is priced as the limit it has become.
-    const bool limit_basis = order.type_ == OrderType::LIMIT || order.type_ == OrderType::STOP_LIMIT;
+    const bool limit_basis = limit_priced(order.type_);
     if (!limit_basis || !order.price_) {
       at_open = has_open;
       return open;
     }
     const auto& limit = *order.price_;
+    bool open_if_better = false;
+    switch (limit_price_) {
+      case LimitFillPrice::AT_OPEN_IF_BETTER:
+        open_if_better = true;
+        break;
+      case LimitFillPrice::AT_LIMIT:
+        break;
+    }
 
     if (order.side_ == OrderSide::BUY) {
       if (decimal_less(limit, next.bar_.low_)) {
         return std::nullopt;
       }
-      if (limit_price_ == LimitFillPrice::AT_OPEN_IF_BETTER && decimal_less(open, limit)) {
+      if (open_if_better && decimal_less(open, limit)) {
         at_open = has_open;
         return open;
       }
@@ -473,7 +510,7 @@ private:
     if (decimal_less(next.bar_.high_, limit)) {
       return std::nullopt;
     }
-    if (limit_price_ == LimitFillPrice::AT_OPEN_IF_BETTER && decimal_less(limit, open)) {
+    if (open_if_better && decimal_less(limit, open)) {
       at_open = has_open;
       return open;
     }

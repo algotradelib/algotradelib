@@ -113,6 +113,25 @@ enum class KiwoomPositionScope {
 };
 
 /**
+ * @brief Tests whether a holdings scope states what Kiwoom's holdings figure covers, so holdings may be
+ *   read and orders checked against them.
+ *
+ * It is the operator's assertion, not a fact the library checked.
+ *
+ * @param scope The scope.
+ * @return `false` for `UNSPECIFIED`; `true` for `VALUATION_ONLY`.
+ */
+inline constexpr bool kiwoom_position_scope_asserted(KiwoomPositionScope scope) noexcept {
+  switch (scope) {
+    case KiwoomPositionScope::UNSPECIFIED:
+      return false;
+    case KiwoomPositionScope::VALUATION_ONLY:
+      return true;
+  }
+  return false;
+}
+
+/**
  * @brief What a Kiwoom holdings row's tradable quantity (`trde_able_qty`) covers; undocumented, so
  *   you assert it (see `KiwoomConfig::holdings_sellable_scope_`).
  */
