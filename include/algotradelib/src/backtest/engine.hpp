@@ -27,7 +27,7 @@ namespace backtest {
  *   live session uses.
  *
  * An order decided on bar *n* is queued and filled against bar *n+1* or later, never the bar it
- * was decided on. Nothing assumes a bar is a day: the same engine replays minute and daily bars.
+ * was decided on. Nothing assumes a bar is a day: the same engine replays intraday and daily bars.
  */
 
 /**
@@ -552,11 +552,11 @@ public:
     //
     // **Whether that instant is exact depends on the stamp**, and getting this wrong deferred real
     // fills by a month. A close-stamped bar's period end is its own timestamp, stated by the broker.
-    // An open-stamped one is `bar_period_end`'s arithmetic, which is exact for a minute and
-    // deliberately **nominal** for a day, a week, a month and a year -- and every shipped adapter
-    // stamps every non-minute bar `OPEN`. February's nominal end is five days into March, so an
-    // order decided on February's bar looked as though it had been decided inside March's period and
-    // was deferred to April.
+    // An open-stamped one is `bar_period_end`'s arithmetic, which is exact for an intraday bar (late
+    // only for a session's last bar cut short by the close) and deliberately **nominal** for a day, a
+    // week, a month and a year -- and every shipped adapter stamps every daily and longer bar `OPEN`.
+    // February's nominal end is five days into March, so an order decided on February's bar looked as
+    // though it had been decided inside March's period and was deferred to April.
     runner_.executor().deciding_at(event.period_end_, period_end_is_exact(event));
 
     settle_queued_against(event);
@@ -893,11 +893,12 @@ private:
   //    a property of the branch rather than a weakness in the tests. It is kept because
   //    `QueuedOrder::decided_at_` is an optional on a public type, and an undated one is a state the
   //    type admits; nothing outside this class calls this function, so no caller exercises it today.
-  // 2. **Where `period_start_of` answers, the comparison is exact**: the bar's period must have begun
+  // 2. **Where `period_start_of` answers, the comparison is made**: the bar's period must have begun
   //    **at or after** the decision. A period that began before it contains the decision, and its
   //    open price -- which is what `NextBarFillModel` credits a market order with -- is from before
   //    the strategy decided anything. This is every bar shape this library produces: intraday,
-  //    open-stamped, and close-stamped daily.
+  //    open-stamped, and close-stamped daily. A derived start can be early (a close-stamped intraday
+  //    bar cut short by the close), which defers a fill and never credits an earlier price.
   // 3. **Where either side of that comparison is a calendar boundary this engine cannot establish,
   //    it makes no inference at all.** Two ways in, and the second was found last: the bar's start is
   //    underivable (a close-stamped weekly, monthly or yearly bar), or the decision instant is only
@@ -1102,7 +1103,7 @@ private:
   // A KRX DAY order expires at the close. Kept queued, a replay's DAY limit or stop was
   // good-till-cancelled on daily bars -- a limit below the market waited for weeks, and a stop placed
   // at an entry still rested months later -- where live it was gone that evening. A bar ends a
-  // session when its interval is a day or longer, or when it is a minute bar ending at or after the
+  // session when its interval is a day or longer, or when it is an intraday bar ending at or after the
   // session's close; a bar of a later date ends it in any case. Withdrawn inside the settlement batch,
   // before order updates are published and before the strategy is shown the bar, so nothing reads an
   // expired order as working. Counted in `ReplayResult::expired_day_orders_`.

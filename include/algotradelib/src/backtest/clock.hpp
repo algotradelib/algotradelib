@@ -141,8 +141,9 @@ public:
    *
    * @param previous The earlier bar.
    * @param event The later bar.
-   * @return `false` if both are minute bars more than a minute apart (such as across sessions);
-   *   `true` otherwise, including for daily and longer bars, where gaps are not decided here.
+   * @return `false` if both are intraday bars of one interval, more than one interval apart (such as
+   *   across sessions); `true` otherwise, including for daily and longer bars and for two different
+   *   intervals, where gaps are not decided here.
    */
   static bool contiguous(
     const strategy::BarEvent& previous,
