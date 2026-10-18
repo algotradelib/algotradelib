@@ -508,13 +508,13 @@ private:
       // received the series (`BarSeries::received_at_`, which every shipped adapter stamps), so a
       // source driven by hand still has one, and one a finished `run` left behind cannot hold back a
       // bar received closed since; with neither, every bar is fed, as before. **Only where the
-      // period end is known**: a close-stamped bar states it, and a day or a minute stamped at its
+      // period end is known**: a close-stamped bar states it, and a day or an intraday bar stamped at its
       // open ends one interval later. A week, a month or a year stamped at its open is fed as
       // before, because no adapter's convention for those stamps has been observed and a wrong
       // guess would hold every closed week back by a week.
       const auto instant = std::max(runner_instance.observed_at(), series.received_at_);
-      const bool knowable = series.stamp_ == BarStamp::CLOSE ||
-        series.interval_ == BarInterval::ONE_DAY || series.interval_ == BarInterval::ONE_MINUTE;
+      const bool knowable = series.stamp_ == BarStamp::CLOSE || series.interval_ == BarInterval::ONE_DAY ||
+        bar_interval_length(series.interval_).has_value();
       const bool timed = knowable && instant != std::chrono::system_clock::time_point{};
       const auto& seen = last_bar_[instrument.symbol_];
       const auto first = collected.size();

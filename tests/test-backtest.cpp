@@ -70,6 +70,46 @@ TEST_CASE("a minute interval annualizes on the session length, not on a day") {
   REQUIRE(*shortened == Catch::Approx(180.0 * 245.0));
 }
 
+TEST_CASE("an intraday interval annualizes on the whole bars a session holds") {
+  // 390 minutes: 78 five-minute bars, 26 of fifteen, 13 of thirty, and 7 hourly ones, the last of them 30 minutes.
+  const auto session = strategy::SessionWindow::krx();
+  const std::pair<BarInterval, double> per_day[] = {
+    {BarInterval::FIVE_MINUTES, 78.0},
+    {BarInterval::FIFTEEN_MINUTES, 26.0},
+    {BarInterval::THIRTY_MINUTES, 13.0},
+    {BarInterval::ONE_HOUR, 7.0},
+  };
+  for (const auto& [interval, bars] : per_day) {
+    INFO(bar_interval_name(interval));
+    const auto count = backtest::periods_per_year(interval, session, 245.0);
+    REQUIRE(count);
+    CHECK(*count == Catch::Approx(bars * 245.0));
+  }
+  CHECK(backtest::interval_duration(BarInterval::FIVE_MINUTES) == std::chrono::seconds(300));
+  CHECK(backtest::interval_duration(BarInterval::ONE_HOUR) == std::chrono::seconds(3600));
+  CHECK_FALSE(backtest::interval_duration(BarInterval::ONE_DAY));
+}
+
+TEST_CASE("an open-stamped intraday bar ends one interval after its start") {
+  Bar bar;
+  bar.timestamp_ = std::chrono::system_clock::time_point{} + std::chrono::hours(1000);
+  const std::pair<BarInterval, std::chrono::minutes> lengths[] = {
+    {BarInterval::FIVE_MINUTES, std::chrono::minutes(5)},
+    {BarInterval::FIFTEEN_MINUTES, std::chrono::minutes(15)},
+    {BarInterval::THIRTY_MINUTES, std::chrono::minutes(30)},
+    {BarInterval::ONE_HOUR, std::chrono::minutes(60)},
+  };
+  for (const auto& [interval, length] : lengths) {
+    INFO(bar_interval_name(interval));
+    CHECK(strategy::bar_period_end(bar, interval, BarStamp::OPEN) == bar.timestamp_ + length);
+    CHECK(strategy::bar_period_end(bar, interval, BarStamp::CLOSE) == bar.timestamp_);
+  }
+  CHECK(bar_interval_name(BarInterval::FIVE_MINUTES) == "5m");
+  CHECK(bar_interval_name(BarInterval::FIFTEEN_MINUTES) == "15m");
+  CHECK(bar_interval_name(BarInterval::THIRTY_MINUTES) == "30m");
+  CHECK(bar_interval_name(BarInterval::ONE_HOUR) == "1h");
+}
+
 TEST_CASE("a calendar interval has no derivable period count, and says so") {
   // A month has no fixed length and a week's divisor depends on the market's week, so answering would
   // be inventing a constant. Nothing is better than a plausible wrong number here.

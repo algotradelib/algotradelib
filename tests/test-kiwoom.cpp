@@ -2367,6 +2367,18 @@ TEST_CASE("the interval guard reads the same table the request does", "[kiwoom][
   CHECK(std::string_view(kiwoom::chart_api_id(BarInterval::ONE_WEEK)) == "ka10082");
   CHECK(std::string_view(kiwoom::chart_rows_field(BarInterval::ONE_WEEK)) == "stk_stk_pole_chart_qry");
   CHECK(std::string_view(kiwoom::chart_api_id(BarInterval::ONE_YEAR)) == "ka10094");
+  // Kiwoom serves these through ka10080's tic_scope, but how it stamps them is not established, so this
+  // client refuses them before any request.
+  for (const auto interval : {BarInterval::FIVE_MINUTES, BarInterval::FIFTEEN_MINUTES,
+                              BarInterval::THIRTY_MINUTES, BarInterval::ONE_HOUR}) {
+    INFO(bar_interval_name(interval));
+    const auto refused = kiwoom::unsupported_bar_interval(interval);
+    REQUIRE(refused);
+    CHECK(refused->broker_code_ == "unsupported_interval");
+    CHECK_FALSE(refused->reached_broker_);
+    CHECK(kiwoom::chart_api_id(interval) == nullptr);
+    CHECK_FALSE(BrokerCaps<kiwoom::KiwoomClient>::supports_interval(interval));
+  }
 }
 
 TEST_CASE("a priced limit order can be cancelled through the runner's own helper", "[kiwoom][orders]") {

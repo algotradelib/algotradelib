@@ -55,8 +55,11 @@ struct QueuedOrder {
    */
   std::optional<std::chrono::system_clock::time_point> decided_at_;
   /**
-   * @brief Whether `decided_at_` is exact, or only an upper bound (the nominal period end of an
+   * @brief Whether `decided_at_` is enforced strictly, or only a nominal upper bound (the period end of an
    *   open-stamped daily or longer bar).
+   *
+   * Strict for every intraday bar, including a session's last one cut short by the close, whose derived
+   * end is late rather than exact: a late bound defers a fill and never credits an earlier price.
    */
   bool decision_is_exact_{true};
   /**
@@ -821,16 +824,21 @@ private:
     result_.aborted_ = remaining.size();
   }
 
-  // Returns whether `event`'s period end is the instant itself rather than an upper bound on it.
+  // Returns whether `event`'s period end is enforced as the decision instant (`true`), or treated as a
+  // nominal upper bound whose fills are allowed and counted as unchecked (`false`).
   //
   // A close-stamped bar carries its period end as its timestamp, so the broker stated it. An
-  // open-stamped bar's end is derived by adding the interval's nominal length, which is right for a
-  // minute and an approximation for every calendar interval -- 24 hours is not a trading day, 31 days
+  // open-stamped bar's end is derived by adding the interval's nominal length, which is right for an
+  // intraday interval save a session's last bar when the session is not a whole number of them: KRX's
+  // 15:00 hourly bar is given 16:00 for its 15:30 close. That end is late, not exact, and it is still
+  // enforced strictly, because a late bound only defers a fill (to the next session's bars) and never
+  // credits a price from before the decision; treating it as nominal would let such fills through
+  // unchecked. For every calendar interval the end is an approximation -- 24 hours is not a trading day, 31 days
   // is not a month, and 366 is not a year. The approximation always runs **long**, which is what
   // makes it usable: an upper bound on the decision instant still proves causality whenever a bar's
   // start is at or after it.
   static bool period_end_is_exact(const strategy::BarEvent& event) noexcept {
-    return event.stamp_ == BarStamp::CLOSE || event.interval_ == BarInterval::ONE_MINUTE;
+    return event.stamp_ == BarStamp::CLOSE || bar_interval_length(event.interval_).has_value();
   }
 
   // Returns when `event`'s period began, where that is answerable **from the event itself**.
@@ -840,7 +848,9 @@ private:
   // 1. **An open-stamped bar states it.** `BarStamp::OPEN` means `bar_.timestamp_` *is* the first
   //    instant of the period, for every interval. Nothing has to be derived.
   // 2. **An intraday interval has a fixed length**, so a close-stamped one began that long before it
-  //    ended.
+  //    ended. A session's last bar cut short by the close began later than that (KRX's hourly bar ending
+  //    15:30 began at 15:00, not 14:30): the derived start is early, which refuses fills the check could
+  //    have allowed and never allows one it should refuse.
   // 3. **A close-stamped daily bar** began at the session open on its own local date, which is the
   //    date its period end falls on and where its open price comes from. **That assumes the stamp
   //    falls on the session's own date**, which is true of a bar stamped at the close and false of

@@ -226,7 +226,8 @@ struct BarEvent {
  * @param stamp Whether `bar.timestamp_` marks the period's open or close.
  * @return `bar.timestamp_` for a `CLOSE`-stamped bar; for an `OPEN`-stamped bar, the timestamp
  *   plus one interval. A month counts as 31 days and a year as 366, so for those intervals the
- *   result is an upper bound, not the exact end.
+ *   result is an upper bound, not the exact end. So is an intraday bar cut short by the session's
+ *   close (KRX's 15:00 hourly bar ends at 15:30, not 16:00): late, never early.
  */
 inline std::chrono::system_clock::time_point bar_period_end(
   const Bar& bar,
@@ -239,6 +240,14 @@ inline std::chrono::system_clock::time_point bar_period_end(
   switch (interval) {
     case BarInterval::ONE_MINUTE:
       return bar.timestamp_ + std::chrono::minutes(1);
+    case BarInterval::FIVE_MINUTES:
+      return bar.timestamp_ + std::chrono::minutes(5);
+    case BarInterval::FIFTEEN_MINUTES:
+      return bar.timestamp_ + std::chrono::minutes(15);
+    case BarInterval::THIRTY_MINUTES:
+      return bar.timestamp_ + std::chrono::minutes(30);
+    case BarInterval::ONE_HOUR:
+      return bar.timestamp_ + std::chrono::hours(1);
     case BarInterval::ONE_DAY:
       return bar.timestamp_ + std::chrono::hours(24);
     case BarInterval::ONE_WEEK:
