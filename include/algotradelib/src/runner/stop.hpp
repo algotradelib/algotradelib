@@ -1,5 +1,8 @@
 #pragma once
 
+#include "../core/enum_values.hpp"
+
+#include <array>
 #include <atomic>
 #include <cstdio>
 #include <optional>
@@ -43,10 +46,17 @@ enum class StopIntent {
   FLATTEN,
 };
 
+/** @brief Every `StopIntent`, in declaration order. */
+inline constexpr std::array<StopIntent, 3> all_stop_intents{
+  StopIntent::QUIESCE,
+  StopIntent::WITHDRAW,
+  StopIntent::FLATTEN,
+};
+
 /**
  * @brief Returns a lowercase name for an intent, as written in the control file (`"withdraw"`).
  * @param intent The intent.
- * @return The name.
+ * @return The name; empty for a value that is not a `StopIntent`.
  */
 inline constexpr std::string_view stop_intent_name(StopIntent intent) noexcept {
   switch (intent) {
@@ -57,8 +67,13 @@ inline constexpr std::string_view stop_intent_name(StopIntent intent) noexcept {
     case StopIntent::FLATTEN:
       return "flatten";
   }
-  return "unknown";
+  return "";
 }
+
+static_assert(
+  lists_every_value(all_stop_intents, [](StopIntent intent) { return !stop_intent_name(intent).empty(); }),
+  "all_stop_intents must list every StopIntent"
+);
 
 /**
  * @brief Parses an intent's name.
@@ -66,16 +81,7 @@ inline constexpr std::string_view stop_intent_name(StopIntent intent) noexcept {
  * @return The intent, or `std::nullopt` for any other text.
  */
 inline std::optional<StopIntent> stop_intent_from(std::string_view text) noexcept {
-  if (text == "quiesce") {
-    return StopIntent::QUIESCE;
-  }
-  if (text == "withdraw") {
-    return StopIntent::WITHDRAW;
-  }
-  if (text == "flatten") {
-    return StopIntent::FLATTEN;
-  }
-  return std::nullopt;
+  return value_named(all_stop_intents, stop_intent_name, text);
 }
 
 /**

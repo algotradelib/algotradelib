@@ -7,6 +7,9 @@
  */
 #define ATL_TRANSPORT_LAYER_PRESENT 1
 
+#include "../core/enum_values.hpp"
+
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -31,6 +34,15 @@ enum class RateLimitGroup {
   MARKET_DATA,
   /** @brief Instrument reference data and trading calendars. */
   REFERENCE,
+};
+
+/** @brief Every `RateLimitGroup`, in declaration order. */
+inline constexpr std::array<RateLimitGroup, 5> all_rate_limit_groups{
+  RateLimitGroup::TRADING,
+  RateLimitGroup::AUTH,
+  RateLimitGroup::ACCOUNT,
+  RateLimitGroup::MARKET_DATA,
+  RateLimitGroup::REFERENCE,
 };
 
 /**
@@ -61,7 +73,7 @@ inline constexpr int rate_limit_priority(RateLimitGroup group) noexcept {
 /**
  * @brief Returns a lowercase name for a traffic class, such as `"market_data"`, for logs.
  * @param group The class.
- * @return The name.
+ * @return The name; empty for a value that is not a `RateLimitGroup`.
  */
 inline constexpr std::string_view rate_limit_group_name(RateLimitGroup group) noexcept {
   switch (group) {
@@ -76,11 +88,16 @@ inline constexpr std::string_view rate_limit_group_name(RateLimitGroup group) no
     case RateLimitGroup::REFERENCE:
       return "reference";
   }
-  return "unknown";
+  return "";
 }
 
+static_assert(
+  lists_every_value(all_rate_limit_groups, [](RateLimitGroup group) { return !rate_limit_group_name(group).empty(); }),
+  "all_rate_limit_groups must list every RateLimitGroup"
+);
+
 /** @brief The number of traffic classes. */
-inline constexpr std::size_t rate_limit_group_count = 5;
+inline constexpr std::size_t rate_limit_group_count = all_rate_limit_groups.size();
 
 /**
  * @brief Returns a traffic class's index, for per-class arrays.

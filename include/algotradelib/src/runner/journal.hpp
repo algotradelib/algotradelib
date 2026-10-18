@@ -34,10 +34,13 @@ enum class JournalAction {
   CANCEL,
 };
 
+/** @brief Every `JournalAction`, in declaration order. */
+inline constexpr std::array<JournalAction, 2> all_journal_actions{JournalAction::PLACE, JournalAction::CANCEL};
+
 /**
  * @brief Returns an action's name as written to the journal (`"place"`, `"cancel"`).
  * @param action The action.
- * @return The name.
+ * @return The name; empty for a value that is not a `JournalAction`.
  */
 inline constexpr std::string_view journal_action_name(JournalAction action) noexcept {
   switch (action) {
@@ -46,8 +49,13 @@ inline constexpr std::string_view journal_action_name(JournalAction action) noex
     case JournalAction::CANCEL:
       return "cancel";
   }
-  return "unknown";
+  return "";
 }
+
+static_assert(
+  lists_every_value(all_journal_actions, [](JournalAction action) { return !journal_action_name(action).empty(); }),
+  "all_journal_actions must list every JournalAction"
+);
 
 /**
  * @brief Parses an action's name.
@@ -55,13 +63,7 @@ inline constexpr std::string_view journal_action_name(JournalAction action) noex
  * @return The action, or `std::nullopt` if `text` names none.
  */
 inline std::optional<JournalAction> journal_action_from(std::string_view text) noexcept {
-  if (text == "place") {
-    return JournalAction::PLACE;
-  }
-  if (text == "cancel") {
-    return JournalAction::CANCEL;
-  }
-  return std::nullopt;
+  return value_named(all_journal_actions, journal_action_name, text);
 }
 
 /**
@@ -110,10 +112,21 @@ enum class JournalOutcome {
   HELD,
 };
 
+/** @brief Every `JournalOutcome`, in declaration order. */
+inline constexpr std::array<JournalOutcome, 7> all_journal_outcomes{
+  JournalOutcome::PENDING,
+  JournalOutcome::ACCEPTED,
+  JournalOutcome::REJECTED,
+  JournalOutcome::INDETERMINATE,
+  JournalOutcome::RESOLVED,
+  JournalOutcome::CONFIRMED,
+  JournalOutcome::HELD,
+};
+
 /**
  * @brief Returns an outcome's name as written to the journal (`"pending"`, ...).
  * @param outcome The outcome.
- * @return The name.
+ * @return The name; empty for a value that is not a `JournalOutcome`.
  */
 inline constexpr std::string_view journal_outcome_name(JournalOutcome outcome) noexcept {
   switch (outcome) {
@@ -132,8 +145,13 @@ inline constexpr std::string_view journal_outcome_name(JournalOutcome outcome) n
     case JournalOutcome::HELD:
       return "held";
   }
-  return "unknown";
+  return "";
 }
+
+static_assert(
+  lists_every_value(all_journal_outcomes, [](JournalOutcome outcome) { return !journal_outcome_name(outcome).empty(); }),
+  "all_journal_outcomes must list every JournalOutcome"
+);
 
 /**
  * @brief Parses an outcome's name.
@@ -141,28 +159,7 @@ inline constexpr std::string_view journal_outcome_name(JournalOutcome outcome) n
  * @return The outcome, or `std::nullopt` if `text` names none.
  */
 inline std::optional<JournalOutcome> journal_outcome_from(std::string_view text) noexcept {
-  if (text == "pending") {
-    return JournalOutcome::PENDING;
-  }
-  if (text == "accepted") {
-    return JournalOutcome::ACCEPTED;
-  }
-  if (text == "rejected") {
-    return JournalOutcome::REJECTED;
-  }
-  if (text == "indeterminate") {
-    return JournalOutcome::INDETERMINATE;
-  }
-  if (text == "resolved") {
-    return JournalOutcome::RESOLVED;
-  }
-  if (text == "confirmed") {
-    return JournalOutcome::CONFIRMED;
-  }
-  if (text == "held") {
-    return JournalOutcome::HELD;
-  }
-  return std::nullopt;
+  return value_named(all_journal_outcomes, journal_outcome_name, text);
 }
 
 /**

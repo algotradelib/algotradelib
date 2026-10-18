@@ -2,6 +2,7 @@
 
 #include <algotradelib/core>
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <optional>
@@ -39,10 +40,19 @@ enum class MarketPhase {
   POST_CLOSE,
 };
 
+/** @brief Every `MarketPhase`, in declaration order. */
+inline constexpr std::array<MarketPhase, 5> all_market_phases{
+  MarketPhase::UNKNOWN,
+  MarketPhase::CLOSED,
+  MarketPhase::PRE_OPEN,
+  MarketPhase::OPEN,
+  MarketPhase::POST_CLOSE,
+};
+
 /**
  * @brief Returns a lowercase name for a phase, such as `"pre_open"`, for logs and display.
  * @param phase The phase.
- * @return The name.
+ * @return The name; empty for a value that is not a `MarketPhase`.
  */
 inline constexpr std::string_view market_phase_name(MarketPhase phase) noexcept {
   switch (phase) {
@@ -57,8 +67,13 @@ inline constexpr std::string_view market_phase_name(MarketPhase phase) noexcept 
     case MarketPhase::POST_CLOSE:
       return "post_close";
   }
-  return "unknown";
+  return "";
 }
+
+static_assert(
+  lists_every_value(all_market_phases, [](MarketPhase phase) { return !market_phase_name(phase).empty(); }),
+  "all_market_phases must list every MarketPhase"
+);
 
 /**
  * @brief The intraday session of a market, as the operator states it.

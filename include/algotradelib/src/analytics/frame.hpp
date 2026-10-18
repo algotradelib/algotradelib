@@ -7,6 +7,7 @@
 
 #include <algotradelib/core>
 
+#include <array>
 #include <cstddef>
 #include <stdexcept>
 #include <string_view>
@@ -26,8 +27,18 @@ enum class BarField {
   TRADED_VALUE,
 };
 
+/** @brief Every `BarField`, in declaration order. */
+inline constexpr std::array<BarField, 6> all_bar_fields{
+  BarField::OPEN,
+  BarField::HIGH,
+  BarField::LOW,
+  BarField::CLOSE,
+  BarField::VOLUME,
+  BarField::TRADED_VALUE,
+};
+
 /** @brief The number of `BarField` values, and so of columns in a `SeriesFrame`. */
-inline constexpr std::size_t bar_field_count = 6;
+inline constexpr std::size_t bar_field_count = all_bar_fields.size();
 
 /**
  * @brief Returns the column position of a field in a `SeriesFrame`.
@@ -41,7 +52,7 @@ inline constexpr std::size_t bar_field_index(BarField field) noexcept {
 /**
  * @brief Returns a lowercase display name for a field, such as `"close"`.
  * @param field The field.
- * @return The name.
+ * @return The name; empty for a value that is not a `BarField`.
  */
 inline constexpr std::string_view bar_field_name(BarField field) noexcept {
   switch (field) {
@@ -58,8 +69,13 @@ inline constexpr std::string_view bar_field_name(BarField field) noexcept {
     case BarField::TRADED_VALUE:
       return "traded_value";
   }
-  return "unknown";
+  return "";
 }
+
+static_assert(
+  lists_every_value(all_bar_fields, [](BarField field) { return !bar_field_name(field).empty(); }),
+  "all_bar_fields must list every BarField"
+);
 
 /**
  * @brief One instrument's bars as numeric columns: one row per bar, one column per `BarField`.

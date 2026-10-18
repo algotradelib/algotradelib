@@ -58,13 +58,10 @@ enum class PollKind {
   PRICE_LIMITS,
 };
 
-/** @brief The number of `PollKind` values. */
-inline constexpr std::size_t poll_kind_count = 7;
-
 /**
  * @brief Returns a poll kind's lowercase name, such as `"working_orders"`.
  * @param kind The kind.
- * @return The name.
+ * @return The name; empty for a value that is not a `PollKind`.
  */
 inline constexpr std::string_view poll_kind_name(PollKind kind) noexcept {
   switch (kind) {
@@ -83,7 +80,7 @@ inline constexpr std::string_view poll_kind_name(PollKind kind) noexcept {
     case PollKind::PRICE_LIMITS:
       return "price_limits";
   }
-  return "unknown";
+  return "";
 }
 
 /** @brief Every poll kind, in the order an iteration polls them. */
@@ -103,10 +100,13 @@ inline constexpr PollKind all_poll_kinds[] = {
 };
 
 static_assert(
-  sizeof(all_poll_kinds) / sizeof(all_poll_kinds[0]) == poll_kind_count,
-  "every PollKind must appear in all_poll_kinds: a kind left out is never polled, and the loop "
+  lists_every_value(all_poll_kinds, [](PollKind kind) { return !poll_kind_name(kind).empty(); }),
+  "every PollKind must appear in all_poll_kinds once: a kind left out is never polled, and the loop "
   "would silently answer with whatever the previous poll left behind"
 );
+
+/** @brief The number of `PollKind` values. */
+inline constexpr std::size_t poll_kind_count = std::size(all_poll_kinds);
 
 /**
  * @brief What became of one poll.
@@ -125,10 +125,18 @@ enum class PollOutcome {
   RATE_LIMITED,
 };
 
+/** @brief Every `PollOutcome`, in declaration order. */
+inline constexpr std::array<PollOutcome, 4> all_poll_outcomes{
+  PollOutcome::UPDATED,
+  PollOutcome::UNCHANGED,
+  PollOutcome::FAILED,
+  PollOutcome::RATE_LIMITED,
+};
+
 /**
  * @brief Returns an outcome's lowercase name, such as `"rate_limited"`.
  * @param outcome The outcome.
- * @return The name.
+ * @return The name; empty for a value that is not a `PollOutcome`.
  */
 inline constexpr std::string_view poll_outcome_name(PollOutcome outcome) noexcept {
   switch (outcome) {
@@ -141,8 +149,13 @@ inline constexpr std::string_view poll_outcome_name(PollOutcome outcome) noexcep
     case PollOutcome::RATE_LIMITED:
       return "rate_limited";
   }
-  return "unknown";
+  return "";
 }
+
+static_assert(
+  lists_every_value(all_poll_outcomes, [](PollOutcome outcome) { return !poll_outcome_name(outcome).empty(); }),
+  "all_poll_outcomes must list every PollOutcome"
+);
 
 /**
  * @brief How often a `PollingLoop` polls each kind; an unset interval disables that poll.

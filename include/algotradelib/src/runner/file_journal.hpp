@@ -129,8 +129,19 @@ inline std::string string_field(const json::object& row, std::string_view key) {
  * change; a file written by yesterday's build has to be readable by today's.
  */
 inline constexpr std::string_view country_name(Country country) noexcept {
-  return country == Country::US ? "US" : "KR";
+  switch (country) {
+    case Country::KR:
+      return "KR";
+    case Country::US:
+      return "US";
+  }
+  return "";
 }
+
+static_assert(
+  lists_every_value(all_countries, [](Country country) { return !country_name(country).empty(); }),
+  "all_countries must list every Country"
+);
 
 /** Returns a stable name for `venue`, as written to the journal. */
 inline constexpr std::string_view venue_name(Venue venue) noexcept {
@@ -144,7 +155,7 @@ inline constexpr std::string_view venue_name(Venue venue) noexcept {
     case Venue::COMBINED:
       return "COMBINED";
   }
-  return "UNSPECIFIED";
+  return "";
 }
 
 /**
@@ -158,38 +169,34 @@ inline constexpr std::string_view venue_name(Venue venue) noexcept {
  * lookalike clear the hold on an NXT order: silence read as confirmation.
  */
 inline std::optional<Venue> known_venue_from(std::string_view text) noexcept {
-  if (text == "KRX") {
-    return Venue::KRX;
-  }
-  if (text == "NXT") {
-    return Venue::NXT;
-  }
-  if (text == "COMBINED") {
-    return Venue::COMBINED;
-  }
-  if (text == "UNSPECIFIED") {
-    return Venue::UNSPECIFIED;
-  }
-  return std::nullopt;
+  return value_named(all_venues, venue_name, text);
 }
 
 
 /** Returns a stable name for `side`, as written to the journal. */
 inline constexpr std::string_view side_name(OrderSide side) noexcept {
-  return side == OrderSide::SELL ? "SELL" : "BUY";
+  switch (side) {
+    case OrderSide::BUY:
+      return "BUY";
+    case OrderSide::SELL:
+      return "SELL";
+  }
+  return "";
 }
+
+static_assert(
+  lists_every_value(all_order_sides, [](OrderSide side) { return !side_name(side).empty(); }),
+  "all_order_sides must list every OrderSide"
+);
 
 
 /**
  * Returns a stable name for `type`, as written to the journal.
  *
- * **A new enumerator must be added here, and the compiler will not say so.**
- * The `switch` has no `default:`, which is the shape that makes `-Wswitch`
- * report a missing case -- but the `return` beneath it means the function still
- * compiles, and an unnamed basis would be written to the journal as `UNKNOWN`
- * and read back as `UNKNOWN`. A journal is what crash recovery reads, so that
- * is silent loss of the fact recovery matches on. The round-trip test over
- * every enumerator is the guard; the build is not.
+ * Every writer here has a case per enumerator and no `default:`, so the library's own test and example
+ * builds (`-Werror=switch`) refuse a new enumerator without a case, and `lists_every_value` refuses one
+ * missing from `all_order_types`. What falls past the `switch` is not an enumerator; it is written as
+ * `""`, which no reader accepts, rather than as another value's name.
  */
 inline constexpr std::string_view order_type_name(OrderType type) noexcept {
   switch (type) {
@@ -212,27 +219,14 @@ inline constexpr std::string_view order_type_name(OrderType type) noexcept {
     case OrderType::UNKNOWN:
       return "UNKNOWN";
   }
-  return "UNKNOWN";
+  return "";
 }
 
-/** Returns the order type `text` names, defaulting to `UNKNOWN`. */
-inline OrderType order_type_from(std::string_view text) noexcept {
-  for (const auto type : {
-         OrderType::LIMIT,
-         OrderType::MARKET,
-         OrderType::CONDITIONAL_LIMIT,
-         OrderType::BEST_LIMIT,
-         OrderType::PRIMARY_LIMIT,
-         OrderType::MID_PRICE,
-         OrderType::STOP_LIMIT,
-         OrderType::CLOSING_PRICE,
-       }) {
-    if (text == order_type_name(type)) {
-      return type;
-    }
-  }
-  return OrderType::UNKNOWN;
-}
+static_assert(
+  lists_every_value(all_order_types, [](OrderType type) { return !order_type_name(type).empty(); }),
+  "all_order_types must list every OrderType"
+);
+
 
 /** Returns a stable name for `condition`, as written to the journal. */
 inline constexpr std::string_view time_in_force_name(TimeInForce condition) noexcept {
@@ -246,30 +240,13 @@ inline constexpr std::string_view time_in_force_name(TimeInForce condition) noex
     case TimeInForce::UNKNOWN:
       return "UNKNOWN";
   }
-  return "UNKNOWN";
+  return "";
 }
 
-/**
- * Returns the condition `text` names, defaulting to `DAY`.
- *
- * `DAY` rather than `UNKNOWN`, and only here: a journal written before this
- * field existed has no `time_in_force` key at all, and every order it could
- * have recorded was a day order, because that was the only condition either
- * adapter would send. Reading those lines as `UNKNOWN` would make recovery
- * refuse to match orders it can match.
- */
-inline TimeInForce time_in_force_from(std::string_view text) noexcept {
-  if (text == "IOC") {
-    return TimeInForce::IMMEDIATE_OR_CANCEL;
-  }
-  if (text == "FOK") {
-    return TimeInForce::FILL_OR_KILL;
-  }
-  if (text == "UNKNOWN") {
-    return TimeInForce::UNKNOWN;
-  }
-  return TimeInForce::DAY;
-}
+static_assert(
+  lists_every_value(all_times_in_force, [](TimeInForce condition) { return !time_in_force_name(condition).empty(); }),
+  "all_times_in_force must list every TimeInForce"
+);
 
 /** Returns a stable name for `session`, as written to the journal. */
 inline constexpr std::string_view order_session_name(OrderSession session) noexcept {
@@ -293,27 +270,14 @@ inline constexpr std::string_view order_session_name(OrderSession session) noexc
     case OrderSession::UNKNOWN:
       return "UNKNOWN";
   }
-  return "UNKNOWN";
+  return "";
 }
 
-/** Returns the session `text` names, defaulting to `REGULAR` for the reason above. */
-inline OrderSession order_session_from(std::string_view text) noexcept {
-  for (const auto session : {
-         OrderSession::OPENING_AUCTION,
-         OrderSession::CLOSING_AUCTION,
-         OrderSession::PRE_MARKET,
-         OrderSession::AFTER_HOURS,
-         OrderSession::AFTER_HOURS_AUCTION,
-         OrderSession::AFTER_MARKET,
-         OrderSession::GTP,
-         OrderSession::UNKNOWN,
-       }) {
-    if (text == order_session_name(session)) {
-      return session;
-    }
-  }
-  return OrderSession::REGULAR;
-}
+static_assert(
+  lists_every_value(all_order_sessions, [](OrderSession session) { return !order_session_name(session).empty(); }),
+  "all_order_sessions must list every OrderSession"
+);
+
 
 /**
  * Strict readers for a value a journal line actually carries.
@@ -356,75 +320,23 @@ inline std::optional<Decimal64> known_decimal_from(std::string_view text) noexce
 }
 
 inline std::optional<Country> known_country_from(std::string_view text) noexcept {
-  if (text == "KR") {
-    return Country::KR;
-  }
-  if (text == "US") {
-    return Country::US;
-  }
-  return std::nullopt;
+  return value_named(all_countries, country_name, text);
 }
 
 inline std::optional<OrderSide> known_side_from(std::string_view text) noexcept {
-  if (text == "BUY") {
-    return OrderSide::BUY;
-  }
-  if (text == "SELL") {
-    return OrderSide::SELL;
-  }
-  return std::nullopt;
+  return value_named(all_order_sides, side_name, text);
 }
 
 inline std::optional<OrderType> known_order_type_from(std::string_view text) noexcept {
-  for (const auto type : {
-         OrderType::UNKNOWN,
-         OrderType::LIMIT,
-         OrderType::MARKET,
-         OrderType::CONDITIONAL_LIMIT,
-         OrderType::BEST_LIMIT,
-         OrderType::PRIMARY_LIMIT,
-         OrderType::MID_PRICE,
-         OrderType::STOP_LIMIT,
-         OrderType::CLOSING_PRICE,
-       }) {
-    if (text == order_type_name(type)) {
-      return type;
-    }
-  }
-  return std::nullopt;
+  return value_named(all_order_types, order_type_name, text);
 }
 
 inline std::optional<TimeInForce> known_time_in_force_from(std::string_view text) noexcept {
-  for (const auto condition : {
-         TimeInForce::UNKNOWN,
-         TimeInForce::DAY,
-         TimeInForce::IMMEDIATE_OR_CANCEL,
-         TimeInForce::FILL_OR_KILL,
-       }) {
-    if (text == time_in_force_name(condition)) {
-      return condition;
-    }
-  }
-  return std::nullopt;
+  return value_named(all_times_in_force, time_in_force_name, text);
 }
 
 inline std::optional<OrderSession> known_order_session_from(std::string_view text) noexcept {
-  for (const auto session : {
-         OrderSession::UNKNOWN,
-         OrderSession::REGULAR,
-         OrderSession::OPENING_AUCTION,
-         OrderSession::CLOSING_AUCTION,
-         OrderSession::PRE_MARKET,
-         OrderSession::AFTER_HOURS,
-         OrderSession::AFTER_HOURS_AUCTION,
-         OrderSession::AFTER_MARKET,
-         OrderSession::GTP,
-       }) {
-    if (text == order_session_name(session)) {
-      return session;
-    }
-  }
-  return std::nullopt;
+  return value_named(all_order_sessions, order_session_name, text);
 }
 
 

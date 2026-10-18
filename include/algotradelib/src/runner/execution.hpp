@@ -4,6 +4,7 @@
 
 #include <algotradelib/core>
 
+#include <array>
 #include <chrono>
 #include <string>
 #include <type_traits>
@@ -62,10 +63,19 @@ enum class SendOutcome {
   REFUSED_LOCALLY,
 };
 
+/** @brief Every `SendOutcome`, in declaration order. */
+inline constexpr std::array<SendOutcome, 5> all_send_outcomes{
+  SendOutcome::ACCEPTED,
+  SendOutcome::REJECTED,
+  SendOutcome::INDETERMINATE,
+  SendOutcome::UNAVAILABLE,
+  SendOutcome::REFUSED_LOCALLY,
+};
+
 /**
  * @brief Returns a lowercase name for an outcome, such as `"indeterminate"`, for logs.
  * @param outcome The outcome.
- * @return The name.
+ * @return The name; empty for a value that is not a `SendOutcome`.
  */
 inline constexpr std::string_view send_outcome_name(SendOutcome outcome) noexcept {
   switch (outcome) {
@@ -80,8 +90,13 @@ inline constexpr std::string_view send_outcome_name(SendOutcome outcome) noexcep
     case SendOutcome::REFUSED_LOCALLY:
       return "refused_locally";
   }
-  return "unknown";
+  return "";
 }
+
+static_assert(
+  lists_every_value(all_send_outcomes, [](SendOutcome outcome) { return !send_outcome_name(outcome).empty(); }),
+  "all_send_outcomes must list every SendOutcome"
+);
 
 /**
  * @brief Classifies an error from an order request: did the order come to exist?

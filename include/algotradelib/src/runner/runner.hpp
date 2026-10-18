@@ -4046,8 +4046,8 @@ private:
     // Switched over rather than tested one outcome at a time, deliberately. Three different outcomes
     // once fell through to `would_cancel_` -- the bucket that says the
     // broker withdrew the order -- because each fix handled the case it was told about and left the
-    // rest. A switch with no default makes the next added enumerator a compile error under
-    // `-Werror`, which is the only version of this that stays fixed.
+    // rest. A switch with no default makes the next added enumerator a compile error in the library's
+    // test and example builds (`-Werror=switch`), which is the only version of this that stays fixed.
     switch (outcome) {
       case SendOutcome::ACCEPTED:
         // The broker took the request. Whether the order stops working is a later fact, which only

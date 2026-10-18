@@ -68,8 +68,20 @@ enum class HaltReason {
   POLL_FAILING,
 };
 
+/** @brief Every `HaltReason`, in declaration order. */
+inline constexpr std::array<HaltReason, 8> all_halt_reasons{
+  HaltReason::OPERATOR,
+  HaltReason::LOCAL_FAILURE,
+  HaltReason::STOPPING,
+  HaltReason::ORDER_LIST_UNREAD,
+  HaltReason::PORTFOLIO_ABSENT,
+  HaltReason::PORTFOLIO_STALE,
+  HaltReason::BUYING_POWER_UNREAD,
+  HaltReason::POLL_FAILING,
+};
+
 /** @brief The number of `HaltReason` values. */
-inline constexpr std::size_t halt_reason_count = 8;
+inline constexpr std::size_t halt_reason_count = all_halt_reasons.size();
 
 /**
  * @brief What an instruction can do to a position, which decides which holds stop it.
@@ -124,7 +136,7 @@ inline constexpr bool halt_blocks(HaltReason reason, InstructionClass klass) noe
 /**
  * @brief Returns a lowercase name for a hold, such as `"portfolio_stale"`, for logs.
  * @param reason The hold.
- * @return The name.
+ * @return The name; empty for a value that is not a `HaltReason`.
  */
 inline constexpr std::string_view halt_reason_name(HaltReason reason) noexcept {
   switch (reason) {
@@ -145,8 +157,13 @@ inline constexpr std::string_view halt_reason_name(HaltReason reason) noexcept {
     case HaltReason::POLL_FAILING:
       return "poll_failing";
   }
-  return "unknown";
+  return "";
 }
+
+static_assert(
+  lists_every_value(all_halt_reasons, [](HaltReason reason) { return !halt_reason_name(reason).empty(); }),
+  "all_halt_reasons must list every HaltReason"
+);
 
 /*
  * Operator limits, checked before anything is sent. A guard refuses an order; it never resizes one.

@@ -3,6 +3,7 @@
 #include "./types.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <optional>
 #include <string>
@@ -24,10 +25,19 @@ enum class BarInterval {
   ONE_YEAR,
 };
 
+/** @brief Every `BarInterval`, in declaration order. */
+inline constexpr std::array<BarInterval, 5> all_bar_intervals{
+  BarInterval::ONE_MINUTE,
+  BarInterval::ONE_DAY,
+  BarInterval::ONE_WEEK,
+  BarInterval::ONE_MONTH,
+  BarInterval::ONE_YEAR,
+};
+
 /**
  * @brief Returns a short name for an interval, such as `"1m"` or `"1d"`.
  * @param interval The interval.
- * @return The name.
+ * @return The name; empty for a value that is not a `BarInterval`.
  */
 inline constexpr std::string_view bar_interval_name(BarInterval interval) noexcept {
   switch (interval) {
@@ -42,8 +52,13 @@ inline constexpr std::string_view bar_interval_name(BarInterval interval) noexce
     case BarInterval::ONE_YEAR:
       return "1y";
   }
-  return "unknown";
+  return "";
 }
+
+static_assert(
+  lists_every_value(all_bar_intervals, [](BarInterval interval) { return !bar_interval_name(interval).empty(); }),
+  "all_bar_intervals must list every BarInterval"
+);
 
 /**
  * @brief Which edge of its period a bar's timestamp marks.

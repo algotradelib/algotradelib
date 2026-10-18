@@ -17,6 +17,8 @@
 #include <variant>
 #include <vector>
 
+#include "./enum_values.hpp"
+
 namespace algotradelib {
 
 /**
@@ -30,6 +32,9 @@ enum class Country {
   US,
 };
 
+/** @brief Every `Country`, in declaration order. */
+inline constexpr std::array<Country, 2> all_countries{Country::KR, Country::US};
+
 /**
  * @brief A trading venue: an exchange, or the combined view across exchanges.
  *
@@ -42,10 +47,13 @@ enum class Venue {
   COMBINED,
 };
 
+/** @brief Every `Venue`, in declaration order. */
+inline constexpr std::array<Venue, 4> all_venues{Venue::UNSPECIFIED, Venue::KRX, Venue::NXT, Venue::COMBINED};
+
 /**
  * @brief Returns a display name for a venue, such as `"KRX"`.
  * @param venue The venue.
- * @return The name.
+ * @return The name; empty for a value that is not a `Venue`.
  */
 inline constexpr std::string_view venue_name(Venue venue) noexcept {
   switch (venue) {
@@ -58,8 +66,13 @@ inline constexpr std::string_view venue_name(Venue venue) noexcept {
     case Venue::COMBINED:
       return "COMBINED";
   }
-  return "unspecified";
+  return "";
 }
+
+static_assert(
+  lists_every_value(all_venues, [](Venue venue) { return !venue_name(venue).empty(); }),
+  "all_venues must list every Venue"
+);
 
 /** @brief Identifies an instrument: its country, venue and symbol. */
 struct InstrumentId {
@@ -1599,6 +1612,9 @@ enum class OrderSide {
   SELL,
 };
 
+/** @brief Every `OrderSide`, in declaration order. */
+inline constexpr std::array<OrderSide, 2> all_order_sides{OrderSide::BUY, OrderSide::SELL};
+
 /**
  * @brief How an order's price is decided (its price basis).
  *
@@ -1625,6 +1641,19 @@ enum class OrderType {
   STOP_LIMIT,
   /** @brief 시간외종가: priced at a session's closing price. */
   CLOSING_PRICE,
+};
+
+/** @brief Every `OrderType`, in declaration order. */
+inline constexpr std::array<OrderType, 9> all_order_types{
+  OrderType::UNKNOWN,
+  OrderType::LIMIT,
+  OrderType::MARKET,
+  OrderType::CONDITIONAL_LIMIT,
+  OrderType::BEST_LIMIT,
+  OrderType::PRIMARY_LIMIT,
+  OrderType::MID_PRICE,
+  OrderType::STOP_LIMIT,
+  OrderType::CLOSING_PRICE,
 };
 
 /**
@@ -1669,6 +1698,14 @@ enum class TimeInForce {
   FILL_OR_KILL,
 };
 
+/** @brief Every `TimeInForce`, in declaration order. */
+inline constexpr std::array<TimeInForce, 4> all_times_in_force{
+  TimeInForce::UNKNOWN,
+  TimeInForce::DAY,
+  TimeInForce::IMMEDIATE_OR_CANCEL,
+  TimeInForce::FILL_OR_KILL,
+};
+
 /**
  * @brief The trading session an order is submitted into.
  *
@@ -1692,6 +1729,19 @@ enum class OrderSession {
   AFTER_MARKET,
   /** @brief NXT's GTP session. */
   GTP,
+};
+
+/** @brief Every `OrderSession`, in declaration order. */
+inline constexpr std::array<OrderSession, 9> all_order_sessions{
+  OrderSession::UNKNOWN,
+  OrderSession::REGULAR,
+  OrderSession::OPENING_AUCTION,
+  OrderSession::CLOSING_AUCTION,
+  OrderSession::PRE_MARKET,
+  OrderSession::AFTER_HOURS,
+  OrderSession::AFTER_HOURS_AUCTION,
+  OrderSession::AFTER_MARKET,
+  OrderSession::GTP,
 };
 
 /**

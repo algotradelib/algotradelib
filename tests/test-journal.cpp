@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cstddef>
@@ -162,67 +163,51 @@ using Journaling =
 // The vocabulary
 // ---------------------------------------------------------------------------
 
-TEST_CASE("every order-shape name round-trips through the journal", "[journal]") {
-  // Written out rather than looped over a range, so adding an enumerator and
-  // not adding it to `order_type_name` fails here. The compiler will not catch
-  // that: the switch has no `default:`, which is what makes -Wswitch report a
-  // missing case, but the `return "UNKNOWN"` after it means the function still
-  // compiles and the new basis is silently journalled as UNKNOWN.
-  const OrderType types[] = {
-    OrderType::UNKNOWN,
-    OrderType::LIMIT,
-    OrderType::MARKET,
-    OrderType::CONDITIONAL_LIMIT,
-    OrderType::BEST_LIMIT,
-    OrderType::PRIMARY_LIMIT,
-    OrderType::MID_PRICE,
-    OrderType::STOP_LIMIT,
-    OrderType::CLOSING_PRICE,
-  };
+namespace {
+
+// Each name round-trips through the reader recovery uses, no two names are alike, and the reader refuses
+// `""` (what a writer returns for a value that is not an enumerator), a damaged name and the name in the
+// other letter case.
+template <typename Enum, std::size_t N, typename Name, typename Read>
+void require_round_trip(const std::array<Enum, N>& values, Name name, Read read) {
   std::vector<std::string> names;
-  for (const auto type : types) {
-    const auto name = runner::journal_detail::order_type_name(type);
-    REQUIRE(runner::journal_detail::order_type_from(name) == type);
-    names.emplace_back(name);
+  for (const auto value : values) {
+    const std::string text(name(value));
+    REQUIRE_FALSE(text.empty());
+    const auto back = read(text);
+    REQUIRE(back.has_value());
+    REQUIRE(*back == value);
+    REQUIRE_FALSE(read(text + "?").has_value());
+    std::string flipped = text;
+    for (auto& c : flipped) {
+      const auto u = static_cast<unsigned char>(c);
+      c = static_cast<char>(std::isupper(u) ? std::tolower(u) : std::toupper(u));
+    }
+    if (flipped != text) {
+      REQUIRE_FALSE(read(flipped).has_value());
+    }
+    names.push_back(text);
   }
-  // Two bases sharing a name would round-trip one of them into the other.
   const auto before = names.size();
   std::sort(names.begin(), names.end());
   names.erase(std::unique(names.begin(), names.end()), names.end());
   REQUIRE(names.size() == before);
+  REQUIRE_FALSE(read("").has_value());
+}
 
-  const TimeInForce conditions[] = {
-    TimeInForce::UNKNOWN,
-    TimeInForce::DAY,
-    TimeInForce::IMMEDIATE_OR_CANCEL,
-    TimeInForce::FILL_OR_KILL,
-  };
-  for (const auto condition : conditions) {
-    REQUIRE(
-      runner::journal_detail::time_in_force_from(
-        runner::journal_detail::time_in_force_name(condition)
-      ) == condition
-    );
-  }
+} // namespace
 
-  const OrderSession sessions[] = {
-    OrderSession::UNKNOWN,
-    OrderSession::REGULAR,
-    OrderSession::OPENING_AUCTION,
-    OrderSession::CLOSING_AUCTION,
-    OrderSession::PRE_MARKET,
-    OrderSession::AFTER_HOURS,
-    OrderSession::AFTER_HOURS_AUCTION,
-    OrderSession::AFTER_MARKET,
-    OrderSession::GTP,
-  };
-  for (const auto session : sessions) {
-    REQUIRE(
-      runner::journal_detail::order_session_from(
-        runner::journal_detail::order_session_name(session)
-      ) == session
-    );
-  }
+TEST_CASE("every journal and control-file name round-trips through its strict reader", "[journal]") {
+  namespace detail = runner::journal_detail;
+  require_round_trip(all_countries, detail::country_name, detail::known_country_from);
+  require_round_trip(all_venues, detail::venue_name, detail::known_venue_from);
+  require_round_trip(all_order_sides, detail::side_name, detail::known_side_from);
+  require_round_trip(all_order_types, detail::order_type_name, detail::known_order_type_from);
+  require_round_trip(all_times_in_force, detail::time_in_force_name, detail::known_time_in_force_from);
+  require_round_trip(all_order_sessions, detail::order_session_name, detail::known_order_session_from);
+  require_round_trip(runner::all_journal_actions, runner::journal_action_name, runner::journal_action_from);
+  require_round_trip(runner::all_journal_outcomes, runner::journal_outcome_name, runner::journal_outcome_from);
+  require_round_trip(runner::all_stop_intents, runner::stop_intent_name, runner::stop_intent_from);
 }
 
 // ---------------------------------------------------------------------------
