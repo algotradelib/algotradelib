@@ -3566,3 +3566,45 @@ TEST_CASE("the same pair rule trades identically through on_bar and on_bars") {
     CHECK(by_bar[i].fill_.at_ == by_slice[i].fill_.at_);
   }
 }
+
+TEST_CASE("a replay models limit and market orders under every condition and stops only as day orders") {
+  const auto order = [](OrderType type, TimeInForce condition, bool priced, bool triggered) {
+    strategy::PlannedOrder planned;
+    planned.type_ = type;
+    planned.time_in_force_ = condition;
+    planned.session_ = OrderSession::REGULAR;
+    if (priced) {
+      planned.price_ = Decimal64::parse("100");
+    }
+    if (triggered) {
+      planned.trigger_price_ = Decimal64::parse("99");
+    }
+    return planned;
+  };
+  const TimeInForce conditions[] = {
+    TimeInForce::UNKNOWN, TimeInForce::DAY, TimeInForce::IMMEDIATE_OR_CANCEL, TimeInForce::FILL_OR_KILL,
+  };
+  for (const auto condition : conditions) {
+    INFO(static_cast<int>(condition));
+    // Limit and market orders under any condition, with or without a price, but never with a trigger.
+    CHECK(ReplayExecutor::can_model(order(OrderType::LIMIT, condition, true, false)));
+    CHECK(ReplayExecutor::can_model(order(OrderType::LIMIT, condition, false, false)));
+    CHECK(ReplayExecutor::can_model(order(OrderType::MARKET, condition, false, false)));
+    CHECK_FALSE(ReplayExecutor::can_model(order(OrderType::LIMIT, condition, true, true)));
+    CHECK_FALSE(ReplayExecutor::can_model(order(OrderType::MARKET, condition, false, true)));
+    // A stop-limit needs both prices, and only a day one is modelled.
+    CHECK(ReplayExecutor::can_model(order(OrderType::STOP_LIMIT, condition, true, true)) ==
+      (condition == TimeInForce::DAY));
+    CHECK_FALSE(ReplayExecutor::can_model(order(OrderType::STOP_LIMIT, condition, true, false)));
+    CHECK_FALSE(ReplayExecutor::can_model(order(OrderType::STOP_LIMIT, condition, false, true)));
+    for (const auto type : {
+           OrderType::UNKNOWN, OrderType::CONDITIONAL_LIMIT, OrderType::BEST_LIMIT, OrderType::PRIMARY_LIMIT,
+           OrderType::MID_PRICE, OrderType::CLOSING_PRICE,
+         }) {
+      CHECK_FALSE(ReplayExecutor::can_model(order(type, condition, true, false)));
+    }
+  }
+  auto auction = order(OrderType::LIMIT, TimeInForce::DAY, true, false);
+  auction.session_ = OrderSession::CLOSING_AUCTION;
+  CHECK_FALSE(ReplayExecutor::can_model(auction));
+}

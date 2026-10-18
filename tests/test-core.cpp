@@ -610,6 +610,21 @@ TEST_CASE("a list of every value is checked at compile time in any order and at 
   REQUIRE_FALSE(value_named(all_venues, venue_name, "").has_value());
 }
 
+TEST_CASE("an unconstrained rule with bands reads them as a stated one does", "[core][price]") {
+  // Only an UNKNOWN rule refuses to answer; STATED and UNCONSTRAINED both read `bands_`. The factory's
+  // unconstrained rule has none, but the field is public.
+  PriceRule rule;
+  rule.kind_ = PriceRule::Kind::UNCONSTRAINED;
+  rule.bands_ = {TickBand{Decimal64::parse("0"), Decimal64::parse("5")}};
+  CHECK(rule.on_tick(Decimal64::parse("10")) == true);
+  CHECK(rule.on_tick(Decimal64::parse("12")) == false);
+  CHECK(rule.round_to_tick(Decimal64::parse("12"), OrderSide::BUY) == Decimal64::parse("10"));
+  CHECK(rule.round_to_tick(Decimal64::parse("12"), OrderSide::SELL) == Decimal64::parse("15"));
+  rule.kind_ = PriceRule::Kind::UNKNOWN;
+  CHECK_FALSE(rule.on_tick(Decimal64::parse("10")).has_value());
+  CHECK_FALSE(rule.round_to_tick(Decimal64::parse("12"), OrderSide::BUY).has_value());
+}
+
 TEST_CASE("decimal arithmetic at the edges of the coefficient", "[core][decimal]") {
   // Two negatives whose common scale overflows: the smaller scale holds the larger magnitude.
   const Decimal64 tiny(-1, 2);
