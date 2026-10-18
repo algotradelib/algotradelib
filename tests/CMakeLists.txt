@@ -20,6 +20,14 @@ if(NOT Catch2_FOUND)
 endif()
 include(Catch)
 
+# A `switch` over an enum that misses one of its values is an error in the library's own builds. Every such
+# `switch` in the library has no `default:`, so this is what tells a contributor who adds an enumerator where
+# its cases are; each enum's list of values (`lists_every_value`) catches the rest. Only these targets: a
+# consumer's build gets no flag from the library.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-Werror=switch)
+endif()
+
 # ATL_ENABLE_COVERAGE instruments the test executables, never the library target, so an installed consumer
 # inherits nothing. GCC and Clang both write gcov's format (`--coverage`), one data file beside each object, which
 # gcovr reads for either (`gcov`, or `llvm-cov gcov` for Clang) and joins by line.

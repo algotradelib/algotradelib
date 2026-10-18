@@ -1,3 +1,11 @@
+# A `switch` over an enum that misses one of its values is an error in the library's own builds. Every such
+# `switch` in the library has no `default:`, so this is what tells a contributor who adds an enumerator where
+# its cases are; each enum's list of values (`lists_every_value`) catches the rest. Only these targets: a
+# consumer's build gets no flag from the library.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-Werror=switch)
+endif()
+
 file(GLOB_RECURSE CPP_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
 
 # The analytics examples include <algotradelib/analytics>, which refuses to compile

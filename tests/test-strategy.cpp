@@ -1657,8 +1657,8 @@ TEST_CASE("every guard reason has a stable name") {
   // reason" that covers most of them is worse than one that names its subset, because the gap is
   // exactly where a new enumerator slips through unnamed -- and `guard_reason_name`'s trailing
   // `return "unknown"` means an unhandled reason compiles and reports nothing useful rather than
-  // failing to build. The library declares no `-Wswitch`-forcing flags of its own, so nothing else
-  // would have said so.
+  // failing to build. The library's test and example builds now make a missing case an error
+  // (`-Werror=switch`); this list still checks the names themselves.
   REQUIRE(
     strategy::guard_reason_name(GuardReason::QUANTITY_NOT_SELLABLE) == "quantity_not_sellable"
   );
