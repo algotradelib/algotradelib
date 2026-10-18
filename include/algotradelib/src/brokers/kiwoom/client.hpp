@@ -739,9 +739,10 @@ inline OrderStatus normalized_order_status(std::string_view text) noexcept {
 /**
  * @brief Returns the `api-id` of the chart endpoint for a bar interval.
  * @param interval The interval.
- * @return The id, or null if Kiwoom has none (every interval has one today).
+ * @return The id, or null where this client requests none: 5, 15, 30 and 60 minutes, which Kiwoom
+ *   serves through `ka10080`'s `tic_scope` but whose row stamps are not established yet.
  */
-inline const char* chart_api_id(BarInterval interval) noexcept {
+inline constexpr const char* chart_api_id(BarInterval interval) noexcept {
   switch (interval) {
     case BarInterval::ONE_MINUTE:
       return "ka10080";
@@ -753,6 +754,11 @@ inline const char* chart_api_id(BarInterval interval) noexcept {
       return "ka10083";
     case BarInterval::ONE_YEAR:
       return "ka10094";
+    case BarInterval::FIVE_MINUTES:
+    case BarInterval::FIFTEEN_MINUTES:
+    case BarInterval::THIRTY_MINUTES:
+    case BarInterval::ONE_HOUR:
+      return nullptr;
   }
   return nullptr;
 }
@@ -760,9 +766,9 @@ inline const char* chart_api_id(BarInterval interval) noexcept {
 /**
  * @brief Returns the array field a bar interval's chart endpoint returns its rows in.
  * @param interval The interval.
- * @return The field name, or null if Kiwoom has no endpoint for it.
+ * @return The field name, or null where `chart_api_id` names no endpoint.
  */
-inline const char* chart_rows_field(BarInterval interval) noexcept {
+inline constexpr const char* chart_rows_field(BarInterval interval) noexcept {
   switch (interval) {
     case BarInterval::ONE_MINUTE:
       return "stk_min_pole_chart_qry";
@@ -774,12 +780,17 @@ inline const char* chart_rows_field(BarInterval interval) noexcept {
       return "stk_mth_pole_chart_qry";
     case BarInterval::ONE_YEAR:
       return "stk_yr_pole_chart_qry";
+    case BarInterval::FIVE_MINUTES:
+    case BarInterval::FIFTEEN_MINUTES:
+    case BarInterval::THIRTY_MINUTES:
+    case BarInterval::ONE_HOUR:
+      return nullptr;
   }
   return nullptr;
 }
 
 /**
- * @brief Refuses a bar interval Kiwoom has no chart endpoint for (none today).
+ * @brief Refuses a bar interval this client requests no chart for (`chart_api_id`).
  * @param interval The interval.
  * @return An `INVALID_ARGUMENT` error (not sent), or `std::nullopt`.
  */
@@ -792,8 +803,8 @@ inline std::optional<BrokerError> unsupported_bar_interval(BarInterval interval)
   error.reached_broker_ = false;
   error.broker_code_ = "unsupported_interval";
   error.message_ =
-    std::string("Kiwoom publishes no chart endpoint for ") +
-    std::string(bar_interval_name(interval)) + " bars";
+    std::string("this Kiwoom client does not request ") + std::string(bar_interval_name(interval)) +
+    " bars yet (Kiwoom serves them through ka10080's tic_scope; how it stamps them is not established)";
   return error;
 }
 

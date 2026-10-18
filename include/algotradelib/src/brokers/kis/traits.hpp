@@ -108,11 +108,11 @@ struct Normalizers {
   /**
    * @brief Tests whether KIS publishes bars at an interval.
    * @param interval The interval.
-   * @return `true`: KIS publishes every interval.
+   * @return `true` for one minute and for a day or longer; `false` for 5, 15, 30 and 60 minutes, which
+   *   KIS does not publish (its minute chart is one minute only).
    */
   static constexpr bool supports_interval(BarInterval interval) {
-    static_cast<void>(interval);
-    return true;
+    return kis::publishes_bar_interval(interval);
   }
 
   /**

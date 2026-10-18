@@ -23,19 +23,31 @@ enum class BarInterval {
   ONE_WEEK,
   ONE_MONTH,
   ONE_YEAR,
+  /** @brief Five minutes. */
+  FIVE_MINUTES,
+  /** @brief Fifteen minutes. */
+  FIFTEEN_MINUTES,
+  /** @brief Thirty minutes. */
+  THIRTY_MINUTES,
+  /** @brief Sixty minutes. */
+  ONE_HOUR,
 };
 
 /** @brief Every `BarInterval`, in declaration order. */
-inline constexpr std::array<BarInterval, 5> all_bar_intervals{
+inline constexpr std::array<BarInterval, 9> all_bar_intervals{
   BarInterval::ONE_MINUTE,
   BarInterval::ONE_DAY,
   BarInterval::ONE_WEEK,
   BarInterval::ONE_MONTH,
   BarInterval::ONE_YEAR,
+  BarInterval::FIVE_MINUTES,
+  BarInterval::FIFTEEN_MINUTES,
+  BarInterval::THIRTY_MINUTES,
+  BarInterval::ONE_HOUR,
 };
 
 /**
- * @brief Returns a short name for an interval, such as `"1m"` or `"1d"`.
+ * @brief Returns a short name for an interval, such as `"1m"`, `"5m"`, `"1h"` or `"1d"`.
  * @param interval The interval.
  * @return The name; empty for a value that is not a `BarInterval`.
  */
@@ -51,8 +63,43 @@ inline constexpr std::string_view bar_interval_name(BarInterval interval) noexce
       return "1mo";
     case BarInterval::ONE_YEAR:
       return "1y";
+    case BarInterval::FIVE_MINUTES:
+      return "5m";
+    case BarInterval::FIFTEEN_MINUTES:
+      return "15m";
+    case BarInterval::THIRTY_MINUTES:
+      return "30m";
+    case BarInterval::ONE_HOUR:
+      return "1h";
   }
   return "";
+}
+
+/**
+ * @brief Returns an interval's fixed length, for an intraday interval.
+ * @param interval The interval.
+ * @return 60, 300, 900, 1800 or 3600 seconds; `std::nullopt` for a day or longer, which has no fixed
+ *   trading length (a trading day is not 24 hours, and a month has no fixed length).
+ */
+inline constexpr std::optional<std::chrono::seconds> bar_interval_length(BarInterval interval) noexcept {
+  switch (interval) {
+    case BarInterval::ONE_MINUTE:
+      return std::chrono::seconds(60);
+    case BarInterval::FIVE_MINUTES:
+      return std::chrono::seconds(300);
+    case BarInterval::FIFTEEN_MINUTES:
+      return std::chrono::seconds(900);
+    case BarInterval::THIRTY_MINUTES:
+      return std::chrono::seconds(1800);
+    case BarInterval::ONE_HOUR:
+      return std::chrono::seconds(3600);
+    case BarInterval::ONE_DAY:
+    case BarInterval::ONE_WEEK:
+    case BarInterval::ONE_MONTH:
+    case BarInterval::ONE_YEAR:
+      return std::nullopt;
+  }
+  return std::nullopt;
 }
 
 static_assert(

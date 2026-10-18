@@ -269,10 +269,45 @@ inline std::optional<BrokerError> unsupported_client_order_id(const OrderRequest
 }
 
 /**
- * @brief Checks a bar interval; KIS publishes every interval, so this accepts all.
- * @return `std::nullopt`.
+ * @brief Tests whether KIS publishes a chart at an interval.
+ * @param interval The interval.
+ * @return `true` for one minute and for a day or longer; `false` for 5, 15, 30 and 60 minutes (its minute
+ *   chart is one minute only).
  */
-inline std::optional<BrokerError> unsupported_bar_interval(BarInterval) { return std::nullopt; }
+inline constexpr bool publishes_bar_interval(BarInterval interval) noexcept {
+  switch (interval) {
+    case BarInterval::ONE_MINUTE:
+    case BarInterval::ONE_DAY:
+    case BarInterval::ONE_WEEK:
+    case BarInterval::ONE_MONTH:
+    case BarInterval::ONE_YEAR:
+      return true;
+    case BarInterval::FIVE_MINUTES:
+    case BarInterval::FIFTEEN_MINUTES:
+    case BarInterval::THIRTY_MINUTES:
+    case BarInterval::ONE_HOUR:
+      return false;
+  }
+  return false;
+}
+
+/**
+ * @brief Refuses a bar interval KIS publishes no chart for (`publishes_bar_interval`).
+ * @param interval The interval.
+ * @return An `INVALID_ARGUMENT` error (not sent), or `std::nullopt`.
+ */
+inline std::optional<BrokerError> unsupported_bar_interval(BarInterval interval) {
+  if (publishes_bar_interval(interval)) {
+    return std::nullopt;
+  }
+  BrokerError error;
+  error.category_ = ErrorCategory::INVALID_ARGUMENT;
+  error.reached_broker_ = false;
+  error.broker_code_ = "unsupported_interval";
+  error.message_ = std::string("KIS publishes no chart for ") + std::string(bar_interval_name(interval)) +
+    " bars; its minute chart is one minute only";
+  return error;
+}
 
 /**
  * @brief The asynchronous KIS REST client: market data, account inquiries and orders for domestic
@@ -942,7 +977,9 @@ private:
       error.message_ = "bar request must ask for at least one bar";
       return error;
     }
-    return std::nullopt;
+    // The session's guard (`BrokerTraits::validate_bars`) asks the same; a caller of this client does not go
+    // through the session.
+    return unsupported_bar_interval(query.interval_);
   }
 
   // Returns KIS's `FID_PERIOD_DIV_CODE` for a period interval.
@@ -956,6 +993,11 @@ private:
         return "Y";
       case BarInterval::ONE_DAY:
       case BarInterval::ONE_MINUTE:
+      // Refused before any request (`unsupported_bar_interval`).
+      case BarInterval::FIVE_MINUTES:
+      case BarInterval::FIFTEEN_MINUTES:
+      case BarInterval::THIRTY_MINUTES:
+      case BarInterval::ONE_HOUR:
         break;
     }
     return "D";
@@ -985,6 +1027,11 @@ private:
         return 365;
       case BarInterval::ONE_DAY:
       case BarInterval::ONE_MINUTE:
+      // Refused before any request (`unsupported_bar_interval`).
+      case BarInterval::FIVE_MINUTES:
+      case BarInterval::FIFTEEN_MINUTES:
+      case BarInterval::THIRTY_MINUTES:
+      case BarInterval::ONE_HOUR:
         break;
     }
     return 1;

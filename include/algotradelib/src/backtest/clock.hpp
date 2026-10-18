@@ -22,36 +22,27 @@ namespace backtest {
  */
 
 /**
- * @brief Returns the fixed duration of an interval.
+ * @brief Returns the fixed duration of an interval (`bar_interval_length`).
  * @param interval The interval.
- * @return 60 seconds for `ONE_MINUTE`; `std::nullopt` for a day or longer, which has no fixed
+ * @return The length of an intraday interval; `std::nullopt` for a day or longer, which has no fixed
  *   trading duration.
  */
 inline std::optional<std::chrono::seconds> interval_duration(BarInterval interval) {
-  switch (interval) {
-    case BarInterval::ONE_MINUTE:
-      return std::chrono::seconds(60);
-    case BarInterval::ONE_DAY:
-    case BarInterval::ONE_WEEK:
-    case BarInterval::ONE_MONTH:
-    case BarInterval::ONE_YEAR:
-      // A trading day is not 24 hours and a month has no fixed length; see `periods_per_year`.
-      return std::nullopt;
-  }
-  return std::nullopt;
+  return bar_interval_length(interval);
 }
 
 /**
  * @brief Returns how many bars of an interval a year contains, for `analytics::annualize_ratio`.
  *
- * Daily bars: `trading_days`. Minute bars: session minutes per day times `trading_days` (KRX's
- * 390-minute session and 245 days give 95,550).
+ * Daily bars: `trading_days`. Intraday bars: the bars a session holds, times `trading_days`. A session
+ * that is not a whole number of bars ends with a shorter one, which counts: KRX's 390-minute session holds
+ * 390 one-minute bars (95,550 a year over 245 days) and 7 hourly ones, the last of them 30 minutes.
  *
  * @param interval The bar interval.
- * @param session The session window (used for minute bars).
+ * @param session The session window (used for intraday bars).
  * @param trading_days Trading days per year, such as about 245 for KRX or 252 for US markets.
  * @return The count, or `std::nullopt` for weekly, monthly or yearly bars, a non-positive
- *   `trading_days`, or (for minute bars) a session whose close is not after its open.
+ *   `trading_days`, or (for intraday bars) a session whose close is not after its open.
  */
 inline std::optional<math::Scalar> periods_per_year(
   BarInterval interval,
@@ -73,9 +64,9 @@ inline std::optional<math::Scalar> periods_per_year(
   if (session_seconds <= 0 || duration->count() <= 0) {
     return std::nullopt;
   }
-  const auto per_day = static_cast<math::Scalar>(session_seconds) /
-    static_cast<math::Scalar>(duration->count());
-  return per_day * trading_days;
+  // Rounded up: the session's last bar may be shorter than the others.
+  const auto per_day = (session_seconds + duration->count() - 1) / duration->count();
+  return static_cast<math::Scalar>(per_day) * trading_days;
 }
 
 /**

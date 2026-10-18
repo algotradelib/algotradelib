@@ -625,6 +625,51 @@ TEST_CASE("an unconstrained rule with bands reads them as a stated one does", "[
   CHECK_FALSE(rule.round_to_tick(Decimal64::parse("12"), OrderSide::BUY).has_value());
 }
 
+TEST_CASE("KIS refuses the intraday intervals it publishes no chart for", "[core][kis][bars]") {
+  // Its minute chart is one minute only; a day or longer has its period chart.
+  for (const auto interval : {BarInterval::ONE_MINUTE, BarInterval::ONE_DAY, BarInterval::ONE_WEEK,
+                              BarInterval::ONE_MONTH, BarInterval::ONE_YEAR}) {
+    INFO(bar_interval_name(interval));
+    CHECK_FALSE(kis::unsupported_bar_interval(interval));
+    CHECK(BrokerCaps<kis::KisClient>::supports_interval(interval));
+  }
+  for (const auto interval : {BarInterval::FIVE_MINUTES, BarInterval::FIFTEEN_MINUTES,
+                              BarInterval::THIRTY_MINUTES, BarInterval::ONE_HOUR}) {
+    INFO(bar_interval_name(interval));
+    const auto refused = kis::unsupported_bar_interval(interval);
+    REQUIRE(refused);
+    CHECK(refused->category_ == ErrorCategory::INVALID_ARGUMENT);
+    CHECK(refused->broker_code_ == "unsupported_interval");
+    CHECK_FALSE(refused->reached_broker_);
+    CHECK_FALSE(BrokerCaps<kis::KisClient>::supports_interval(interval));
+  }
+
+  // The client's own entry point refuses them too, before it asks for a token: a caller of the client does not
+  // go through the session's guard. Unrefused, a daily chart came back labelled with the intraday interval.
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  auto client = std::make_shared<kis::KisClient>(ioc.get_executor(), context, kis::KisConfig{});
+  for (const auto interval : {BarInterval::FIVE_MINUTES, BarInterval::FIFTEEN_MINUTES,
+                              BarInterval::THIRTY_MINUTES, BarInterval::ONE_HOUR}) {
+    INFO(bar_interval_name(interval));
+    BarQuery query;
+    query.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+    query.interval_ = interval;
+    query.count_ = 10;
+    bool completed = false;
+    client->async_bars(query, [&completed](Result<BarSeries> result) {
+      REQUIRE_FALSE(result);
+      CHECK(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+      CHECK(result.error().broker_code_ == "unsupported_interval");
+      CHECK_FALSE(result.error().reached_broker_);
+      completed = true;
+    });
+    ioc.restart();
+    ioc.run();
+    REQUIRE(completed);
+  }
+}
+
 TEST_CASE("decimal arithmetic at the edges of the coefficient", "[core][decimal]") {
   // Two negatives whose common scale overflows: the smaller scale holds the larger magnitude.
   const Decimal64 tiny(-1, 2);

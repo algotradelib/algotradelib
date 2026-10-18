@@ -116,11 +116,11 @@ struct Normalizers {
   /**
    * @brief Tests whether Kiwoom publishes bars at an interval.
    * @param interval The interval.
-   * @return `true`: Kiwoom publishes every interval.
+   * @return `true` for one minute and for a day or longer; `false` for 5, 15, 30 and 60 minutes, which
+   *   this client does not request yet.
    */
   static constexpr bool supports_interval(BarInterval interval) {
-    static_cast<void>(interval);
-    return true;
+    return kiwoom::chart_api_id(interval) != nullptr && kiwoom::chart_rows_field(interval) != nullptr;
   }
 
   /**
