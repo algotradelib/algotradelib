@@ -1,8 +1,9 @@
-// expect: enumeration value 'ADDED' not handled in switch
+// expect: error: enumeration value 'ADDED' not handled in switch
 // Deliberately does not compile. `enum-switch-must-name-every-value` builds this file and passes only when
 // the compiler refuses a `switch` that misses an enumerator. The library's switches over its enums have no
 // `default:`, and its test and example builds turn the missing case into an error (`-Werror=switch` in
-// tests/CMakeLists.txt); this probe fails if that flag is lost.
+// tests/CMakeLists.txt); this probe fails if that flag is lost, because the pattern
+// requires an error, not the warning the same text would be without it.
 #include <string_view>
 
 namespace probe {

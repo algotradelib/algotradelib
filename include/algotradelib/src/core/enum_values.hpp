@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <limits>
 #include <optional>
 #include <string_view>
 #include <type_traits>
@@ -20,6 +21,15 @@ namespace algotradelib {
 
 /// \cond ATL_ENUM_VALUES_DETAIL
 namespace enum_values_detail {
+
+// A scoped enum (`enum class`) always has a fixed underlying type, so every value of that type is a value of
+// the enum and the conversions below are defined. An unscoped one converts to an integer implicitly.
+template <typename Enum, bool = std::is_enum<Enum>::value>
+struct is_scoped_enum : std::false_type {};
+
+template <typename Enum>
+struct is_scoped_enum<Enum, true>
+: std::integral_constant<bool, !std::is_convertible<Enum, std::underlying_type_t<Enum>>::value> {};
 
 template <typename Enum, typename IsEnumerator>
 constexpr bool lists_every_value(const Enum* values, std::size_t count, IsEnumerator is_enumerator) noexcept {
@@ -40,7 +50,12 @@ constexpr bool lists_every_value(const Enum* values, std::size_t count, IsEnumer
       }
     }
   }
-  return !is_enumerator(static_cast<Enum>(count));
+  // `count` distinct values below `count` that fill the underlying type leave nothing beyond them, and
+  // converting `count` would wrap onto 0 (an `enum class : bool` with both values listed).
+  if (count > static_cast<std::size_t>(std::numeric_limits<Underlying>::max())) {
+    return true;
+  }
+  return !is_enumerator(static_cast<Enum>(static_cast<Underlying>(count)));
 }
 
 } // namespace enum_values_detail
@@ -49,9 +64,9 @@ constexpr bool lists_every_value(const Enum* values, std::size_t count, IsEnumer
 /**
  * @brief Tests whether a list holds every value of an enum exactly once, in any order.
  *
- * The enum's values must be `0` to `N - 1`: no enumerator may state its own value. Then `N` distinct
- * enumerators below `N` are all of them, and `N` itself must not be one, or the enum is longer than the
- * list.
+ * The enum must be scoped (`enum class`), and its values `0` to `N - 1`: no enumerator may state its own
+ * value. Then `N` distinct enumerators below `N` are all of them, and `N` itself must not be one, or the
+ * enum is longer than the list (unless `N` values already fill the underlying type).
  *
  * Use it in a `static_assert` beside the list. Pass a test that is `true` exactly for the enum's values,
  * such as the enum's name function, whose `switch` has a case for each value and returns `""` after it:
@@ -69,7 +84,10 @@ constexpr bool lists_every_value(const Enum* values, std::size_t count, IsEnumer
  */
 template <typename Enum, std::size_t N, typename IsEnumerator>
 constexpr bool lists_every_value(const std::array<Enum, N>& values, IsEnumerator is_enumerator) noexcept {
-  static_assert(std::is_enum<Enum>::value, "lists_every_value checks a list of an enum's values");
+  static_assert(
+    enum_values_detail::is_scoped_enum<Enum>::value,
+    "lists_every_value checks a list of a scoped enum's values (enum class)"
+  );
   return enum_values_detail::lists_every_value(values.data(), N, is_enumerator);
 }
 
@@ -87,7 +105,10 @@ constexpr bool lists_every_value(const std::array<Enum, N>& values, IsEnumerator
  */
 template <typename Enum, std::size_t N, typename IsEnumerator>
 constexpr bool lists_every_value(const Enum (&values)[N], IsEnumerator is_enumerator) noexcept {
-  static_assert(std::is_enum<Enum>::value, "lists_every_value checks a list of an enum's values");
+  static_assert(
+    enum_values_detail::is_scoped_enum<Enum>::value,
+    "lists_every_value checks a list of a scoped enum's values (enum class)"
+  );
   return enum_values_detail::lists_every_value(values, N, is_enumerator);
 }
 

@@ -559,6 +559,57 @@ TEST_CASE(
   }
 }
 
+namespace enum_list_probe {
+
+enum class Bit : bool {
+  ZERO,
+  ONE,
+};
+
+constexpr bool is_bit(Bit value) noexcept {
+  switch (value) {
+    case Bit::ZERO:
+    case Bit::ONE:
+      return true;
+  }
+  return false;
+}
+
+enum class Small : unsigned char {
+  A,
+  B,
+  C,
+};
+
+constexpr bool is_small(Small value) noexcept {
+  switch (value) {
+    case Small::A:
+    case Small::B:
+    case Small::C:
+      return true;
+  }
+  return false;
+}
+
+} // namespace enum_list_probe
+
+TEST_CASE("a list of every value is checked at compile time in any order and at the type's edge", "[core][enum]") {
+  using enum_list_probe::Bit;
+  using enum_list_probe::Small;
+  // Both values of a `bool`-based enum fill its type: there is no value past them to probe, and converting
+  // the count would wrap onto `ZERO`.
+  static_assert(lists_every_value(std::array<Bit, 2>{Bit::ONE, Bit::ZERO}, enum_list_probe::is_bit));
+  static_assert(!lists_every_value(std::array<Bit, 1>{Bit::ZERO}, enum_list_probe::is_bit));
+  static_assert(!lists_every_value(std::array<Bit, 2>{Bit::ONE, Bit::ONE}, enum_list_probe::is_bit));
+  static_assert(lists_every_value(std::array<Small, 3>{Small::C, Small::A, Small::B}, enum_list_probe::is_small));
+  static_assert(!lists_every_value(std::array<Small, 2>{Small::A, Small::B}, enum_list_probe::is_small));
+  static_assert(!lists_every_value(std::array<Small, 3>{Small::A, Small::A, Small::B}, enum_list_probe::is_small));
+  constexpr Small c_array[] = {Small::B, Small::C, Small::A};
+  static_assert(lists_every_value(c_array, enum_list_probe::is_small));
+  REQUIRE(value_named(all_venues, venue_name, "KRX") == Venue::KRX);
+  REQUIRE_FALSE(value_named(all_venues, venue_name, "").has_value());
+}
+
 TEST_CASE("decimal arithmetic at the edges of the coefficient", "[core][decimal]") {
   // Two negatives whose common scale overflows: the smaller scale holds the larger magnitude.
   const Decimal64 tiny(-1, 2);
