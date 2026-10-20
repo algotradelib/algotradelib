@@ -6,6 +6,7 @@
 
 #include <algotradelib/core>
 
+#include <algorithm>
 #include <cstddef>
 #include <optional>
 #include <string_view>
@@ -95,6 +96,7 @@ public:
       cash_ = std::move(other.cash_);
       realized_ = std::move(other.realized_);
       executions_ = std::move(other.executions_);
+      held_ = std::move(other.held_);
     }
     return *this;
   }
@@ -307,8 +309,23 @@ public:
       return false;
     }
 
+    // Room in `held_` for this lot is made before anything changes, so the insert below cannot allocate,
+    // whatever the list's history (a copy holds no spare room).
+    if (resulting->coefficient() != 0 && held_.size() == held_.capacity()) {
+      held_.reserve(std::max<std::size_t>(8, 2 * held_.capacity()));
+    }
+
     // --- No arithmetic below can fail, and nothing below returns false -----------------------
     auto* lot = find_or_open(fill.instrument_);
+    if ((lot->quantity_.coefficient() != 0) != (resulting->coefficient() != 0)) {
+      const auto at = static_cast<std::size_t>(lot - positions_.data());
+      const auto where = std::lower_bound(held_.begin(), held_.end(), at);
+      if (resulting->coefficient() != 0) {
+        held_.insert(where, at);
+      } else {
+        held_.erase(where);
+      }
+    }
     lot->average_purchase_price_ = new_average;
     lot->quantity_ = *resulting;
     lot->last_price_ = fill.price_;
@@ -405,11 +422,10 @@ public:
    * @return The equity, or `std::nullopt` if the arithmetic does not fit.
    */
   std::optional<Decimal64> equity_in(const Currency& currency) const {
-    auto total = cash_in(currency).value_or(Decimal64::parse("0"));
-    for (const auto& lot : positions_) {
-      if (lot.quantity_.coefficient() == 0) {
-        continue;
-      }
+    auto total = cash_in(currency).value_or(Decimal64(0, 0));
+    // The lots with a non-zero quantity, in the order of `positions_`.
+    for (const auto at : held_) {
+      const auto& lot = positions_[at];
       // Only positions in `currency` (recorded on `market_value_` by `apply`); no conversion.
       if (!(lot.market_value_.currency_ == currency)) {
         continue;
@@ -578,6 +594,8 @@ private:
   std::vector<Money> cash_;
   std::vector<Money> realized_;
   std::vector<Execution> executions_;
+  // Where the lots with a non-zero quantity are in `positions_`, ascending; `apply` keeps it.
+  std::vector<std::size_t> held_;
 };
 
 } // namespace backtest
