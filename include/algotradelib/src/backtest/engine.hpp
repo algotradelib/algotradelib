@@ -950,8 +950,8 @@ private:
 
   // Fills orders resting from an earlier bar against `event`, and tells a strategy that declares `on_fill`.
   //
-  // **Walked by reference rather than by iterator or index.** Applying a fill calls `on_fill`, which
-  // may place or withdraw orders, so any position into the queue is invalid the moment the strategy
+  // **Walked by reference rather than by iterator or index.** Applying a fill calls `on_fill` when the
+  // strategy declares it, which may place or withdraw orders, so any position into the queue is invalid the moment the strategy
   // is told anything. The eligible references are collected first and each is looked up again when
   // its turn comes; one the callback withdrew is simply no longer there.
   //
@@ -1082,8 +1082,8 @@ private:
       if constexpr (strategy::strategy_detail::declares_on_fill<Strategy>) {
         // **No handler, nothing to show.** For a strategy without `on_fill` the install would be overwritten
         // unread (every later dispatch, and `settle_deferred`, installs first) and the pass would settle an
-        // empty instruction list. Skipped at compile time: per fill, both cost a row per queued order and a
-        // copy of every position.
+        // empty instruction list. Skipped at compile time: per fill, the install alone costs a row per queued
+        // order and a copy of every position.
         install_portfolio();
         drain_reports(runner_.feed(decision.execution_->fill_));
       }
