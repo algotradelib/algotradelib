@@ -94,7 +94,10 @@ struct InstrumentId {
    * @return `true` if all three are equal.
    */
   friend bool operator==(const InstrumentId& lhs, const InstrumentId& rhs) {
-    return lhs.country_ == rhs.country_ && lhs.venue_ == rhs.venue_ && lhs.symbol_ == rhs.symbol_;
+    // The length and the first character settle most mismatches without a call to compare the strings.
+    return lhs.country_ == rhs.country_ && lhs.venue_ == rhs.venue_ &&
+      lhs.symbol_.size() == rhs.symbol_.size() &&
+      (lhs.symbol_.empty() || lhs.symbol_.front() == rhs.symbol_.front()) && lhs.symbol_ == rhs.symbol_;
   }
 
   /**
