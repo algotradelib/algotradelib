@@ -4222,7 +4222,8 @@ std::string seen_by(Ctx& ctx) {
  * of its own working orders; from bars, quotes, phases, fills and the stop. Records what every callback was shown.
  * Declares no `on_order_update`, and no bar handler: `Wanders` and `WandersBySlice` add one each.
  */
-struct WanderCore {
+/** A seeded random strategy acting from quotes, recording what each callback is shown; no `on_fill`. */
+struct WanderBase {
   std::uint32_t state_{20261020};
   std::string seen_;
 
@@ -4293,14 +4294,6 @@ struct WanderCore {
   }
 
   template <class Ctx>
-  void on_fill(Ctx& ctx, const strategy::Fill& fill) {
-    seen_ += "fill " + fill.instrument_.symbol_ + " " + fill.quantity_.str() + " " + seen_by(ctx);
-    if (draw(4) == 0) {
-      act(ctx, fill.instrument_, fill.price_);
-    }
-  }
-
-  template <class Ctx>
   void on_phase(Ctx& ctx, strategy::MarketPhase phase) {
     seen_ += "phase " + std::to_string(static_cast<int>(phase)) + " " + seen_by(ctx);
   }
@@ -4314,6 +4307,17 @@ struct WanderCore {
       flat.target_quantity_ = Decimal64(0, 0);
       flat.tag_ = "last";
       ctx.submit(flat);
+    }
+  }
+};
+
+/** The same, acting on one fill in four too. */
+struct WanderCore : WanderBase {
+  template <class Ctx>
+  void on_fill(Ctx& ctx, const strategy::Fill& fill) {
+    seen_ += "fill " + fill.instrument_.symbol_ + " " + fill.quantity_.str() + " " + seen_by(ctx);
+    if (draw(4) == 0) {
+      act(ctx, fill.instrument_, fill.price_);
     }
   }
 };
@@ -4357,6 +4361,67 @@ static_assert(!strategy::strategy_detail::declares_on_order_update<Wanders>);
 static_assert(strategy::strategy_detail::declares_on_order_update<WandersHearing>);
 static_assert(!strategy::strategy_detail::declares_on_order_update<WandersBySlice>);
 static_assert(strategy::strategy_detail::declares_on_order_update<WandersBySliceHearing>);
+
+/** How many fills the strategies below were told about, so the test knows the full fill path ran. */
+std::size_t fills_heard = 0;
+
+/** Acting from bars and quotes, never told a fill. */
+struct Unfilled : WanderBase {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    act(ctx, bar.instrument_, bar.bar_.close_);
+  }
+};
+
+/** The same, told about every fill and answering none. */
+struct UnfilledHearingFills : Unfilled {
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill&) {
+    ++fills_heard;
+  }
+};
+
+/** The same, told about every fill and every order update, answering none: both full paths. */
+struct UnfilledHearingBoth : UnfilledHearingFills {
+  template <class Ctx>
+  void on_order_update(Ctx&, const OrderSnapshot&) {
+    ++updates_heard;
+  }
+};
+
+/** The `on_bars` forms of the three. */
+struct UnfilledBySlice : WanderBase {
+  template <class Ctx>
+  void on_bars(Ctx& ctx, const strategy::BarSlice& slice) {
+    for (const auto& bar : slice.bars_) {
+      act(ctx, bar.instrument_, bar.bar_.close_);
+    }
+  }
+};
+
+struct UnfilledBySliceHearingFills : UnfilledBySlice {
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill&) {
+    ++fills_heard;
+  }
+};
+
+struct UnfilledBySliceHearingBoth : UnfilledBySliceHearingFills {
+  template <class Ctx>
+  void on_order_update(Ctx&, const OrderSnapshot&) {
+    ++updates_heard;
+  }
+};
+
+static_assert(!strategy::strategy_detail::declares_on_fill<Unfilled>);
+static_assert(!strategy::strategy_detail::declares_on_order_update<Unfilled>);
+static_assert(strategy::strategy_detail::declares_on_fill<UnfilledHearingFills>);
+static_assert(!strategy::strategy_detail::declares_on_order_update<UnfilledHearingFills>);
+static_assert(strategy::strategy_detail::declares_on_fill<UnfilledHearingBoth>);
+static_assert(strategy::strategy_detail::declares_on_order_update<UnfilledHearingBoth>);
+static_assert(!strategy::strategy_detail::declares_on_fill<UnfilledBySlice>);
+static_assert(strategy::strategy_detail::declares_on_fill<UnfilledBySliceHearingFills>);
+static_assert(strategy::strategy_detail::declares_on_order_update<UnfilledBySliceHearingBoth>);
 
 /** The replay's own result and what its strategy was shown. */
 struct Wandered {
@@ -4486,6 +4551,56 @@ TEST_CASE("a replay skips order updates for a strategy that has no handler and c
   CHECK(behind_stops > 20);
   CHECK(refused > 50);
   CHECK(expired > 5);
+  CHECK(updates_heard > 1000);
+}
+
+TEST_CASE("a replay tells fills only to a strategy that has on_fill and changes no result", "[fills]") {
+  // The type without `on_fill` takes the skip; adding an empty `on_fill`, and then an empty `on_order_update` too,
+  // takes the full fill path and both full paths. Every field of the result and everything each callback was
+  // shown must agree.
+  fills_heard = 0;
+  updates_heard = 0;
+  std::size_t executions = 0;
+  std::size_t behind_stops = 0;
+  std::size_t refused = 0;
+  std::size_t expired = 0;
+  for (const bool limited : {false, true}) {
+    const auto config = limited ? limited_pair_config() : pair_config();
+    for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+      INFO((limited ? "limited" : "default") << " limits, seed " << seed);
+      const auto skipped = wander<Unfilled>(seed, config);
+      const auto told = wander<UnfilledHearingFills>(seed, config);
+      const auto both = wander<UnfilledHearingBoth>(seed, config);
+      CHECK(result_digest(skipped.result_) == result_digest(told.result_));
+      CHECK(result_digest(skipped.result_) == result_digest(both.result_));
+      CHECK(skipped.seen_ == told.seen_);
+      CHECK(skipped.seen_ == both.seen_);
+      const auto sliced = wander<UnfilledBySlice>(seed, config);
+      const auto sliced_told = wander<UnfilledBySliceHearingFills>(seed, config);
+      const auto sliced_both = wander<UnfilledBySliceHearingBoth>(seed, config);
+      CHECK(result_digest(sliced.result_) == result_digest(sliced_told.result_));
+      CHECK(result_digest(sliced.result_) == result_digest(sliced_both.result_));
+      CHECK(sliced.seen_ == sliced_told.seen_);
+      CHECK(sliced.seen_ == sliced_both.seen_);
+      executions += skipped.result_.executions_.size() + sliced.result_.executions_.size();
+      refused += skipped.result_.refused_.size() + sliced.result_.refused_.size();
+      expired += skipped.result_.expired_day_orders_ + sliced.result_.expired_day_orders_;
+      for (const auto* result : {&skipped.result_, &sliced.result_}) {
+        for (const auto& rejection : result->rejected_) {
+          behind_stops += rejection.reason_ == strategy::RejectReason::STOP_ORDER_RESTING ? 1 : 0;
+        }
+      }
+    }
+  }
+  // The runs did what the comparison is about: orders filled, rested and expired, targets waited behind stops, the
+  // guard refused some, and the hearing types were told about fills and updates.
+  INFO("executions " << executions << ", behind stops " << behind_stops << ", refused " << refused << ", expired "
+    << expired << ", fills heard " << fills_heard << ", updates heard " << updates_heard);
+  CHECK(executions > 400);
+  CHECK(behind_stops > 20);
+  CHECK(refused > 50);
+  CHECK(expired > 5);
+  CHECK(fills_heard > 400);
   CHECK(updates_heard > 1000);
 }
 
