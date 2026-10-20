@@ -144,6 +144,26 @@ inline constexpr std::size_t scan_limit = 16;
  */
 class PositionTable {
 public:
+  PositionTable() = default;
+  PositionTable(const PositionTable&) = default;
+  PositionTable& operator=(const PositionTable&) = default;
+
+  /** Takes `other`'s positions and leaves it empty. */
+  PositionTable(PositionTable&& other) noexcept
+      : slots_(std::move(other.slots_)), count_(std::exchange(other.count_, 0)) {
+    other.slots_.clear();
+  }
+
+  /** Takes `other`'s positions and leaves it empty. */
+  PositionTable& operator=(PositionTable&& other) noexcept {
+    if (this != &other) {
+      slots_ = std::move(other.slots_);
+      other.slots_.clear();
+      count_ = std::exchange(other.count_, 0);
+    }
+    return *this;
+  }
+
   /** Whether the table holds no position. */
   bool empty() const noexcept { return count_ == 0; }
 

@@ -130,6 +130,7 @@ std::vector<std::string> symbols_of(const strategy::BarSlice& slice) {
 static_assert(std::is_nothrow_move_assignable<backtest::ReplayLedger>::value);
 static_assert(std::is_nothrow_move_constructible<backtest::ReplayLedger>::value);
 static_assert(std::is_nothrow_move_assignable<strategy::slice_detail::Bucket>::value);
+static_assert(std::is_nothrow_move_constructible<strategy::slice_detail::Bucket>::value);
 
 TEST_CASE("a ledger opening a lot finds every lot it lists after a failed allocation") {
   // At 16, 17, 20 and 32 lots before the fill: the last scan, the index being built, the index extended, and
@@ -289,4 +290,44 @@ TEST_CASE("a wide slice taken first leaves a narrow one answering by its own bar
   const auto hourly = bucket.take_first();
   CHECK(symbols_of(hourly).size() == 18);
   CHECK(bucket.empty());
+}
+
+TEST_CASE("a wide bucket moved away leaves its source empty and usable") {
+  const auto daily = [](const std::string& symbol) { return bar_of(symbol, BarInterval::ONE_DAY); };
+  const auto twenty = [&daily](const std::string& prefix) {
+    strategy::slice_detail::Bucket bucket;
+    for (int k = 0; k < 20; ++k) {
+      bucket.add(daily(prefix + std::to_string(k)));
+    }
+    return bucket;
+  };
+  // The source holds nothing, and a wide slice added to it again answers by its own bars.
+  const auto check_source = [&daily](strategy::slice_detail::Bucket& source) {
+    CHECK(source.empty());
+    CHECK_FALSE(source.holds(daily("S0")));
+    for (int k = 0; k < 18; ++k) {
+      source.add(daily("E" + std::to_string(k)));
+    }
+    CHECK(source.holds(daily("E17")));
+    CHECK_FALSE(source.holds(daily("S0")));
+  };
+  const auto check_destination = [&daily](strategy::slice_detail::Bucket& destination) {
+    CHECK(destination.holds(daily("S19")));
+    CHECK_FALSE(destination.holds(daily("E0")));
+    CHECK(destination.take_first().bars_.size() == 20);
+  };
+
+  SECTION("by construction") {
+    auto source = twenty("S");
+    strategy::slice_detail::Bucket destination(std::move(source));
+    check_source(source);
+    check_destination(destination);
+  }
+  SECTION("by assignment") {
+    auto source = twenty("S");
+    auto destination = twenty("T");
+    destination = std::move(source);
+    check_source(source);
+    check_destination(destination);
+  }
 }

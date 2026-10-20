@@ -242,6 +242,60 @@ TEST_CASE("a ledger past sixteen instruments finds each lot as a scan of its pos
   CHECK(ledger.quantity_of(id(12)) == std::optional<Decimal64>(Decimal64::parse("13")));
 }
 
+TEST_CASE("a ledger moved past sixteen instruments leaves its source empty and usable") {
+  const auto id = [](int k) {
+    return InstrumentId{Country::KR, all_venues[static_cast<std::size_t>(k % 4)], "S" + std::to_string(k / 4)};
+  };
+  const auto fill = [&id](OrderSide side, int k) {
+    auto execution = filled(side, "1", "1000");
+    execution.fill_.instrument_ = id(k);
+    return execution;
+  };
+  const auto holding_twenty = [&fill] {
+    auto ledger = opening("9000000000000000000");
+    for (int k = 0; k < 20; ++k) {
+      REQUIRE(ledger.apply(fill(OrderSide::BUY, k), krw()));
+    }
+    return ledger;
+  };
+  // The source of a move holds no lot, answers as an empty ledger, and opens lots again past sixteen.
+  const auto check_source = [&id, &fill](backtest::ReplayLedger& source) {
+    CHECK(source.positions().empty());
+    CHECK_FALSE(source.quantity_of(id(0)));
+    CHECK_FALSE(source.average_price_of(id(19)));
+    CHECK(source.mark(id(5), Decimal64::parse("1")));
+    for (int k = 100; k < 120; ++k) {
+      REQUIRE(source.apply(fill(OrderSide::SELL, k), krw()));
+    }
+    CHECK(source.positions().size() == 20);
+    for (int k = 100; k < 120; ++k) {
+      CHECK(source.quantity_of(id(k)) == std::optional<Decimal64>(Decimal64::parse("-1")));
+    }
+    CHECK_FALSE(source.quantity_of(id(0)));
+  };
+  const auto check_destination = [&id](const backtest::ReplayLedger& destination) {
+    CHECK(destination.positions().size() == 20);
+    for (int k = 0; k < 20; ++k) {
+      CHECK(destination.quantity_of(id(k)) == std::optional<Decimal64>(Decimal64::parse("1")));
+    }
+    CHECK_FALSE(destination.quantity_of(id(100)));
+  };
+
+  SECTION("by construction") {
+    auto source = holding_twenty();
+    const backtest::ReplayLedger destination(std::move(source));
+    check_source(source);
+    check_destination(destination);
+  }
+  SECTION("by assignment") {
+    auto source = holding_twenty();
+    auto destination = opening();
+    destination = std::move(source);
+    check_source(source);
+    check_destination(destination);
+  }
+}
+
 TEST_CASE("an instrument does not change currency underneath an open position") {
   // Backtester resolves the currency from fixed reference data, so it cannot reach this; the ledger
   // is public and a direct caller can. The second fill used to relabel the whole lot, so a position
