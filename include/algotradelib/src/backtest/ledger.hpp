@@ -83,11 +83,21 @@ public:
   ReplayLedger(ReplayLedger&& other) = default;
 
   /**
-   * @brief Replaces this ledger with a move of another.
+   * @brief Replaces this ledger with a move of another; moving a ledger into itself leaves it unchanged.
    * @param other The ledger to move from.
    * @return This ledger.
    */
-  ReplayLedger& operator=(ReplayLedger&& other) = default;
+  ReplayLedger& operator=(ReplayLedger&& other) noexcept {
+    // A self-move must not reach the members: it would empty `positions_` while `index_` kept its entries.
+    if (this != &other) {
+      positions_ = std::move(other.positions_);
+      index_ = std::move(other.index_);
+      cash_ = std::move(other.cash_);
+      realized_ = std::move(other.realized_);
+      executions_ = std::move(other.executions_);
+    }
+    return *this;
+  }
 
   /**
    * @brief Replaces this ledger with a copy of another, entirely or not at all.

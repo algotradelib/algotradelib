@@ -242,7 +242,7 @@ TEST_CASE("a ledger past sixteen instruments finds each lot as a scan of its pos
   CHECK(ledger.quantity_of(id(12)) == std::optional<Decimal64>(Decimal64::parse("13")));
 }
 
-TEST_CASE("a ledger moved past sixteen instruments leaves its source empty and usable") {
+TEST_CASE("a ledger moved past sixteen instruments leaves its source empty and itself unchanged") {
   const auto id = [](int k) {
     return InstrumentId{Country::KR, all_venues[static_cast<std::size_t>(k % 4)], "S" + std::to_string(k / 4)};
   };
@@ -293,6 +293,24 @@ TEST_CASE("a ledger moved past sixteen instruments leaves its source empty and u
     destination = std::move(source);
     check_source(source);
     check_destination(destination);
+  }
+  SECTION("into itself") {
+    // A ledger moved into itself is unchanged: every lot is still found where it is listed, and it keeps
+    // opening and finding lots past sixteen.
+    auto ledger = holding_twenty();
+    auto& alias = ledger;
+    ledger = std::move(alias);
+    check_destination(ledger);
+    CHECK(ledger.mark(id(19), Decimal64::parse("2000")));
+    CHECK(ledger.positions()[19].last_price_ == Decimal64::parse("2000"));
+    for (int k = 100; k < 120; ++k) {
+      REQUIRE(ledger.apply(fill(OrderSide::BUY, k), krw()));
+    }
+    CHECK(ledger.positions().size() == 40);
+    for (int k = 0; k < 20; ++k) {
+      CHECK(ledger.quantity_of(id(k)) == std::optional<Decimal64>(Decimal64::parse("1")));
+      CHECK(ledger.quantity_of(id(100 + k)) == std::optional<Decimal64>(Decimal64::parse("1")));
+    }
   }
 }
 
