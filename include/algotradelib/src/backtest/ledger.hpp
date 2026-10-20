@@ -6,8 +6,10 @@
 
 #include <algotradelib/core>
 
+#include <cstddef>
 #include <optional>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -70,6 +72,39 @@ public:
   }
 
   /**
+   * @brief Copies a ledger.
+   * @param other The ledger to copy.
+   */
+  ReplayLedger(const ReplayLedger& other) = default;
+
+  /**
+   * @brief Moves a ledger.
+   * @param other The ledger to move from.
+   */
+  ReplayLedger(ReplayLedger&& other) = default;
+
+  /**
+   * @brief Replaces this ledger with a move of another.
+   * @param other The ledger to move from.
+   * @return This ledger.
+   */
+  ReplayLedger& operator=(ReplayLedger&& other) = default;
+
+  /**
+   * @brief Replaces this ledger with a copy of another, entirely or not at all.
+   * @param other The ledger to copy.
+   * @return This ledger.
+   * @throws std::bad_alloc If the copy cannot be made; this ledger is then unchanged.
+   */
+  ReplayLedger& operator=(const ReplayLedger& other) {
+    if (this != &other) {
+      ReplayLedger copy(other);
+      *this = std::move(copy);
+    }
+    return *this;
+  }
+
+  /**
    * @brief Returns the cash held in a currency.
    * @param currency The currency.
    * @return The amount, or `std::nullopt` if none is held.
@@ -89,10 +124,8 @@ public:
    * @return The quantity (zero if the position went flat), or `std::nullopt` if never held.
    */
   std::optional<Decimal64> quantity_of(const InstrumentId& instrument) const {
-    for (const auto& lot : positions_) {
-      if (lot.instrument_ == instrument) {
-        return lot.quantity_;
-      }
+    if (const auto* lot = find(instrument)) {
+      return lot->quantity_;
     }
     return std::nullopt;
   }
@@ -103,10 +136,8 @@ public:
    * @return The average price, or `std::nullopt` if flat or never held.
    */
   std::optional<Decimal64> average_price_of(const InstrumentId& instrument) const {
-    for (const auto& lot : positions_) {
-      if (lot.instrument_ == instrument && lot.quantity_.coefficient() != 0) {
-        return lot.average_purchase_price_;
-      }
+    if (const auto* lot = find(instrument); lot && lot->quantity_.coefficient() != 0) {
+      return lot->average_purchase_price_;
     }
     return std::nullopt;
   }
@@ -296,25 +327,25 @@ public:
    *   `Backtester` halts the replay with `mark_not_representable`); `true` otherwise.
    */
   bool mark(const InstrumentId& instrument, const Decimal64& price) {
-    bool marked = true;
-    for (auto& lot : positions_) {
-      if (lot.instrument_ == instrument) {
-        // **Both fields move or neither does, and the caller is told which.** Two earlier versions
-        // each lost one half of that. Advancing the price and leaving the old `market_value_`
-        // handed a strategy reading `positions()` or `snapshot()` a stale number presented as
-        // current, with no error anywhere; skipping the row silently declined to apply a price the
-        // caller asked for. The currency is the one `apply` recorded -- a lot exists only because a
-        // fill opened it -- and it is the half nothing can invalidate.
-        const auto valued = decimal_multiply(lot.quantity_, price);
-        if (!valued) {
-          marked = false;
-          continue;
-        }
-        lot.last_price_ = price;
-        lot.market_value_ = Money{*valued, lot.market_value_.currency_};
-      }
+    // An instrument has at most one lot: `find_or_open` opens one only when none matches.
+    const auto slot = slot_of(instrument);
+    if (!slot) {
+      return true;
     }
-    return marked;
+    auto& lot = positions_[*slot];
+    // **Both fields move or neither does, and the caller is told which.** Two earlier versions
+    // each lost one half of that. Advancing the price and leaving the old `market_value_`
+    // handed a strategy reading `positions()` or `snapshot()` a stale number presented as
+    // current, with no error anywhere; skipping the row silently declined to apply a price the
+    // caller asked for. The currency is the one `apply` recorded -- a lot exists only because a
+    // fill opened it -- and it is the half nothing can invalidate.
+    const auto valued = decimal_multiply(lot.quantity_, price);
+    if (!valued) {
+      return false;
+    }
+    lot.last_price_ = price;
+    lot.market_value_ = Money{*valued, lot.market_value_.currency_};
+    return true;
   }
 
   /**
@@ -391,26 +422,58 @@ public:
 private:
   // Returns the position in `instrument`, or nothing, **without creating one**.
   const HoldingPosition* find(const InstrumentId& instrument) const {
-    for (const auto& lot : positions_) {
-      if (lot.instrument_ == instrument) {
-        return &lot;
+    const auto slot = slot_of(instrument);
+    return slot ? &positions_[*slot] : nullptr;
+  }
+
+  // Returns where `instrument`'s lot is in `positions_`: by the index once the ledger holds more than
+  // `id_detail::scan_limit` lots, by a scan before that.
+  std::optional<std::size_t> slot_of(const InstrumentId& instrument) const {
+    if (!index_.empty()) {
+      const auto found = index_.find(instrument);
+      if (found == index_.end()) {
+        return std::nullopt;
+      }
+      return found->second;
+    }
+    for (std::size_t at = 0; at < positions_.size(); ++at) {
+      if (positions_[at].instrument_ == instrument) {
+        return at;
       }
     }
-    return nullptr;
+    return std::nullopt;
   }
 
   HoldingPosition* find_or_open(const InstrumentId& instrument) {
-    for (auto& lot : positions_) {
-      if (lot.instrument_ == instrument) {
-        return &lot;
-      }
+    if (const auto slot = slot_of(instrument)) {
+      return &positions_[*slot];
     }
     HoldingPosition opened;
     opened.instrument_ = instrument;
     opened.quantity_ = Decimal64::parse("0");
     opened.average_purchase_price_ = Decimal64::parse("0");
     opened.last_price_ = Decimal64::parse("0");
-    positions_.push_back(opened);
+    // The index is built whole, or extended, before the lot is appended, so a failure in either
+    // leaves the ledger as it was. Lots are never removed or reordered, so a slot stays valid.
+    if (!index_.empty()) {
+      index_.emplace(instrument, positions_.size());
+      try {
+        positions_.push_back(std::move(opened));
+      } catch (...) {
+        index_.erase(instrument);
+        throw;
+      }
+    } else if (positions_.size() + 1 > id_detail::scan_limit) {
+      std::unordered_map<InstrumentId, std::size_t, id_detail::InstrumentIdHash> built;
+      for (std::size_t at = 0; at < positions_.size(); ++at) {
+        built.emplace(positions_[at].instrument_, at);
+      }
+      built.emplace(instrument, positions_.size());
+      positions_.push_back(std::move(opened));
+      index_ = std::move(built);
+    } else {
+      positions_.push_back(std::move(opened));
+    }
     return &positions_.back();
   }
 
@@ -497,6 +560,9 @@ private:
   }
 
   std::vector<HoldingPosition> positions_;
+  // Where each instrument's lot is in `positions_`; empty until the ledger holds more than
+  // `id_detail::scan_limit` lots.
+  std::unordered_map<InstrumentId, std::size_t, id_detail::InstrumentIdHash> index_;
   std::vector<Money> cash_;
   std::vector<Money> realized_;
   std::vector<Execution> executions_;

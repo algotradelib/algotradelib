@@ -8,6 +8,8 @@
 #include <optional>
 #include <ratio>
 #include <string>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace algotradelib {
@@ -327,6 +329,20 @@ namespace slice_detail {
  */
 class Bucket {
 public:
+  Bucket() = default;
+  Bucket(const Bucket&) = default;
+  Bucket(Bucket&&) = default;
+  Bucket& operator=(Bucket&&) = default;
+
+  /** Copies all or nothing, so a slice and its id set never disagree after a failed copy. */
+  Bucket& operator=(const Bucket& other) {
+    if (this != &other) {
+      Bucket copy(other);
+      *this = std::move(copy);
+    }
+    return *this;
+  }
+
   /** Whether the bucket holds no bar. */
   bool empty() const noexcept { return slices_.empty(); }
 
@@ -337,6 +353,9 @@ public:
   bool holds(const BarEvent& event) const noexcept {
     for (const auto& slice : slices_) {
       if (slice.interval_ == event.interval_) {
+        if (slice.bars_.size() > id_detail::scan_limit) {
+          return wide(event.interval_)->ids_.count(event.instrument_) != 0;
+        }
         return slice.find(event.instrument_) != nullptr;
       }
     }
@@ -351,6 +370,22 @@ public:
     for (auto& slice : slices_) {
       if (slice.interval_ == event.interval_) {
         slice.bars_.push_back(event);
+        // If the id set cannot grow, the bar comes out again, so the two never disagree.
+        try {
+          if (slice.bars_.size() == id_detail::scan_limit + 1) {
+            // The slice has just become wide: from now on `holds` asks a set of its ids.
+            Wide built{slice.interval_, {}};
+            for (const auto& bar : slice.bars_) {
+              built.ids_.insert(bar.instrument_);
+            }
+            wide_.push_back(std::move(built));
+          } else if (slice.bars_.size() > id_detail::scan_limit) {
+            wide(slice.interval_)->ids_.insert(event.instrument_);
+          }
+        } catch (...) {
+          slice.bars_.pop_back();
+          throw;
+        }
         return;
       }
     }
@@ -365,6 +400,12 @@ public:
   BarSlice take_first() {
     BarSlice slice = std::move(slices_.front());
     slices_.erase(slices_.begin());
+    for (auto at = wide_.begin(); at != wide_.end(); ++at) {
+      if (at->interval_ == slice.interval_) {
+        wide_.erase(at);
+        break;
+      }
+    }
     return slice;
   }
 
@@ -372,15 +413,46 @@ public:
   std::vector<BarSlice> take() {
     std::vector<BarSlice> slices = std::move(slices_);
     slices_.clear();
+    wide_.clear();
     return slices;
   }
 
   /** Drops every bar held. */
-  void clear() noexcept { slices_.clear(); }
+  void clear() noexcept {
+    slices_.clear();
+    wide_.clear();
+  }
 
 private:
+  // The ids of one slice holding more than `id_detail::scan_limit` bars. A narrow slice has none, so a
+  // bucket of narrow slices allocates nothing beyond them.
+  struct Wide {
+    BarInterval interval_;
+    std::unordered_set<InstrumentId, id_detail::InstrumentIdHash> ids_;
+  };
+
+  const Wide* wide(BarInterval interval) const noexcept {
+    for (const auto& entry : wide_) {
+      if (entry.interval_ == interval) {
+        return &entry;
+      }
+    }
+    return nullptr;
+  }
+
+  Wide* wide(BarInterval interval) noexcept {
+    for (auto& entry : wide_) {
+      if (entry.interval_ == interval) {
+        return &entry;
+      }
+    }
+    return nullptr;
+  }
+
   std::chrono::system_clock::time_point period_end_{};
   std::vector<BarSlice> slices_;
+  // One entry per slice holding more than `id_detail::scan_limit` bars, and only those.
+  std::vector<Wide> wide_;
 };
 
 } // namespace slice_detail

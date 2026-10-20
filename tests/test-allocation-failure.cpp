@@ -1,0 +1,289 @@
+// What a failed allocation leaves behind in the lookup tables a wide replay builds. This executable replaces the
+// global allocator so a test can make its n-th allocation fail, and walks n from the first allocation to the
+// last one the operation makes.
+
+#include <algotradelib/backtest>
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <chrono>
+#include <cstddef>
+#include <cstdlib>
+#include <new>
+#include <optional>
+#include <string>
+#include <type_traits>
+#include <vector>
+
+namespace {
+
+// How many more allocations succeed before one fails; negative means none fails.
+long allocations_left = -1;
+
+void* allocate(std::size_t size) {
+  if (allocations_left == 0) {
+    allocations_left = -1;
+    throw std::bad_alloc();
+  }
+  if (allocations_left > 0) {
+    --allocations_left;
+  }
+  if (void* memory = std::malloc(size == 0 ? 1 : size)) {
+    return memory;
+  }
+  throw std::bad_alloc();
+}
+
+} // namespace
+
+void* operator new(std::size_t size) { return allocate(size); }
+void* operator new[](std::size_t size) { return allocate(size); }
+void operator delete(void* memory) noexcept { std::free(memory); }
+void operator delete[](void* memory) noexcept { std::free(memory); }
+void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
+void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
+
+using namespace algotradelib;
+
+namespace {
+
+/**
+ * Runs `operation` with its n-th allocation failing, for n = 0, 1, ... until it completes; calls `check` after
+ * each failure. Returns how many failures were tried.
+ */
+template <typename Operation, typename Check>
+int fail_each_allocation(Operation operation, Check check) {
+  for (int n = 0;; ++n) {
+    allocations_left = n;
+    try {
+      operation();
+      allocations_left = -1;
+      return n;
+    } catch (const std::bad_alloc&) {
+      allocations_left = -1;
+      check();
+    }
+  }
+}
+
+InstrumentId named(const std::string& symbol) { return InstrumentId{Country::KR, Venue::COMBINED, symbol}; }
+
+Currency krw() { return Currency{"KRW"}; }
+
+backtest::Execution bought(const InstrumentId& id, const char* quantity) {
+  backtest::Execution execution;
+  execution.fill_.instrument_ = id;
+  execution.fill_.side_ = OrderSide::BUY;
+  execution.fill_.quantity_ = Decimal64::parse(quantity);
+  execution.fill_.price_ = Decimal64::parse("1000");
+  execution.commission_ = Decimal64::parse("0");
+  execution.slippage_ = Decimal64::parse("0");
+  return execution;
+}
+
+backtest::ReplayLedger holding(const std::string& prefix, int lots) {
+  backtest::ReplayLedger ledger(Decimal64::parse("9000000000000000"), krw());
+  for (int k = 0; k < lots; ++k) {
+    REQUIRE(ledger.apply(bought(named(prefix + std::to_string(k)), "1"), krw()));
+  }
+  return ledger;
+}
+
+// Every lot the ledger lists is the one its lookups find.
+void require_lookups_match_positions(const backtest::ReplayLedger& ledger) {
+  for (const auto& lot : ledger.positions()) {
+    REQUIRE(ledger.quantity_of(lot.instrument_) == std::optional<Decimal64>(lot.quantity_));
+  }
+}
+
+bool lists(const backtest::ReplayLedger& ledger, const InstrumentId& id) {
+  for (const auto& lot : ledger.positions()) {
+    if (lot.instrument_ == id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+strategy::BarEvent bar_of(const std::string& symbol, BarInterval interval) {
+  Bar bar;
+  bar.timestamp_ = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 20000);
+  const auto price = Decimal64::parse("100");
+  bar.open_ = price;
+  bar.high_ = price;
+  bar.low_ = price;
+  bar.close_ = price;
+  bar.volume_ = Decimal64::parse("1");
+  return strategy::make_bar_event(named(symbol), interval, BarStamp::CLOSE, bar);
+}
+
+std::vector<std::string> symbols_of(const strategy::BarSlice& slice) {
+  std::vector<std::string> symbols;
+  for (const auto& event : slice.bars_) {
+    symbols.push_back(event.instrument_.symbol_);
+  }
+  return symbols;
+}
+
+} // namespace
+
+static_assert(std::is_nothrow_move_assignable<backtest::ReplayLedger>::value);
+static_assert(std::is_nothrow_move_constructible<backtest::ReplayLedger>::value);
+static_assert(std::is_nothrow_move_assignable<strategy::slice_detail::Bucket>::value);
+
+TEST_CASE("a ledger opening a lot finds every lot it lists after a failed allocation") {
+  // At 16, 17 and 20 lots before the fill: the last scan, the index being built, the index growing.
+  for (const int lots : {16, 17, 20}) {
+    INFO(lots << " lots before the fill");
+    const auto opened = named("NEW");
+    const auto before = holding("S", lots);
+    auto ledger = before;
+    const auto fill = bought(opened, "3");
+    bool applied = false;
+    const int failures = fail_each_allocation(
+      [&] { applied = ledger.apply(fill, krw()); },
+      [&] {
+        require_lookups_match_positions(ledger);
+        // The lot that failed to open is found exactly when it is listed.
+        CHECK(ledger.quantity_of(opened).has_value() == lists(ledger, opened));
+        ledger = before;
+      }
+    );
+    CHECK(failures > 0);
+    CHECK(applied);
+    require_lookups_match_positions(ledger);
+    CHECK(ledger.quantity_of(opened) == std::optional<Decimal64>(Decimal64::parse("3")));
+    CHECK(ledger.positions().size() == static_cast<std::size_t>(lots + 1));
+  }
+}
+
+TEST_CASE("a ledger copy that fails leaves the destination as it was") {
+  const auto source = holding("T", 25);
+  const auto original = holding("S", 20);
+  auto ledger = original;
+  const int failures = fail_each_allocation(
+    [&] { ledger = source; },
+    [&] {
+      REQUIRE(ledger.positions().size() == 20);
+      require_lookups_match_positions(ledger);
+      CHECK(ledger.quantity_of(named("S19")) == std::optional<Decimal64>(Decimal64::parse("1")));
+      CHECK_FALSE(ledger.quantity_of(named("T0")));
+    }
+  );
+  CHECK(failures > 0);
+  CHECK(ledger.positions().size() == 25);
+  require_lookups_match_positions(ledger);
+  CHECK_FALSE(ledger.quantity_of(named("S0")));
+}
+
+TEST_CASE("a period bucket adding a bar keeps its slice and its ids together after a failed allocation") {
+  // At 16, 17 and 20 bars before the add: the last scan, the id set being built, the set growing.
+  for (const int bars : {16, 17, 20}) {
+    INFO(bars << " bars before the add");
+    strategy::slice_detail::Bucket before;
+    for (int k = 0; k < bars; ++k) {
+      before.add(bar_of("S" + std::to_string(k), BarInterval::ONE_DAY));
+    }
+    auto bucket = before;
+    const auto added = bar_of("NEW", BarInterval::ONE_DAY);
+    const int failures = fail_each_allocation(
+      [&] { bucket.add(added); },
+      [&] {
+        // The bar was not added, so it is not held.
+        CHECK_FALSE(bucket.holds(added));
+        for (int k = 0; k < bars; ++k) {
+          REQUIRE(bucket.holds(bar_of("S" + std::to_string(k), BarInterval::ONE_DAY)));
+        }
+        bucket = before;
+      }
+    );
+    CHECK(failures > 0);
+    CHECK(bucket.holds(added));
+    const auto slices = bucket.take();
+    REQUIRE(slices.size() == 1);
+    CHECK(slices[0].bars_.size() == static_cast<std::size_t>(bars + 1));
+  }
+}
+
+TEST_CASE("a period bucket copy that fails leaves the destination as it was") {
+  strategy::slice_detail::Bucket source;
+  strategy::slice_detail::Bucket bucket;
+  for (int k = 0; k < 25; ++k) {
+    source.add(bar_of("T" + std::to_string(k), BarInterval::ONE_DAY));
+  }
+  for (int k = 0; k < 20; ++k) {
+    bucket.add(bar_of("S" + std::to_string(k), BarInterval::ONE_DAY));
+  }
+  const int failures = fail_each_allocation(
+    [&] { bucket = source; },
+    [&] {
+      CHECK(bucket.holds(bar_of("S19", BarInterval::ONE_DAY)));
+      CHECK_FALSE(bucket.holds(bar_of("T0", BarInterval::ONE_DAY)));
+    }
+  );
+  CHECK(failures > 0);
+  CHECK(bucket.holds(bar_of("T24", BarInterval::ONE_DAY)));
+  CHECK_FALSE(bucket.holds(bar_of("S0", BarInterval::ONE_DAY)));
+}
+
+TEST_CASE("a wide slice taken first leaves a narrow one answering by its own bars") {
+  // A wide daily slice and a narrow hourly one end at one instant; taking the daily one must not take the
+  // hourly one's answers with it, and the hourly one turning wide later gets ids of its own.
+  strategy::slice_detail::Bucket bucket;
+  for (int k = 0; k < 20; ++k) {
+    bucket.add(bar_of("S" + std::to_string(k), BarInterval::ONE_DAY));
+  }
+  bucket.add(bar_of("S3", BarInterval::ONE_HOUR));
+  CHECK(bucket.holds(bar_of("S3", BarInterval::ONE_HOUR)));
+  CHECK_FALSE(bucket.holds(bar_of("S4", BarInterval::ONE_HOUR)));
+
+  const auto daily = bucket.take_first();
+  CHECK(daily.interval_ == BarInterval::ONE_DAY);
+  CHECK(daily.bars_.size() == 20);
+  CHECK_FALSE(bucket.holds(bar_of("S5", BarInterval::ONE_DAY)));
+  CHECK(bucket.holds(bar_of("S3", BarInterval::ONE_HOUR)));
+
+  for (int k = 0; k < 20; ++k) {
+    if (k != 3) {
+      bucket.add(bar_of("S" + std::to_string(k), BarInterval::ONE_HOUR));
+    }
+  }
+  for (int k = 0; k < 20; ++k) {
+    CHECK(bucket.holds(bar_of("S" + std::to_string(k), BarInterval::ONE_HOUR)));
+  }
+  CHECK_FALSE(bucket.holds(bar_of("S20", BarInterval::ONE_HOUR)));
+  CHECK_FALSE(bucket.holds(bar_of("S0", BarInterval::ONE_DAY)));
+
+  // A new daily slice turning wide answers by its own ids, not the ones taken out with the first.
+  for (int k = 0; k < 20; ++k) {
+    bucket.add(bar_of("D" + std::to_string(k), BarInterval::ONE_DAY));
+  }
+  CHECK(bucket.holds(bar_of("D19", BarInterval::ONE_DAY)));
+  CHECK_FALSE(bucket.holds(bar_of("S0", BarInterval::ONE_DAY)));
+  CHECK_FALSE(bucket.holds(bar_of("S19", BarInterval::ONE_DAY)));
+  CHECK(bucket.take_first().interval_ == BarInterval::ONE_HOUR);
+  CHECK(bucket.take_first().interval_ == BarInterval::ONE_DAY);
+  CHECK(bucket.empty());
+
+  // Emptied by `take_first` alone, as the live source empties it, and filled again: the same.
+  for (int k = 0; k < 20; ++k) {
+    bucket.add(bar_of("E" + std::to_string(k), BarInterval::ONE_DAY));
+  }
+  CHECK(bucket.holds(bar_of("E0", BarInterval::ONE_DAY)));
+  CHECK_FALSE(bucket.holds(bar_of("D0", BarInterval::ONE_DAY)));
+  CHECK(bucket.take_first().bars_.size() == 20);
+  bucket.add(bar_of("S3", BarInterval::ONE_HOUR));
+
+  // Emptied and reused, the bucket answers by what it holds now.
+  bucket.clear();
+  CHECK(bucket.empty());
+  CHECK_FALSE(bucket.holds(bar_of("S3", BarInterval::ONE_HOUR)));
+  for (int k = 0; k < 18; ++k) {
+    bucket.add(bar_of("U" + std::to_string(k), BarInterval::ONE_HOUR));
+  }
+  CHECK(bucket.holds(bar_of("U17", BarInterval::ONE_HOUR)));
+  CHECK_FALSE(bucket.holds(bar_of("S3", BarInterval::ONE_HOUR)));
+  const auto hourly = bucket.take_first();
+  CHECK(symbols_of(hourly).size() == 18);
+  CHECK(bucket.empty());
+}

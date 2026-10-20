@@ -181,6 +181,68 @@ TEST_CASE("realized profit is not banked by a fill that then fails") {
   REQUIRE(ledger.quantity_of(samsung()) == quantity_before);
 }
 
+TEST_CASE("a ledger past sixteen instruments finds each lot as a scan of its positions would") {
+  // Past sixteen lots the ledger finds a lot by an index instead of a scan; every answer must stay the same.
+  // The 41st instrument shares the sixth's symbol at another venue, which makes it another instrument.
+  const auto id = [](int k) {
+    return k == 40 ?
+      InstrumentId{Country::KR, Venue::NXT, "S5"} :
+      InstrumentId{Country::KR, Venue::COMBINED, "S" + std::to_string(k)};
+  };
+  const auto buy = [&id](int k, const std::string& quantity, const char* price) {
+    auto execution = filled(OrderSide::BUY, quantity.c_str(), price);
+    execution.fill_.instrument_ = id(k);
+    return execution;
+  };
+  auto ledger = opening("9000000000000000000");
+  for (int k = 0; k <= 40; ++k) {
+    REQUIRE(ledger.apply(buy(k, std::to_string(k + 1), "1000"), krw()));
+    REQUIRE(ledger.positions().size() == static_cast<std::size_t>(k + 1));
+    // Every lot opened so far, before and after the index exists, in the order it was opened.
+    for (int j = 0; j <= k; ++j) {
+      INFO("lot " << j << " of " << k + 1);
+      REQUIRE(ledger.positions()[static_cast<std::size_t>(j)].instrument_ == id(j));
+      REQUIRE(ledger.quantity_of(id(j)) == std::optional<Decimal64>(Decimal64::parse(std::to_string(j + 1))));
+    }
+    REQUIRE_FALSE(ledger.quantity_of(id(k + 1)));
+  }
+
+  // A fill adds to the lot it names and opens nothing.
+  REQUIRE(ledger.apply(buy(3, "4", "2000"), krw()));
+  CHECK(ledger.positions().size() == 41);
+  CHECK(ledger.quantity_of(id(3)) == std::optional<Decimal64>(Decimal64::parse("8")));
+  CHECK(ledger.average_price_of(id(3)) == std::optional<Decimal64>(Decimal64::parse("1500")));
+  auto sell = buy(7, "8", "1000");
+  sell.fill_.side_ = OrderSide::SELL;
+  REQUIRE(ledger.apply(sell, krw()));
+  CHECK(ledger.quantity_of(id(7)) == std::optional<Decimal64>(Decimal64::parse("0")));
+  CHECK_FALSE(ledger.average_price_of(id(7)));
+
+  // A mark reaches its own lot only: not the same symbol at another venue.
+  const auto twin_price = ledger.positions()[5].last_price_;
+  REQUIRE(ledger.mark(id(40), Decimal64::parse("777")));
+  CHECK(ledger.positions()[40].last_price_ == Decimal64::parse("777"));
+  CHECK(ledger.positions()[40].market_value_.amount_ == Decimal64::parse("31857"));
+  CHECK(ledger.positions()[5].last_price_ == twin_price);
+  // An instrument never held is not an error and changes nothing.
+  CHECK(ledger.mark(id(41), Decimal64::parse("1")));
+  CHECK(ledger.positions().size() == 41);
+  // A value that does not fit leaves both fields as they were and says so.
+  const auto before = ledger.positions()[30];
+  CHECK_FALSE(ledger.mark(id(30), Decimal64::parse("900000000000000000")));
+  CHECK(ledger.positions()[30].last_price_ == before.last_price_);
+  CHECK(ledger.positions()[30].market_value_.amount_ == before.market_value_.amount_);
+
+  // A copy keeps finding its lots, and a lot it opens is its own.
+  auto copy = ledger;
+  REQUIRE(copy.apply(buy(41, "2", "1000"), krw()));
+  REQUIRE(copy.apply(buy(12, "1", "1000"), krw()));
+  CHECK(copy.quantity_of(id(41)) == std::optional<Decimal64>(Decimal64::parse("2")));
+  CHECK(copy.quantity_of(id(12)) == std::optional<Decimal64>(Decimal64::parse("14")));
+  CHECK_FALSE(ledger.quantity_of(id(41)));
+  CHECK(ledger.quantity_of(id(12)) == std::optional<Decimal64>(Decimal64::parse("13")));
+}
+
 TEST_CASE("an instrument does not change currency underneath an open position") {
   // Backtester resolves the currency from fixed reference data, so it cannot reach this; the ledger
   // is public and a direct caller can. The second fill used to relabel the whole lot, so a position
@@ -3411,6 +3473,49 @@ TEST_CASE("on_bars refuses a bar it could not show consistently before anything 
     );
     CHECK(engine.result().quotes_ == 0);
   }
+}
+
+TEST_CASE("a period of forty instruments reaches on_bars whole and still refuses a second bar") {
+  // Past sixteen bars a period keeps a set of its ids instead of scanning its slice; every answer must stay
+  // the same. The 41st instrument shares the sixth's symbol at another venue, which makes it another instrument.
+  auto config = replay_config();
+  config.instruments_.clear();
+  std::vector<InstrumentId> ids;
+  for (int k = 0; k <= 40; ++k) {
+    ids.push_back(
+      k == 40 ?
+        InstrumentId{Country::KR, Venue::NXT, "S5"} :
+        InstrumentId{Country::KR, Venue::COMBINED, "S" + std::to_string(k)}
+    );
+    auto reference = samsung_reference();
+    reference.id_ = ids.back();
+    config.instruments_.push_back(reference);
+  }
+  const auto d1 = utc(2026, 3, 10, 6, 30);
+  const auto d2 = utc(2026, 3, 11, 6, 30);
+  backtest::Backtester<RecordsSlices> engine(RecordsSlices{}, config);
+  for (const auto& id : ids) {
+    engine.feed(slice_bar(id, d1, BarInterval::ONE_DAY, "100", "101"));
+  }
+  // Another interval at the same instant is another slice, with its own ids.
+  engine.feed(slice_bar(ids[29], d1, BarInterval::ONE_HOUR, "100", "101"));
+  // A second daily bar, for a name fed after the set was built and for one fed before.
+  CHECK_THROWS_AS(engine.feed(slice_bar(ids[29], d1, BarInterval::ONE_DAY, "100", "101")), std::invalid_argument);
+  CHECK_THROWS_AS(engine.feed(slice_bar(ids[3], d1, BarInterval::ONE_DAY, "100", "101")), std::invalid_argument);
+  CHECK(engine.result().bars_ == 42);
+  engine.feed(slice_bar(ids[0], d2, BarInterval::ONE_DAY, "102", "103"));
+  engine.finish();
+
+  const auto& seen = engine.strategy().seen_;
+  REQUIRE(seen.size() == 3);
+  REQUIRE(seen[0].symbols_.size() == 41);
+  for (std::size_t k = 0; k < ids.size(); ++k) {
+    CHECK(seen[0].symbols_[k] == ids[k].symbol_);
+  }
+  CHECK(seen[1].interval_ == BarInterval::ONE_HOUR);
+  CHECK(seen[1].symbols_ == std::vector<std::string>{"S29"});
+  CHECK(seen[2].end_ == d2);
+  CHECK(seen[2].symbols_ == std::vector<std::string>{"S0"});
 }
 
 TEST_CASE("a slice with a bar stating its end is decided at that end and not at a nominal one") {
