@@ -1926,12 +1926,16 @@ private:
     // therefore the broker's last report **plus** what this runner has sent since -- which is what a
     // target and a limit have to size against, and why the rows are marked so that anything inferring
     // the broker's behaviour from the listing can tell them apart.
-    auto view = context_.portfolio();
+    //
+    // **Copied only when something is pending.** The view and the exposure basis serve the placements
+    // below and nothing after them, so a pass with nothing to place -- most passes: a bar the strategy
+    // answers with no order -- skips a copy of every position and working row.
+    auto view = pending.empty() ? strategy::Portfolio<Tag>{} : context_.portfolio();
     // Resolved once for the pass. The currencies and marks do not move as orders are accepted --
     // only quantities do, and the guard reads those from the view -- and resolving per order would
     // repeat a map lookup per instrument for every instrument. Built only when the ceiling is on, so
     // a caller who has not asked for it pays nothing.
-    if (guard_.limits().max_gross_exposure_) {
+    if (!pending.empty() && guard_.limits().max_gross_exposure_) {
       inputs.exposure_basis_ = exposure_basis_for(view, pending);
     }
     for (std::size_t at = 0; at < pending.size(); ++at) {
