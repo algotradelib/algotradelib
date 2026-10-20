@@ -3822,3 +3822,210 @@ TEST_CASE("a replay models limit and market orders under every condition and sto
   auction.session_ = OrderSession::CLOSING_AUCTION;
   CHECK_FALSE(ReplayExecutor::can_model(auction));
 }
+
+// ---------------------------------------------------------------------------
+// A strategy without on_order_update: the replay skips the updates, and nothing else changes
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** Every field of a replay's result, as text, so two runs can be compared whole. */
+std::string result_digest(const backtest::ReplayResult& r) {
+  std::string out;
+  const auto when = [](Clock::time_point at) { return std::to_string(at.time_since_epoch().count()); };
+  const auto maybe_when = [&](const std::optional<Clock::time_point>& at) { return at ? when(*at) : std::string("-"); };
+  const auto maybe = [](const std::optional<Decimal64>& value) { return value ? value->str() : std::string("-"); };
+  const auto id = [](const InstrumentId& i) { return std::to_string(static_cast<int>(i.venue_)) + "/" + i.symbol_; };
+  out += "bars " + std::to_string(r.bars_) + " gaps " + std::to_string(r.gaps_) + " unfilled " +
+    std::to_string(r.unfilled_) + " aborted " + std::to_string(r.aborted_) + " quotes " + std::to_string(r.quotes_) +
+    " unchecked " + std::to_string(r.unchecked_fill_causality_) + " unvalued " + std::to_string(r.unvalued_bars_) +
+    " " + maybe_when(r.first_unvalued_) + " releases " + std::to_string(r.stop_releases_) + " intrabar " +
+    std::to_string(r.stop_fills_intrabar_) + " bounded " + std::to_string(r.limit_fills_bounded_) + " overdrawn " +
+    std::to_string(r.overdrawn_bars_) + " " + maybe_when(r.first_overdrawn_) + " lowest " +
+    (r.lowest_cash_ ? r.lowest_cash_->amount_.str() : std::string("-")) + " " + maybe_when(r.lowest_cash_at_) +
+    " expired " + std::to_string(r.expired_day_orders_) + " halted " + (r.halted_ ? r.halted_->message_ : "-") + "\n";
+  for (const auto& point : r.equity_) {
+    out += "E " + when(point.at_) + " " + point.equity_.str() + " " + std::to_string(point.period_return_) + "\n";
+  }
+  for (const auto& x : r.executions_) {
+    const auto& f = x.fill_;
+    out += "X " + f.order_id_ + " " + id(f.instrument_) + " " + std::to_string(static_cast<int>(f.side_)) + " " +
+      f.quantity_.str() + " " + f.price_.str() + " " + f.tag_ + " " + when(f.at_) + " " + x.commission_.str() + " " +
+      maybe(x.institution_fee_) + " " + x.slippage_.str() + " " + x.tax_.str() + " " + x.applied_.rate_.str() + "\n";
+  }
+  for (const auto& j : r.rejected_) {
+    out += "J " + std::to_string(static_cast<int>(j.reason_)) + " " + id(j.instrument_) + " " + j.tag_ + "\n";
+  }
+  for (const auto& g : r.refused_) {
+    out += "G " + std::to_string(static_cast<int>(g.reason_)) + " " + id(g.instrument_) + " " + g.tag_ + " " +
+      maybe(g.limit_) + " " + maybe(g.attempted_) + "\n";
+  }
+  return out;
+}
+
+/**
+ * Places, at random from a fixed seed, what makes a replay publish updates: limits that rest and fill, stop-limits,
+ * targets (a flat one waits behind a resting stop), market orders, and cancellations of its own working orders.
+ * Declares no `on_order_update`.
+ */
+struct Wanders {
+  std::uint32_t state_{20261020};
+
+  std::uint32_t draw(std::uint32_t below) {
+    state_ = state_ * 1664525u + 1013904223u;
+    return (state_ >> 8) % below;
+  }
+
+  static strategy::Price at(long price) {
+    return *strategy::Price::checked(Decimal64(price, 0), PriceRule::krx_equity());
+  }
+
+  template <class Ctx>
+  void act(Ctx& ctx, const strategy::BarEvent& bar) {
+    const auto close = bar.bar_.close_.coefficient() / static_cast<long>(std::pow(10, bar.bar_.close_.scale()));
+    const auto some = strategy::SizeSpec::quantity(Decimal64(static_cast<long>(1 + draw(5)), 0));
+    const auto& id = bar.instrument_;
+    switch (draw(10)) {
+      case 0: {
+        strategy::TargetPosition target;
+        target.instrument_ = id;
+        target.target_quantity_ = Decimal64(static_cast<long>(draw(30)), 0);
+        target.tag_ = "target";
+        ctx.submit(target);
+        break;
+      }
+      case 1:
+        ctx.submit(strategy::OrderIntent::limit(id, OrderSide::BUY, some, at(close - 100 * draw(12))).with_tag("bid"));
+        break;
+      case 2:
+        ctx.submit(strategy::OrderIntent::limit(id, OrderSide::SELL, some, at(close + 100 * draw(12))).with_tag("ask"));
+        break;
+      case 3:
+        ctx.submit(strategy::OrderIntent::stop_limit(id, OrderSide::SELL, some, at(close - 200), at(close - 300)).with_tag("stop"));
+        break;
+      case 4:
+        for (const auto& working : ctx.portfolio().working_) {
+          if (working.order_.instrument_ == id && draw(2) == 0) {
+            ctx.cancel(working.ref_, "withdraw");
+            break;
+          }
+        }
+        break;
+      case 5:
+        ctx.submit(strategy::OrderIntent::market(id, OrderSide::BUY, some).with_tag("buy"));
+        break;
+      case 6: {
+        strategy::TargetPosition flat;
+        flat.instrument_ = id;
+        flat.target_quantity_ = Decimal64(0, 0);
+        flat.tag_ = "flat";
+        ctx.submit(flat);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    act(ctx, bar);
+  }
+};
+
+/** How many updates the hearing strategies below were told about, so the test knows the full path ran. */
+std::size_t updates_heard = 0;
+
+/** The same strategy, told about every order update and answering none. */
+struct WandersHearing : Wanders {
+  template <class Ctx>
+  void on_order_update(Ctx&, const OrderSnapshot&) {
+    ++updates_heard;
+  }
+};
+
+/** The same choices made once a period, over every instrument's bar. */
+struct WandersBySlice {
+  Wanders inner_;
+
+  template <class Ctx>
+  void on_bars(Ctx& ctx, const strategy::BarSlice& slice) {
+    for (const auto& bar : slice.bars_) {
+      inner_.act(ctx, bar);
+    }
+  }
+};
+
+struct WandersBySliceHearing : WandersBySlice {
+  template <class Ctx>
+  void on_order_update(Ctx&, const OrderSnapshot&) {
+    ++updates_heard;
+  }
+};
+
+static_assert(!strategy::strategy_detail::declares_on_order_update<Wanders>);
+static_assert(strategy::strategy_detail::declares_on_order_update<WandersHearing>);
+static_assert(!strategy::strategy_detail::declares_on_order_update<WandersBySlice>);
+static_assert(strategy::strategy_detail::declares_on_order_update<WandersBySliceHearing>);
+
+/** Three sessions of one-minute bars of both instruments, prices walking on the KRX grid. */
+template <class Strategy>
+backtest::ReplayResult wander(std::uint32_t seed) {
+  backtest::Backtester<Strategy> engine(Strategy{}, pair_config());
+  std::uint32_t walk = seed;
+  const auto step = [&walk](std::uint32_t below) {
+    walk = walk * 22695477u + 1u;
+    return (walk >> 8) % below;
+  };
+  std::array<long, 2> price{70000, 120000};
+  for (int day = 0; day < 3; ++day) {
+    for (int minute = 1; minute <= 40; ++minute) {
+      for (std::size_t k = 0; k < 2; ++k) {
+        const long open = price[k];
+        price[k] += 100 * (static_cast<long>(step(5)) - 2);
+        const long close = price[k];
+        Bar bar;
+        bar.timestamp_ = utc(2026, 3, 10 + day, 1, minute);
+        bar.open_ = Decimal64(open, 0);
+        bar.close_ = Decimal64(close, 0);
+        bar.high_ = Decimal64(std::max(open, close) + 100 * static_cast<long>(step(3)), 0);
+        bar.low_ = Decimal64(std::min(open, close) - 100 * static_cast<long>(step(3)), 0);
+        bar.volume_ = Decimal64::parse("1000");
+        engine.feed(strategy::make_bar_event(k == 0 ? samsung() : hynix(), BarInterval::ONE_MINUTE, BarStamp::CLOSE, bar));
+      }
+    }
+  }
+  engine.finish();
+  return engine.result();
+}
+
+} // namespace
+
+TEST_CASE("a replay skips order updates for a strategy that has no handler and changes no result", "[order-updates]") {
+  // The type without `on_order_update` takes the skip; the one adding an empty handler takes the full path. Same
+  // decisions, same bars: every field must agree, including deferred targets released behind stops.
+  updates_heard = 0;
+  std::size_t executions = 0;
+  std::size_t behind_stops = 0;
+  std::size_t refused = 0;
+  std::size_t expired = 0;
+  for (std::uint32_t seed = 1; seed <= 12; ++seed) {
+    INFO("seed " << seed);
+    const auto skipped = wander<Wanders>(seed);
+    CHECK(result_digest(skipped) == result_digest(wander<WandersHearing>(seed)));
+    CHECK(result_digest(wander<WandersBySlice>(seed)) == result_digest(wander<WandersBySliceHearing>(seed)));
+    executions += skipped.executions_.size();
+    refused += skipped.refused_.size();
+    expired += skipped.expired_day_orders_;
+    for (const auto& rejection : skipped.rejected_) {
+      behind_stops += rejection.reason_ == strategy::RejectReason::STOP_ORDER_RESTING ? 1 : 0;
+    }
+  }
+  // The runs did what the comparison is about: orders filled, rested and expired, targets waited behind
+  // stops, the guard refused some, and the hearing types were told about updates.
+  CHECK(executions > 200);
+  CHECK(behind_stops > 10);
+  CHECK(refused > 10);
+  CHECK(expired > 5);
+  CHECK(updates_heard > 500);
+}
