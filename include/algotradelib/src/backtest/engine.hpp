@@ -958,6 +958,12 @@ private:
   // The queue is never emptied, so an order this loop has not reached yet is outstanding, visible in
   // every portfolio installed along the way, and addressable by a cancellation from any callback.
   void settle_queued_against(const strategy::BarEvent& event) {
+    // With nothing queued nothing can expire, fill or be assigned a session; only the publication at the end
+    // has work left (it releases deferred targets).
+    if (runner_.executor().queued().empty()) {
+      publish_order_updates();
+      return;
+    }
     const auto bar_date = clock_.session().local_date(event.bar_.timestamp_);
     // A session the replay had no closing bar for -- a missing last minute -- still ended: an order
     // of an earlier date is withdrawn before this bar can fill it.
@@ -1133,7 +1139,7 @@ private:
   // Records equity at this bar, and the return since the previous point.
   void record_equity(const strategy::BarEvent& event) {
     if (const auto cash = ledger_.cash_in(config_.currency_);
-        cash && decimal_less(*cash, Decimal64::parse("0"))) {
+        cash && cash->coefficient() < 0) {
       ++result_.overdrawn_bars_;
       if (!result_.first_overdrawn_) {
         result_.first_overdrawn_ = event.period_end_;
@@ -1266,6 +1272,11 @@ private:
 
   // The part of `publish_order_updates` a strategy declaring `on_order_update` needs.
   void publish_to_handler() {
+    // Nothing queued and nothing tracked: no order can have changed.
+    if (runner_.executor().queued().empty() && updates_.tracked_orders() == 0) {
+      settle_deferred();
+      return;
+    }
     std::vector<WorkingOrder<Tag>> rows;
     rows.reserve(runner_.executor().queued().size());
     for (const auto& entry : runner_.executor().queued()) {
