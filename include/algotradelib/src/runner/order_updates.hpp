@@ -158,7 +158,9 @@ private:
   std::vector<OrderSnapshot> observe(
     const std::vector<WorkingOrder<Broker>>& rows, bool report
   ) {
-    if (unchanged(rows)) {
+    // The listing's first `same` rows are the first `same` tracked orders again (see `unchanged_prefix`).
+    const std::size_t same = unchanged_prefix(rows);
+    if (same == rows.size() && same == tracked_.size()) {
       return {};
     }
     std::vector<Tracked> next;
@@ -168,11 +170,16 @@ private:
     // order of `next`, and so of the updates, is the listing's. Built here from the vectors each
     // time, so nothing has to be kept in step with `tracked_`; a reference maps to the first entry
     // that has it, which is the one a scan would find.
+    //
+    // The first `same` rows become `next[0..same)`, each with the reference of `tracked_` at the same
+    // place: they are neither reserved nor without a reference, and tracked references are distinct.
+    // A later row with one of those references is their duplicate in `built`, never a new entry, so
+    // no new entry can match `tracked_[0..same)` and `held_at` leaves them out.
     std::unordered_map<OrderRef<Broker>, std::size_t> built;
     built.reserve(rows.size());
     std::unordered_map<OrderRef<Broker>, std::size_t> held_at;
-    held_at.reserve(tracked_.size());
-    for (std::size_t at = 0; at < tracked_.size(); ++at) {
+    held_at.reserve(tracked_.size() - same);
+    for (std::size_t at = same; at < tracked_.size(); ++at) {
       held_at.emplace(tracked_[at].ref_, at);
     }
 
@@ -200,9 +207,14 @@ private:
     }
 
     std::vector<OrderSnapshot> updates;
-    for (const auto& entry : next) {
+    for (std::size_t at = 0; at < next.size(); ++at) {
+      const auto& entry = next[at];
       if (entry.contradicted_) {
         ++contradicted_;
+        continue;
+      }
+      if (at < same) {
+        // Tracked at this place, in the same observable state: nothing to report.
         continue;
       }
       const auto found = held_at.find(entry.ref_);
@@ -228,20 +240,18 @@ private:
     return updates;
   }
 
-  // Whether `rows` is the tracked orders again, in the same order and each in the same observable state, none
-  // reserved: then the full pass would report nothing and count nothing. The tracked snapshots are kept rather
-  // than replaced; they differ only in fields `same_observable_state` ignores, and they are only ever compared.
-  bool unchanged(const std::vector<WorkingOrder<Broker>>& rows) const {
-    if (rows.size() != tracked_.size()) {
-      return false;
+  // How many leading rows are the tracked orders at the same places again: not reserved, the same reference,
+  // the same observable state. When that is every row and every tracked order, the full pass would report
+  // nothing and count nothing, and `observe` returns at once; the tracked snapshots are then kept rather than
+  // replaced, since they differ only in fields `same_observable_state` ignores and are only ever compared.
+  std::size_t unchanged_prefix(const std::vector<WorkingOrder<Broker>>& rows) const {
+    const std::size_t limit = std::min(rows.size(), tracked_.size());
+    std::size_t at = 0;
+    while (at < limit && !rows[at].reserved_ && rows[at].ref_ == tracked_[at].ref_ &&
+           order_update_detail::same_observable_state(tracked_[at].last_, rows[at].order_)) {
+      ++at;
     }
-    for (std::size_t at = 0; at < rows.size(); ++at) {
-      if (rows[at].reserved_ || !(rows[at].ref_ == tracked_[at].ref_) ||
-          !order_update_detail::same_observable_state(tracked_[at].last_, rows[at].order_)) {
-        return false;
-      }
-    }
-    return true;
+    return at;
   }
 
   std::vector<Tracked> tracked_;

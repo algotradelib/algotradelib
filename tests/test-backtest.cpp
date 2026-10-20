@@ -3212,6 +3212,18 @@ public:
   std::size_t untracked_rows() const noexcept { return untracked_; }
   std::size_t contradicted_rows() const noexcept { return contradicted_; }
 
+  /** The orders tracked, in order, as a listing would state them. */
+  std::vector<WatchRow> listing() const {
+    std::vector<WatchRow> rows;
+    for (const auto& [ref, last] : tracked_) {
+      WatchRow row;
+      row.ref_ = ref;
+      row.order_ = last;
+      rows.push_back(row);
+    }
+    return rows;
+  }
+
 private:
   std::vector<std::pair<OrderRef<algotradelib::runner::DryTag>, OrderSnapshot>> tracked_;
   std::size_t untracked_{0};
@@ -3320,9 +3332,61 @@ TEST_CASE("an order-update watch reports what a row-by-row scan of the listings 
   ScanningWatch scanning;
   std::vector<WatchRow> previous;
   int repeated = 0;
-  for (int listing = 0; listing < 400; ++listing) {
+  int edited = 0;
+  for (int listing = 0; listing < 600; ++listing) {
     std::vector<WatchRow> rows;
-    if (!previous.empty() && draw(3) == 0) {
+    const auto mode = draw(3);
+    if (scanning.tracked_orders() > 1 && mode == 1) {
+      // Exactly the tracked orders, so a leading run of rows is unchanged, then one or two edits at a
+      // random place: what comes after the unchanged run must be judged as a full pass would.
+      rows = scanning.listing();
+      for (auto& row : rows) {
+        row.order_.name_ = "listing " + std::to_string(listing);
+      }
+      for (auto edits = 1 + draw(2); edits > 0; --edits) {
+        const auto at = static_cast<std::size_t>(draw(static_cast<std::uint32_t>(rows.size()) + 1));
+        const auto some = rows.empty() ? watch_row("o0", "", OrderStatus::PENDING) : rows[draw(static_cast<std::uint32_t>(rows.size()))];
+        auto moved = some;
+        moved.order_.status_ = statuses[draw(3)];
+        moved.order_.execution_.filled_quantity_ = Decimal64::parse(fills[draw(3)]);
+        auto reserved = some;
+        reserved.reserved_ = true;
+        const auto place = rows.begin() + static_cast<std::ptrdiff_t>(std::min(at, rows.size()));
+        switch (draw(7)) {
+          case 0: // a row's state moves
+            if (at < rows.size()) {
+              rows[at].order_.status_ = statuses[draw(3)];
+              rows[at].order_.execution_.filled_quantity_ = Decimal64::parse(fills[draw(3)]);
+            }
+            break;
+          case 1: // a row leaves
+            if (at < rows.size()) {
+              rows.erase(place);
+            }
+            break;
+          case 2: // a new order, or one listed elsewhere, comes in here
+            rows.insert(place, draw(2) == 0 ? watch_row("o" + std::to_string(draw(12)), "", OrderStatus::PENDING) : some);
+            break;
+          case 3: // a later row repeats an earlier order, agreeing or not
+            rows.push_back(draw(2) == 0 ? some : moved);
+            break;
+          case 4: // an order comes back reserved, mostly in its own place
+            if (at < rows.size() && draw(4) != 0) {
+              rows[at].reserved_ = true;
+            } else {
+              rows.insert(place, reserved);
+            }
+            break;
+          case 5: // a row without a reference
+            rows.insert(place, watch_row("", "", OrderStatus::PENDING));
+            break;
+          default: // the listing stops here
+            rows.resize(std::min(at, rows.size()));
+            break;
+        }
+      }
+      ++edited;
+    } else if (!previous.empty() && mode == 0) {
       // The same listing again, with fields the watch ignores changed and a quantity at another scale.
       rows = previous;
       for (auto& row : rows) {
@@ -3337,18 +3401,19 @@ TEST_CASE("an order-update watch reports what a row-by-row scan of the listings 
       REQUIRE(watch.untracked_rows() == scanning.untracked_rows());
       REQUIRE(watch.contradicted_rows() == scanning.contradicted_rows());
       continue;
-    }
-    const auto count = draw(40);
-    for (std::uint32_t at = 0; at < count; ++at) {
-      const auto primary = draw(25) == 0 ? std::string() : "o" + std::to_string(draw(12));
-      const auto secondary = draw(4) == 0 ? "s" + std::to_string(draw(2)) : std::string();
-      // Most rows keep the reading the reference had last; some move.
-      const bool moves = draw(5) == 0;
-      auto row = watch_row(
-        primary, secondary, moves ? statuses[draw(3)] : OrderStatus::PENDING, moves ? fills[draw(3)] : "0"
-      );
-      row.reserved_ = draw(20) == 0;
-      rows.push_back(row);
+    } else {
+      const auto count = draw(40);
+      for (std::uint32_t at = 0; at < count; ++at) {
+        const auto primary = draw(25) == 0 ? std::string() : "o" + std::to_string(draw(12));
+        const auto secondary = draw(4) == 0 ? "s" + std::to_string(draw(2)) : std::string();
+        // Most rows keep the reading the reference had last; some move.
+        const bool moves = draw(5) == 0;
+        auto row = watch_row(
+          primary, secondary, moves ? statuses[draw(3)] : OrderStatus::PENDING, moves ? fills[draw(3)] : "0"
+        );
+        row.reserved_ = draw(20) == 0;
+        rows.push_back(row);
+      }
     }
     const auto expected = scanning.changed(rows);
     const auto reported = watch.changed(rows);
@@ -3367,6 +3432,7 @@ TEST_CASE("an order-update watch reports what a row-by-row scan of the listings 
   CHECK(scanning.contradicted_rows() > 20);
   CHECK(scanning.untracked_rows() > 20);
   CHECK(repeated > 50);
+  CHECK(edited > 100);
 }
 
 TEST_CASE("a listing that repeats the last one reports nothing, and the next change reports the new row", "[order-updates]") {
@@ -3436,6 +3502,33 @@ TEST_CASE("a listing that repeats the last one reports nothing, and the next cha
   CHECK(watch.tracked_orders() == 0);
   CHECK(watch.changed({}).empty());
   CHECK(ids_of(watch.changed({a})) == std::vector<std::string>{"a"});
+
+  // The tracked orders again, then something more: only the rest is compared and reported.
+  const auto c = watch_row("c", "", OrderStatus::PENDING);
+  Watch prefixed;
+  prefixed.changed({a, b});
+  CHECK(ids_of(prefixed.changed({a, b, c})) == std::vector<std::string>{"c"});
+  CHECK(ids_of(prefixed.changed({a, b, watch_row("c", "", OrderStatus::PARTIAL_FILLED, "2")})) == std::vector<std::string>{"c"});
+  CHECK(prefixed.changed({a, b}).empty());
+  CHECK(prefixed.tracked_orders() == 2);
+  // Two disagreeing readings after an unchanged leading order are still a contradiction.
+  CHECK(prefixed.changed({a, watch_row("b", "", OrderStatus::PARTIAL_FILLED, "1"), b}).empty());
+  CHECK(prefixed.contradicted_rows() == 1);
+  CHECK(prefixed.tracked_orders() == 1);
+  prefixed.changed({a, b});
+  // A later row that repeats an unchanged leading order agrees with it: one order, nothing to report.
+  CHECK(prefixed.changed({a, b, a}).empty());
+  CHECK(prefixed.tracked_orders() == 2);
+  // A later row that disagrees with an unchanged leading order: contradicted, not reported, and dropped.
+  CHECK(prefixed.changed({a, b, watch_row("a", "", OrderStatus::PARTIAL_FILLED, "1")}).empty());
+  CHECK(prefixed.contradicted_rows() == 2);
+  CHECK(prefixed.tracked_orders() == 1);
+  // Listed plainly again, the dropped order is new; the leading one is not.
+  CHECK(ids_of(prefixed.changed({b, a})) == std::vector<std::string>{"a"});
+  // Fewer rows than tracked, all of them unchanged: nothing reported, the missing order forgotten.
+  CHECK(prefixed.changed({b}).empty());
+  CHECK(prefixed.tracked_orders() == 1);
+  CHECK(ids_of(prefixed.changed({b, a})) == std::vector<std::string>{"a"});
 }
 
 // ---------------------------------------------------------------------------
