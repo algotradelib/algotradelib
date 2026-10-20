@@ -354,7 +354,9 @@ public:
     for (const auto& slice : slices_) {
       if (slice.interval_ == event.interval_) {
         if (slice.bars_.size() > id_detail::scan_limit) {
-          return wide(event.interval_)->ids_.count(event.instrument_) != 0;
+          if (const auto* entry = wide(event.interval_)) {
+            return entry->ids_.count(event.instrument_) != 0;
+          }
         }
         return slice.find(event.instrument_) != nullptr;
       }
