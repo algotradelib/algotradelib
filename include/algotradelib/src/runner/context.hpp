@@ -331,16 +331,9 @@ public:
 #endif
 
 private:
-  // Hashes an instrument id for the two per-instrument tables below. Both are looked up by id and
-  // never iterated, so their order is nobody's to observe.
-  struct InstrumentHash {
-    std::size_t operator()(const InstrumentId& id) const noexcept {
-      std::size_t seed = std::hash<std::string>{}(id.symbol_);
-      seed ^= static_cast<std::size_t>(id.country_) + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
-      seed ^= static_cast<std::size_t>(id.venue_) + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
-      return seed;
-    }
-  };
+  // The two per-instrument tables below are looked up by id and never iterated, so their order is
+  // nobody's to observe.
+  using InstrumentHash = id_detail::InstrumentIdHash;
 
   std::size_t series_capacity_;
   std::chrono::system_clock::time_point now_{};

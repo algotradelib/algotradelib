@@ -117,6 +117,28 @@ struct InstrumentId {
   }
 };
 
+/// \cond ATL_ID_DETAIL
+namespace id_detail {
+
+/** Hashes an instrument id over the three fields `operator==` compares. */
+struct InstrumentIdHash {
+  std::size_t operator()(const InstrumentId& id) const noexcept {
+    std::size_t seed = std::hash<std::string>{}(id.symbol_);
+    seed ^= static_cast<std::size_t>(id.country_) + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+    seed ^= static_cast<std::size_t>(id.venue_) + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2);
+    return seed;
+  }
+};
+
+/**
+ * Up to this many instruments, a lookup scans a vector of ids rather than building a hash table: a short
+ * scan is as fast as hashing the probe and allocates nothing, so a pair or a small basket pays nothing.
+ */
+inline constexpr std::size_t scan_limit = 16;
+
+} // namespace id_detail
+/// \endcond
+
 /**
  * @brief A short uppercase code (letters, digits, `_`), stored inline without allocation.
  *
