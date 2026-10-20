@@ -3863,13 +3863,35 @@ std::string result_digest(const backtest::ReplayResult& r) {
   return out;
 }
 
+/** What a callback was shown: positions, cash, buying power and the working orders, as text. */
+template <class Ctx>
+std::string seen_by(Ctx& ctx) {
+  const auto& portfolio = ctx.portfolio();
+  std::string out = "@" + std::to_string(portfolio.as_of_.time_since_epoch().count());
+  for (const auto& position : portfolio.positions_) {
+    out += " P" + position.instrument_.symbol_ + "=" + position.quantity_.str();
+  }
+  for (const auto& money : portfolio.cash_) {
+    out += " C" + money.amount_.str();
+  }
+  const auto power = portfolio.buying_power_in(Currency{"KRW"});
+  out += " B" + (power ? power->str() : std::string("-"));
+  for (const auto& working : portfolio.working_) {
+    out += " W" + working.ref_.primary_ + ":" + working.order_.execution_.filled_quantity_.str() + ":" +
+      std::to_string(static_cast<int>(working.order_.status_));
+  }
+  return out + "\n";
+}
+
 /**
  * Places, at random from a fixed seed, what makes a replay publish updates: limits that rest and fill, stop-limits,
- * targets (a flat one waits behind a resting stop), market orders, and cancellations of its own working orders.
- * Declares no `on_order_update`.
+ * targets (a flat one waits behind a resting stop), market orders sized by quantity and by weight, and cancellations
+ * of its own working orders; from bars, quotes, phases, fills and the stop. Records what every callback was shown.
+ * Declares no `on_order_update`, and no bar handler: `Wanders` and `WandersBySlice` add one each.
  */
-struct Wanders {
+struct WanderCore {
   std::uint32_t state_{20261020};
+  std::string seen_;
 
   std::uint32_t draw(std::uint32_t below) {
     state_ = state_ * 1664525u + 1013904223u;
@@ -3881,11 +3903,11 @@ struct Wanders {
   }
 
   template <class Ctx>
-  void act(Ctx& ctx, const strategy::BarEvent& bar) {
-    const auto close = bar.bar_.close_.coefficient() / static_cast<long>(std::pow(10, bar.bar_.close_.scale()));
+  void act(Ctx& ctx, const InstrumentId& id, const Decimal64& last) {
+    seen_ += seen_by(ctx);
+    const auto close = last.coefficient() / static_cast<long>(std::pow(10, last.scale()));
     const auto some = strategy::SizeSpec::quantity(Decimal64(static_cast<long>(1 + draw(5)), 0));
-    const auto& id = bar.instrument_;
-    switch (draw(10)) {
+    switch (draw(12)) {
       case 0: {
         strategy::TargetPosition target;
         target.instrument_ = id;
@@ -3922,14 +3944,51 @@ struct Wanders {
         ctx.submit(flat);
         break;
       }
+      case 7:
+        ctx.submit(strategy::OrderIntent::market(
+          id, OrderSide::BUY, strategy::SizeSpec::target_weight(Decimal64(static_cast<long>(draw(20)), 2))
+        ).with_tag("weight"));
+        break;
       default:
         break;
     }
   }
 
   template <class Ctx>
+  void on_quote(Ctx& ctx, const strategy::QuoteEvent& quote) {
+    act(ctx, quote.quote_.instrument_, quote.quote_.last_price_);
+  }
+
+  template <class Ctx>
+  void on_fill(Ctx& ctx, const strategy::Fill& fill) {
+    seen_ += "fill " + fill.instrument_.symbol_ + " " + fill.quantity_.str() + "\n";
+    if (draw(4) == 0) {
+      act(ctx, fill.instrument_, fill.price_);
+    }
+  }
+
+  template <class Ctx>
+  void on_phase(Ctx& ctx, strategy::MarketPhase phase) {
+    seen_ += "phase " + std::to_string(static_cast<int>(phase)) + " " + seen_by(ctx);
+  }
+
+  template <class Ctx>
+  void on_stop(Ctx& ctx) {
+    seen_ += "stop " + seen_by(ctx);
+    for (const auto& id : {samsung(), hynix()}) {
+      strategy::TargetPosition flat;
+      flat.instrument_ = id;
+      flat.target_quantity_ = Decimal64(0, 0);
+      flat.tag_ = "last";
+      ctx.submit(flat);
+    }
+  }
+};
+
+struct Wanders : WanderCore {
+  template <class Ctx>
   void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
-    act(ctx, bar);
+    act(ctx, bar.instrument_, bar.bar_.close_);
   }
 };
 
@@ -3945,13 +4004,11 @@ struct WandersHearing : Wanders {
 };
 
 /** The same choices made once a period, over every instrument's bar. */
-struct WandersBySlice {
-  Wanders inner_;
-
+struct WandersBySlice : WanderCore {
   template <class Ctx>
   void on_bars(Ctx& ctx, const strategy::BarSlice& slice) {
     for (const auto& bar : slice.bars_) {
-      inner_.act(ctx, bar);
+      act(ctx, bar.instrument_, bar.bar_.close_);
     }
   }
 };
@@ -3968,10 +4025,19 @@ static_assert(strategy::strategy_detail::declares_on_order_update<WandersHearing
 static_assert(!strategy::strategy_detail::declares_on_order_update<WandersBySlice>);
 static_assert(strategy::strategy_detail::declares_on_order_update<WandersBySliceHearing>);
 
-/** Three sessions of one-minute bars of both instruments, prices walking on the KRX grid. */
+/** The replay's own result and what its strategy was shown. */
+struct Wandered {
+  backtest::ReplayResult result_;
+  std::string seen_;
+};
+
+/**
+ * Three sessions of one-minute bars of both instruments, prices walking on the KRX grid, with a quote of the first
+ * instrument now and then between bars, under the limits `config` sets.
+ */
 template <class Strategy>
-backtest::ReplayResult wander(std::uint32_t seed) {
-  backtest::Backtester<Strategy> engine(Strategy{}, pair_config());
+Wandered wander(std::uint32_t seed, const backtest::ReplayConfig& config) {
+  backtest::Backtester<Strategy> engine(Strategy{}, config);
   std::uint32_t walk = seed;
   const auto step = [&walk](std::uint32_t below) {
     walk = walk * 22695477u + 1u;
@@ -3980,6 +4046,18 @@ backtest::ReplayResult wander(std::uint32_t seed) {
   std::array<long, 2> price{70000, 120000};
   for (int day = 0; day < 3; ++day) {
     for (int minute = 1; minute <= 40; ++minute) {
+      if constexpr (!strategy::strategy_detail::declares_on_bars<Strategy>) {
+        // A quote between bars; the `on_bars` form takes none, since one at a pending period would deliver it early.
+        if (step(4) == 0) {
+          strategy::QuoteEvent quote;
+          quote.quote_.instrument_ = samsung();
+          quote.quote_.last_price_ = Decimal64(price[0], 0);
+          quote.quote_.currency_ = Currency{"KRW"};
+          quote.quote_.received_at_ = utc(2026, 3, 10 + day, 1, minute - 1) + std::chrono::seconds(30);
+          quote.quote_.exchange_time_ = quote.quote_.received_at_;
+          engine.feed(quote);
+        }
+      }
       for (std::size_t k = 0; k < 2; ++k) {
         const long open = price[k];
         price[k] += 100 * (static_cast<long>(step(5)) - 2);
@@ -3996,36 +4074,99 @@ backtest::ReplayResult wander(std::uint32_t seed) {
     }
   }
   engine.finish();
-  return engine.result();
+  return Wandered{engine.result(), engine.strategy().seen_};
 }
+
+/** The pair, with every optional limit the guard checks switched on, tight enough to refuse. */
+backtest::ReplayConfig limited_pair_config() {
+  auto config = pair_config();
+  config.limits_.enforce_buying_power_ = true;
+  config.limits_.max_position_quantity_ = Decimal64::parse("25");
+  config.limits_.max_order_notional_ = Decimal64::parse("2000000");
+  config.limits_.max_gross_exposure_ = Decimal64::parse("3000000");
+  config.limits_.max_orders_per_window_ = 6;
+  return config;
+}
+
+/** Holds ten, rests a stop under them, then states flat once: the flat waits behind the stop, and is never restated. */
+struct FlatOnceBehindAStop {
+  int bars_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ++bars_;
+    if (bars_ == 1) {
+      ctx.submit(strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
+      ).with_tag("entry"));
+    } else if (bars_ == 3) {
+      ctx.submit(strategy::OrderIntent::stop_limit(
+        bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
+        *strategy::Price::checked(Decimal64::parse("66500"), PriceRule::krx_equity()),
+        *strategy::Price::checked(Decimal64::parse("66000"), PriceRule::krx_equity())
+      ).with_tag("stop"));
+    } else if (bars_ == 5) {
+      strategy::TargetPosition flat;
+      flat.instrument_ = bar.instrument_;
+      flat.target_quantity_ = Decimal64::parse("0");
+      flat.tag_ = "flat";
+      ctx.submit(flat);
+    }
+  }
+};
 
 } // namespace
 
 TEST_CASE("a replay skips order updates for a strategy that has no handler and changes no result", "[order-updates]") {
   // The type without `on_order_update` takes the skip; the one adding an empty handler takes the full path. Same
-  // decisions, same bars: every field must agree, including deferred targets released behind stops.
+  // decisions, same events: every field of the result and everything each callback was shown must agree.
   updates_heard = 0;
   std::size_t executions = 0;
   std::size_t behind_stops = 0;
   std::size_t refused = 0;
   std::size_t expired = 0;
-  for (std::uint32_t seed = 1; seed <= 12; ++seed) {
-    INFO("seed " << seed);
-    const auto skipped = wander<Wanders>(seed);
-    CHECK(result_digest(skipped) == result_digest(wander<WandersHearing>(seed)));
-    CHECK(result_digest(wander<WandersBySlice>(seed)) == result_digest(wander<WandersBySliceHearing>(seed)));
-    executions += skipped.executions_.size();
-    refused += skipped.refused_.size();
-    expired += skipped.expired_day_orders_;
-    for (const auto& rejection : skipped.rejected_) {
-      behind_stops += rejection.reason_ == strategy::RejectReason::STOP_ORDER_RESTING ? 1 : 0;
+  for (const bool limited : {false, true}) {
+    const auto config = limited ? limited_pair_config() : pair_config();
+    for (std::uint32_t seed = 1; seed <= 8; ++seed) {
+      INFO((limited ? "limited" : "default") << " limits, seed " << seed);
+      const auto skipped = wander<Wanders>(seed, config);
+      const auto published = wander<WandersHearing>(seed, config);
+      CHECK(result_digest(skipped.result_) == result_digest(published.result_));
+      CHECK(skipped.seen_ == published.seen_);
+      const auto sliced = wander<WandersBySlice>(seed, config);
+      const auto sliced_published = wander<WandersBySliceHearing>(seed, config);
+      CHECK(result_digest(sliced.result_) == result_digest(sliced_published.result_));
+      CHECK(sliced.seen_ == sliced_published.seen_);
+      executions += skipped.result_.executions_.size() + sliced.result_.executions_.size();
+      refused += skipped.result_.refused_.size() + sliced.result_.refused_.size();
+      expired += skipped.result_.expired_day_orders_ + sliced.result_.expired_day_orders_;
+      for (const auto* result : {&skipped.result_, &sliced.result_}) {
+        for (const auto& rejection : result->rejected_) {
+          behind_stops += rejection.reason_ == strategy::RejectReason::STOP_ORDER_RESTING ? 1 : 0;
+        }
+      }
     }
   }
-  // The runs did what the comparison is about: orders filled, rested and expired, targets waited behind
-  // stops, the guard refused some, and the hearing types were told about updates.
-  CHECK(executions > 200);
-  CHECK(behind_stops > 10);
-  CHECK(refused > 10);
+  // The runs did what the comparison is about: orders filled, rested and expired, targets waited behind stops,
+  // the guard refused some, and the hearing types were told about updates.
+  CHECK(executions > 400);
+  CHECK(behind_stops > 20);
+  CHECK(refused > 50);
   CHECK(expired > 5);
-  CHECK(updates_heard > 500);
+  CHECK(updates_heard > 1000);
+}
+
+TEST_CASE("a flat stated once behind a stop is placed at the boundary that withdraws the stop", "[order-updates]") {
+  // No `on_order_update`, and the flat is never restated: only the release of deferred targets at the end of the
+  // pass can place it, and it then fills on the next bar.
+  backtest::Backtester<FlatOnceBehindAStop> engine(FlatOnceBehindAStop{}, replay_config());
+  for (int minute = 1; minute <= 7; ++minute) {
+    engine.feed(moving_bar(session_minute(minute), BarInterval::ONE_MINUTE, "70000", "70000"));
+  }
+  engine.finish();
+  REQUIRE(engine.result().rejected_.size() == 1);
+  CHECK(engine.result().rejected_[0].reason_ == strategy::RejectReason::STOP_ORDER_RESTING);
+  REQUIRE(engine.result().executions_.size() == 2);
+  CHECK(engine.result().executions_[1].fill_.tag_ == "flat");
+  CHECK(engine.result().executions_[1].fill_.at_ == session_minute(6));
 }
