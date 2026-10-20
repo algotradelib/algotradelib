@@ -4413,6 +4413,47 @@ struct UnfilledBySliceHearingBoth : UnfilledBySliceHearingFills {
   }
 };
 
+/** Acting on one order update in four, from the book it is shown; no `on_fill`. */
+struct UnfilledActingOnUpdates : Unfilled {
+  template <class Ctx>
+  void on_order_update(Ctx& ctx, const OrderSnapshot& update) {
+    seen_ += "update " + update.order_id_ + " " + seen_by(ctx);
+    if (draw(4) == 0) {
+      act(ctx, update.instrument_, Decimal64(update.instrument_ == samsung() ? 70000 : 120000, 0));
+    }
+  }
+};
+
+/** The same, told about every fill too and answering none. */
+struct UnfilledActingOnUpdatesHearingFills : UnfilledActingOnUpdates {
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill&) {
+    ++fills_heard;
+  }
+};
+
+struct UnfilledBySliceActingOnUpdates : UnfilledBySlice {
+  template <class Ctx>
+  void on_order_update(Ctx& ctx, const OrderSnapshot& update) {
+    seen_ += "update " + update.order_id_ + " " + seen_by(ctx);
+    if (draw(4) == 0) {
+      act(ctx, update.instrument_, Decimal64(update.instrument_ == samsung() ? 70000 : 120000, 0));
+    }
+  }
+};
+
+struct UnfilledBySliceActingOnUpdatesHearingFills : UnfilledBySliceActingOnUpdates {
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill&) {
+    ++fills_heard;
+  }
+};
+
+static_assert(!strategy::strategy_detail::declares_on_fill<UnfilledActingOnUpdates>);
+static_assert(strategy::strategy_detail::declares_on_order_update<UnfilledActingOnUpdates>);
+static_assert(strategy::strategy_detail::declares_on_fill<UnfilledActingOnUpdatesHearingFills>);
+static_assert(!strategy::strategy_detail::declares_on_fill<UnfilledBySliceActingOnUpdates>);
+static_assert(strategy::strategy_detail::declares_on_fill<UnfilledBySliceActingOnUpdatesHearingFills>);
 static_assert(!strategy::strategy_detail::declares_on_fill<Unfilled>);
 static_assert(!strategy::strategy_detail::declares_on_order_update<Unfilled>);
 static_assert(strategy::strategy_detail::declares_on_fill<UnfilledHearingFills>);
@@ -4560,6 +4601,14 @@ TEST_CASE("a replay tells fills only to a strategy that has on_fill and changes 
   // shown must agree.
   fills_heard = 0;
   updates_heard = 0;
+  std::size_t update_records = 0;
+  const auto count_of = [](const std::string& text, const std::string& word) {
+    std::size_t count = 0;
+    for (auto at = text.find(word); at != std::string::npos; at = text.find(word, at + word.size())) {
+      ++count;
+    }
+    return count;
+  };
   std::size_t executions = 0;
   std::size_t behind_stops = 0;
   std::size_t refused = 0;
@@ -4582,6 +4631,17 @@ TEST_CASE("a replay tells fills only to a strategy that has on_fill and changes 
       CHECK(result_digest(sliced.result_) == result_digest(sliced_both.result_));
       CHECK(sliced.seen_ == sliced_told.seen_);
       CHECK(sliced.seen_ == sliced_both.seen_);
+      // A handler acting on order updates, without and with an empty `on_fill`: the updates it acts on follow
+      // fills whose install was skipped.
+      const auto acting = wander<UnfilledActingOnUpdates>(seed, config);
+      const auto acting_told = wander<UnfilledActingOnUpdatesHearingFills>(seed, config);
+      CHECK(result_digest(acting.result_) == result_digest(acting_told.result_));
+      CHECK(acting.seen_ == acting_told.seen_);
+      const auto sliced_acting = wander<UnfilledBySliceActingOnUpdates>(seed, config);
+      const auto sliced_acting_told = wander<UnfilledBySliceActingOnUpdatesHearingFills>(seed, config);
+      CHECK(result_digest(sliced_acting.result_) == result_digest(sliced_acting_told.result_));
+      CHECK(sliced_acting.seen_ == sliced_acting_told.seen_);
+      update_records += count_of(acting.seen_, "update ") + count_of(sliced_acting.seen_, "update ");
       executions += skipped.result_.executions_.size() + sliced.result_.executions_.size();
       refused += skipped.result_.refused_.size() + sliced.result_.refused_.size();
       expired += skipped.result_.expired_day_orders_ + sliced.result_.expired_day_orders_;
@@ -4593,15 +4653,16 @@ TEST_CASE("a replay tells fills only to a strategy that has on_fill and changes 
     }
   }
   // The runs did what the comparison is about: orders filled, rested and expired, targets waited behind stops, the
-  // guard refused some, and the hearing types were told about fills and updates.
+  // guard refused some, the hearing types were told about fills and updates, and the acting ones about updates.
   INFO("executions " << executions << ", behind stops " << behind_stops << ", refused " << refused << ", expired "
-    << expired << ", fills heard " << fills_heard << ", updates heard " << updates_heard);
+    << expired << ", fills heard " << fills_heard << ", updates heard " << updates_heard << ", update records " << update_records);
   CHECK(executions > 400);
   CHECK(behind_stops > 20);
   CHECK(refused > 50);
   CHECK(expired > 5);
   CHECK(fills_heard > 400);
   CHECK(updates_heard > 1000);
+  CHECK(update_records > 1000);
 }
 
 TEST_CASE("the result digest the replay comparisons use tells apart a change to any field", "[order-updates]") {
