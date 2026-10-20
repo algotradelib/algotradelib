@@ -8,7 +8,6 @@
 #include <optional>
 #include <ratio>
 #include <string>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -328,13 +327,20 @@ namespace slice_detail {
  * first seen. Used by the runner's sources to group bars before `on_bars`.
  */
 class Bucket {
+  // The id at a position of a slice, for its table.
+  struct SliceIds {
+    const BarSlice* slice_;
+    const InstrumentId& operator()(std::size_t at) const noexcept { return slice_->bars_[at].instrument_; }
+  };
+  static SliceIds ids_of(const BarSlice& slice) noexcept { return SliceIds{&slice}; }
+
 public:
   Bucket() = default;
   Bucket(const Bucket&) = default;
   Bucket(Bucket&&) = default;
   Bucket& operator=(Bucket&&) = default;
 
-  /** Copies all or nothing, so a slice and its id set never disagree after a failed copy. */
+  /** Copies all or nothing, so a slice and its table never disagree after a failed copy. */
   Bucket& operator=(const Bucket& other) {
     if (this != &other) {
       Bucket copy(other);
@@ -355,7 +361,7 @@ public:
       if (slice.interval_ == event.interval_) {
         if (slice.bars_.size() > id_detail::scan_limit) {
           if (const auto* entry = wide(event.interval_)) {
-            return entry->ids_.count(event.instrument_) != 0;
+            return entry->table_.find(event.instrument_, ids_of(slice)).has_value();
           }
         }
         return slice.find(event.instrument_) != nullptr;
@@ -372,17 +378,14 @@ public:
     for (auto& slice : slices_) {
       if (slice.interval_ == event.interval_) {
         slice.bars_.push_back(event);
-        // If the id set cannot grow, the bar comes out again, so the two never disagree.
+        // If the table cannot grow, the bar comes out again, so the two never disagree.
         try {
           if (slice.bars_.size() == id_detail::scan_limit + 1) {
-            // The slice has just become wide: from now on `holds` asks a set of its ids.
-            Wide built{slice.interval_, {}};
-            for (const auto& bar : slice.bars_) {
-              built.ids_.insert(bar.instrument_);
-            }
-            wide_.push_back(std::move(built));
+            widen(slice);
           } else if (slice.bars_.size() > id_detail::scan_limit) {
-            wide(slice.interval_)->ids_.insert(event.instrument_);
+            if (auto* entry = wide(slice.interval_)) {
+              entry->table_.insert(event.instrument_, slice.bars_.size() - 1, ids_of(slice));
+            }
           }
         } catch (...) {
           slice.bars_.pop_back();
@@ -402,12 +405,6 @@ public:
   BarSlice take_first() {
     BarSlice slice = std::move(slices_.front());
     slices_.erase(slices_.begin());
-    for (auto at = wide_.begin(); at != wide_.end(); ++at) {
-      if (at->interval_ == slice.interval_) {
-        wide_.erase(at);
-        break;
-      }
-    }
     return slice;
   }
 
@@ -415,22 +412,20 @@ public:
   std::vector<BarSlice> take() {
     std::vector<BarSlice> slices = std::move(slices_);
     slices_.clear();
-    wide_.clear();
     return slices;
   }
 
   /** Drops every bar held. */
-  void clear() noexcept {
-    slices_.clear();
-    wide_.clear();
-  }
+  void clear() noexcept { slices_.clear(); }
 
 private:
-  // The ids of one slice holding more than `id_detail::scan_limit` bars. A narrow slice has none, so a
-  // bucket of narrow slices allocates nothing beyond them.
+  // An interval's table, which describes that interval's slice only while the slice holds more than
+  // `id_detail::scan_limit` bars: `widen` refills it when a slice passes that size and `add` extends it after,
+  // and nothing reads it while the slice is narrower. It outlives the slice, so the next wide slice of the
+  // interval reuses its storage; a bucket that never holds a wide slice has none.
   struct Wide {
     BarInterval interval_;
-    std::unordered_set<InstrumentId, id_detail::InstrumentIdHash> ids_;
+    id_detail::PositionTable table_;
   };
 
   const Wide* wide(BarInterval interval) const noexcept {
@@ -451,9 +446,28 @@ private:
     return nullptr;
   }
 
+  // Refills the interval's table from its slice, which has just passed `id_detail::scan_limit` bars. On a
+  // failure the table is left empty, and the caller takes the bar back out, so nothing reads it.
+  void widen(const BarSlice& slice) {
+    Wide* entry = wide(slice.interval_);
+    if (entry == nullptr) {
+      wide_.push_back(Wide{slice.interval_, {}});
+      entry = &wide_.back();
+    }
+    entry->table_.reset();
+    try {
+      for (std::size_t at = 0; at < slice.bars_.size(); ++at) {
+        entry->table_.insert(slice.bars_[at].instrument_, at, ids_of(slice));
+      }
+    } catch (...) {
+      entry->table_.reset();
+      throw;
+    }
+  }
+
   std::chrono::system_clock::time_point period_end_{};
   std::vector<BarSlice> slices_;
-  // One entry per slice holding more than `id_detail::scan_limit` bars, and only those.
+  // At most one entry per interval that has had a wide slice.
   std::vector<Wide> wide_;
 };
 

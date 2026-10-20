@@ -136,6 +136,81 @@ struct InstrumentIdHash {
  */
 inline constexpr std::size_t scan_limit = 16;
 
+/**
+ * Where ids sit in a vector its owner keeps, by open addressing. The table holds positions only, one
+ * `std::size_t` a slot in a power-of-two array at most half full, never the ids themselves: no id is copied,
+ * nothing is allocated per entry, and `reset` keeps the array for reuse. Every call takes `id_of`, which returns
+ * the id at a position of the owner's vector.
+ */
+class PositionTable {
+public:
+  /** Whether the table holds no position. */
+  bool empty() const noexcept { return count_ == 0; }
+
+  /** Forgets every position and keeps the storage. */
+  void reset() noexcept {
+    for (auto& slot : slots_) {
+      slot = 0;
+    }
+    count_ = 0;
+  }
+
+  /** Returns the position of `id`, or nothing. */
+  template <typename IdOf>
+  std::optional<std::size_t> find(const InstrumentId& id, const IdOf& id_of) const noexcept {
+    if (count_ == 0) {
+      return std::nullopt;
+    }
+    const std::size_t mask = slots_.size() - 1;
+    for (std::size_t at = InstrumentIdHash{}(id) & mask;; at = (at + 1) & mask) {
+      const std::size_t slot = slots_[at];
+      if (slot == 0) {
+        return std::nullopt;
+      }
+      if (id_of(slot - 1) == id) {
+        return slot - 1;
+      }
+    }
+  }
+
+  /**
+   * Records `position` for `id`, which the table must not hold. If growing the array fails, the table is left as
+   * it was.
+   */
+  template <typename IdOf>
+  void insert(const InstrumentId& id, std::size_t position, const IdOf& id_of) {
+    if (2 * (count_ + 1) > slots_.size()) {
+      std::size_t size = slots_.empty() ? 32 : 2 * slots_.size();
+      while (2 * (count_ + 1) > size) {
+        size *= 2;
+      }
+      std::vector<std::size_t> grown(size, 0);
+      for (const auto slot : slots_) {
+        if (slot != 0) {
+          place(grown, InstrumentIdHash{}(id_of(slot - 1)), slot);
+        }
+      }
+      slots_.swap(grown);
+    }
+    place(slots_, InstrumentIdHash{}(id), position + 1);
+    ++count_;
+  }
+
+private:
+  static void place(std::vector<std::size_t>& slots, std::size_t hash, std::size_t slot) noexcept {
+    const std::size_t mask = slots.size() - 1;
+    std::size_t at = hash & mask;
+    while (slots[at] != 0) {
+      at = (at + 1) & mask;
+    }
+    slots[at] = slot;
+  }
+
+  // A position plus one; zero is an empty slot.
+  std::vector<std::size_t> slots_;
+  std::size_t count_{0};
+};
+
 } // namespace id_detail
 /// \endcond
 

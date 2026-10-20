@@ -183,11 +183,10 @@ TEST_CASE("realized profit is not banked by a fill that then fails") {
 
 TEST_CASE("a ledger past sixteen instruments finds each lot as a scan of its positions would") {
   // Past sixteen lots the ledger finds a lot by an index instead of a scan; every answer must stay the same.
-  // The 41st instrument shares the sixth's symbol at another venue, which makes it another instrument.
+  // Each symbol is listed at all four venues, which makes four instruments, so a lookup that matched on the
+  // symbol alone would find another venue's lot.
   const auto id = [](int k) {
-    return k == 40 ?
-      InstrumentId{Country::KR, Venue::NXT, "S5"} :
-      InstrumentId{Country::KR, Venue::COMBINED, "S" + std::to_string(k)};
+    return InstrumentId{Country::KR, all_venues[static_cast<std::size_t>(k % 4)], "S" + std::to_string(k / 4)};
   };
   const auto buy = [&id](int k, const std::string& quantity, const char* price) {
     auto execution = filled(OrderSide::BUY, quantity.c_str(), price);
@@ -219,11 +218,11 @@ TEST_CASE("a ledger past sixteen instruments finds each lot as a scan of its pos
   CHECK_FALSE(ledger.average_price_of(id(7)));
 
   // A mark reaches its own lot only: not the same symbol at another venue.
-  const auto twin_price = ledger.positions()[5].last_price_;
-  REQUIRE(ledger.mark(id(40), Decimal64::parse("777")));
-  CHECK(ledger.positions()[40].last_price_ == Decimal64::parse("777"));
-  CHECK(ledger.positions()[40].market_value_.amount_ == Decimal64::parse("31857"));
-  CHECK(ledger.positions()[5].last_price_ == twin_price);
+  const auto twin_price = ledger.positions()[37].last_price_;
+  REQUIRE(ledger.mark(id(38), Decimal64::parse("777")));
+  CHECK(ledger.positions()[38].last_price_ == Decimal64::parse("777"));
+  CHECK(ledger.positions()[38].market_value_.amount_ == Decimal64::parse("30303"));
+  CHECK(ledger.positions()[37].last_price_ == twin_price);
   // An instrument never held is not an error and changes nothing.
   CHECK(ledger.mark(id(41), Decimal64::parse("1")));
   CHECK(ledger.positions().size() == 41);
@@ -3476,16 +3475,14 @@ TEST_CASE("on_bars refuses a bar it could not show consistently before anything 
 }
 
 TEST_CASE("a period of forty instruments reaches on_bars whole and still refuses a second bar") {
-  // Past sixteen bars a period keeps a set of its ids instead of scanning its slice; every answer must stay
-  // the same. The 41st instrument shares the sixth's symbol at another venue, which makes it another instrument.
+  // Past sixteen bars a period finds an id by a table instead of scanning its slice; every answer must stay
+  // the same. Each symbol is listed at all four venues, which makes four instruments.
   auto config = replay_config();
   config.instruments_.clear();
   std::vector<InstrumentId> ids;
   for (int k = 0; k <= 40; ++k) {
     ids.push_back(
-      k == 40 ?
-        InstrumentId{Country::KR, Venue::NXT, "S5"} :
-        InstrumentId{Country::KR, Venue::COMBINED, "S" + std::to_string(k)}
+      InstrumentId{Country::KR, all_venues[static_cast<std::size_t>(k % 4)], "S" + std::to_string(k / 4)}
     );
     auto reference = samsung_reference();
     reference.id_ = ids.back();
@@ -3513,9 +3510,9 @@ TEST_CASE("a period of forty instruments reaches on_bars whole and still refuses
     CHECK(seen[0].symbols_[k] == ids[k].symbol_);
   }
   CHECK(seen[1].interval_ == BarInterval::ONE_HOUR);
-  CHECK(seen[1].symbols_ == std::vector<std::string>{"S29"});
+  CHECK(seen[1].symbols_ == std::vector<std::string>{ids[29].symbol_});
   CHECK(seen[2].end_ == d2);
-  CHECK(seen[2].symbols_ == std::vector<std::string>{"S0"});
+  CHECK(seen[2].symbols_ == std::vector<std::string>{ids[0].symbol_});
 }
 
 TEST_CASE("a slice with a bar stating its end is decided at that end and not at a nominal one") {

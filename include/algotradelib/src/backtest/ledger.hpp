@@ -9,7 +9,6 @@
 #include <cstddef>
 #include <optional>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -430,11 +429,7 @@ private:
   // `id_detail::scan_limit` lots, by a scan before that.
   std::optional<std::size_t> slot_of(const InstrumentId& instrument) const {
     if (!index_.empty()) {
-      const auto found = index_.find(instrument);
-      if (found == index_.end()) {
-        return std::nullopt;
-      }
-      return found->second;
+      return index_.find(instrument, lot_ids());
     }
     for (std::size_t at = 0; at < positions_.size(); ++at) {
       if (positions_[at].instrument_ == instrument) {
@@ -443,6 +438,13 @@ private:
     }
     return std::nullopt;
   }
+
+  // The id at a position of `positions_`, for the index.
+  struct LotIds {
+    const std::vector<HoldingPosition>* positions_;
+    const InstrumentId& operator()(std::size_t at) const noexcept { return (*positions_)[at].instrument_; }
+  };
+  LotIds lot_ids() const noexcept { return LotIds{&positions_}; }
 
   HoldingPosition* find_or_open(const InstrumentId& instrument) {
     if (const auto slot = slot_of(instrument)) {
@@ -453,26 +455,26 @@ private:
     opened.quantity_ = Decimal64::parse("0");
     opened.average_purchase_price_ = Decimal64::parse("0");
     opened.last_price_ = Decimal64::parse("0");
-    // The index is built whole, or extended, before the lot is appended, so a failure in either
-    // leaves the ledger as it was. Lots are never removed or reordered, so a slot stays valid.
-    if (!index_.empty()) {
-      index_.emplace(instrument, positions_.size());
-      try {
-        positions_.push_back(std::move(opened));
-      } catch (...) {
-        index_.erase(instrument);
-        throw;
+    positions_.push_back(std::move(opened));
+    if (index_.empty() && positions_.size() <= id_detail::scan_limit) {
+      return &positions_.back();
+    }
+    // Past `id_detail::scan_limit` lots the index holds every lot: built whole at the first one past it,
+    // extended after that. If it cannot be, the lot comes out again, so the two never disagree. Lots are never
+    // removed or reordered, so a position stays valid.
+    try {
+      if (index_.empty()) {
+        id_detail::PositionTable built;
+        for (std::size_t at = 0; at < positions_.size(); ++at) {
+          built.insert(positions_[at].instrument_, at, lot_ids());
+        }
+        index_ = std::move(built);
+      } else {
+        index_.insert(instrument, positions_.size() - 1, lot_ids());
       }
-    } else if (positions_.size() + 1 > id_detail::scan_limit) {
-      std::unordered_map<InstrumentId, std::size_t, id_detail::InstrumentIdHash> built;
-      for (std::size_t at = 0; at < positions_.size(); ++at) {
-        built.emplace(positions_[at].instrument_, at);
-      }
-      built.emplace(instrument, positions_.size());
-      positions_.push_back(std::move(opened));
-      index_ = std::move(built);
-    } else {
-      positions_.push_back(std::move(opened));
+    } catch (...) {
+      positions_.pop_back();
+      throw;
     }
     return &positions_.back();
   }
@@ -562,7 +564,7 @@ private:
   std::vector<HoldingPosition> positions_;
   // Where each instrument's lot is in `positions_`; empty until the ledger holds more than
   // `id_detail::scan_limit` lots.
-  std::unordered_map<InstrumentId, std::size_t, id_detail::InstrumentIdHash> index_;
+  id_detail::PositionTable index_;
   std::vector<Money> cash_;
   std::vector<Money> realized_;
   std::vector<Execution> executions_;

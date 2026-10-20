@@ -132,8 +132,9 @@ static_assert(std::is_nothrow_move_constructible<backtest::ReplayLedger>::value)
 static_assert(std::is_nothrow_move_assignable<strategy::slice_detail::Bucket>::value);
 
 TEST_CASE("a ledger opening a lot finds every lot it lists after a failed allocation") {
-  // At 16, 17 and 20 lots before the fill: the last scan, the index being built, the index growing.
-  for (const int lots : {16, 17, 20}) {
+  // At 16, 17, 20 and 32 lots before the fill: the last scan, the index being built, the index extended, and
+  // the index growing its storage.
+  for (const int lots : {16, 17, 20, 32}) {
     INFO(lots << " lots before the fill");
     const auto opened = named("NEW");
     const auto before = holding("S", lots);
@@ -177,8 +178,9 @@ TEST_CASE("a ledger copy that fails leaves the destination as it was") {
 }
 
 TEST_CASE("a period bucket adding a bar keeps its slice and its ids together after a failed allocation") {
-  // At 16, 17 and 20 bars before the add: the last scan, the id set being built, the set growing.
-  for (const int bars : {16, 17, 20}) {
+  // At 16, 17, 20 and 32 bars before the add: the last scan, the table being filled, the table extended, and
+  // the table growing its storage.
+  for (const int bars : {16, 17, 20, 32}) {
     INFO(bars << " bars before the add");
     strategy::slice_detail::Bucket before;
     for (int k = 0; k < bars; ++k) {
@@ -254,11 +256,12 @@ TEST_CASE("a wide slice taken first leaves a narrow one answering by its own bar
   CHECK_FALSE(bucket.holds(bar_of("S20", BarInterval::ONE_HOUR)));
   CHECK_FALSE(bucket.holds(bar_of("S0", BarInterval::ONE_DAY)));
 
-  // A new daily slice turning wide answers by its own ids, not the ones taken out with the first.
-  for (int k = 0; k < 20; ++k) {
+  // A new daily slice turning wide answers by its own ids, not the ones taken out with the first; it is smaller
+  // than the first, so a position left over from that one would point past its end.
+  for (int k = 0; k < 17; ++k) {
     bucket.add(bar_of("D" + std::to_string(k), BarInterval::ONE_DAY));
   }
-  CHECK(bucket.holds(bar_of("D19", BarInterval::ONE_DAY)));
+  CHECK(bucket.holds(bar_of("D16", BarInterval::ONE_DAY)));
   CHECK_FALSE(bucket.holds(bar_of("S0", BarInterval::ONE_DAY)));
   CHECK_FALSE(bucket.holds(bar_of("S19", BarInterval::ONE_DAY)));
   CHECK(bucket.take_first().interval_ == BarInterval::ONE_HOUR);
