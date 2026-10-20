@@ -148,7 +148,9 @@ public:
     if (fields_ != bar_field_count) {
       throw std::invalid_argument("pushing a bar needs a buffer over every bar field");
     }
-    math::Vector row = math::unobserved(bar_field_count);
+    // On the stack: a replay pushes one row for every bar it feeds.
+    Eigen::Matrix<math::Scalar, static_cast<int>(bar_field_count), 1> row;
+    row.setConstant(math::missing());
     if (bar.open_) {
       row(static_cast<math::Index>(bar_field_index(BarField::OPEN))) = to_scalar(*bar.open_);
     }
