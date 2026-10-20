@@ -4154,7 +4154,9 @@ std::string result_digest(const backtest::ReplayResult& r) {
   if (r.halted_) {
     const auto& e = *r.halted_;
     out += "halted " + n(static_cast<int>(e.category_)) + " " + n(e.reached_broker_) + " " + n(e.http_status_) + " [" +
-      e.broker_code_ + "] [" + e.request_id_ + "] [" + e.message_ + "]\n";
+      e.broker_code_ + "] [" + e.request_id_ + "] [" + e.message_ + "] " +
+      (e.retry_after_ ? n(e.retry_after_->count()) : std::string("-")) + " " +
+      (e.rate_limit_ ? n(*e.rate_limit_) : std::string("-")) + "\n";
   } else {
     out += "not halted\n";
   }
@@ -4540,6 +4542,16 @@ TEST_CASE("the result digest the replay comparisons use tells apart a change to 
     r.halted_ = error;
   });
   differs("a tag with a space moved", [](backtest::ReplayResult& r) { r.rejected_.front().tag_ += " "; });
+  // Against a halted result, so the change below is the field's own and not the halt's presence.
+  auto halted = base;
+  halted.halted_ = BrokerError{};
+  halted.halted_->message_ = "halted";
+  auto retrying = halted;
+  retrying.halted_->retry_after_ = std::chrono::seconds(30);
+  CHECK(result_digest(retrying) != result_digest(halted));
+  auto limited = halted;
+  limited.halted_->rate_limit_ = 5;
+  CHECK(result_digest(limited) != result_digest(halted));
 }
 
 TEST_CASE("a flat stated once behind a stop is placed at the boundary that withdraws the stop", "[order-updates]") {
