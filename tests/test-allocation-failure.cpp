@@ -96,6 +96,33 @@ void require_lookups_match_positions(const backtest::ReplayLedger& ledger) {
   }
 }
 
+// Equity as a scan of every lot computes it: the flat ones skipped, the rest multiplied and added in order.
+std::optional<Decimal64> equity_by_scan(const backtest::ReplayLedger& ledger) {
+  auto total = ledger.cash_in(krw()).value_or(Decimal64::parse("0"));
+  for (const auto& lot : ledger.positions()) {
+    if (lot.quantity_.coefficient() == 0) {
+      continue;
+    }
+    const auto value = decimal_multiply(lot.quantity_, lot.last_price_);
+    const auto sum = value ? decimal_add(total, *value) : std::nullopt;
+    if (!sum) {
+      return std::nullopt;
+    }
+    total = *sum;
+  }
+  return total;
+}
+
+void require_equity_as_scanned(const backtest::ReplayLedger& ledger) {
+  const auto equity = ledger.equity_in(krw());
+  const auto scanned = equity_by_scan(ledger);
+  REQUIRE(equity.has_value() == scanned.has_value());
+  if (equity) {
+    REQUIRE(equity->coefficient() == scanned->coefficient());
+    REQUIRE(equity->scale() == scanned->scale());
+  }
+}
+
 bool lists(const backtest::ReplayLedger& ledger, const InstrumentId& id) {
   for (const auto& lot : ledger.positions()) {
     if (lot.instrument_ == id) {
@@ -146,6 +173,7 @@ TEST_CASE("a ledger opening a lot finds every lot it lists after a failed alloca
       [&] { applied = ledger.apply(fill, krw()); },
       [&] {
         require_lookups_match_positions(ledger);
+        require_equity_as_scanned(ledger);
         // The lot that failed to open is found exactly when it is listed.
         CHECK(ledger.quantity_of(opened).has_value() == lists(ledger, opened));
         ledger = before;
@@ -156,6 +184,43 @@ TEST_CASE("a ledger opening a lot finds every lot it lists after a failed alloca
     require_lookups_match_positions(ledger);
     CHECK(ledger.quantity_of(opened) == std::optional<Decimal64>(Decimal64::parse("3")));
     CHECK(ledger.positions().size() == static_cast<std::size_t>(lots + 1));
+    require_equity_as_scanned(ledger);
+  }
+}
+
+TEST_CASE("a reopened lot that cannot be recorded leaves equity as a scan of the lots says") {
+  // A copy holds its list of held lots without room to spare: 100 lots opened, 99 closed, copied (by
+  // construction and by assignment), then one of the closed lots reopened in the copy.
+  auto book = holding("S", 100);
+  for (int k = 1; k < 100; ++k) {
+    auto sold = bought(named("S" + std::to_string(k)), "1");
+    sold.fill_.side_ = OrderSide::SELL;
+    REQUIRE(book.apply(sold, krw()));
+  }
+  for (const bool assigned : {false, true}) {
+    INFO((assigned ? "copy assigned" : "copy constructed"));
+    auto before = book;
+    if (assigned) {
+      before = holding("T", 3);
+      before = book;
+    }
+    auto ledger = before;
+    const auto reopened = bought(named("S50"), "2");
+    bool applied = false;
+    const int failures = fail_each_allocation(
+      [&] { applied = ledger.apply(reopened, krw()); },
+      [&] {
+        require_lookups_match_positions(ledger);
+        // A failure after the lot changed (recording the execution) may leave it changed, as `apply` documents;
+        // either way the list of held lots agrees with the lots.
+        require_equity_as_scanned(ledger);
+        ledger = before;
+      }
+    );
+    CHECK(failures > 0);
+    CHECK(applied);
+    CHECK(ledger.quantity_of(named("S50")) == std::optional<Decimal64>(Decimal64::parse("2")));
+    require_equity_as_scanned(ledger);
   }
 }
 
@@ -168,6 +233,7 @@ TEST_CASE("a ledger copy that fails leaves the destination as it was") {
     [&] {
       REQUIRE(ledger.positions().size() == 20);
       require_lookups_match_positions(ledger);
+      require_equity_as_scanned(ledger);
       CHECK(ledger.quantity_of(named("S19")) == std::optional<Decimal64>(Decimal64::parse("1")));
       CHECK_FALSE(ledger.quantity_of(named("T0")));
     }

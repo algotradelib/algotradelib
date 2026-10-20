@@ -314,6 +314,116 @@ TEST_CASE("a ledger moved past sixteen instruments leaves its source empty and i
   }
 }
 
+namespace {
+
+// `ReplayLedger::equity_in` as it was written before it kept the lots held: every lot, in order, skipping the flat
+// ones and those in another currency, multiplied and added with the same checked arithmetic.
+std::optional<Decimal64> equity_by_scan(const backtest::ReplayLedger& ledger, const Currency& currency) {
+  auto total = ledger.cash_in(currency).value_or(Decimal64::parse("0"));
+  for (const auto& lot : ledger.positions()) {
+    if (lot.quantity_.coefficient() == 0 || !(lot.market_value_.currency_ == currency)) {
+      continue;
+    }
+    const auto value = decimal_multiply(lot.quantity_, lot.last_price_);
+    if (!value) {
+      return std::nullopt;
+    }
+    const auto sum = decimal_add(total, *value);
+    if (!sum) {
+      return std::nullopt;
+    }
+    total = *sum;
+  }
+  return total;
+}
+
+// The same optional decimal, written the same way: equal coefficient and scale, or both empty.
+bool same_written(const std::optional<Decimal64>& lhs, const std::optional<Decimal64>& rhs) {
+  if (lhs.has_value() != rhs.has_value()) {
+    return false;
+  }
+  return !lhs || (lhs->coefficient() == rhs->coefficient() && lhs->scale() == rhs->scale());
+}
+
+void require_equity_as_scanned(const backtest::ReplayLedger& ledger) {
+  for (const auto& currency : {krw(), Currency{"USD"}}) {
+    INFO("equity in " << currency.str());
+    REQUIRE(same_written(ledger.equity_in(currency), equity_by_scan(ledger, currency)));
+  }
+}
+
+} // namespace
+
+TEST_CASE("equity counts the lots held, as a scan of every lot does", "[ledger]") {
+  const auto id = [](int k) {
+    return InstrumentId{Country::KR, all_venues[static_cast<std::size_t>(k % 4)], "S" + std::to_string(k / 4)};
+  };
+  std::uint32_t state = 20261020;
+  const auto draw = [&state](std::uint32_t below) {
+    state = state * 1664525u + 1013904223u;
+    return (state >> 8) % below;
+  };
+  const std::array<const char*, 4> quantities{"0", "1", "3", "7"};
+  const std::array<const char*, 4> prices{"1000", "1250.5", "980", "1000000000000000000"};
+  // Opens, adds to, closes, crosses and reopens lots of 41 instruments, in two currencies, with fills that fail
+  // (an unrepresentable value, a currency change under an open lot) and marks between them.
+  const auto step = [&](backtest::ReplayLedger& ledger) {
+    const int k = static_cast<int>(draw(41));
+    if (draw(4) == 0) {
+      ledger.mark(id(k), Decimal64::parse(prices[draw(3)]));
+      return;
+    }
+    auto execution = filled(draw(2) == 0 ? OrderSide::BUY : OrderSide::SELL, quantities[draw(4)], prices[draw(4)]);
+    execution.fill_.instrument_ = id(k);
+    ledger.apply(execution, draw(9) == 0 ? Currency{"USD"} : krw());
+  };
+
+  auto ledger = opening("900000000000");
+  for (int at = 0; at < 600; ++at) {
+    INFO("step " << at);
+    step(ledger);
+    require_equity_as_scanned(ledger);
+  }
+  CHECK(ledger.positions().size() == 41);
+
+  // Each special member keeps it, and both sides go on agreeing as they trade apart.
+  auto copied = ledger;
+  auto assigned = opening();
+  assigned = ledger;
+  auto moved = std::move(copied);
+  auto target = opening();
+  target = std::move(assigned);
+  auto& alias = target;
+  target = std::move(alias);
+  for (auto* each : {&ledger, &copied, &assigned, &moved, &target}) {
+    for (int at = 0; at < 150; ++at) {
+      step(*each);
+      require_equity_as_scanned(*each);
+    }
+  }
+}
+
+TEST_CASE("equity adds the lots held in the order they were opened", "[ledger]") {
+  // An earlier lot reopened after a later one: summed in the order of `positions()` the total fits; summed with
+  // the reopened lot last it would pass the largest decimal on the way.
+  const InstrumentId first{Country::KR, Venue::COMBINED, "FIRST"};
+  const InstrumentId second{Country::KR, Venue::COMBINED, "SECOND"};
+  const auto fill = [](const InstrumentId& instrument, OrderSide side) {
+    auto execution = filled(side, "1", "100000000000000000");
+    execution.fill_.instrument_ = instrument;
+    return execution;
+  };
+  auto ledger = opening("9200000000000000000");
+  REQUIRE(ledger.apply(fill(first, OrderSide::BUY), krw()));
+  REQUIRE(ledger.apply(fill(first, OrderSide::SELL), krw()));
+  REQUIRE(ledger.apply(fill(second, OrderSide::BUY), krw()));
+  REQUIRE(ledger.apply(fill(first, OrderSide::SELL), krw()));
+  REQUIRE(ledger.positions().front().instrument_ == first);
+  CHECK(ledger.quantity_of(first) == std::optional<Decimal64>(Decimal64::parse("-1")));
+  CHECK(same_written(ledger.equity_in(krw()), Decimal64::parse("9200000000000000000")));
+  require_equity_as_scanned(ledger);
+}
+
 TEST_CASE("an instrument does not change currency underneath an open position") {
   // Backtester resolves the currency from fixed reference data, so it cannot reach this; the ledger
   // is public and a direct caller can. The second fill used to relabel the whole lot, so a position
@@ -3208,8 +3318,26 @@ TEST_CASE("an order-update watch reports what a row-by-row scan of the listings 
 
   algotradelib::runner::OrderUpdateWatch<algotradelib::runner::DryTag> watch;
   ScanningWatch scanning;
+  std::vector<WatchRow> previous;
+  int repeated = 0;
   for (int listing = 0; listing < 400; ++listing) {
     std::vector<WatchRow> rows;
+    if (!previous.empty() && draw(3) == 0) {
+      // The same listing again, with fields the watch ignores changed and a quantity at another scale.
+      rows = previous;
+      for (auto& row : rows) {
+        row.order_.name_ = "listing " + std::to_string(listing);
+        row.order_.quantity_ = Decimal64(100, 1);
+      }
+      ++repeated;
+      const auto expected = scanning.changed(rows);
+      const auto reported = watch.changed(rows);
+      REQUIRE(reported.size() == expected.size());
+      REQUIRE(watch.tracked_orders() == scanning.tracked_orders());
+      REQUIRE(watch.untracked_rows() == scanning.untracked_rows());
+      REQUIRE(watch.contradicted_rows() == scanning.contradicted_rows());
+      continue;
+    }
     const auto count = draw(40);
     for (std::uint32_t at = 0; at < count; ++at) {
       const auto primary = draw(25) == 0 ? std::string() : "o" + std::to_string(draw(12));
@@ -3233,10 +3361,81 @@ TEST_CASE("an order-update watch reports what a row-by-row scan of the listings 
     REQUIRE(watch.tracked_orders() == scanning.tracked_orders());
     REQUIRE(watch.untracked_rows() == scanning.untracked_rows());
     REQUIRE(watch.contradicted_rows() == scanning.contradicted_rows());
+    previous = rows;
   }
   // The sequence did exercise the rules it is there for.
   CHECK(scanning.contradicted_rows() > 20);
   CHECK(scanning.untracked_rows() > 20);
+  CHECK(repeated > 50);
+}
+
+TEST_CASE("a listing that repeats the last one reports nothing, and the next change reports the new row", "[order-updates]") {
+  using Watch = algotradelib::runner::OrderUpdateWatch<algotradelib::runner::DryTag>;
+  const auto named = [](WatchRow row, const std::string& name) {
+    row.order_.name_ = name;
+    return row;
+  };
+  const auto a = watch_row("a", "", OrderStatus::PENDING);
+  const auto b = watch_row("b", "", OrderStatus::PENDING);
+  const auto s = watch_row("", "s1", OrderStatus::PENDING);
+
+  for (const bool adopting : {false, true}) {
+    INFO((adopting ? "adopted" : "reported") << " baseline");
+    Watch watch;
+    if (adopting) {
+      watch.adopt({named(a, "first"), named(b, "first"), s});
+    } else {
+      CHECK(ids_of(watch.changed({named(a, "first"), named(b, "first"), s})) == std::vector<std::string>{"a", "b", ""});
+    }
+    CHECK(watch.tracked_orders() == 3);
+
+    // Fields the watch ignores, and a quantity at another scale: nothing to report, by either call.
+    auto rescaled = named(b, "second");
+    rescaled.order_.quantity_ = Decimal64(100, 1);
+    rescaled.order_.execution_.average_filled_price_ = Decimal64::parse("99");
+    CHECK(watch.changed({named(a, "second"), rescaled, s}).empty());
+    watch.adopt({named(a, "second"), rescaled, s});
+    CHECK(watch.tracked_orders() == 3);
+    CHECK(watch.untracked_rows() == 0);
+    CHECK(watch.contradicted_rows() == 0);
+
+    // A change that counts reports the row as now listed, every field of it.
+    auto moved = named(watch_row("b", "", OrderStatus::PARTIAL_FILLED, "4"), "third");
+    const auto report = watch.changed({named(a, "third"), moved, s});
+    REQUIRE(report.size() == 1);
+    CHECK(report.front().order_id_ == "b");
+    CHECK(report.front().name_ == "third");
+    CHECK(report.front().status_ == OrderStatus::PARTIAL_FILLED);
+  }
+
+  Watch watch;
+  watch.changed({a, b});
+  // The same orders in another order: compared by reference, nothing changed.
+  CHECK(watch.changed({b, a}).empty());
+  CHECK(watch.tracked_orders() == 2);
+  // A tracked order that comes back reserved, in its own place, is skipped, not counted as untracked; when it is
+  // listed plainly again it is new.
+  auto reserved = a;
+  reserved.reserved_ = true;
+  CHECK(watch.changed({b, reserved}).empty());
+  CHECK(watch.tracked_orders() == 1);
+  CHECK(watch.untracked_rows() == 0);
+  CHECK(ids_of(watch.changed({b, a})) == std::vector<std::string>{"a"});
+  // A row without a reference, as often as the listing has the same length, is counted every time.
+  watch.changed({b, watch_row("", "", OrderStatus::PENDING)});
+  watch.changed({b, watch_row("", "", OrderStatus::PENDING)});
+  CHECK(watch.untracked_rows() == 2);
+  // The same reference twice, the length of the tracked listing: contradicted, and counted.
+  watch.changed({a, b});
+  CHECK(watch.changed({a, watch_row("a", "", OrderStatus::PARTIAL_FILLED, "1")}).empty());
+  CHECK(watch.contradicted_rows() == 1);
+  CHECK(watch.tracked_orders() == 0);
+  // Empty after non-empty, then empty again.
+  watch.changed({a});
+  CHECK(watch.changed({}).empty());
+  CHECK(watch.tracked_orders() == 0);
+  CHECK(watch.changed({}).empty());
+  CHECK(ids_of(watch.changed({a})) == std::vector<std::string>{"a"});
 }
 
 // ---------------------------------------------------------------------------

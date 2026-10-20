@@ -670,6 +670,33 @@ TEST_CASE("KIS refuses the intraday intervals it publishes no chart for", "[core
   }
 }
 
+TEST_CASE("two instrument ids are equal exactly when country, venue and the whole symbol are", "[core][id]") {
+  using algotradelib::Country;
+  using algotradelib::InstrumentId;
+  using algotradelib::Venue;
+  const auto id = [](const std::string& symbol, Country country = Country::KR, Venue venue = Venue::KRX) {
+    return InstrumentId{country, venue, symbol};
+  };
+  CHECK(id("005930") == id("005930"));
+  CHECK(id("") == id(""));
+  CHECK(std::string("A\0B", 3) == std::string("A\0B", 3));
+  CHECK(id(std::string("A\0B", 3)) == id(std::string("A\0B", 3)));
+  CHECK_FALSE(id(std::string("A\0B", 3)) == id(std::string("A\0C", 3)));
+  CHECK_FALSE(id(std::string("A\0B", 3)) == id("A"));
+  // Equal length, differing first, in the middle, last.
+  CHECK_FALSE(id("005930") == id("105930"));
+  CHECK_FALSE(id("005930") == id("005830"));
+  CHECK_FALSE(id("005930") == id("005931"));
+  // A common prefix of another length, either way round; an empty symbol against one.
+  CHECK_FALSE(id("BRK") == id("BRK.B"));
+  CHECK_FALSE(id("BRK.B") == id("BRK"));
+  CHECK_FALSE(id("") == id("A"));
+  CHECK_FALSE(id("A") == id(""));
+  // The same symbol elsewhere.
+  CHECK_FALSE(id("005930", Country::KR, Venue::KRX) == id("005930", Country::KR, Venue::NXT));
+  CHECK_FALSE(id("005930", Country::KR) == id("005930", Country::US));
+}
+
 TEST_CASE("decimal arithmetic at the edges of the coefficient", "[core][decimal]") {
   // Two negatives whose common scale overflows: the smaller scale holds the larger magnitude.
   const Decimal64 tiny(-1, 2);
