@@ -637,7 +637,8 @@ public:
    * A quote does not mark the ledger, record an equity point or fill anything. An order placed from
    * `on_quote` fills against a later bar, not the quote (see `ReportCaveats::quotes_`). Compared
    * with a live loop, `on_phase` fires before `on_quote` here (live, after the iteration's polls),
-   * and order updates are always published here (live, only when the working-order poll runs).
+   * and order updates are published here after every quote (live, only when the working-order poll
+   * runs) to a strategy that declares `on_order_update`.
    * A quote before the first bar is fine; its orders wait for a bar.
    *
    * @param event The quote; feed it in timestamp order with the bars, since the clock follows
@@ -1251,6 +1252,20 @@ private:
       // decide on a replay that has stopped being able to cost what it asks for.
       return;
     }
+    if constexpr (!strategy::strategy_detail::declares_on_order_update<Strategy>) {
+      // **No handler, no updates.** An update would reach no code: dispatching it is a no-op and the
+      // settlement after it has no instruction to settle. The rows, the comparison and the installs
+      // around it are skipped; the release of deferred targets is not, because it answers the passes
+      // before this point, not the updates.
+      settle_deferred();
+      return;
+    } else {
+      publish_to_handler();
+    }
+  }
+
+  // The part of `publish_order_updates` a strategy declaring `on_order_update` needs.
+  void publish_to_handler() {
     std::vector<WorkingOrder<Tag>> rows;
     rows.reserve(runner_.executor().queued().size());
     for (const auto& entry : runner_.executor().queued()) {
@@ -1456,7 +1471,7 @@ private:
   ReplayLedger ledger_;
   ReplayClock clock_;
   Runner runner_;
-  // Turns this replay's own working listing into `on_order_update` events.
+  // Turns this replay's own working listing into `on_order_update` events; unused for a strategy without one.
   runner::OrderUpdateWatch<Tag> updates_;
   ReplayResult result_;
   // Whether a bar since the last equity point went unvalued, so the next point carries no return.
