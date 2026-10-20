@@ -158,6 +158,9 @@ private:
   std::vector<OrderSnapshot> observe(
     const std::vector<WorkingOrder<Broker>>& rows, bool report
   ) {
+    if (unchanged(rows)) {
+      return {};
+    }
     std::vector<Tracked> next;
     next.reserve(rows.size());
     // Where each reference sits, in this listing (`next`) and in the previous one (`tracked_`), so a
@@ -223,6 +226,22 @@ private:
     );
     tracked_ = std::move(next);
     return updates;
+  }
+
+  // Whether `rows` is the tracked orders again, in the same order and each in the same observable state, none
+  // reserved: then the full pass would report nothing and count nothing. The tracked snapshots are kept rather
+  // than replaced; they differ only in fields `same_observable_state` ignores, and they are only ever compared.
+  bool unchanged(const std::vector<WorkingOrder<Broker>>& rows) const {
+    if (rows.size() != tracked_.size()) {
+      return false;
+    }
+    for (std::size_t at = 0; at < rows.size(); ++at) {
+      if (rows[at].reserved_ || !(rows[at].ref_ == tracked_[at].ref_) ||
+          !order_update_detail::same_observable_state(tracked_[at].last_, rows[at].order_)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   std::vector<Tracked> tracked_;
