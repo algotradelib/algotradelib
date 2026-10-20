@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <optional>
 #include <string>
 #include <utility>
@@ -4121,47 +4122,81 @@ TEST_CASE("a replay models limit and market orders under every condition and sto
 
 namespace {
 
-/** Every field of a replay's result, as text, so two runs can be compared whole. */
+/**
+ * Every field of a replay's result, as text, so two runs can be compared whole: decimals as written, returns by
+ * their bits (a missing return is NaN, written as such), every optional's presence, and every applied-rate field.
+ */
 std::string result_digest(const backtest::ReplayResult& r) {
   std::string out;
+  const auto n = [](auto value) { return std::to_string(value); };
   const auto when = [](Clock::time_point at) { return std::to_string(at.time_since_epoch().count()); };
   const auto maybe_when = [&](const std::optional<Clock::time_point>& at) { return at ? when(*at) : std::string("-"); };
   const auto maybe = [](const std::optional<Decimal64>& value) { return value ? value->str() : std::string("-"); };
-  const auto id = [](const InstrumentId& i) { return std::to_string(static_cast<int>(i.venue_)) + "/" + i.symbol_; };
-  out += "bars " + std::to_string(r.bars_) + " gaps " + std::to_string(r.gaps_) + " unfilled " +
-    std::to_string(r.unfilled_) + " aborted " + std::to_string(r.aborted_) + " quotes " + std::to_string(r.quotes_) +
-    " unchecked " + std::to_string(r.unchecked_fill_causality_) + " unvalued " + std::to_string(r.unvalued_bars_) +
-    " " + maybe_when(r.first_unvalued_) + " releases " + std::to_string(r.stop_releases_) + " intrabar " +
-    std::to_string(r.stop_fills_intrabar_) + " bounded " + std::to_string(r.limit_fills_bounded_) + " overdrawn " +
-    std::to_string(r.overdrawn_bars_) + " " + maybe_when(r.first_overdrawn_) + " lowest " +
-    (r.lowest_cash_ ? r.lowest_cash_->amount_.str() : std::string("-")) + " " + maybe_when(r.lowest_cash_at_) +
-    " expired " + std::to_string(r.expired_day_orders_) + " halted " + (r.halted_ ? r.halted_->message_ : "-") + "\n";
+  const auto id = [&](const InstrumentId& i) {
+    return n(static_cast<int>(i.country_)) + "/" + n(static_cast<int>(i.venue_)) + "/" + i.symbol_;
+  };
+  const auto date = [&](const std::optional<Date>& d) {
+    return d ? n(d->year_) + "-" + n(d->month_) + "-" + n(d->day_) : std::string("-");
+  };
+  const auto bits = [](math::Scalar value) {
+    std::uint64_t word = 0;
+    static_assert(sizeof(word) == sizeof(value), "a return is a 64-bit double");
+    std::memcpy(&word, &value, sizeof(word));
+    return std::to_string(word);
+  };
+  out += "bars " + n(r.bars_) + " gaps " + n(r.gaps_) + " unfilled " + n(r.unfilled_) + " currency " +
+    r.currency_.str() + " aborted " + n(r.aborted_) + " quotes " + n(r.quotes_) + " unchecked " +
+    n(r.unchecked_fill_causality_) + " unvalued " + n(r.unvalued_bars_) + " " + maybe_when(r.first_unvalued_) +
+    " releases " + n(r.stop_releases_) + " intrabar " + n(r.stop_fills_intrabar_) + " bounded " +
+    n(r.limit_fills_bounded_) + " overdrawn " + n(r.overdrawn_bars_) + " " + maybe_when(r.first_overdrawn_) +
+    " lowest " + (r.lowest_cash_ ? r.lowest_cash_->amount_.str() + " " + r.lowest_cash_->currency_.str() : "-") +
+    " " + maybe_when(r.lowest_cash_at_) + " expired " + n(r.expired_day_orders_) + "\n";
+  if (r.halted_) {
+    const auto& e = *r.halted_;
+    out += "halted " + n(static_cast<int>(e.category_)) + " " + n(e.reached_broker_) + " " + n(e.http_status_) + " [" +
+      e.broker_code_ + "] [" + e.request_id_ + "] [" + e.message_ + "]\n";
+  } else {
+    out += "not halted\n";
+  }
   for (const auto& point : r.equity_) {
-    out += "E " + when(point.at_) + " " + point.equity_.str() + " " + std::to_string(point.period_return_) + "\n";
+    out += "E " + when(point.at_) + " " + point.equity_.str() + " " + bits(point.period_return_) + "\n";
   }
   for (const auto& x : r.executions_) {
     const auto& f = x.fill_;
-    out += "X " + f.order_id_ + " " + id(f.instrument_) + " " + std::to_string(static_cast<int>(f.side_)) + " " +
-      f.quantity_.str() + " " + f.price_.str() + " " + f.tag_ + " " + when(f.at_) + " " + x.commission_.str() + " " +
-      maybe(x.institution_fee_) + " " + x.slippage_.str() + " " + x.tax_.str() + " " + x.applied_.rate_.str() + "\n";
+    const auto& a = x.applied_;
+    out += "X [" + f.order_id_ + "] " + id(f.instrument_) + " " + n(static_cast<int>(f.side_)) + " " +
+      f.quantity_.str() + " " + f.price_.str() + " [" + f.tag_ + "] " + when(f.at_) + " " + x.commission_.str() + " " +
+      maybe(x.institution_fee_) + " " + x.currency_.str() + " " + x.slippage_.str() + " " + x.tax_.str() + " rate " +
+      n(static_cast<int>(a.country_)) + " " + n(static_cast<int>(a.venue_.kind())) + " " +
+      n(static_cast<int>(a.venue_.venue())) + " " + a.rate_.str() + " " + maybe(a.institution_rate_) + " " +
+      a.minimum_.str() + " " + date(a.from_) + " " + date(a.until_) + " " + n(static_cast<int>(a.origin_)) + " " +
+      n(a.executions_) + "\n";
   }
   for (const auto& j : r.rejected_) {
-    out += "J " + std::to_string(static_cast<int>(j.reason_)) + " " + id(j.instrument_) + " " + j.tag_ + "\n";
+    out += "J " + n(static_cast<int>(j.reason_)) + " " + id(j.instrument_) + " [" + j.tag_ + "]\n";
   }
   for (const auto& g : r.refused_) {
-    out += "G " + std::to_string(static_cast<int>(g.reason_)) + " " + id(g.instrument_) + " " + g.tag_ + " " +
-      maybe(g.limit_) + " " + maybe(g.attempted_) + "\n";
+    out += "G " + n(static_cast<int>(g.reason_)) + " " + id(g.instrument_) + " [" + g.tag_ + "] " +
+      (g.halt_reason_ ? n(static_cast<int>(*g.halt_reason_)) : std::string("-")) + " " + maybe(g.limit_) + " " +
+      maybe(g.attempted_) + "\n";
   }
   return out;
 }
 
-/** What a callback was shown: positions, cash, buying power and the working orders, as text. */
+/**
+ * What a callback was shown, as text: the positions (quantity, sellable quantity, average price, mark), cash, buying
+ * power, and each working order (reference, instrument, side, type, price, trigger, quantity,
+ * filled quantity, status, reservation).
+ */
 template <class Ctx>
 std::string seen_by(Ctx& ctx) {
   const auto& portfolio = ctx.portfolio();
-  std::string out = "@" + std::to_string(portfolio.as_of_.time_since_epoch().count());
+  const auto maybe = [](const std::optional<Decimal64>& value) { return value ? value->str() : std::string("-"); };
+  std::string out = "@" + std::to_string(portfolio.as_of_.time_since_epoch().count()) + "/" +
+    std::to_string(portfolio.working_as_of_.time_since_epoch().count());
   for (const auto& position : portfolio.positions_) {
-    out += " P" + position.instrument_.symbol_ + "=" + position.quantity_.str();
+    out += " P" + position.instrument_.symbol_ + "=" + position.quantity_.str() + "/" +
+      maybe(position.sellable_quantity_) + "/" + position.average_purchase_price_.str() + "/" + position.last_price_.str();
   }
   for (const auto& money : portfolio.cash_) {
     out += " C" + money.amount_.str();
@@ -4169,8 +4204,12 @@ std::string seen_by(Ctx& ctx) {
   const auto power = portfolio.buying_power_in(Currency{"KRW"});
   out += " B" + (power ? power->str() : std::string("-"));
   for (const auto& working : portfolio.working_) {
-    out += " W" + working.ref_.primary_ + ":" + working.order_.execution_.filled_quantity_.str() + ":" +
-      std::to_string(static_cast<int>(working.order_.status_));
+    const auto& order = working.order_;
+    out += " W" + working.ref_.primary_ + "/" + working.ref_.secondary_ + ":" + order.instrument_.symbol_ + ":" +
+      std::to_string(static_cast<int>(order.side_)) + ":" + std::to_string(static_cast<int>(order.type_)) + ":" +
+      maybe(order.price_) + ":" + maybe(order.trigger_price_) + ":" + order.quantity_.str() + ":" +
+      order.execution_.filled_quantity_.str() + ":" + std::to_string(static_cast<int>(order.status_)) + ":" +
+      (working.reserved_ ? "r" : "-");
   }
   return out + "\n";
 }
@@ -4253,7 +4292,7 @@ struct WanderCore {
 
   template <class Ctx>
   void on_fill(Ctx& ctx, const strategy::Fill& fill) {
-    seen_ += "fill " + fill.instrument_.symbol_ + " " + fill.quantity_.str() + "\n";
+    seen_ += "fill " + fill.instrument_.symbol_ + " " + fill.quantity_.str() + " " + seen_by(ctx);
     if (draw(4) == 0) {
       act(ctx, fill.instrument_, fill.price_);
     }
@@ -4446,6 +4485,61 @@ TEST_CASE("a replay skips order updates for a strategy that has no handler and c
   CHECK(refused > 50);
   CHECK(expired > 5);
   CHECK(updates_heard > 1000);
+}
+
+TEST_CASE("the result digest the replay comparisons use tells apart a change to any field", "[order-updates]") {
+  // The comparisons above are only as strong as this digest: each change below, however small, must show.
+  const auto base = wander<Wanders>(1, limited_pair_config()).result_;
+  REQUIRE(!base.equity_.empty());
+  REQUIRE(!base.executions_.empty());
+  REQUIRE(!base.rejected_.empty());
+  REQUIRE(!base.refused_.empty());
+  const auto digest = result_digest(base);
+  const auto differs = [&digest, &base](const char* what, auto&& change) {
+    INFO(what);
+    auto changed = base;
+    change(changed);
+    CHECK(result_digest(changed) != digest);
+  };
+  differs("a return by one bit", [](backtest::ReplayResult& r) {
+    auto& point = r.equity_.back();
+    point.period_return_ = std::nextafter(point.period_return_, 1.0);
+  });
+  differs("a missing return", [](backtest::ReplayResult& r) { r.equity_.back().period_return_ = math::missing(); });
+  differs("an equity amount's scale", [](backtest::ReplayResult& r) {
+    r.equity_.back().equity_ = Decimal64(r.equity_.back().equity_.coefficient() * 10, r.equity_.back().equity_.scale() + 1);
+  });
+  differs("the result's currency", [](backtest::ReplayResult& r) { r.currency_ = Currency{"USD"}; });
+  differs("an execution's currency", [](backtest::ReplayResult& r) { r.executions_.front().currency_ = Currency{"USD"}; });
+  differs("an instrument's country", [](backtest::ReplayResult& r) {
+    r.executions_.front().fill_.instrument_.country_ = Country::US;
+  });
+  differs("an applied minimum", [](backtest::ReplayResult& r) {
+    r.executions_.front().applied_.minimum_ = Decimal64::parse("1000");
+  });
+  differs("an applied institution rate", [](backtest::ReplayResult& r) {
+    r.executions_.front().applied_.institution_rate_ = Decimal64::parse("0.0001");
+  });
+  differs("an applied rate's dates", [](backtest::ReplayResult& r) {
+    r.executions_.front().applied_.from_ = Date{2026, 1, 1};
+  });
+  differs("an applied rate's count", [](backtest::ReplayResult& r) { ++r.executions_.front().applied_.executions_; });
+  differs("an applied rate's country", [](backtest::ReplayResult& r) { r.executions_.front().applied_.country_ = Country::US; });
+  differs("a refusal's halt reason", [](backtest::ReplayResult& r) {
+    r.refused_.front().halt_reason_ = strategy::HaltReason::OPERATOR;
+  });
+  differs("a lowest cash's currency", [](backtest::ReplayResult& r) {
+    const auto amount = r.lowest_cash_ ? r.lowest_cash_->amount_ : Decimal64::parse("1");
+    const auto currency = r.lowest_cash_ && r.lowest_cash_->currency_ == Currency{"USD"} ? Currency{"KRW"} : Currency{"USD"};
+    r.lowest_cash_ = Money{amount, currency};
+    r.lowest_cash_at_ = r.equity_.front().at_;
+  });
+  differs("a halt whose message is a dash", [](backtest::ReplayResult& r) {
+    BrokerError error;
+    error.message_ = "-";
+    r.halted_ = error;
+  });
+  differs("a tag with a space moved", [](backtest::ReplayResult& r) { r.rejected_.front().tag_ += " "; });
 }
 
 TEST_CASE("a flat stated once behind a stop is placed at the boundary that withdraws the stop", "[order-updates]") {
