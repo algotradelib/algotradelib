@@ -160,9 +160,10 @@ static_assert(std::is_nothrow_move_assignable<strategy::slice_detail::Bucket>::v
 static_assert(std::is_nothrow_move_constructible<strategy::slice_detail::Bucket>::value);
 
 TEST_CASE("a ledger opening a lot finds every lot it lists after a failed allocation") {
-  // At 16, 17, 20 and 32 lots before the fill: the last scan, the index being built, the index extended, and
-  // the index growing its storage.
-  for (const int lots : {16, 17, 20, 32}) {
+  // At 0, 1 and 8 lots before the fill, narrow ledgers whose list of held lots must grow first (a copy's list has
+  // no room to spare, and 8 fills the first growth); at 16, 17, 20 and 32: the last scan, the index being built,
+  // the index extended, and the index growing its storage.
+  for (const int lots : {0, 1, 8, 16, 17, 20, 32}) {
     INFO(lots << " lots before the fill");
     const auto opened = named("NEW");
     const auto before = holding("S", lots);
