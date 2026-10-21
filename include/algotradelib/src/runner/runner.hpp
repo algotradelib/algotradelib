@@ -4176,10 +4176,10 @@ private:
 
   // Reconciles one queued instruction against the current portfolio.
   //
-  // The reference data is held in a local for the duration of the call, because
-  // `ReconcileInputs` borrows it rather than copying: an `Instrument` carries a tick table, and
-  // copying one per instruction per bar would be paying repeatedly for a value that does not
-  // change.
+  // The reference data is borrowed from the context (`find_instrument`) for the duration of the
+  // call, as `ReconcileInputs` borrows it in turn, rather than copied: an `Instrument` carries a tick
+  // table, and copying one per instruction per bar would pay repeatedly for a value that does not
+  // change. Nothing a plan does changes the context's reference data.
   strategy::Plan<Tag> plan_for(const Instruction<Tag>& instruction) {
     const auto id = instrument_of(instruction);
     const auto* reference = context_.find_instrument(id);
