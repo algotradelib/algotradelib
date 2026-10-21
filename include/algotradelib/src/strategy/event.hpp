@@ -306,10 +306,17 @@ struct BarSlice {
 
   /**
    * @brief Finds an instrument's bar.
+   *
+   * A slice a runner delivers finds it by hash; any other slice, or one whose bars changed since, by a scan.
+   *
    * @param id The instrument.
    * @return Its bar, or `nullptr` if it has none for this period.
    */
   const BarEvent* find(const InstrumentId& id) const noexcept {
+    if (!index_.empty() && index_for_ == bars_.data() && index_size_ == bars_.size()) {
+      const auto at = index_.find(id, Ids{&bars_});
+      return at ? &bars_[*at] : nullptr;
+    }
     for (const auto& event : bars_) {
       if (event.instrument_ == id) {
         return &event;
@@ -317,6 +324,21 @@ struct BarSlice {
     }
     return nullptr;
   }
+
+  /// \cond ATL_SLICE_DETAIL
+  // Where each bar is, by instrument, as the period bucket built it, and the bars it was built over (their
+  // storage and count). `find` uses it only for those very bars, so a copy, or a slice whose bars were changed
+  // or replaced since, is searched by a scan; the table compares the instrument of every position it returns.
+  id_detail::PositionTable index_;
+  const BarEvent* index_for_{nullptr};
+  std::size_t index_size_{0};
+
+  // The instrument at a position of `bars_`, for the table.
+  struct Ids {
+    const std::vector<BarEvent>* bars_;
+    const InstrumentId& operator()(std::size_t at) const noexcept { return (*bars_)[at].instrument_; }
+  };
+  /// \endcond
 };
 
 /// \cond ATL_SLICE_DETAIL
@@ -403,6 +425,7 @@ public:
 
   /** Takes the first slice out; the bucket must not be empty. */
   BarSlice take_first() {
+    hand_index_to(slices_.front());
     BarSlice slice = std::move(slices_.front());
     slices_.erase(slices_.begin());
     return slice;
@@ -410,6 +433,9 @@ public:
 
   /** Takes the slices out, leaving the bucket empty. */
   std::vector<BarSlice> take() {
+    for (auto& slice : slices_) {
+      hand_index_to(slice);
+    }
     std::vector<BarSlice> slices = std::move(slices_);
     slices_.clear();
     return slices;
@@ -448,6 +474,21 @@ private:
 
   // Refills the interval's table from its slice, which has just passed `id_detail::scan_limit` bars. On a
   // failure the table is left empty, and the caller takes the bar back out, so nothing reads it.
+  // Moves the table of a wide slice into it, with the bars it describes, so `BarSlice::find` can use it after
+  // the slice is delivered. Moving a slice keeps its bars' storage, so the table stays valid for it; the bucket's
+  // own table is rebuilt (`widen`) when a later period's slice grows wide again.
+  void hand_index_to(BarSlice& slice) noexcept {
+    if (slice.bars_.size() <= id_detail::scan_limit) {
+      return;
+    }
+    if (auto* entry = wide(slice.interval_)) {
+      slice.index_ = std::move(entry->table_);
+      entry->table_.reset();
+      slice.index_for_ = slice.bars_.data();
+      slice.index_size_ = slice.bars_.size();
+    }
+  }
+
   void widen(const BarSlice& slice) {
     Wide* entry = wide(slice.interval_);
     if (entry == nullptr) {
