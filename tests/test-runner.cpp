@@ -887,3 +887,103 @@ TEST_CASE("a context finds an instrument's reference data and last price by its 
   ctx.set_last_price(combined, Decimal64::parse("71000"));
   CHECK(*ctx.last_price(combined) == Decimal64::parse("71000"));
 }
+
+namespace {
+
+// How a cancellation changes the portfolio its runner shows, as an executor holding the runner's context may.
+enum class OnCancel { SWAP_ROWS, DROP_FIRST_ROW };
+
+// Records what it places; its cancellation rewrites the context's position rows.
+struct RewritesOnCancel {
+  static constexpr bool reaches_a_broker = false;
+  runner::Context<runner::DryTag, strategy::NoCaps>* context_{nullptr};
+  OnCancel how_{OnCancel::SWAP_ROWS};
+  std::vector<strategy::PlannedOrder> placed_;
+
+  runner::SendOutcome place(const strategy::PlannedOrder& order) {
+    placed_.push_back(order);
+    return runner::SendOutcome::ACCEPTED;
+  }
+  runner::SendOutcome cancel(const WorkingOrder<runner::DryTag>&) {
+    auto portfolio = context_->portfolio();
+    if (how_ == OnCancel::SWAP_ROWS) {
+      std::swap(portfolio.positions_[0], portfolio.positions_[1]);
+    } else {
+      portfolio.positions_.erase(portfolio.positions_.begin());
+    }
+    context_->set_portfolio(std::move(portfolio));
+    return runner::SendOutcome::ACCEPTED;
+  }
+};
+
+InstrumentId named(const char* symbol) { return InstrumentId{Country::KR, Venue::COMBINED, symbol}; }
+
+// Cancels its working order in A, then holds 110 of A, then states 100 of B fifteen times: seventeen
+// instructions, so the pass indexes the portfolio's rows.
+struct CancelsThenTargets {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent&) {
+    ctx.cancel(OrderRef<typename Ctx::Broker>{"0001", ""});
+    const auto hold = [&ctx](const char* symbol, const char* quantity) {
+      strategy::TargetPosition target;
+      target.instrument_ = named(symbol);
+      target.target_quantity_ = Decimal64::parse(quantity);
+      target.tag_ = "test";
+      ctx.submit(target);
+    };
+    hold("A", "110");
+    for (int k = 0; k < 15; ++k) {
+      hold("B", "100");
+    }
+  }
+};
+
+} // namespace
+
+TEST_CASE("a pass plans from the portfolio as an executor's cancellation left it") {
+  // The pass indexes the portfolio's rows before planning; an executor's cancellation then replaces the
+  // portfolio (rows swapped, or one dropped). Every later target must be planned against the portfolio as it
+  // now is, as a scan reads it, not against the index of the one before.
+  for (const auto how : {OnCancel::SWAP_ROWS, OnCancel::DROP_FIRST_ROW}) {
+    INFO((how == OnCancel::SWAP_ROWS ? "rows swapped" : "first row dropped"));
+    strategy::RiskLimits limits;
+    limits.permitted_phases_ = std::nullopt;
+    runner::Runner<CancelsThenTargets, strategy::NoCaps, runner::DryTag, RewritesOnCancel> run(CancelsThenTargets{}, limits);
+    run.executor().context_ = &run.context();
+    run.executor().how_ = how;
+    for (const char* symbol : {"A", "B"}) {
+      auto reference = samsung_reference();
+      reference.id_ = named(symbol);
+      run.context().set_instrument(reference);
+      run.context().set_last_price(named(symbol), Decimal64::parse("70000"));
+    }
+    run.context().set_phase(strategy::MarketPhase::OPEN);
+    strategy::Portfolio<runner::DryTag> portfolio;
+    HoldingPosition a;
+    a.instrument_ = named("A");
+    a.quantity_ = Decimal64::parse("10");
+    HoldingPosition b;
+    b.instrument_ = named("B");
+    b.quantity_ = Decimal64::parse("100");
+    portfolio.positions_ = {a, b};
+    WorkingOrder<runner::DryTag> working;
+    working.order_.instrument_ = named("A");
+    working.order_.side_ = OrderSide::BUY;
+    working.order_.type_ = OrderType::LIMIT;
+    working.order_.status_ = OrderStatus::PENDING;
+    working.order_.quantity_ = Decimal64::parse("1");
+    working.order_.execution_.filled_quantity_ = Decimal64::parse("0");
+    working.ref_ = OrderRef<runner::DryTag>{"0001", ""};
+    portfolio.working_.push_back(working);
+    run.context().set_portfolio(portfolio);
+
+    run.feed(bar_at(10, "70000"));
+    const auto& placed = run.executor().placed_;
+    // The cancelled buy of 1 is still listed, so it counts as working. Swapped, A still holds 10 and B 100:
+    // buy 99 of A, nothing of B. Dropped, A holds nothing: buy 109 of A, and B still holds 100.
+    REQUIRE(placed.size() == 1);
+    CHECK(placed[0].instrument_ == named("A"));
+    CHECK(placed[0].side_ == OrderSide::BUY);
+    CHECK(placed[0].quantity_ == Decimal64::parse(how == OnCancel::SWAP_ROWS ? "99" : "109"));
+  }
+}

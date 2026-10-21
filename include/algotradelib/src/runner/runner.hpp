@@ -1713,6 +1713,22 @@ private:
     confirm_reservations();
 
     Report report;
+    // **One index of the portfolio's rows for a pass with many instructions**, so each target finds its own
+    // rows instead of scanning all of them (`strategy::PortfolioRows`). It describes the portfolio as it is
+    // now; `plan_for` uses it only while the context's portfolio has been neither replaced nor edited since
+    // (an executor's cancellation can replace it), and scans otherwise. Built before the instructions are
+    // taken, so a failed allocation leaves them queued; cleared on every way out of the pass.
+    std::optional<strategy::PortfolioRows> rows;
+    if (context_.queued().size() > id_detail::scan_limit) {
+      rows.emplace(context_.portfolio());
+      rows_replacements_ = context_detail::PortfolioAccess::replacements(context_);
+      rows_edits_ = context_detail::PortfolioAccess::runner_edits(context_);
+    }
+    struct ForgetRows {
+      const strategy::PortfolioRows*& rows_;
+      ~ForgetRows() { rows_ = nullptr; }
+    } forget_rows{pass_rows_};
+    pass_rows_ = rows ? &*rows : nullptr;
     auto instructions = context_.drain();
     kept_this_pass_.clear();
     drop_superseded_deferred(instructions);
@@ -1904,6 +1920,8 @@ private:
         origin.push_back(&instruction);
       }
     }
+    // Placements below change the portfolio (`persist_reservation`), so the index ends with the planning.
+    pass_rows_ = nullptr;
 
     strategy::GuardInputs inputs;
     // When the order actually goes out (`send_instant`): a target kept at a ledger mark, or one
@@ -4175,6 +4193,14 @@ private:
     inputs.portfolio_value_currency_ = portfolio_value_currency_;
     inputs.tolerance_ = tolerance_;
     inputs.reserved_rows_are_unconfirmed_ = keeps_sent_orders_until_listed;
+    // The pass's index of the rows, while it still describes the portfolio; once anything replaced or edited
+    // the portfolio, the rest of the pass scans.
+    if (pass_rows_ != nullptr &&
+        (context_detail::PortfolioAccess::replacements(context_) != rows_replacements_ ||
+         context_detail::PortfolioAccess::runner_edits(context_) != rows_edits_)) {
+      pass_rows_ = nullptr;
+    }
+    inputs.rows_ = pass_rows_;
 
     auto plan = [&] {
       if (const auto* target = std::get_if<strategy::TargetPosition>(&instruction)) {
@@ -4493,6 +4519,11 @@ private:
   std::size_t kept_intents_dropped_{0};
   // The instructions kept for the phase in the current pass, so each is kept once.
   std::vector<const Instruction<Tag>*> kept_this_pass_;
+  // The index of the portfolio's rows for the planning loop of the pass in progress, or null (`settle`), and the
+  // context's counts of portfolio replacements and edits when it was built.
+  const strategy::PortfolioRows* pass_rows_{nullptr};
+  std::uint64_t rows_replacements_{0};
+  std::uint64_t rows_edits_{0};
   // True only inside a deferred release's settle, which `plan_withhold_reason` exempts.
   bool releasing_deferred_{false};
   // How many were ever deferred; see `targets_deferred`.

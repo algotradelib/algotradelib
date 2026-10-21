@@ -9,12 +9,16 @@
 
 #include <algotradelib/core>
 
+#include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -85,7 +89,71 @@ struct QueuedOrder {
  */
 template <typename BrokerTag>
 class QueueingExecutor {
+  struct Slot;
+
 public:
+  /** @brief An executor with nothing queued. */
+  QueueingExecutor() = default;
+
+  /**
+   * @brief Copies an executor and its queue.
+   * @param other The executor to copy.
+   */
+  QueueingExecutor(const QueueingExecutor& other) = default;
+
+  /**
+   * @brief Moves an executor; the source is left with nothing queued.
+   * @param other The executor to move from.
+   */
+  QueueingExecutor(QueueingExecutor&& other) noexcept
+  : slots_(std::move(other.slots_)),
+    live_(other.live_),
+    by_instrument_(std::move(other.by_instrument_)),
+    last_ref_(std::move(other.last_ref_)),
+    issued_(other.issued_),
+    bar_(other.bar_),
+    changes_(other.changes_ + 1),
+    deciding_at_(other.deciding_at_),
+    decision_is_exact_(other.decision_is_exact_) {
+    other.forget_queue();
+  }
+
+  /**
+   * @brief Replaces this executor with a move of another, which is left with nothing queued.
+   * @param other The executor to move from.
+   * @return This executor.
+   */
+  QueueingExecutor& operator=(QueueingExecutor&& other) noexcept {
+    if (this != &other) {
+      slots_ = std::move(other.slots_);
+      live_ = other.live_;
+      by_instrument_ = std::move(other.by_instrument_);
+      last_ref_ = std::move(other.last_ref_);
+      issued_ = other.issued_;
+      bar_ = other.bar_;
+      // The queue changed, whatever its count was: a replay comparing the count must see it move.
+      changes_ = (changes_ > other.changes_ ? changes_ : other.changes_) + 1;
+      deciding_at_ = other.deciding_at_;
+      decision_is_exact_ = other.decision_is_exact_;
+      other.forget_queue();
+    }
+    return *this;
+  }
+
+  /**
+   * @brief Replaces this executor with a copy of another, entirely or not at all.
+   * @param other The executor to copy.
+   * @return This executor.
+   * @throws std::bad_alloc If the copy cannot be made; this executor is then unchanged.
+   */
+  QueueingExecutor& operator=(const QueueingExecutor& other) {
+    if (this != &other) {
+      QueueingExecutor copy(other);
+      *this = std::move(copy);
+    }
+    return *this;
+  }
+
 
   /** @brief `false`: a replay reaches no broker. */
   static constexpr bool reaches_a_broker = false;
@@ -104,14 +172,24 @@ public:
     if (!can_model(order)) {
       return runner::SendOutcome::REFUSED_LOCALLY;
     }
-    QueuedOrder<BrokerTag> entry;
-    entry.order_ = order;
-    entry.ref_.primary_ = std::to_string(++issued_);
-    entry.accepted_on_ = bar_;
-    entry.decided_at_ = deciding_at_;
-    entry.decision_is_exact_ = decision_is_exact_;
-    last_ref_ = entry.ref_;
-    queued_.push_back(std::move(entry));
+    // Room in the instrument's list first, so that once the order is stored nothing below can fail.
+    auto& serials = by_instrument_[order.instrument_];
+    if (serials.size() == serials.capacity()) {
+      serials.reserve(std::max<std::size_t>(4, 2 * serials.capacity()));
+    }
+    Slot slot;
+    slot.entry_.order_ = order;
+    slot.serial_ = issued_ + 1;
+    slot.entry_.ref_.primary_ = std::to_string(slot.serial_);
+    slot.entry_.accepted_on_ = bar_;
+    slot.entry_.decided_at_ = deciding_at_;
+    slot.entry_.decision_is_exact_ = decision_is_exact_;
+    auto last = slot.entry_.ref_;
+    slots_.push_back(std::move(slot));
+    serials.push_back(slots_.back().serial_);
+    ++issued_;
+    ++live_;
+    last_ref_ = std::move(last);
     ++changes_;
     return runner::SendOutcome::ACCEPTED;
   }
@@ -179,14 +257,7 @@ public:
    *   withdrawn).
    */
   runner::SendOutcome cancel(const WorkingOrder<BrokerTag>& working) {
-    for (auto at = queued_.begin(); at != queued_.end(); ++at) {
-      if (at->ref_ == working.ref_) {
-        queued_.erase(at);
-        ++changes_;
-        return runner::SendOutcome::ACCEPTED;
-      }
-    }
-    return runner::SendOutcome::REJECTED;
+    return withdraw(working.ref_) ? runner::SendOutcome::ACCEPTED : runner::SendOutcome::REJECTED;
   }
 
   /**
@@ -196,10 +267,141 @@ public:
   std::optional<OrderRef<BrokerTag>> last_ref() const { return last_ref_; }
 
   /**
-   * @brief Returns every outstanding order.
-   * @return The orders, oldest first.
+   * @brief Every outstanding order, oldest first: a view over the queue, valid until the queue changes.
+   *
+   * Iterated, counted (`size`, `empty`) and read from the front (`front`); it holds no copy of any order.
    */
-  const std::vector<QueuedOrder<BrokerTag>>& queued() const noexcept { return queued_; }
+  class Queue {
+  public:
+    /** @brief Walks the outstanding orders, oldest first. */
+    class const_iterator {
+    public:
+      /** @brief A forward iterator. */
+      using iterator_category = std::forward_iterator_tag;
+      /** @brief An outstanding order. */
+      using value_type = QueuedOrder<BrokerTag>;
+      /** @brief The distance between two positions. */
+      using difference_type = std::ptrdiff_t;
+      /** @brief A pointer to an order. */
+      using pointer = const QueuedOrder<BrokerTag>*;
+      /** @brief A reference to an order. */
+      using reference = const QueuedOrder<BrokerTag>&;
+
+      /** @brief An iterator past the end of an empty queue. */
+      const_iterator() = default;
+      /**
+       * @brief Returns the order here.
+       * @return The order.
+       */
+      reference operator*() const noexcept { return at_->entry_; }
+      /**
+       * @brief Points at the order here.
+       * @return A pointer to it.
+       */
+      pointer operator->() const noexcept { return &at_->entry_; }
+      /**
+       * @brief Moves to the next outstanding order.
+       * @return This iterator.
+       */
+      const_iterator& operator++() noexcept {
+        ++at_;
+        skip();
+        return *this;
+      }
+      /**
+       * @brief Moves to the next outstanding order.
+       * @return The iterator as it was.
+       */
+      const_iterator operator++(int) noexcept {
+        auto was = *this;
+        ++*this;
+        return was;
+      }
+      /**
+       * @brief Compares two positions in one queue.
+       * @param lhs The first.
+       * @param rhs The second.
+       * @return `true` if they are the same.
+       */
+      friend bool operator==(const const_iterator& lhs, const const_iterator& rhs) noexcept { return lhs.at_ == rhs.at_; }
+      /**
+       * @brief Compares two positions in one queue.
+       * @param lhs The first.
+       * @param rhs The second.
+       * @return `true` if they differ.
+       */
+      friend bool operator!=(const const_iterator& lhs, const const_iterator& rhs) noexcept { return lhs.at_ != rhs.at_; }
+
+    private:
+      friend class Queue;
+      const_iterator(const Slot* at, const Slot* end) noexcept : at_(at), end_(end) { skip(); }
+      void skip() noexcept {
+        while (at_ != end_ && !at_->live_) {
+          ++at_;
+        }
+      }
+      const Slot* at_{nullptr};
+      const Slot* end_{nullptr};
+    };
+
+    /**
+     * @brief Returns the oldest outstanding order's position.
+     * @return The iterator.
+     */
+    const_iterator begin() const noexcept { return const_iterator(first_, last_); }
+    /**
+     * @brief Returns the position past the newest.
+     * @return The iterator.
+     */
+    const_iterator end() const noexcept { return const_iterator(last_, last_); }
+    /**
+     * @brief Returns how many orders are outstanding.
+     * @return The count.
+     */
+    std::size_t size() const noexcept { return size_; }
+    /**
+     * @brief Returns whether no order is outstanding.
+     * @return `true` if none is.
+     */
+    bool empty() const noexcept { return size_ == 0; }
+    /**
+     * @brief Returns the oldest outstanding order; the queue must not be empty.
+     * @return The order.
+     */
+    const QueuedOrder<BrokerTag>& front() const noexcept { return *begin(); }
+
+  private:
+    friend class QueueingExecutor;
+    Queue(const Slot* first, const Slot* last, std::size_t size) noexcept : first_(first), last_(last), size_(size) {}
+    const Slot* first_;
+    const Slot* last_;
+    std::size_t size_;
+  };
+
+  /**
+   * @brief Returns every outstanding order, oldest first.
+   * @return A view of the orders; valid until the queue changes.
+   */
+  Queue queued() const noexcept { return Queue(slots_.data(), slots_.data() + slots_.size(), live_); }
+
+  /**
+   * @brief Calls `each` with every outstanding order in one instrument, oldest first.
+   *
+   * Visits only that instrument's orders, however many others are queued. `each` must not change the queue.
+   *
+   * @param instrument The instrument.
+   * @param each Called as `each(const QueuedOrder&)`.
+   */
+  template <typename Each>
+  void for_each_queued_in(const InstrumentId& instrument, Each&& each) const {
+    const auto found = by_instrument_.find(instrument);
+    if (found == by_instrument_.end()) {
+      return;
+    }
+    for (const auto serial : found->second) {
+      each(slots_[*slot_of(serial)].entry_);
+    }
+  }
 
   /**
    * @brief Finds an outstanding order.
@@ -207,12 +409,8 @@ public:
    * @return A pointer into the queue (valid until the queue changes), or `nullptr`.
    */
   const QueuedOrder<BrokerTag>* find(const OrderRef<BrokerTag>& ref) const {
-    for (const auto& entry : queued_) {
-      if (entry.ref_ == ref) {
-        return &entry;
-      }
-    }
-    return nullptr;
+    const auto at = live_slot_of(ref);
+    return at ? &slots_[*at].entry_ : nullptr;
   }
 
   /**
@@ -221,11 +419,8 @@ public:
    * @param session The session's market-local date.
    */
   void assign_session(const OrderRef<BrokerTag>& ref, Date session) {
-    for (auto& entry : queued_) {
-      if (entry.ref_ == ref) {
-        entry.session_ = session;
-        return;
-      }
+    if (const auto at = live_slot_of(ref)) {
+      slots_[*at].entry_.session_ = session;
     }
   }
 
@@ -235,14 +430,24 @@ public:
    * @return `true` if it was queued.
    */
   bool withdraw(const OrderRef<BrokerTag>& ref) {
-    for (auto at = queued_.begin(); at != queued_.end(); ++at) {
-      if (at->ref_ == ref) {
-        queued_.erase(at);
-        ++changes_;
-        return true;
-      }
+    const auto at = live_slot_of(ref);
+    if (!at) {
+      return false;
     }
-    return false;
+    // **Marked removed where it is, not erased.** Erasing moved every later order (each with three strings)
+    // one place down, for every fill; the storage is compacted instead once removed orders outnumber the
+    // rest, which keeps placement order and costs each removal a constant on average. Finding the order in
+    // its instrument's list is linear in that instrument's outstanding orders, usually one.
+    auto& slot = slots_[*at];
+    slot.live_ = false;
+    --live_;
+    auto& serials = by_instrument_.find(slot.entry_.order_.instrument_)->second;
+    serials.erase(std::find(serials.begin(), serials.end(), slot.serial_));
+    ++changes_;
+    if (slots_.size() - live_ > live_) {
+      compact();
+    }
+    return true;
   }
 
   /**
@@ -251,13 +456,12 @@ public:
    * @return `true` if it was queued.
    */
   bool release(const OrderRef<BrokerTag>& ref) {
-    for (auto& entry : queued_) {
-      if (entry.ref_ == ref) {
-        entry.released_ = true;
-        return true;
-      }
+    const auto at = live_slot_of(ref);
+    if (!at) {
+      return false;
     }
-    return false;
+    slots_[*at].entry_.released_ = true;
+    return true;
   }
 
   /**
@@ -291,7 +495,64 @@ public:
   }
 
 private:
-  std::vector<QueuedOrder<BrokerTag>> queued_;
+  // One accepted order and its serial (the number its reference states), in placement order; `live_` turns
+  // false when it fills or is withdrawn, until `compact` drops it.
+  struct Slot {
+    QueuedOrder<BrokerTag> entry_;
+    std::uint64_t serial_{0};
+    bool live_{true};
+  };
+
+  // Where the order with `serial` is in `slots_`. Serials rise in placement order, which compaction keeps.
+  std::optional<std::size_t> slot_of(std::uint64_t serial) const noexcept {
+    const auto found = std::lower_bound(
+      slots_.begin(), slots_.end(), serial,
+      [](const Slot& slot, std::uint64_t wanted) { return slot.serial_ < wanted; }
+    );
+    if (found == slots_.end() || found->serial_ != serial) {
+      return std::nullopt;
+    }
+    return static_cast<std::size_t>(found - slots_.begin());
+  }
+
+  // Where the outstanding order `ref` names is, by the serial its primary part states: a reference this
+  // executor did not issue, or one already filled or withdrawn, is found nowhere, as by a scan comparing whole
+  // references.
+  std::optional<std::size_t> live_slot_of(const OrderRef<BrokerTag>& ref) const noexcept {
+    const auto& text = ref.primary_;
+    std::uint64_t serial = 0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), serial);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()) {
+      return std::nullopt;
+    }
+    const auto at = slot_of(serial);
+    if (!at || !slots_[*at].live_ || !(slots_[*at].entry_.ref_ == ref)) {
+      return std::nullopt;
+    }
+    return at;
+  }
+
+  // Leaves a moved-from executor with nothing queued, its count of changes moved on.
+  void forget_queue() noexcept {
+    slots_.clear();
+    by_instrument_.clear();
+    live_ = 0;
+    last_ref_.reset();
+    ++changes_;
+  }
+
+  // Drops the removed orders, keeping the rest in placement order. Moves orders; allocates nothing.
+  void compact() noexcept {
+    slots_.erase(
+      std::remove_if(slots_.begin(), slots_.end(), [](const Slot& slot) { return !slot.live_; }),
+      slots_.end()
+    );
+  }
+
+  std::vector<Slot> slots_;
+  std::size_t live_{0};
+  // Each instrument's outstanding orders by serial, oldest first.
+  std::unordered_map<InstrumentId, std::vector<std::uint64_t>, id_detail::InstrumentIdHash> by_instrument_;
   std::optional<OrderRef<BrokerTag>> last_ref_;
   std::uint64_t issued_{0};
   std::uint64_t bar_{0};
@@ -983,15 +1244,12 @@ private:
     expire_day_orders(event, bar_date, false);
     std::vector<OrderRef<Tag>> eligible;
     std::vector<OrderRef<Tag>> first_session;
-    for (const auto& entry : runner_.executor().queued()) {
-      // A different instrument's order waits for that instrument's next bar, which is what makes an
-      // interleaved multi-instrument replay behave. An order accepted during this bar waits for the
-      // next one, which is the no-lookahead rule.
-      if (!(entry.order_.instrument_ == event.instrument_)) {
-        continue;
-      }
+    // Only this instrument's orders, oldest first: a different instrument's order waits for that
+    // instrument's next bar, which is what makes an interleaved multi-instrument replay behave. An order
+    // accepted during this bar waits for the next one, which is the no-lookahead rule.
+    runner_.executor().for_each_queued_in(event.instrument_, [&](const QueuedOrder<Tag>& entry) {
       if (entry.accepted_on_ >= runner_.executor().bar()) {
-        continue;
+        return;
       }
       // **And, where the event says enough to check it, it cannot fill against a bar whose period
       // had already begun when it was decided.** The counter above is enough while only bars place
@@ -1000,7 +1258,7 @@ private:
       // the decision. Where the event does *not* say enough, `may_fill` allows the fill and records
       // that nothing was checked. See it for all three answers.
       if (!may_fill(entry, event)) {
-        continue;
+        return;
       }
       eligible.push_back(entry.ref_);
       // **Which session a DAY order lives in**, fixed at the first bar it is eligible against: that
@@ -1012,7 +1270,7 @@ private:
       if (!entry.session_ && time_in_force_expires_at_close(entry.order_.time_in_force_)) {
         first_session.push_back(entry.ref_);
       }
-    }
+    });
     for (const auto& ref : first_session) {
       runner_.executor().assign_session(ref, bar_date);
     }
@@ -1140,15 +1398,14 @@ private:
       clock_.session().close_;
     const bool ends_session = after_fills && (daily_or_longer || !(event.period_end_ < closes));
     std::vector<OrderRef<Tag>> expired;
-    for (const auto& entry : runner_.executor().queued()) {
-      if (!(entry.order_.instrument_ == event.instrument_) || !entry.session_ ||
-          !time_in_force_expires_at_close(entry.order_.time_in_force_)) {
-        continue;
+    runner_.executor().for_each_queued_in(event.instrument_, [&](const QueuedOrder<Tag>& entry) {
+      if (!entry.session_ || !time_in_force_expires_at_close(entry.order_.time_in_force_)) {
+        return;
       }
       if (*entry.session_ < bar_date || (*entry.session_ == bar_date && ends_session)) {
         expired.push_back(entry.ref_);
       }
-    }
+    });
     for (const auto& ref : expired) {
       runner_.executor().withdraw(ref);
       ++result_.expired_day_orders_;

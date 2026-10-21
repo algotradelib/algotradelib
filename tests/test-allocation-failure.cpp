@@ -305,6 +305,56 @@ TEST_CASE("a reservation that cannot be recorded leaves the rows and the buying 
   CHECK(dry.context().portfolio().working_.size() == 1);
 }
 
+TEST_CASE("a replay queue copy that fails leaves the destination as it was") {
+  // The queue keeps its orders and an index of them by instrument; a copy assigned whole or not at all leaves
+  // the two agreeing, so every order the destination lists is found, walked and withdrawn.
+  const auto order_in = [](const std::string& symbol) {
+    strategy::PlannedOrder order;
+    order.instrument_ = named(symbol);
+    order.type_ = OrderType::MARKET;
+    order.time_in_force_ = TimeInForce::DAY;
+    order.quantity_ = Decimal64::parse("1");
+    return order;
+  };
+  using Queue = backtest::QueueingExecutor<backtest::BacktestTag>;
+  Queue source;
+  for (int k = 0; k < 6; ++k) {
+    REQUIRE(source.place(order_in("SOURCE-INSTRUMENT-WITH-A-LONG-NAME-" + std::to_string(k % 3))) ==
+      runner::SendOutcome::ACCEPTED);
+  }
+  Queue destination;
+  REQUIRE(destination.place(order_in("DESTINATION-INSTRUMENT-WITH-A-LONG-NAME")) == runner::SendOutcome::ACCEPTED);
+  const auto require_consistent = [](Queue& queue, std::size_t expected) {
+    REQUIRE(queue.queued().size() == expected);
+    std::vector<OrderRef<backtest::BacktestTag>> refs;
+    for (const auto& entry : queue.queued()) {
+      refs.push_back(entry.ref_);
+      std::size_t found = 0;
+      queue.for_each_queued_in(entry.order_.instrument_, [&](const auto& mine) { found += mine.ref_ == entry.ref_; });
+      REQUIRE(found == 1);
+    }
+    REQUIRE(refs.size() == expected);
+    return refs;
+  };
+  const int failures = fail_each_allocation(
+    [&] { destination = source; },
+    [&] {
+      auto copy = destination;
+      const auto refs = require_consistent(copy, 1);
+      for (const auto& ref : refs) {
+        REQUIRE(copy.withdraw(ref));
+      }
+      REQUIRE(copy.queued().empty());
+    }
+  );
+  CHECK(failures > 0);
+  const auto refs = require_consistent(destination, 6);
+  for (const auto& ref : refs) {
+    REQUIRE(destination.withdraw(ref));
+  }
+  CHECK(destination.queued().empty());
+}
+
 TEST_CASE("a ledger copy that fails leaves the destination as it was") {
   const auto source = holding("T", 25);
   const auto original = holding("S", 20);

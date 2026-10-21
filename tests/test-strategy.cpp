@@ -1908,3 +1908,101 @@ TEST_CASE("the default limits refuse a sell the account has not been shown to ho
   borrowing.enforce_sellable_quantity_ = false;
   CHECK_FALSE(RiskGuard(borrowing).check(planned("1", "70000", OrderSide::SELL), flat, open_market()));
 }
+
+namespace {
+
+// Whether two plans are the same: the same cancellations, placements and refusals, in the same order.
+template <typename Broker>
+bool same_plan(const strategy::Plan<Broker>& lhs, const strategy::Plan<Broker>& rhs) {
+  if (!(lhs.cancel_ == rhs.cancel_) || lhs.place_.size() != rhs.place_.size() ||
+      lhs.rejected_.size() != rhs.rejected_.size()) {
+    return false;
+  }
+  for (std::size_t at = 0; at < lhs.place_.size(); ++at) {
+    const auto& a = lhs.place_[at];
+    const auto& b = rhs.place_[at];
+    if (!(a.instrument_ == b.instrument_) || a.side_ != b.side_ || a.type_ != b.type_ ||
+        a.time_in_force_ != b.time_in_force_ || !(a.quantity_ == b.quantity_) || !(a.price_ == b.price_) ||
+        a.tag_ != b.tag_ || a.quantity_rounded_ != b.quantity_rounded_) {
+      return false;
+    }
+  }
+  for (std::size_t at = 0; at < lhs.rejected_.size(); ++at) {
+    if (lhs.rejected_[at].reason_ != rhs.rejected_[at].reason_ ||
+        !(lhs.rejected_[at].instrument_ == rhs.rejected_[at].instrument_)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+} // namespace
+
+TEST_CASE("a target's plan is the same with a pass's index of the portfolio's rows as without it") {
+  // `ReconcileInputs::rows_` only tells `reconcile` where each instrument's rows are; over portfolios with
+  // several rows per instrument, stops, reserved rows, closed orders and both sides, every plan must match the
+  // one a scan gives, cancellations in the same order.
+  std::uint32_t state = 20261021;
+  const auto next = [&state](std::uint32_t below) {
+    state = state * 1664525u + 1013904223u;
+    return (state >> 8) % below;
+  };
+  const auto id_of = [](std::uint32_t k) { return InstrumentId{Country::KR, Venue::COMBINED, "S" + std::to_string(k)}; };
+  for (int round = 0; round < 400; ++round) {
+    ProbePortfolio portfolio;
+    for (std::uint32_t row = 0, rows = next(7); row < rows; ++row) {
+      HoldingPosition position;
+      position.instrument_ = id_of(next(4));
+      position.quantity_ = Decimal64(static_cast<std::int64_t>(next(101)) - 50, 0);
+      portfolio.positions_.push_back(position);
+    }
+    for (std::uint32_t row = 0, rows = next(11); row < rows; ++row) {
+      WorkingOrder<strategy::ProbeBroker> working;
+      working.order_.instrument_ = id_of(next(4));
+      working.order_.side_ = next(2) == 0 ? OrderSide::BUY : OrderSide::SELL;
+      const auto kind = next(5);
+      working.order_.type_ = kind == 0 ? OrderType::STOP_LIMIT : OrderType::LIMIT;
+      if (kind == 0) {
+        working.order_.trigger_price_ = Decimal64::parse("70000");
+      }
+      const OrderStatus statuses[] = {OrderStatus::PENDING, OrderStatus::PARTIAL_FILLED, OrderStatus::FILLED,
+        OrderStatus::PENDING_CANCEL};
+      working.order_.status_ = statuses[next(4)];
+      working.order_.quantity_ = Decimal64(static_cast<std::int64_t>(next(30)) + 1, 0);
+      working.order_.execution_.filled_quantity_ = Decimal64(static_cast<std::int64_t>(next(5)), 0);
+      working.ref_.primary_ = std::to_string(row);
+      working.reserved_ = next(3) == 0;
+      portfolio.working_.push_back(working);
+    }
+    const strategy::PortfolioRows rows(portfolio);
+    for (std::uint32_t k = 0; k < 5; ++k) {
+      auto reference = samsung_reference();
+      reference.id_ = id_of(k);
+      ReconcileInputs scanned;
+      scanned.instrument_ = &reference;
+      scanned.reserved_rows_are_unconfirmed_ = round % 2 == 0;
+      auto indexed = scanned;
+      indexed.rows_ = &rows;
+      TargetPosition wanted;
+      wanted.instrument_ = id_of(k);
+      wanted.target_quantity_ = Decimal64(static_cast<std::int64_t>(next(81)) - 40, 0);
+      wanted.tag_ = "test";
+      INFO("round " << round << " instrument " << k);
+      REQUIRE(same_plan(strategy::reconcile(wanted, portfolio, scanned), strategy::reconcile(wanted, portfolio, indexed)));
+    }
+  }
+  // A sum that does not fit is refused the same way.
+  ProbePortfolio overflowing;
+  overflowing.positions_.push_back(holding("9223372036854775807"));
+  overflowing.positions_.push_back(holding("9223372036854775807"));
+  const strategy::PortfolioRows rows(overflowing);
+  const auto reference = samsung_reference();
+  ReconcileInputs scanned;
+  scanned.instrument_ = &reference;
+  auto indexed = scanned;
+  indexed.rows_ = &rows;
+  const auto plan = strategy::reconcile(target("0"), overflowing, indexed);
+  REQUIRE(plan.rejected_.size() == 1);
+  CHECK(plan.rejected_[0].reason_ == strategy::RejectReason::NOT_REPRESENTABLE);
+  CHECK(same_plan(plan, strategy::reconcile(target("0"), overflowing, scanned)));
+}
