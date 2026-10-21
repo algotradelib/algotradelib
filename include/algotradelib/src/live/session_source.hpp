@@ -640,7 +640,9 @@ private:
   template <typename Runner>
   void deliver(Runner& runner_instance, strategy::slice_detail::Bucket& bucket, bool history) {
     while (!bucket.empty()) {
-      auto slice = bucket.take_first();
+      // **Const, so a runner can only read it.** The delivered slice carries the bucket's table of where each
+      // bar is (`BarSlice::find`); a runner offering an overload for a mutable slice must not be handed this one.
+      const auto slice = bucket.take_first();
       delivered_through_ = slice.period_end_;
       if (history) {
         runner_instance.feed_warmup(slice);

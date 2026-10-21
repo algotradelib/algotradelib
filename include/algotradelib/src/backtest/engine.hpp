@@ -891,8 +891,9 @@ public:
     }
 
     if constexpr (Runner::takes_bar_slices) {
-      // Cached, priced and clocked now; the strategy sees it with the rest of its period.
-      runner_.record(event);
+      // Cached and clocked now (priced above, so not again); the strategy sees it with the rest of its period.
+      runner_.record_history_only(event);
+      runner_.context().set_now(event.period_end_);
       pending_.add(event);
     } else {
       install_portfolio();

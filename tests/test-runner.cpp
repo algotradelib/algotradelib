@@ -987,3 +987,34 @@ TEST_CASE("a pass plans from the portfolio as an executor's cancellation left it
     CHECK(placed[0].quantity_ == Decimal64::parse(how == OnCancel::SWAP_ROWS ? "99" : "109"));
   }
 }
+
+#if defined(ATL_HAS_EIGEN)
+TEST_CASE("a cached series stays where it is as more instruments and intervals are cached") {
+  // `ctx.bars` hands out a pointer to the cache; the series behind it must not move when other instruments, or
+  // another interval of the same one, are cached after it.
+  runner::Context<runner::DryTag, strategy::NoCaps> context(8);
+  const auto bar_for = [](const InstrumentId& id, BarInterval interval, int minute, const char* close) {
+    Bar bar;
+    bar.timestamp_ = utc(2026, 3, 10, 1, minute);
+    bar.open_ = bar.high_ = bar.low_ = bar.close_ = Decimal64::parse(close);
+    bar.volume_ = Decimal64::parse("1");
+    return strategy::make_bar_event(id, interval, BarStamp::CLOSE, bar);
+  };
+  context.record_bar(bar_for(samsung(), BarInterval::ONE_DAY, 0, "70000"));
+  const auto* daily = context.bars(samsung(), BarInterval::ONE_DAY);
+  REQUIRE(daily != nullptr);
+  for (int k = 0; k < 600; ++k) {
+    context.record_bar(bar_for(InstrumentId{Country::KR, Venue::COMBINED, "N" + std::to_string(k)}, BarInterval::ONE_DAY, 0, "100"));
+  }
+  context.record_bar(bar_for(samsung(), BarInterval::ONE_MINUTE, 1, "70100"));
+  REQUIRE(context.bars(samsung(), BarInterval::ONE_DAY) == daily);
+  REQUIRE(daily->size() == 1);
+  const auto* minute = context.bars(samsung(), BarInterval::ONE_MINUTE);
+  REQUIRE(minute != nullptr);
+  REQUIRE(minute != daily);
+  REQUIRE(minute->size() == 1);
+  REQUIRE(context.bars(samsung(), BarInterval::ONE_HOUR) == nullptr);
+  REQUIRE(context.bars(InstrumentId{Country::KR, Venue::COMBINED, "N599"}) != nullptr);
+  REQUIRE(context.bars(InstrumentId{Country::KR, Venue::COMBINED, "N600"}) == nullptr);
+}
+#endif

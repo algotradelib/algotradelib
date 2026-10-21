@@ -286,6 +286,48 @@ inline BarEvent make_bar_event(
   return event;
 }
 
+struct BarSlice;
+
+/// \cond ATL_SLICE_DETAIL
+namespace slice_detail {
+
+// Where each bar of a delivered slice is, by instrument, and the bars it was built over (their storage and
+// count). Only the period bucket fills it, on the slice it delivers; **a copy or a move of a slice starts with
+// none**, so the only slice that can use it is the one the library built and hands on only as a const reference
+// (to a handler, and from `live::SessionSource` to a runner), whose bars nobody changes. A copy, a move, or a slice
+// built by its holder has no table and is scanned.
+class SliceIndex {
+public:
+  SliceIndex() = default;
+  SliceIndex(const SliceIndex&) noexcept {}
+  SliceIndex(SliceIndex&&) noexcept {}
+  SliceIndex& operator=(const SliceIndex&) noexcept {
+    forget();
+    return *this;
+  }
+  SliceIndex& operator=(SliceIndex&&) noexcept {
+    forget();
+    return *this;
+  }
+
+private:
+  friend struct strategy::BarSlice;
+  friend class Bucket;
+
+  void forget() noexcept {
+    table_.reset();
+    built_over_ = nullptr;
+    count_ = 0;
+  }
+
+  id_detail::PositionTable table_;
+  const void* built_over_{nullptr};
+  std::size_t count_{0};
+};
+
+} // namespace slice_detail
+/// \endcond
+
 /**
  * @brief Every instrument's bar of one interval for one period end, delivered to `on_bars`.
  *
@@ -306,10 +348,18 @@ struct BarSlice {
 
   /**
    * @brief Finds an instrument's bar.
+   *
+   * The slice a runner hands to `on_bars` finds it by hash; a copy, a move, or a slice built by its holder, by a
+   * scan.
+   *
    * @param id The instrument.
    * @return Its bar, or `nullptr` if it has none for this period.
    */
   const BarEvent* find(const InstrumentId& id) const noexcept {
+    if (!index_.table_.empty() && index_.built_over_ == bars_.data() && index_.count_ == bars_.size()) {
+      const auto at = index_.table_.find(id, Ids{&bars_});
+      return at ? &bars_[*at] : nullptr;
+    }
     for (const auto& event : bars_) {
       if (event.instrument_ == id) {
         return &event;
@@ -317,6 +367,19 @@ struct BarSlice {
     }
     return nullptr;
   }
+
+  /// \cond ATL_SLICE_DETAIL
+  // The bucket's table of where each bar is, on the slice it delivers only (`slice_detail::SliceIndex`). The
+  // storage and count are checked too, which catches bars reallocated or resized since; it cannot catch bars
+  // changed in place, which is why only a slice handed on as const carries the table.
+  slice_detail::SliceIndex index_;
+
+  // The instrument at a position of `bars_`, for the table.
+  struct Ids {
+    const std::vector<BarEvent>* bars_;
+    const InstrumentId& operator()(std::size_t at) const noexcept { return (*bars_)[at].instrument_; }
+  };
+  /// \endcond
 };
 
 /// \cond ATL_SLICE_DETAIL
@@ -403,13 +466,18 @@ public:
 
   /** Takes the first slice out; the bucket must not be empty. */
   BarSlice take_first() {
+    // Moved out first, since a move does not carry the table (`SliceIndex`); the bars keep their storage.
     BarSlice slice = std::move(slices_.front());
+    hand_index_to(slice);
     slices_.erase(slices_.begin());
     return slice;
   }
 
   /** Takes the slices out, leaving the bucket empty. */
   std::vector<BarSlice> take() {
+    for (auto& slice : slices_) {
+      hand_index_to(slice);
+    }
     std::vector<BarSlice> slices = std::move(slices_);
     slices_.clear();
     return slices;
@@ -448,6 +516,21 @@ private:
 
   // Refills the interval's table from its slice, which has just passed `id_detail::scan_limit` bars. On a
   // failure the table is left empty, and the caller takes the bar back out, so nothing reads it.
+  // Moves the table of a wide slice into it, with the bars it describes, so `BarSlice::find` can use it after
+  // the slice is delivered. Moving a slice keeps its bars' storage, so the table stays valid for it; the bucket's
+  // own table is rebuilt (`widen`) when a later period's slice grows wide again.
+  void hand_index_to(BarSlice& slice) noexcept {
+    if (slice.bars_.size() <= id_detail::scan_limit) {
+      return;
+    }
+    if (auto* entry = wide(slice.interval_)) {
+      slice.index_.table_ = std::move(entry->table_);
+      entry->table_.reset();
+      slice.index_.built_over_ = slice.bars_.data();
+      slice.index_.count_ = slice.bars_.size();
+    }
+  }
+
   void widen(const BarSlice& slice) {
     Wide* entry = wide(slice.interval_);
     if (entry == nullptr) {

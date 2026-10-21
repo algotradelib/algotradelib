@@ -294,11 +294,12 @@ public:
     const InstrumentId& id,
     BarInterval interval = BarInterval::ONE_DAY
   ) const {
-    const auto found = series_.find(SeriesKey{id, interval});
+    const auto found = series_.find(id);
     if (found == series_.end()) {
       return nullptr;
     }
-    return &found->second;
+    const auto series = found->second.find(interval);
+    return series == found->second.end() ? nullptr : &series->second;
   }
 #endif
 
@@ -408,12 +409,17 @@ public:
    *   capacity is zero.
    */
   void record_bar(const BarEvent& event) {
-    const SeriesKey key{event.instrument_, event.interval_};
-    auto found = series_.find(key);
+    // Found by hash, without building a key; the instrument is copied only for its first bar.
+    auto found = series_.find(event.instrument_);
     if (found == series_.end()) {
-      found = series_.emplace(key, analytics::SeriesBuffer(series_capacity_)).first;
+      found = series_.emplace(event.instrument_, std::map<BarInterval, analytics::SeriesBuffer>{}).first;
     }
-    found->second.push(event.bar_);
+    auto& by_interval = found->second;
+    auto series = by_interval.find(event.interval_);
+    if (series == by_interval.end()) {
+      series = by_interval.emplace(event.interval_, analytics::SeriesBuffer(series_capacity_)).first;
+    }
+    series->second.push(event.bar_);
   }
 #endif
 
@@ -437,7 +443,8 @@ private:
   std::unordered_map<InstrumentId, Instrument, InstrumentHash> instruments_;
   std::unordered_map<InstrumentId, Decimal64, InstrumentHash> prices_;
 #if defined(ATL_HAS_EIGEN)
-  std::map<SeriesKey, analytics::SeriesBuffer> series_;
+  // Each instrument's cached series, by interval. Node-based both ways, so a series never moves once made.
+  std::unordered_map<InstrumentId, std::map<BarInterval, analytics::SeriesBuffer>, InstrumentHash> series_;
 #endif
   std::vector<Instruction<BrokerTag>> queued_;
   Log log_;
