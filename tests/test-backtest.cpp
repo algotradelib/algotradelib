@@ -5028,3 +5028,46 @@ TEST_CASE("a ledger applies one of its own executions while making room for it")
   CHECK(ledger.quantity_of(bought.fill_.instrument_) ==
     std::optional<Decimal64>(Decimal64(static_cast<std::int64_t>(before + 1), 0)));
 }
+
+namespace {
+
+/**
+ * Buys one share on bar 1; on bar 3 moves into its context a copy of it whose position names another
+ * instrument. Records the symbol of the first position it reads on every bar.
+ */
+struct MovesAContextIn {
+  int bars_{0};
+  std::vector<std::string> symbols_seen_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ++bars_;
+    symbols_seen_.push_back(ctx.portfolio().positions_.empty() ? "" : ctx.portfolio().positions_[0].instrument_.symbol_);
+    if (bars_ == 1) {
+      ctx.submit(strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))));
+    } else if (bars_ == 3) {
+      auto portfolio = ctx.portfolio();
+      portfolio.positions_[0].instrument_.symbol_ = "WRONG";
+      Ctx replacement;
+      replacement.set_portfolio(std::move(portfolio));
+      replacement.set_instrument(*ctx.instrument(bar.instrument_));
+      replacement.set_now(ctx.now());
+      replacement.set_phase(ctx.phase());
+      ctx = std::move(replacement);
+    }
+  }
+};
+
+} // namespace
+
+TEST_CASE("a replay rebuilds a portfolio moved into its context") {
+  // A move brings in another context's portfolio and its count of replacements; the count must still differ
+  // from the one the replay last saw, or the replay would keep the moved-in rows. This file's check fails the
+  // replay on any difference from a fresh rebuild.
+  backtest::Backtester<MovesAContextIn> engine(MovesAContextIn{}, replay_config());
+  for (int minute = 1; minute <= 4; ++minute) {
+    engine.feed(moving_bar(session_minute(minute), BarInterval::ONE_MINUTE, "70000", "70000"));
+  }
+  REQUIRE(engine.strategy().symbols_seen_ == std::vector<std::string>{"", "005930", "005930", "005930"});
+}

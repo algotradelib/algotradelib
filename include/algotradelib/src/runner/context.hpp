@@ -58,6 +58,24 @@ class Backtester;
 namespace runner {
 namespace context_detail {
 
+// A count of a context's portfolio replacements that a move also advances. Moving a context's state into
+// another replaces the destination's portfolio, so the destination's count must not merely take the source's
+// value: it rises above both, and the source's (now emptied) count rises too. A replay comparing the count with
+// the one it last saw then rebuilds whatever a move brought in.
+struct Revision {
+  std::uint64_t value_{0};
+
+  Revision() = default;
+  Revision(const Revision&) = delete;
+  Revision& operator=(const Revision&) = delete;
+  Revision(Revision&& other) noexcept : value_(other.value_ + 1) { ++other.value_; }
+  Revision& operator=(Revision&& other) noexcept {
+    value_ = (value_ > other.value_ ? value_ : other.value_) + 1;
+    ++other.value_;
+    return *this;
+  }
+};
+
 // In-place access to a context's portfolio, for the runner and the replay only.
 //
 // A strategy reads its portfolio through `Context::portfolio()`, a const reference; it gets no mutable
@@ -84,7 +102,7 @@ class PortfolioAccess {
   }
 
   template <typename Ctx>
-  static std::uint64_t replacements(const Ctx& context) noexcept { return context.replacements_; }
+  static std::uint64_t replacements(const Ctx& context) noexcept { return context.replacements_.value_; }
 
   template <typename Ctx>
   static std::uint64_t runner_edits(const Ctx& context) noexcept { return context.runner_edits_; }
@@ -360,7 +378,7 @@ public:
    */
   void set_portfolio(Portfolio<BrokerTag> portfolio) {
     portfolio_ = std::move(portfolio);
-    ++replacements_;
+    ++replacements_.value_;
   }
 
   /**
@@ -411,9 +429,9 @@ private:
   MarketPhase phase_{MarketPhase::UNKNOWN};
   TradingCalendar calendar_;
   Portfolio<BrokerTag> portfolio_;
-  // Counted for `context_detail::PortfolioAccess`: replacements of the portfolio, runners' edits of it in
-  // place, and changes of reference data.
-  std::uint64_t replacements_{0};
+  // Counted for `context_detail::PortfolioAccess`: replacements of the portfolio (by `set_portfolio` or by a
+  // move into or out of this context), runners' edits of it in place, and changes of reference data.
+  context_detail::Revision replacements_;
   std::uint64_t runner_edits_{0};
   std::uint64_t reference_changes_{0};
   std::unordered_map<InstrumentId, Instrument, InstrumentHash> instruments_;
