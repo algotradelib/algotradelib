@@ -235,14 +235,19 @@ public:
    * profit against the old average, and opens the remainder at the new price. Commission,
    * institution fee and tax are deducted from cash.
    *
-   * @param execution The execution.
-   * @param currency The instrument's currency.
-   * @return `false`, with the ledger unchanged, if the arithmetic does not fit, or if `currency`
+   * @param execution_in The execution; it may be one of `executions()`.
+   * @param currency_in The instrument's currency.
+   * @return `false`, with the ledger unchanged, if the arithmetic does not fit, or if `currency_in`
    *   differs from the currency of a non-flat position in the instrument; `true` otherwise.
    * @throws std::bad_alloc If an allocation fails; the ledger is then unchanged.
    */
-  bool apply(const Execution& execution, const Currency& currency) {
-    const auto& fill = execution.fill_;
+  bool apply(const Execution& execution_in, const Currency& currency_in) {
+    // **Owned copies first.** The execution passed in may be one of `executions()`, which reserving room
+    // below can move, and `currency_in` may be its currency; every read below is of these copies.
+    auto recorded = execution_in;
+    const auto currency = currency_in;
+    const auto& execution = recorded;
+    const auto& fill = recorded.fill_;
     const auto zero = Decimal64(0, 0);
 
     // Signed quantity: a sale reduces the position.
@@ -360,13 +365,12 @@ public:
       held_.reserve(std::max<std::size_t>(8, 2 * held_.capacity()));
     }
     // **And every other allocation, so that a failed one leaves the ledger as it was.** A currency seen for
-    // the first time gets its cash and realized entries' room here, and the execution is copied and given
+    // the first time gets its cash and realized entries' room here, and the execution (copied above) is given
     // room now; after `find_or_open` below (which undoes itself if it fails), nothing allocates.
     reserve_entry(cash_, currency);
     if (realized_total) {
       reserve_entry(realized_, currency);
     }
-    auto recorded = execution;
     if (executions_.size() == executions_.capacity()) {
       executions_.reserve(std::max<std::size_t>(8, 2 * executions_.capacity()));
     }
@@ -758,7 +762,7 @@ private:
     Decimal64 total_;
     // The magnitudes of the cash and of every counted value, added up.
     Decimal64 bound_;
-    // The largest scale among the cash and the counted values seen; never lowered.
+    // The largest scale among the cash and the counted values seen since the last `recount`; never lowered between.
     std::uint8_t scale_{0};
     // The cash counted in `total_`.
     Decimal64 cash_;

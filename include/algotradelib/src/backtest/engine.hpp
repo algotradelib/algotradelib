@@ -1365,7 +1365,7 @@ private:
     // (`Context::set_portfolio`); otherwise the ledger rewrites the lots it changed and the cash, and the
     // working rows are rebuilt when the queue gained or lost an order, a runner edited them in place
     // (`Runner::persist_reservation`), or reference data (a row's currency) changed. What was seen is
-    // acknowledged only once everything is in, so an install that throws is redone whole by the next.
+    // acknowledged only once everything is in, so the next install finishes what one that threw left undone.
     if (!installed_ || Access::replacements(context) != replacements_seen_) {
       auto portfolio = ledger_.snapshot<Tag>(clock_.now());
       portfolio.working_.reserve(queued.size());

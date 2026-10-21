@@ -5004,3 +5004,27 @@ TEST_CASE("a ledger's running equity is the full sum digit for digit or falls ba
     same(moved);
   }
 }
+
+TEST_CASE("a ledger applies one of its own executions while making room for it") {
+  // `apply` copies what it is given before anything can move: the execution may be an element of
+  // `executions()`, which grows when this one is recorded, and the currency may be that element's.
+  const auto krw_currency = Currency{"KRW"};
+  backtest::ReplayLedger ledger(Decimal64::parse("1000"), krw_currency);
+  backtest::Execution bought;
+  bought.fill_.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "A-SYMBOL-LONGER-THAN-A-SHORT-STRING"};
+  bought.fill_.side_ = OrderSide::BUY;
+  bought.fill_.quantity_ = Decimal64::parse("1");
+  bought.fill_.price_ = Decimal64::parse("1");
+  bought.commission_ = Decimal64::parse("0");
+  bought.slippage_ = Decimal64::parse("0");
+  bought.currency_ = krw_currency;
+  // Applied until the list is full, then once more from its own front, its currency passed from it too.
+  while (ledger.executions().size() < 8 || ledger.executions().size() != ledger.executions().capacity()) {
+    REQUIRE(ledger.apply(bought, krw_currency));
+  }
+  const auto before = ledger.executions().size();
+  REQUIRE(ledger.apply(ledger.executions().front(), ledger.executions().front().currency_));
+  CHECK(ledger.executions().size() == before + 1);
+  CHECK(ledger.quantity_of(bought.fill_.instrument_) ==
+    std::optional<Decimal64>(Decimal64(static_cast<std::int64_t>(before + 1), 0)));
+}
