@@ -8470,3 +8470,60 @@ TEST_CASE("the live program starts nothing on a journal line it cannot read, and
   CHECK(out.str().find("Do NOT move it aside while an order it may track is left working") != std::string::npos);
   CHECK(out.str().find("accept that it exists") == std::string::npos);
 }
+
+namespace {
+
+/** A runner offering an overload for a mutable slice beside the const one, counting which the source calls. */
+template <typename Base>
+struct CountsSliceOverloads : Base {
+  using Base::Base;
+  using Base::feed;
+  using Base::feed_warmup;
+  int mutable_feeds_{0};
+  int const_feeds_{0};
+  int mutable_warmups_{0};
+  int const_warmups_{0};
+
+  auto feed(strategy::BarSlice& slice) {
+    ++mutable_feeds_;
+    return Base::feed(static_cast<const strategy::BarSlice&>(slice));
+  }
+  auto feed(const strategy::BarSlice& slice) {
+    ++const_feeds_;
+    return Base::feed(slice);
+  }
+  void feed_warmup(strategy::BarSlice& slice) {
+    ++mutable_warmups_;
+    Base::feed_warmup(static_cast<const strategy::BarSlice&>(slice));
+  }
+  void feed_warmup(const strategy::BarSlice& slice) {
+    ++const_warmups_;
+    Base::feed_warmup(slice);
+  }
+};
+
+} // namespace
+
+TEST_CASE("a live source hands a runner its slices only as const", "[warmup]") {
+  // A delivered slice finds its bars through the bucket's table, which describes the bars as delivered; a
+  // runner able to change them must not be given one. History and the newest period both go to the const overloads.
+  using Rig = WarmupRig<BuysOnEverySlice>;
+  Rig rig({samsung(), hynix()});
+  CountsSliceOverloads<Rig::LoopRunner> counted(
+    BuysOnEverySlice{}, Rig::any_phase(), 512, live::SessionExecutor<FakeSession<WithKey>>(rig.session)
+  );
+  for (const auto& id : {samsung(), hynix()}) {
+    auto reference = samsung_reference();
+    reference.id_ = id;
+    counted.context().set_instrument(reference);
+    counted.context().set_last_price(id, Decimal64::parse("70000"));
+  }
+  counted.context().set_portfolio(held_position<WithKey>("0", nullptr));
+  rig.session.set_bars(history_bars(4));
+  rig.source.poll(runner::PollKind::BARS, counted);
+  CHECK(counted.mutable_feeds_ == 0);
+  CHECK(counted.mutable_warmups_ == 0);
+  CHECK(counted.const_warmups_ == 3);
+  CHECK(counted.const_feeds_ == 1);
+  CHECK(counted.strategy().seen_.size() == 4);
+}

@@ -293,8 +293,9 @@ namespace slice_detail {
 
 // Where each bar of a delivered slice is, by instrument, and the bars it was built over (their storage and
 // count). Only the period bucket fills it, on the slice it delivers; **a copy or a move of a slice starts with
-// none**, so the only slice that can use it is the one the library built and hands to a handler as a const
-// reference, whose bars nobody changes. A slice copied, moved, built or changed by its holder is scanned.
+// none**, so the only slice that can use it is the one the library built and hands on only as a const reference
+// (to a handler, and from `live::SessionSource` to a runner), whose bars nobody changes. A copy, a move, or a slice
+// built by its holder has no table and is scanned.
 class SliceIndex {
 public:
   SliceIndex() = default;
@@ -369,7 +370,8 @@ struct BarSlice {
 
   /// \cond ATL_SLICE_DETAIL
   // The bucket's table of where each bar is, on the slice it delivers only (`slice_detail::SliceIndex`). The
-  // storage and count are checked too, so a holder that clears or refills the bars falls back to a scan.
+  // storage and count are checked too, which catches bars reallocated or resized since; it cannot catch bars
+  // changed in place, which is why only a slice handed on as const carries the table.
   slice_detail::SliceIndex index_;
 
   // The instrument at a position of `bars_`, for the table.
