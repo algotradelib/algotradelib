@@ -1133,6 +1133,31 @@ TEST_CASE("a runner keeping no bar history still refuses a bar not later than it
   CHECK(slices.context().last_price(samsung()) == Decimal64::parse("70000"));
 }
 
+TEST_CASE("a context moved between runners keeping and not keeping history keeps each series' newest bar") {
+  const std::string later = "a series buffer observation must be later than the last";
+  // A context holding a series, moved into a runner keeping no history: its newest bar still bounds the next.
+  runner::DryRunner<KeepsNoHistory> dropping;
+  runner::DryRunner<KeepsNoHistory>::Context holding;
+  holding.record_bar(minute_bar(10));
+  dropping.context() = std::move(holding);
+  CHECK_THROWS_WITH(dropping.feed(minute_bar(9)), later);
+  CHECK_THROWS_WITH(dropping.feed(minute_bar(10)), later);
+  CHECK(dropping.strategy().bars_ == 0);
+  dropping.feed(minute_bar(11));
+  CHECK(dropping.strategy().bars_ == 1);
+  CHECK_THROWS_AS(dropping.context().bars(samsung(), BarInterval::ONE_MINUTE), std::logic_error);
+
+  // And back: a context that kept only newest bar times, moved into a runner keeping history.
+  runner::DryRunner<ReadsAfterAll> keeping;
+  keeping.context() = std::move(dropping.context());
+  CHECK_THROWS_WITH(keeping.feed(minute_bar(11)), later);
+  keeping.feed(minute_bar(12));
+  const auto* series = keeping.context().bars(samsung(), BarInterval::ONE_MINUTE);
+  REQUIRE(series != nullptr);
+  CHECK(series->size() == 1);
+  CHECK_THROWS_WITH(keeping.feed(minute_bar(12)), later);
+}
+
 TEST_CASE("a runner keeping no bar history keeps refusing reads after its context or itself is moved") {
   using Runner = runner::DryRunner<KeepsNoHistory>;
   using Ctx = Runner::Context;

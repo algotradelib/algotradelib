@@ -145,24 +145,62 @@ class PortfolioAccess {
 
   // For a runner whose strategy declares it reads no bar history: `Context::bars` throws from now on.
   template <typename Ctx>
-  static void stop_bar_history(Ctx& context) noexcept {
-    context.bar_history_.kept_ = false;
+  static void stop_bar_history(Ctx& context) {
+    context.history_.stop_keeping();
   }
 #endif
 };
 
 #if defined(ATL_HAS_EIGEN)
-// Whether a context keeps bar history. It belongs to the context object, not to its contents: a move
-// assignment keeps the destination's, so a context moved into a runner's place cannot turn on reads the
-// runner never records for.
-struct BarHistoryKept {
+// A context's bar history: each series' trailing bars, or, when the context keeps none, each series' newest bar
+// time only (to refuse a bar that is not later). Whether it keeps them belongs to the context object, not to
+// its contents: a move assignment keeps the destination's, so a context moved into a runner's place cannot turn
+// on reads the runner never records for, and what it brings is converted to the destination's form.
+struct BarHistory {
+  using Series = std::map<BarInterval, analytics::SeriesBuffer>;
+  using Times = std::map<BarInterval, std::optional<std::chrono::system_clock::time_point>>;
+
+  // Node-based both ways, so a series or a time never moves once made.
+  std::unordered_map<InstrumentId, Series, id_detail::InstrumentIdHash> series_;
+  // Only in a context keeping no history, or one such context was moved into.
+  std::unordered_map<InstrumentId, Times, id_detail::InstrumentIdHash> times_;
   bool kept_{true};
 
-  BarHistoryKept() = default;
-  BarHistoryKept(const BarHistoryKept&) = delete;
-  BarHistoryKept& operator=(const BarHistoryKept&) = delete;
-  BarHistoryKept(BarHistoryKept&& other) noexcept : kept_(other.kept_) {}
-  BarHistoryKept& operator=(BarHistoryKept&&) noexcept { return *this; }
+  BarHistory() = default;
+  BarHistory(const BarHistory&) = delete;
+  BarHistory& operator=(const BarHistory&) = delete;
+  BarHistory(BarHistory&&) = default;
+  BarHistory& operator=(BarHistory&& other) {
+    series_ = std::move(other.series_);
+    times_ = std::move(other.times_);
+    if (!kept_) {
+      keep_times_only();
+    }
+    return *this;
+  }
+
+  // For a runner whose strategy reads no history.
+  void stop_keeping() {
+    kept_ = false;
+    keep_times_only();
+  }
+
+private:
+  // Replaces each series by its newest bar time, keeping the later where both exist.
+  void keep_times_only() {
+    for (const auto& [id, by_interval] : series_) {
+      for (const auto& [interval, series] : by_interval) {
+        if (series.empty()) {
+          continue;
+        }
+        auto& newest = times_[id][interval];
+        if (!newest || *newest < series.newest_instant()) {
+          newest = series.newest_instant();
+        }
+      }
+    }
+    series_.clear();
+  }
 };
 #endif
 
@@ -352,8 +390,8 @@ public:
     BarInterval interval = BarInterval::ONE_DAY
   ) const {
     require_bar_history();
-    const auto found = series_.find(id);
-    if (found == series_.end()) {
+    const auto found = history_.series_.find(id);
+    if (found == history_.series_.end()) {
       return nullptr;
     }
     const auto series = found->second.find(interval);
@@ -484,28 +522,40 @@ private:
   // The series a bar of `event`'s instrument and interval goes into, made if it is the first; found by hash,
   // without building a key, and the instrument copied only for its first bar.
   analytics::SeriesBuffer& series_for(const BarEvent& event) {
-    auto found = series_.find(event.instrument_);
-    if (found == series_.end()) {
-      found = series_.emplace(event.instrument_, std::map<BarInterval, analytics::SeriesBuffer>{}).first;
+    auto found = history_.series_.find(event.instrument_);
+    if (found == history_.series_.end()) {
+      found = history_.series_.emplace(event.instrument_, context_detail::BarHistory::Series{}).first;
     }
     auto& by_interval = found->second;
     auto series = by_interval.find(event.interval_);
     if (series == by_interval.end()) {
       series = by_interval.emplace(event.interval_, analytics::SeriesBuffer(series_capacity_)).first;
     }
+    // A context moved in may bring only that series' newest bar time (it kept no history); an empty series
+    // must not accept a bar that time already passed. Its first push then sets a later newest bar.
+    if (series->second.empty() && !history_.times_.empty()) {
+      const auto times = history_.times_.find(event.instrument_);
+      if (times != history_.times_.end()) {
+        const auto newest = times->second.find(event.interval_);
+        if (newest != times->second.end() && newest->second && !(*newest->second < event.bar_.timestamp_)) {
+          throw std::invalid_argument("a series buffer observation must be later than the last");
+        }
+      }
+    }
     return series->second;
   }
 
+  // The newest bar time of `event`'s series, made empty if it is the first.
   std::optional<std::chrono::system_clock::time_point>& bar_time_for(const BarEvent& event) {
-    auto found = bar_times_.find(event.instrument_);
-    if (found == bar_times_.end()) {
-      found = bar_times_.emplace(event.instrument_, BarTimes{}).first;
+    auto found = history_.times_.find(event.instrument_);
+    if (found == history_.times_.end()) {
+      found = history_.times_.emplace(event.instrument_, context_detail::BarHistory::Times{}).first;
     }
     return found->second[event.interval_];
   }
 
   void require_bar_history() const {
-    if (!bar_history_.kept_) {
+    if (!history_.kept_) {
       throw std::logic_error(
         "ctx.bars() read by a strategy declaring reads_bar_history = false, so its runner keeps no bar "
         "history; remove the declaration or declare it true"
@@ -527,13 +577,8 @@ private:
   std::unordered_map<InstrumentId, Instrument, InstrumentHash> instruments_;
   std::unordered_map<InstrumentId, Decimal64, InstrumentHash> prices_;
 #if defined(ATL_HAS_EIGEN)
-  // Each instrument's cached series, by interval. Node-based both ways, so a series never moves once made.
-  std::unordered_map<InstrumentId, std::map<BarInterval, analytics::SeriesBuffer>, InstrumentHash> series_;
-  // In place of `series_` when the strategy reads no history: each series' newest bar time, to refuse a bar
-  // that is not later.
-  using BarTimes = std::map<BarInterval, std::optional<std::chrono::system_clock::time_point>>;
-  std::unordered_map<InstrumentId, BarTimes, InstrumentHash> bar_times_;
-  context_detail::BarHistoryKept bar_history_;
+  // Each instrument's cached series by interval, or with no history kept, their newest bar times.
+  context_detail::BarHistory history_;
 #endif
   std::vector<Instruction<BrokerTag>> queued_;
   Log log_;

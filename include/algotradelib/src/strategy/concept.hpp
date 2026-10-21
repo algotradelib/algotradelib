@@ -100,12 +100,18 @@ ATL_DETECT_DECLARED(reads_bar_history);
 
 #undef ATL_DETECT_DECLARED
 
-// Whether `S::reads_bar_history` names an accessible static data member of type `const bool`.
+// Whether `S::reads_bar_history` names an accessible static data member declared `const bool`. The declared type
+// is checked as well as the address's, since a class type can overload `operator&`.
 template <typename S, typename = void>
 struct names_static_bool_reads_bar_history : std::false_type {};
 template <typename S>
-struct names_static_bool_reads_bar_history<S, std::void_t<decltype(&S::reads_bar_history)>>
-: std::is_same<decltype(&S::reads_bar_history), const bool*> {};
+struct names_static_bool_reads_bar_history<
+  S, std::void_t<decltype(S::reads_bar_history), decltype(&S::reads_bar_history)>
+>
+: std::bool_constant<
+  std::is_same_v<decltype(S::reads_bar_history), const bool> &&
+  std::is_same_v<decltype(&S::reads_bar_history), const bool*>
+> {};
 
 template <typename S, bool Declared = declares_reads_bar_history<S>>
 struct bar_history_policy {

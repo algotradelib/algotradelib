@@ -2784,6 +2784,67 @@ TEST_CASE("a bar arriving after its period was delivered is cached and not deliv
 
 namespace {
 
+/** `S`, declaring it reads no bar history. */
+template <class S>
+struct WithoutHistory : S {
+  static constexpr bool reads_bar_history = false;
+};
+
+} // namespace
+
+TEST_CASE("a live strategy reading no bar history gets the same warm-up and sends the same orders", "[warmup]") {
+  // Bars: a cold start of fifty with an entry on the tenth, then a backlog.
+  WarmupRig<EntersOnTenth> kept({samsung()});
+  WarmupRig<WithoutHistory<EntersOnTenth>> dropped({samsung()});
+  STATIC_REQUIRE_FALSE(decltype(dropped.live_runner)::records_bar_history);
+  kept.session.set_bars(history_bars(50));
+  dropped.session.set_bars(history_bars(50));
+  kept.loop.run(kept.stop, 1);
+  dropped.loop.run(dropped.stop, 1);
+  CHECK(dropped.session.placed().size() == kept.session.placed().size());
+  CHECK(dropped.live_runner.strategy().bars_ == 50);
+  CHECK(dropped.live_runner.warmup_instructions_discarded() == kept.live_runner.warmup_instructions_discarded());
+  CHECK(dropped.source.bars_fed_as_warmup() == kept.source.bars_fed_as_warmup());
+
+  WarmupRig<BuysOne> kept_backlog({samsung()});
+  WarmupRig<WithoutHistory<BuysOne>> dropped_backlog({samsung()});
+  for (int bars : {3, 5}) {
+    kept_backlog.session.set_bars(history_bars(bars));
+    dropped_backlog.session.set_bars(history_bars(bars));
+    kept_backlog.loop.run(kept_backlog.stop, 1);
+    dropped_backlog.loop.run(dropped_backlog.stop, 1);
+    CHECK(dropped_backlog.session.placed().size() == kept_backlog.session.placed().size());
+  }
+  CHECK(dropped_backlog.source.bars_fed_as_warmup() == kept_backlog.source.bars_fed_as_warmup());
+
+  // Slices: a cold start, then a bar arriving after its period was delivered.
+  WarmupRig<BuysOnEverySlice> kept_slices({samsung(), hynix()});
+  WarmupRig<WithoutHistory<BuysOnEverySlice>> dropped_slices({samsung(), hynix()});
+  for (auto* rig_bars : {&kept_slices.session, &dropped_slices.session}) {
+    rig_bars->set_bars_for(samsung().symbol_, history_bars(6));
+    rig_bars->set_bars_for(hynix().symbol_, history_bars(5));
+  }
+  kept_slices.loop.run(kept_slices.stop, 1);
+  dropped_slices.loop.run(dropped_slices.stop, 1);
+  kept_slices.session.set_bars_for(hynix().symbol_, history_bars(6));
+  dropped_slices.session.set_bars_for(hynix().symbol_, history_bars(6));
+  kept_slices.loop.run(kept_slices.stop, 1);
+  dropped_slices.loop.run(dropped_slices.stop, 1);
+  CHECK(dropped_slices.live_runner.strategy().seen_ == kept_slices.live_runner.strategy().seen_);
+  CHECK(dropped_slices.session.placed().size() == kept_slices.session.placed().size());
+  CHECK(
+    dropped_slices.live_runner.warmup_instructions_discarded() == kept_slices.live_runner.warmup_instructions_discarded()
+  );
+  CHECK(dropped_slices.source.bars_fed_as_warmup() == kept_slices.source.bars_fed_as_warmup());
+  CHECK(dropped_slices.source.bars_not_delivered() == 1);
+  CHECK(dropped_slices.source.bars_not_delivered() == kept_slices.source.bars_not_delivered());
+#if defined(ATL_HAS_EIGEN)
+  CHECK_THROWS_AS(dropped_slices.live_runner.context().bars(hynix(), BarInterval::ONE_DAY), std::logic_error);
+#endif
+}
+
+namespace {
+
 /** Records each slice's period, and throws on the first slice it is given. */
 struct ThrowsOnFirstSlice {
   std::vector<std::chrono::system_clock::time_point> seen_;

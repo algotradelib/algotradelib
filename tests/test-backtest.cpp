@@ -5557,6 +5557,22 @@ struct ReadsAfterMovingAContextIn {
   }
 };
 
+/** Reads no history; on its second period moves in a context holding a later bar of the same series. */
+struct MovesInAPopulatedContext {
+  static constexpr bool reads_bar_history = false;
+  int periods_{0};
+
+  template <class Ctx>
+  void on_bars(Ctx& ctx, const strategy::BarSlice&) {
+    if (++periods_ == 2) {
+      Ctx replacement;
+      replacement.set_now(ctx.now());
+      replacement.record_bar(moving_bar(session_minute(10), BarInterval::ONE_MINUTE, "70000", "70000"));
+      ctx = std::move(replacement);
+    }
+  }
+};
+
 } // namespace
 
 TEST_CASE("a replay of a strategy reading no bar history matches one keeping it") {
@@ -5574,6 +5590,17 @@ TEST_CASE("a replay keeping no bar history refuses a read after a context is mov
     }
   };
   CHECK_THROWS_AS(feed_all(), std::logic_error);
+  CHECK(engine.strategy().periods_ == 2);
+}
+
+TEST_CASE("a replay keeping no bar history refuses a bar older than one a moved-in context holds") {
+  backtest::Backtester<MovesInAPopulatedContext> engine(MovesInAPopulatedContext{}, replay_config());
+  const auto feed_all = [&engine] {
+    for (int minute = 1; minute <= 4; ++minute) {
+      engine.feed(moving_bar(session_minute(minute), BarInterval::ONE_MINUTE, "70000", "70000"));
+    }
+  };
+  CHECK_THROWS_WITH(feed_all(), "a series buffer observation must be later than the last");
   CHECK(engine.strategy().periods_ == 2);
 }
 
