@@ -5071,3 +5071,76 @@ TEST_CASE("a replay rebuilds a portfolio moved into its context") {
   }
   REQUIRE(engine.strategy().symbols_seen_ == std::vector<std::string>{"", "005930", "005930", "005930"});
 }
+
+TEST_CASE("a replay's queue keeps placement order and finds orders by reference after removals") {
+  // Removal marks an order removed in place and the storage is compacted once removed orders outnumber the
+  // rest; neither may change the order the others are listed in, nor which reference finds which order.
+  ReplayExecutor executor;
+  const auto id_of = [](int k) { return InstrumentId{Country::KR, Venue::COMBINED, "S" + std::to_string(k)}; };
+  std::vector<OrderRef<backtest::BacktestTag>> refs;
+  for (int k = 0; k < 40; ++k) {
+    strategy::PlannedOrder order;
+    order.instrument_ = id_of(k % 4);
+    order.type_ = OrderType::MARKET;
+    order.time_in_force_ = TimeInForce::DAY;
+    order.quantity_ = Decimal64(k + 1, 0);
+    REQUIRE(executor.place(order) == runner::SendOutcome::ACCEPTED);
+    refs.push_back(*executor.last_ref());
+  }
+  std::vector<int> kept;
+  for (int k = 0; k < 40; ++k) {
+    if (k % 4 == 1 || k % 3 == 0) {
+      REQUIRE(executor.withdraw(refs[k]));
+    } else {
+      kept.push_back(k);
+    }
+  }
+  std::vector<int> listed;
+  for (const auto& entry : executor.queued()) {
+    listed.push_back(static_cast<int>(entry.order_.quantity_.coefficient()) - 1);
+  }
+  REQUIRE(listed == kept);
+  REQUIRE(executor.queued().size() == kept.size());
+  CHECK(executor.queued().front().ref_ == refs[kept.front()]);
+  for (int instrument = 0; instrument < 4; ++instrument) {
+    std::vector<int> mine;
+    executor.for_each_queued_in(id_of(instrument), [&mine](const auto& entry) {
+      mine.push_back(static_cast<int>(entry.order_.quantity_.coefficient()) - 1);
+    });
+    std::vector<int> expected;
+    for (const int k : kept) {
+      if (k % 4 == instrument) {
+        expected.push_back(k);
+      }
+    }
+    CHECK(mine == expected);
+  }
+  for (int k = 0; k < 40; ++k) {
+    const bool outstanding = std::find(kept.begin(), kept.end(), k) != kept.end();
+    const auto* found = executor.find(refs[k]);
+    REQUIRE((found != nullptr) == outstanding);
+    if (found != nullptr) {
+      CHECK(found->order_.quantity_ == Decimal64(k + 1, 0));
+    }
+    CHECK(executor.release(refs[k]) == outstanding);
+  }
+  // Only the reference exactly as issued finds an order: not padded, signed, overflowing, or with a second part.
+  REQUIRE(executor.find(refs[4]) != nullptr);
+  CHECK(refs[4].primary_ == "5");
+  for (const char* other : {"05", "+5", "-5", "", "5 ", "abc", "18446744073709551616"}) {
+    CHECK(executor.find(OrderRef<backtest::BacktestTag>{other, ""}) == nullptr);
+  }
+  CHECK(executor.find(OrderRef<backtest::BacktestTag>{"5", "x"}) == nullptr);
+  for (const int k : kept) {
+    REQUIRE(executor.withdraw(refs[k]));
+  }
+  CHECK(executor.queued().empty());
+  strategy::PlannedOrder again;
+  again.instrument_ = id_of(0);
+  again.type_ = OrderType::MARKET;
+  again.time_in_force_ = TimeInForce::DAY;
+  again.quantity_ = Decimal64(1, 0);
+  REQUIRE(executor.place(again) == runner::SendOutcome::ACCEPTED);
+  CHECK(executor.last_ref()->primary_ == "41");
+  CHECK(executor.queued().size() == 1);
+}
