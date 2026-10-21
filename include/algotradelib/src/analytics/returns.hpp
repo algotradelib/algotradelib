@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <stdexcept>
+#include <vector>
 
 namespace algotradelib {
 namespace analytics {
@@ -122,14 +123,23 @@ inline math::Vector weighted_returns(math::MatrixView returns, math::MatrixView 
     return result;
   }
   const auto shift = static_cast<math::Index>(lag);
-  // Column by column, so both matrices are read in the order they are stored; a row's sum starts at its first
-  // observed product.
+  // Summed from zero, with whether a row saw any product kept apart from its sum: a sum can itself become `NaN`
+  // (opposite infinities), which must stay so rather than read as a row not yet started.
+  math::Vector sums = math::Vector::Zero(rows);
+  std::vector<bool> seen(static_cast<std::size_t>(rows), false);
+  // Column by column, so both matrices are read in the order they are stored.
   for (math::Index column = 0; column < returns.cols(); ++column) {
     for (math::Index row = shift; row < rows; ++row) {
       const Scalar product = weights(row - shift, column) * returns(row, column);
       if (observed(product)) {
-        result[row] = observed(result[row]) ? result[row] + product : product;
+        sums[row] += product;
+        seen[static_cast<std::size_t>(row)] = true;
       }
+    }
+  }
+  for (math::Index row = shift; row < rows; ++row) {
+    if (seen[static_cast<std::size_t>(row)]) {
+      result[row] = sums[row];
     }
   }
   return result;

@@ -973,6 +973,23 @@ TEST_CASE("weighted returns hold each period's weights over a later period's ret
   CHECK(analytics::weighted_returns(math::Matrix(0, 3), math::Matrix(0, 3), 1).size() == 0);
   CHECK_THROWS_AS(analytics::weighted_returns(returns, math::Matrix(4, 3), 1), std::invalid_argument);
   CHECK_THROWS_AS(analytics::weighted_returns(returns, math::Matrix(3, 2), 1), std::invalid_argument);
+  // A sum that became NaN stays NaN whatever comes after it, in any column order; so do opposite products that
+  // overflow; a portfolio of no instruments has nothing to sum.
+  const auto inf = std::numeric_limits<double>::infinity();
+  for (const auto& order : {std::vector<double>{inf, -inf, 0.05}, std::vector<double>{0.05, inf, -inf},
+                            std::vector<double>{inf, 0.05, -inf}}) {
+    math::Matrix r(1, 3);
+    r << order[0], order[1], order[2];
+    CHECK_FALSE(math::observed(analytics::weighted_returns(r, math::Matrix::Ones(1, 3), 0)[0]));
+  }
+  math::Matrix huge(1, 3);
+  huge << std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), 0.1;
+  math::Matrix opposite(1, 3);
+  opposite << 2.0, -2.0, 0.5;
+  CHECK_FALSE(math::observed(analytics::weighted_returns(huge, opposite, 0)[0]));
+  const auto no_columns = analytics::weighted_returns(math::Matrix(3, 0), math::Matrix(3, 0), 1);
+  REQUIRE(no_columns.size() == 3);
+  CHECK_FALSE(no_columns.array().unaryExpr([](double v) { return math::observed(v); }).any());
   // Blocks of larger matrices, read with their strides.
   math::Matrix wide_returns = math::Matrix::Zero(6, 5);
   math::Matrix wide_weights = math::Matrix::Zero(6, 5);
