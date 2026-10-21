@@ -82,7 +82,9 @@ foreach(source IN LISTS ATL_TEST_SOURCES)
     # The live program's broker-free wiring lives beside the example that uses it, and is tested against
     # the in-memory session.
     target_include_directories(${test} PRIVATE "${algotradelib_SOURCE_DIR}/examples")
-    catch_discover_tests(${test})
+    # CTest has no default timeout, so a case that hangs (a Windows Debug build's abort can wait on a dialog)
+    # would hold the run until the job is cancelled. The slowest case takes under 30 seconds there.
+    catch_discover_tests(${test} PROPERTIES TIMEOUT 300)
 endforeach()
 
 # Every tests/compile-fail/test-<name>.cpp must not compile, and the compiler's diagnostic must be the

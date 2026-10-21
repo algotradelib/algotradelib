@@ -48,6 +48,19 @@ using namespace algotradelib;
 namespace {
 
 /**
+ * Skips a case whose operation move-constructs a string or a container (growing a vector of them, say) where the
+ * standard library allocates in those `noexcept` constructors: MSVC's, with iterator debugging on (the default in
+ * a Debug build), gives every string and container a proxy allocated as it is constructed, moves included. A
+ * failure injected there ends the process in `std::terminate`, and a Debug build's abort can then wait on a dialog
+ * nobody closes. A case that only copies and then move-assigns allocates nowhere it cannot throw, so it runs.
+ */
+void skip_where_moves_allocate() {
+#if defined(_MSVC_STL_VERSION) && _ITERATOR_DEBUG_LEVEL != 0
+  SKIP("MSVC's iterator debugging allocates in noexcept move constructors");
+#endif
+}
+
+/**
  * Runs `operation` with its n-th allocation failing, for n = 0, 1, ... until it completes; calls `check` after
  * each failure. Returns how many failures were tried.
  */
@@ -184,6 +197,7 @@ static_assert(std::is_nothrow_move_assignable<strategy::slice_detail::Bucket>::v
 static_assert(std::is_nothrow_move_constructible<strategy::slice_detail::Bucket>::value);
 
 TEST_CASE("a ledger opening a lot finds every lot it lists after a failed allocation") {
+  skip_where_moves_allocate();
   // At 0, 1 and 8 lots before the fill, narrow ledgers whose list of held lots must grow first (a copy's list has
   // no room to spare, and 8 fills the first growth); at 16, 17, 20 and 32: the last scan, the index being built,
   // the index extended, and the index growing its storage.
@@ -214,6 +228,7 @@ TEST_CASE("a ledger opening a lot finds every lot it lists after a failed alloca
 }
 
 TEST_CASE("a reopened lot that cannot be recorded leaves equity as a scan of the lots says") {
+  skip_where_moves_allocate();
   // A copy holds its list of held lots without room to spare: 100 lots opened, 99 closed, copied (by
   // construction and by assignment), then one of the closed lots reopened in the copy.
   auto book = holding("S", 100);
@@ -251,6 +266,7 @@ TEST_CASE("a reopened lot that cannot be recorded leaves equity as a scan of the
 }
 
 TEST_CASE("a reservation that cannot be recorded leaves the rows and the buying power together") {
+  skip_where_moves_allocate();
   // `Runner::persist_reservation` writes in place: the row is appended whole or not at all, and the buying
   // power is lowered only after it is in. A failure later in the pass (after the order was sent) can leave the
   // reservation in; it never leaves half of one.
@@ -376,6 +392,7 @@ TEST_CASE("a ledger copy that fails leaves the destination as it was") {
 }
 
 TEST_CASE("a period bucket adding a bar keeps its slice and its ids together after a failed allocation") {
+  skip_where_moves_allocate();
   // At 16, 17, 20 and 32 bars before the add: the last scan, the table being filled, the table extended, and
   // the table growing its storage.
   for (const int bars : {16, 17, 20, 32}) {
