@@ -114,13 +114,27 @@ std::optional<Decimal64> equity_by_scan(const backtest::ReplayLedger& ledger) {
 }
 
 void require_equity_as_scanned(const backtest::ReplayLedger& ledger) {
-  const auto equity = ledger.equity_in(krw());
   const auto scanned = equity_by_scan(ledger);
-  REQUIRE(equity.has_value() == scanned.has_value());
-  if (equity) {
-    REQUIRE(equity->coefficient() == scanned->coefficient());
-    REQUIRE(equity->scale() == scanned->scale());
+  // Both the full sum and the running total the replay reads.
+  for (const auto& equity : {ledger.equity_in(krw()), ledger.equity()}) {
+    REQUIRE(equity.has_value() == scanned.has_value());
+    if (equity) {
+      REQUIRE(equity->coefficient() == scanned->coefficient());
+      REQUIRE(equity->scale() == scanned->scale());
+    }
   }
+}
+
+// A failed `apply` leaves the ledger as it was: the same lots in the same places, cash and executions.
+void require_unchanged(const backtest::ReplayLedger& ledger, const backtest::ReplayLedger& before) {
+  REQUIRE(ledger.positions().size() == before.positions().size());
+  for (std::size_t at = 0; at < ledger.positions().size(); ++at) {
+    REQUIRE(ledger.positions()[at].instrument_ == before.positions()[at].instrument_);
+    REQUIRE(ledger.positions()[at].quantity_ == before.positions()[at].quantity_);
+    REQUIRE(ledger.positions()[at].last_price_ == before.positions()[at].last_price_);
+  }
+  REQUIRE(ledger.cash_in(krw()) == before.cash_in(krw()));
+  REQUIRE(ledger.executions().size() == before.executions().size());
 }
 
 bool lists(const backtest::ReplayLedger& ledger, const InstrumentId& id) {
@@ -143,6 +157,16 @@ strategy::BarEvent bar_of(const std::string& symbol, BarInterval interval) {
   bar.volume_ = Decimal64::parse("1");
   return strategy::make_bar_event(named(symbol), interval, BarStamp::CLOSE, bar);
 }
+
+// Buys ten of the bar's instrument at market on every bar.
+struct BuysTen {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ctx.submit(
+      strategy::OrderIntent::market(bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")))
+    );
+  }
+};
 
 std::vector<std::string> symbols_of(const strategy::BarSlice& slice) {
   std::vector<std::string> symbols;
@@ -175,8 +199,8 @@ TEST_CASE("a ledger opening a lot finds every lot it lists after a failed alloca
       [&] {
         require_lookups_match_positions(ledger);
         require_equity_as_scanned(ledger);
-        // The lot that failed to open is found exactly when it is listed.
-        CHECK(ledger.quantity_of(opened).has_value() == lists(ledger, opened));
+        require_unchanged(ledger, before);
+        CHECK_FALSE(lists(ledger, opened));
         ledger = before;
       }
     );
@@ -212,9 +236,10 @@ TEST_CASE("a reopened lot that cannot be recorded leaves equity as a scan of the
       [&] { applied = ledger.apply(reopened, krw()); },
       [&] {
         require_lookups_match_positions(ledger);
-        // A failure after the lot changed (recording the execution) may leave it changed, as `apply` documents;
-        // either way the list of held lots agrees with the lots.
+        // Every allocation is made before the lot changes, so a failure leaves it, and the running equity, as
+        // they were.
         require_equity_as_scanned(ledger);
+        require_unchanged(ledger, before);
         ledger = before;
       }
     );
@@ -223,6 +248,61 @@ TEST_CASE("a reopened lot that cannot be recorded leaves equity as a scan of the
     CHECK(ledger.quantity_of(named("S50")) == std::optional<Decimal64>(Decimal64::parse("2")));
     require_equity_as_scanned(ledger);
   }
+}
+
+TEST_CASE("a reservation that cannot be recorded leaves the rows and the buying power together") {
+  // `Runner::persist_reservation` writes in place: the row is appended whole or not at all, and the buying
+  // power is lowered only after it is in. A failure later in the pass (after the order was sent) can leave the
+  // reservation in; it never leaves half of one.
+  strategy::RiskLimits limits;
+  limits.enforce_buying_power_ = true;
+  limits.enforce_sellable_quantity_ = false;
+  limits.permitted_phases_ = std::nullopt;
+  runner::DryRunner<BuysTen> dry(BuysTen{}, limits);
+  using Tag = runner::DryRunner<BuysTen>::Tag;
+  // A symbol too long for a short string, so copying the row allocates.
+  const auto symbol = std::string("A-SYMBOL-LONGER-THAN-ANY-SHORT-STRING");
+  Instrument reference;
+  reference.id_ = named(symbol);
+  reference.type_ = SecurityType::STOCK;
+  reference.currency_ = krw();
+  reference.lot_size_ = Decimal64::parse("1");
+  reference.price_rule_ = PriceRule::krx_equity();
+  dry.context().set_instrument(reference);
+  dry.context().set_phase(strategy::MarketPhase::OPEN);
+  // Each attempt a day later, since a bar must be later than the last one fed.
+  auto event = bar_of(symbol, BarInterval::ONE_DAY);
+  const auto next_day = [&event] {
+    event.bar_.timestamp_ += std::chrono::hours(24);
+    event.period_end_ += std::chrono::hours(24);
+  };
+  strategy::Portfolio<Tag> funded;
+  funded.as_of_ = event.period_end_;
+  funded.cash_.push_back(Money{Decimal64::parse("100000000"), krw()});
+  funded.buying_power_.push_back(BuyingPower{Money{Decimal64::parse("100000000"), krw()}, event.period_end_});
+  dry.context().set_portfolio(funded);
+
+  const auto require_whole = [&dry] {
+    const auto& portfolio = dry.context().portfolio();
+    REQUIRE(portfolio.working_.size() <= 1);
+    REQUIRE(portfolio.buying_power_.size() == 1);
+    // Ten at the bar's close of a hundred.
+    const char* left = portfolio.working_.empty() ? "100000000" : "99999000";
+    REQUIRE(portfolio.buying_power_[0].cash_.amount_ == Decimal64::parse(left));
+  };
+  const int failures = fail_each_allocation(
+    [&] {
+      next_day();
+      dry.feed(event);
+    },
+    [&] {
+      require_whole();
+      dry.context().set_portfolio(funded);
+    }
+  );
+  CHECK(failures > 0);
+  require_whole();
+  CHECK(dry.context().portfolio().working_.size() == 1);
 }
 
 TEST_CASE("a ledger copy that fails leaves the destination as it was") {
