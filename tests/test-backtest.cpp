@@ -1,3 +1,17 @@
+// **Every replay in this file checks its own portfolio.** At every install the portfolio the replay keeps up
+// to date in place must equal, field for field and digit for digit, the one it used to build from scratch
+// (`Backtester::install_portfolio`), and at every bar its running equity must equal the full sum
+// (`ReplayLedger::equity` against `equity_in`). Declared here, before the library, so the engine finds them;
+// defined after it.
+namespace replay_check {
+template <typename Portfolio, typename Equity>
+void portfolio(const Portfolio& kept, const Portfolio& rebuilt, const Equity& running, const Equity& summed);
+template <typename Equity>
+void equity(const Equity& running, const Equity& summed);
+} // namespace replay_check
+#define ATL_REPLAY_CHECK_PORTFOLIO ::replay_check::portfolio
+#define ATL_REPLAY_CHECK_EQUITY ::replay_check::equity
+
 #include <algotradelib/backtest>
 #include <algotradelib/vanilla>
 
@@ -10,9 +24,97 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
+
+namespace replay_check {
+
+inline void require(bool same, const char* what) {
+  if (!same) {
+    throw std::logic_error(std::string("the replay's kept portfolio differs from a rebuild: ") + what);
+  }
+}
+
+inline bool same_basis(const algotradelib::SellableBasis& lhs, const algotradelib::SellableBasis& rhs) {
+  return lhs.coverage_ == rhs.coverage_ && lhs.resting_ == rhs.resting_ && lhs.verified_ == rhs.verified_;
+}
+
+inline void same_position(const algotradelib::HoldingPosition& lhs, const algotradelib::HoldingPosition& rhs) {
+  require(lhs.instrument_ == rhs.instrument_, "position instrument");
+  require(lhs.name_ == rhs.name_, "position name");
+  require(lhs.quantity_ == rhs.quantity_, "position quantity");
+  require(lhs.sellable_quantity_ == rhs.sellable_quantity_, "position sellable quantity");
+  require(lhs.sellable_basis_.has_value() == rhs.sellable_basis_.has_value() &&
+    (!lhs.sellable_basis_ || same_basis(*lhs.sellable_basis_, *rhs.sellable_basis_)), "position sellable basis");
+  require(lhs.average_purchase_price_ == rhs.average_purchase_price_, "position average price");
+  require(lhs.last_price_ == rhs.last_price_, "position last price");
+  require(lhs.purchase_value_ == rhs.purchase_value_, "position purchase value");
+  require(lhs.market_value_ == rhs.market_value_, "position market value");
+  require(lhs.unrealized_profit_loss_ == rhs.unrealized_profit_loss_, "position unrealized profit");
+  require(lhs.unrealized_return_ == rhs.unrealized_return_, "position unrealized return");
+}
+
+inline void same_order(const algotradelib::OrderSnapshot& lhs, const algotradelib::OrderSnapshot& rhs) {
+  require(lhs.order_id_ == rhs.order_id_, "order id");
+  require(lhs.instrument_ == rhs.instrument_, "order instrument");
+  require(lhs.name_ == rhs.name_, "order name");
+  require(lhs.side_ == rhs.side_, "order side");
+  require(lhs.type_ == rhs.type_, "order type");
+  require(lhs.time_in_force_ == rhs.time_in_force_, "order time in force");
+  require(lhs.session_ == rhs.session_, "order session");
+  require(lhs.venue_ == rhs.venue_, "order venue");
+  require(lhs.shape_code_ == rhs.shape_code_, "order shape code");
+  require(lhs.status_ == rhs.status_, "order status");
+  require(lhs.price_ == rhs.price_, "order price");
+  require(lhs.trigger_price_ == rhs.trigger_price_, "order trigger");
+  require(lhs.quantity_ == rhs.quantity_, "order quantity");
+  require(lhs.order_amount_ == rhs.order_amount_, "order amount");
+  require(lhs.currency_ == rhs.currency_, "order currency");
+  require(lhs.ordered_at_ == rhs.ordered_at_, "order time");
+  require(lhs.ordered_date_assumed_ == rhs.ordered_date_assumed_, "order date assumed");
+  require(lhs.canceled_at_ == rhs.canceled_at_, "order canceled at");
+  const auto& a = lhs.execution_;
+  const auto& b = rhs.execution_;
+  require(a.filled_quantity_ == b.filled_quantity_ && a.average_filled_price_ == b.average_filled_price_ &&
+    a.filled_amount_ == b.filled_amount_ && a.commission_ == b.commission_ && a.tax_ == b.tax_ &&
+    a.filled_at_ == b.filled_at_ && a.settlement_date_ == b.settlement_date_, "order execution");
+}
+
+template <typename Portfolio, typename Equity>
+void portfolio(const Portfolio& kept, const Portfolio& rebuilt, const Equity& running, const Equity& summed) {
+  require(kept.positions_.size() == rebuilt.positions_.size(), "number of positions");
+  for (std::size_t at = 0; at < kept.positions_.size(); ++at) {
+    same_position(kept.positions_[at], rebuilt.positions_[at]);
+  }
+  require(kept.cash_ == rebuilt.cash_, "cash");
+  require(kept.buying_power_.size() == rebuilt.buying_power_.size(), "number of buying powers");
+  for (std::size_t at = 0; at < kept.buying_power_.size(); ++at) {
+    require(kept.buying_power_[at].cash_ == rebuilt.buying_power_[at].cash_ &&
+      kept.buying_power_[at].received_at_ == rebuilt.buying_power_[at].received_at_, "buying power");
+  }
+  require(kept.working_.size() == rebuilt.working_.size(), "number of working orders");
+  for (std::size_t at = 0; at < kept.working_.size(); ++at) {
+    same_order(kept.working_[at].order_, rebuilt.working_[at].order_);
+    require(kept.working_[at].ref_ == rebuilt.working_[at].ref_, "working reference");
+    require(kept.working_[at].amendable_quantity_ == rebuilt.working_[at].amendable_quantity_, "amendable quantity");
+    require(kept.working_[at].reserved_ == rebuilt.working_[at].reserved_, "reserved flag");
+  }
+  require(kept.as_of_ == rebuilt.as_of_, "as of");
+  require(kept.working_as_of_ == rebuilt.working_as_of_, "working as of");
+  require(same_basis(kept.sellable_basis_, rebuilt.sellable_basis_), "sellable basis");
+  equity(running, summed);
+}
+
+template <typename Equity>
+void equity(const Equity& running, const Equity& summed) {
+  require(running.has_value() == summed.has_value(), "equity presence");
+  require(!running || (running->coefficient() == summed->coefficient() && running->scale() == summed->scale()),
+    "equity value or scale");
+}
+
+} // namespace replay_check
 
 using namespace algotradelib;
 
@@ -4743,4 +4845,162 @@ TEST_CASE("a flat stated once behind a stop is placed at the boundary that withd
   REQUIRE(engine.result().executions_.size() == 2);
   CHECK(engine.result().executions_[1].fill_.tag_ == "flat");
   CHECK(engine.result().executions_[1].fill_.at_ == session_minute(6));
+}
+
+namespace {
+
+/**
+ * Rests a limit buy, then changes what the replay must rebuild from: the instrument's currency (bar 2) and the
+ * whole portfolio, replaced outright (bar 3). Records what it reads after each.
+ */
+struct RewritesWhatItReads {
+  int bars_{0};
+  std::vector<std::string> currencies_seen_;
+  std::vector<std::size_t> positions_seen_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ++bars_;
+    for (const auto& working : ctx.portfolio().working_) {
+      currencies_seen_.push_back(working.order_.currency_.str());
+    }
+    positions_seen_.push_back(ctx.portfolio().positions_.size());
+    if (bars_ == 1) {
+      // One that fills at once, so a position exists, and one that rests below the market.
+      ctx.submit(strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))));
+      const auto limit = strategy::Price::checked(Decimal64::parse("50000"), krx_grid());
+      ctx.submit(strategy::OrderIntent::limit(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")), *limit));
+    } else if (bars_ == 3) {
+      auto reference = *ctx.instrument(bar.instrument_);
+      reference.currency_ = Currency{"USD"};
+      ctx.set_instrument(reference);
+    } else if (bars_ == 4) {
+      ctx.set_portfolio(strategy::Portfolio<typename Ctx::Broker>{});
+    }
+  }
+};
+
+} // namespace
+
+TEST_CASE("a replay rebuilds what reference data or a replaced portfolio changed") {
+  // The portfolio a replay keeps up to date in place must not keep a working row's old currency after the
+  // instrument's reference data changed, nor anything of a portfolio replaced outright. This file's check
+  // compares it with a fresh rebuild at every install, so a stale row or position fails the replay itself;
+  // the strategy's own readings say what it saw.
+  backtest::Backtester<RewritesWhatItReads> engine(RewritesWhatItReads{}, replay_config());
+  for (int minute = 1; minute <= 6; ++minute) {
+    engine.feed(moving_bar(session_minute(minute), BarInterval::ONE_MINUTE, "70000", "70000"));
+  }
+  const auto& seen = engine.strategy();
+  REQUIRE(seen.bars_ == 6);
+  // The rest is there from bar 2 on, in won, and in dollars once the reference says so (bar 4 on).
+  REQUIRE(seen.currencies_seen_ == std::vector<std::string>{"KRW", "KRW", "USD", "USD", "USD"});
+  // The market buy filled at bar 2's open; the replaced portfolio is rebuilt with it at bar 5.
+  REQUIRE(seen.positions_seen_ == std::vector<std::size_t>{0, 1, 1, 1, 1, 1});
+}
+
+TEST_CASE("a ledger's running equity is the full sum digit for digit or falls back to it") {
+  const auto krw_currency = Currency{"KRW"};
+  const auto same = [&krw_currency](const backtest::ReplayLedger& ledger) {
+    const auto running = ledger.equity();
+    const auto summed = ledger.equity_in(krw_currency);
+    REQUIRE(running.has_value() == summed.has_value());
+    if (running) {
+      REQUIRE(running->coefficient() == summed->coefficient());
+      REQUIRE(running->scale() == summed->scale());
+    }
+    return summed;
+  };
+  const auto trade = [](const char* symbol, OrderSide side, const char* quantity, const char* price) {
+    backtest::Execution execution;
+    execution.fill_.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, symbol};
+    execution.fill_.side_ = side;
+    execution.fill_.quantity_ = Decimal64::parse(quantity);
+    execution.fill_.price_ = Decimal64::parse(price);
+    execution.commission_ = Decimal64::parse("0");
+    execution.slippage_ = Decimal64::parse("0");
+    return execution;
+  };
+  const auto id = [](const char* symbol) { return InstrumentId{Country::KR, Venue::COMBINED, symbol}; };
+
+  SECTION("the cash as stored until a lot is held, then normalized; a zero mark and a flat lot") {
+    // 100.00, at a scale `parse` would not keep.
+    backtest::ReplayLedger ledger(Decimal64(10000, 2), krw_currency);
+    // Nothing held: the cash itself, at the scale it was given.
+    CHECK(same(ledger)->scale() == 2);
+    REQUIRE(ledger.apply(trade("A", OrderSide::BUY, "1", "10.50"), krw_currency));
+    CHECK(same(ledger) == std::optional<Decimal64>(Decimal64::parse("100")));
+    // A lot held at a zero price still counts as held: the sum is normalized.
+    REQUIRE(ledger.mark(id("A"), Decimal64::parse("0")));
+    CHECK(same(ledger) == std::optional<Decimal64>(Decimal64::parse("89.5")));
+    REQUIRE(ledger.mark(id("A"), Decimal64::parse("10")));
+    REQUIRE(ledger.apply(trade("A", OrderSide::SELL, "1", "10"), krw_currency));
+    same(ledger);
+    // Reopened, then crossed through flat into a short.
+    REQUIRE(ledger.apply(trade("A", OrderSide::BUY, "2", "10"), krw_currency));
+    REQUIRE(ledger.apply(trade("A", OrderSide::SELL, "3", "11"), krw_currency));
+    same(ledger);
+  }
+  SECTION("a lot in another currency is not counted") {
+    backtest::ReplayLedger ledger(Decimal64::parse("1000"), krw_currency);
+    REQUIRE(ledger.apply(trade("U", OrderSide::BUY, "2", "7.25"), Currency{"USD"}));
+    same(ledger);
+    REQUIRE(ledger.apply(trade("A", OrderSide::BUY, "1", "100"), krw_currency));
+    REQUIRE(ledger.mark(id("U"), Decimal64::parse("8")));
+    same(ledger);
+  }
+  SECTION("a scan that overflows on the way gives nothing, whichever order the running total took") {
+    // Cash 7e18 after a long of 1e18 and a short of 4e18; the long then marked to 3e18. The total, 6e18, fits,
+    // but the full sum adds the long before the short, and 7e18 + 3e18 does not.
+    backtest::ReplayLedger ledger(Decimal64::parse("4000000000000000000"), krw_currency);
+    REQUIRE(ledger.apply(trade("A", OrderSide::BUY, "1", "1000000000000000000"), krw_currency));
+    REQUIRE(ledger.apply(trade("B", OrderSide::SELL, "1", "4000000000000000000"), krw_currency));
+    same(ledger);
+    REQUIRE(ledger.mark(id("A"), Decimal64::parse("3000000000000000000")));
+    CHECK_FALSE(same(ledger));
+    // Marked back, both agree again.
+    REQUIRE(ledger.mark(id("A"), Decimal64::parse("1000000000000000000")));
+    CHECK(same(ledger) == std::optional<Decimal64>(Decimal64::parse("4000000000000000000")));
+  }
+  SECTION("a scale the cash cannot be written at gives nothing") {
+    // 9e18 of cash fits; written at one decimal place, as adding a value of 0.5 needs, it does not.
+    backtest::ReplayLedger ledger(Decimal64::parse("9000000000000000000"), krw_currency);
+    REQUIRE(ledger.apply(trade("A", OrderSide::BUY, "1", "1"), krw_currency));
+    same(ledger);
+    REQUIRE(ledger.mark(id("A"), Decimal64::parse("0.5")));
+    CHECK_FALSE(same(ledger));
+    REQUIRE(ledger.mark(id("A"), Decimal64::parse("2")));
+    same(ledger);
+  }
+  SECTION("a total that fits only until its cents are written gives nothing") {
+    // Lots of 0.01 and 0.99 leave every total whole, so the running one never writes cents; the cash then
+    // reaches 9e18 through a sale. The full sum adds the cash to 0.01, which needs the cash at two decimal
+    // places, and that does not fit -- so nothing, as the running total must also answer.
+    backtest::ReplayLedger ledger(Decimal64::parse("100"), krw_currency);
+    REQUIRE(ledger.apply(trade("A", OrderSide::BUY, "1", "0.01"), krw_currency));
+    REQUIRE(ledger.apply(trade("B", OrderSide::BUY, "1", "0.99"), krw_currency));
+    REQUIRE(ledger.apply(trade("D", OrderSide::BUY, "1", "1"), krw_currency));
+    same(ledger);
+    REQUIRE(ledger.mark(id("D"), Decimal64::parse("9000000000000000000")));
+    same(ledger);
+    REQUIRE(ledger.apply(trade("D", OrderSide::SELL, "1", "9000000000000000000"), krw_currency));
+    CHECK_FALSE(same(ledger));
+  }
+  SECTION("a copy, and a ledger moved from and used again") {
+    backtest::ReplayLedger ledger(Decimal64::parse("1000"), krw_currency);
+    REQUIRE(ledger.apply(trade("A", OrderSide::BUY, "3", "10"), krw_currency));
+    const auto copy = ledger;
+    same(copy);
+    auto moved = std::move(ledger);
+    same(moved);
+    same(ledger);
+    REQUIRE(ledger.apply(trade("B", OrderSide::SELL, "1", "5"), krw_currency));
+    same(ledger);
+    backtest::ReplayLedger assigned(Decimal64::parse("1"), krw_currency);
+    assigned = std::move(moved);
+    same(assigned);
+    same(moved);
+  }
 }

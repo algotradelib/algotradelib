@@ -112,6 +112,7 @@ public:
     entry.decision_is_exact_ = decision_is_exact_;
     last_ref_ = entry.ref_;
     queued_.push_back(std::move(entry));
+    ++changes_;
     return runner::SendOutcome::ACCEPTED;
   }
 
@@ -181,6 +182,7 @@ public:
     for (auto at = queued_.begin(); at != queued_.end(); ++at) {
       if (at->ref_ == working.ref_) {
         queued_.erase(at);
+        ++changes_;
         return runner::SendOutcome::ACCEPTED;
       }
     }
@@ -236,6 +238,7 @@ public:
     for (auto at = queued_.begin(); at != queued_.end(); ++at) {
       if (at->ref_ == ref) {
         queued_.erase(at);
+        ++changes_;
         return true;
       }
     }
@@ -269,6 +272,15 @@ public:
   std::uint64_t bar() const noexcept { return bar_; }
 
   /**
+   * @brief Returns how many times the queue gained or lost an order (`place`, `cancel`, `withdraw`).
+   *
+   * Releasing a stop and dating an order's session change neither its working row nor the count.
+   *
+   * @return The count since construction.
+   */
+  std::uint64_t changes() const noexcept { return changes_; }
+
+  /**
    * @brief Sets the decision instant stamped on orders accepted from now on.
    * @param at The instant.
    * @param exact Whether `at` is exact or only an upper bound; see `QueuedOrder::decision_is_exact_`.
@@ -283,6 +295,7 @@ private:
   std::optional<OrderRef<BrokerTag>> last_ref_;
   std::uint64_t issued_{0};
   std::uint64_t bar_{0};
+  std::uint64_t changes_{0};
   std::optional<std::chrono::system_clock::time_point> deciding_at_;
   bool decision_is_exact_{true};
 };
@@ -1011,7 +1024,7 @@ private:
         continue;
       }
       const auto order = entry->order_;
-      const auto rule = rule_for(order.instrument_);
+      const auto& rule = rule_for(order.instrument_);
       // An `OPEN`-stamped bar states its start, so a fill at its open has a known day; the period
       // end's day is nominal there -- a day late for a daily bar, days into the next month for a
       // monthly one. See `NextBarFillModel::decide`'s `open_date`.
@@ -1151,7 +1164,10 @@ private:
         result_.first_overdrawn_ = event.period_end_;
       }
     }
-    const auto equity = ledger_.equity_in(config_.currency_);
+    const auto equity = ledger_.equity();
+#if defined(ATL_REPLAY_CHECK_EQUITY)
+    ATL_REPLAY_CHECK_EQUITY(equity, ledger_.equity_in(config_.currency_));
+#endif
     if (!equity) {
       // Every lot was marked, and the total of cash and lots still does not fit an exact decimal.
       // No point is recorded -- a point at an approximate total would be a figure nobody computed
@@ -1335,17 +1351,69 @@ private:
     // The value a weight is sized against: the ledger's equity in the replay's currency at the
     // latest marks, which is what the equity curve records. Cleared when that total does not fit,
     // so a weight is refused on such a bar rather than sized against the previous one.
-    if (const auto equity = ledger_.equity_in(config_.currency_)) {
+    if (const auto equity = ledger_.equity()) {
       runner_.set_portfolio_value(Money{*equity, config_.currency_});
     } else {
       runner_.clear_portfolio_value();
     }
-    auto portfolio = ledger_.snapshot<Tag>(clock_.now());
-    for (const auto& entry : runner_.executor().queued()) {
-      portfolio.working_.push_back(working_row(entry));
-      commit_open_buy(portfolio, entry);
+    using Access = runner::context_detail::PortfolioAccess;
+    auto& context = runner_.context();
+    const auto& queued = runner_.executor().queued();
+    // **Built whole once, then kept up to date in place**, so a callback costs what changed rather than a
+    // copy of every position. Afterwards the portfolio is what a fresh snapshot with a row per queued order
+    // would be. Built whole on the first install and after anything replaced the portfolio outright
+    // (`Context::set_portfolio`); otherwise the ledger rewrites the lots it changed and the cash, and the
+    // working rows are rebuilt when the queue gained or lost an order, a runner edited them in place
+    // (`Runner::persist_reservation`), or reference data (a row's currency) changed. What was seen is
+    // acknowledged only once everything is in, so an install that throws is redone whole by the next.
+    if (!installed_ || Access::replacements(context) != replacements_seen_) {
+      auto portfolio = ledger_.snapshot<Tag>(clock_.now());
+      portfolio.working_.reserve(queued.size());
+      for (const auto& entry : queued) {
+        portfolio.working_.push_back(working_row(entry));
+        commit_open_buy(portfolio, entry);
+      }
+      context.set_portfolio(std::move(portfolio));
+      ledger_.clear_changed();
+    } else {
+      // A runner's reservation follows an order the queue accepted, so today the queue's count moves with it;
+      // the runner's own count is checked too, so a reservation written without a new order is not kept.
+      const bool rows_stale = runner_.executor().changes() != queue_seen_ ||
+        Access::runner_edits(context) != edits_seen_ ||
+        Access::reference_changes(context) != references_seen_;
+      auto& portfolio = Access::for_replay_sync(context);
+      ledger_.update(portfolio, clock_.now());
+      if (rows_stale) {
+        portfolio.working_.clear();
+        for (const auto& entry : queued) {
+          portfolio.working_.push_back(working_row(entry));
+        }
+      }
+      // `update` set the buying power back to the cash, so every open buy is taken out again; a market
+      // buy is valued at the last price, which moves.
+      if (config_.limits_.enforce_buying_power_) {
+        for (const auto& entry : queued) {
+          commit_open_buy(portfolio, entry);
+        }
+      }
     }
-    runner_.context().set_portfolio(std::move(portfolio));
+    installed_ = true;
+    replacements_seen_ = Access::replacements(context);
+    edits_seen_ = Access::runner_edits(context);
+    references_seen_ = Access::reference_changes(context);
+    queue_seen_ = runner_.executor().changes();
+#if defined(ATL_REPLAY_CHECK_PORTFOLIO)
+    // A test build's check (the tests define the macro as their comparison): the portfolio as kept against
+    // the one the replay used to build from scratch, and the running equity against the full sum.
+    {
+      auto fresh = ledger_.snapshot<Tag>(clock_.now());
+      for (const auto& entry : queued) {
+        fresh.working_.push_back(working_row(entry));
+        commit_open_buy(fresh, entry);
+      }
+      ATL_REPLAY_CHECK_PORTFOLIO(context.portfolio(), fresh, ledger_.equity(), ledger_.equity_in(config_.currency_));
+    }
+#endif
   }
 
   // Returns the working-order row for an outstanding replay order.
@@ -1431,20 +1499,15 @@ private:
     }
   }
 
-  Currency currency_for(const InstrumentId& instrument) const {
-    const auto reference = runner_.context().instrument(instrument);
-    if (!reference) {
-      return config_.currency_;
-    }
-    return reference->currency_;
+  // Both read the reference data in place; use the result at once (`Context::find_instrument`).
+  const Currency& currency_for(const InstrumentId& instrument) const {
+    const auto* reference = runner_.context().find_instrument(instrument);
+    return reference != nullptr ? reference->currency_ : config_.currency_;
   }
 
-  PriceRule rule_for(const InstrumentId& instrument) const {
-    const auto reference = runner_.context().instrument(instrument);
-    if (!reference) {
-      return PriceRule::unknown("no reference data supplied to the replay");
-    }
-    return reference->price_rule_;
+  const PriceRule& rule_for(const InstrumentId& instrument) const {
+    const auto* reference = runner_.context().find_instrument(instrument);
+    return reference != nullptr ? reference->price_rule_ : unknown_rule_;
   }
 
   // Collects what a runner pass reported, so a replay ends with the whole picture.
@@ -1493,6 +1556,15 @@ private:
   ReplayResult result_;
   // Whether a bar since the last equity point went unvalued, so the next point carries no return.
   bool equity_gap_{false};
+  // The rule for an instrument without reference data, kept so `rule_for` can return it by reference.
+  PriceRule unknown_rule_{PriceRule::unknown("no reference data supplied to the replay")};
+  // What `install_portfolio` last saw: whether it installed at all, the context's counts of replacements,
+  // runner edits and reference-data changes, and the queue's count of changes.
+  bool installed_{false};
+  std::uint64_t replacements_seen_{0};
+  std::uint64_t edits_seen_{0};
+  std::uint64_t references_seen_{0};
+  std::uint64_t queue_seen_{0};
   std::optional<strategy::BarEvent> previous_;
   // For a strategy declaring `on_bars`: the bars of the period not yet delivered, and the period end of
   // the last one delivered. A later bar may not join a delivered period, so nothing is decided twice.
