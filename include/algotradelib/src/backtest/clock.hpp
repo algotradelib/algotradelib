@@ -149,12 +149,27 @@ public:
     const strategy::BarEvent& previous,
     const strategy::BarEvent& event
   ) {
+    return contiguous(previous.interval_, previous.period_end_, event);
+  }
+
+  /**
+   * @brief As `contiguous(previous, event)`, given only what it reads of the previous bar.
+   * @param previous_interval The previous bar's interval.
+   * @param previous_end The previous bar's period end.
+   * @param event The bar.
+   * @return `true` if the bar follows the previous one without a gap.
+   */
+  static bool contiguous(
+    BarInterval previous_interval,
+    std::chrono::system_clock::time_point previous_end,
+    const strategy::BarEvent& event
+  ) {
     const auto duration = interval_duration(event.interval_);
-    if (!duration || previous.interval_ != event.interval_) {
+    if (!duration || previous_interval != event.interval_) {
       // Undecidable for intervals with no fixed length; reported as contiguous.
       return true;
     }
-    return event.period_end_ - previous.period_end_ <= *duration;
+    return event.period_end_ - previous_end <= *duration;
   }
 
 private:

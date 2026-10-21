@@ -433,6 +433,29 @@ public:
     return false;
   }
 
+  /**
+   * Adds a bar its caller knows is the first of its instrument and interval in this period, and whose period end
+   * matches a non-empty bucket, without keeping the table `holds` reads (a replay tracks membership itself); the
+   * table is built when the slice is delivered. A bucket filled this way answers `holds` only for slices narrow
+   * enough to scan, so its caller does not ask.
+   */
+  void add_checked(const BarEvent& event) {
+    if (slices_.empty()) {
+      period_end_ = event.period_end_;
+    }
+    for (auto& slice : slices_) {
+      if (slice.interval_ == event.interval_) {
+        slice.bars_.push_back(event);
+        return;
+      }
+    }
+    BarSlice slice;
+    slice.period_end_ = event.period_end_;
+    slice.interval_ = event.interval_;
+    slice.bars_.push_back(event);
+    slices_.push_back(std::move(slice));
+  }
+
   /** Adds a bar; the caller has checked `holds` and that its period end matches a non-empty bucket. */
   void add(const BarEvent& event) {
     if (slices_.empty()) {
@@ -448,6 +471,7 @@ public:
           } else if (slice.bars_.size() > id_detail::scan_limit) {
             if (auto* entry = wide(slice.interval_)) {
               entry->table_.insert(event.instrument_, slice.bars_.size() - 1, ids_of(slice));
+              entry->count_ = slice.bars_.size();
             }
           }
         } catch (...) {
@@ -494,6 +518,9 @@ private:
   struct Wide {
     BarInterval interval_;
     id_detail::PositionTable table_;
+    // How many of the slice's bars the table holds: all of them after `add` or `widen`, fewer after
+    // `add_checked`.
+    std::size_t count_{0};
   };
 
   const Wide* wide(BarInterval interval) const noexcept {
@@ -514,8 +541,6 @@ private:
     return nullptr;
   }
 
-  // Refills the interval's table from its slice, which has just passed `id_detail::scan_limit` bars. On a
-  // failure the table is left empty, and the caller takes the bar back out, so nothing reads it.
   // Moves the table of a wide slice into it, with the bars it describes, so `BarSlice::find` can use it after
   // the slice is delivered. Moving a slice keeps its bars' storage, so the table stays valid for it; the bucket's
   // own table is rebuilt (`widen`) when a later period's slice grows wide again.
@@ -523,14 +548,27 @@ private:
     if (slice.bars_.size() <= id_detail::scan_limit) {
       return;
     }
+    // Built now if `add_checked` left it unbuilt (or behind); a failed allocation only leaves the slice scanned.
+    const auto* built = wide(slice.interval_);
+    if (built == nullptr || built->count_ != slice.bars_.size() || built->table_.empty()) {
+      try {
+        widen(slice);
+      } catch (...) {
+        return;
+      }
+    }
     if (auto* entry = wide(slice.interval_)) {
       slice.index_.table_ = std::move(entry->table_);
       entry->table_.reset();
+      entry->count_ = 0;
       slice.index_.built_over_ = slice.bars_.data();
       slice.index_.count_ = slice.bars_.size();
     }
   }
 
+  // Refills the interval's table from its slice, which has just passed `id_detail::scan_limit` bars (or is being
+  // delivered). On a failure the table is left empty, and the caller takes the bar back out or scans, so nothing
+  // reads it.
   void widen(const BarSlice& slice) {
     Wide* entry = wide(slice.interval_);
     if (entry == nullptr) {
@@ -538,6 +576,7 @@ private:
       entry = &wide_.back();
     }
     entry->table_.reset();
+    entry->count_ = 0;
     try {
       for (std::size_t at = 0; at < slice.bars_.size(); ++at) {
         entry->table_.insert(slice.bars_[at].instrument_, at, ids_of(slice));
@@ -546,6 +585,7 @@ private:
       entry->table_.reset();
       throw;
     }
+    entry->count_ = slice.bars_.size();
   }
 
   std::chrono::system_clock::time_point period_end_{};

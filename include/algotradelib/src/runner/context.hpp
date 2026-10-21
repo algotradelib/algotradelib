@@ -76,12 +76,13 @@ struct Revision {
   }
 };
 
-// In-place access to a context's portfolio, for the runner and the replay only.
+// In-place access to a context's caches, for the runner and the replay only.
 //
 // A strategy reads its portfolio through `Context::portfolio()`, a const reference; it gets no mutable
 // one from here, since everything below is private and only `Runner` and `Backtester` are friends. The
 // counts tell a replay what changed since it last brought the portfolio up to date: a replacement
-// (`Context::set_portfolio`), a runner's edit of its working rows, or new reference data.
+// (`Context::set_portfolio`, or a move), a runner's edit of its working rows, or new reference data. The price
+// and series entries let a replay that sets them on every bar find them once.
 class PortfolioAccess {
   template <typename Strategy, typename CapsType, typename BrokerTag, typename Executor>
   friend class runner::Runner;
@@ -109,6 +110,22 @@ class PortfolioAccess {
 
   template <typename Ctx>
   static std::uint64_t reference_changes(const Ctx& context) noexcept { return context.reference_changes_; }
+
+  // Sets an instrument's last price and returns where it is kept, for a replay that sets it again on every bar:
+  // the entry, once made, stays where it is for the context's life (a map node).
+  template <typename Ctx>
+  static Decimal64& set_price(Ctx& context, const InstrumentId& id, const Decimal64& price) {
+    return context.prices_.insert_or_assign(id, price).first->second;
+  }
+
+#if defined(ATL_HAS_EIGEN)
+  // The series a bar of `event`'s instrument and interval goes into, made if it is the first; it stays where it
+  // is for the context's life, as `Context::bars` promises.
+  template <typename Ctx>
+  static analytics::SeriesBuffer& series_for(Ctx& context, const BarEvent& event) {
+    return context.series_for(event);
+  }
+#endif
 };
 
 } // namespace context_detail
@@ -409,17 +426,7 @@ public:
    *   capacity is zero.
    */
   void record_bar(const BarEvent& event) {
-    // Found by hash, without building a key; the instrument is copied only for its first bar.
-    auto found = series_.find(event.instrument_);
-    if (found == series_.end()) {
-      found = series_.emplace(event.instrument_, std::map<BarInterval, analytics::SeriesBuffer>{}).first;
-    }
-    auto& by_interval = found->second;
-    auto series = by_interval.find(event.interval_);
-    if (series == by_interval.end()) {
-      series = by_interval.emplace(event.interval_, analytics::SeriesBuffer(series_capacity_)).first;
-    }
-    series->second.push(event.bar_);
+    series_for(event).push(event.bar_);
   }
 #endif
 
@@ -429,6 +436,23 @@ private:
   // The two per-instrument tables below are looked up by id and never iterated, so their order is
   // nobody's to observe.
   using InstrumentHash = id_detail::InstrumentIdHash;
+
+#if defined(ATL_HAS_EIGEN)
+  // The series a bar of `event`'s instrument and interval goes into, made if it is the first; found by hash,
+  // without building a key, and the instrument copied only for its first bar.
+  analytics::SeriesBuffer& series_for(const BarEvent& event) {
+    auto found = series_.find(event.instrument_);
+    if (found == series_.end()) {
+      found = series_.emplace(event.instrument_, std::map<BarInterval, analytics::SeriesBuffer>{}).first;
+    }
+    auto& by_interval = found->second;
+    auto series = by_interval.find(event.interval_);
+    if (series == by_interval.end()) {
+      series = by_interval.emplace(event.interval_, analytics::SeriesBuffer(series_capacity_)).first;
+    }
+    return series->second;
+  }
+#endif
 
   std::size_t series_capacity_;
   std::chrono::system_clock::time_point now_{};

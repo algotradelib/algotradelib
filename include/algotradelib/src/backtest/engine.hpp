@@ -834,11 +834,14 @@ public:
       pending_.clear();
       return;
     }
+    // **One lookup of the instrument per bar**: its slot says where its lot, its last price and its series are,
+    // and whether it already has a bar in the period being collected.
+    auto& slot = slot_for(event.instrument_);
     if constexpr (Runner::takes_bar_slices) {
       // **Checked before anything is counted, settled, marked or cached**, so a refused bar leaves the
       // replay as it was. The pending period is delivered here, before this bar's settlement, exactly
       // where `on_bar` would have run for that period's last bar.
-      check_slice_order(event);
+      check_slice_order(event, slot);
       if (!pending_.empty() && pending_.period_end() < event.period_end_) {
         deliver_pending();
         if (result_.halted_) {
@@ -847,7 +850,7 @@ public:
       }
     }
     ++result_.bars_;
-    if (previous_ && !ReplayClock::contiguous(*previous_, event)) {
+    if (previous_ && !ReplayClock::contiguous(previous_->first, previous_->second, event)) {
       // A gap is counted rather than interpolated across: nothing happened in it that a strategy
       // should be told about, and inventing a bar would be inventing data.
       ++result_.gaps_;
@@ -875,7 +878,7 @@ public:
     if (period_point_ && *period_point_ != event.period_end_) {
       record_point(*period_point_);
     }
-    settle_queued_against(event);
+    settle_queued_against(event, slot);
     // **The halt stops this bar too, not merely the next one.** Returning only from settlement left
     // `feed` to mark the book, record an equity point, advance the clock and call `on_phase` and
     // `on_bar` on the very bar whose fill could not be costed -- so the strategy decided once more
@@ -891,7 +894,7 @@ public:
     // an order, against a position valued one bar ago beside a price from this one. An order placed
     // from that view fills on a later bar and changes every figure after it. This used to skip only
     // the equity point and carry on, which reported nothing and let that order through.
-    if (!ledger_.mark(event.instrument_, event.bar_.close_)) {
+    if (slot.lot_ && !ledger_.mark_lot(*slot.lot_, event.bar_.close_)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.reached_broker_ = false;
@@ -911,7 +914,7 @@ public:
     // than a uniformly stale picture because it looks current. After a close moves from 10 to 100, a
     // market buy from `on_phase` would be checked against buying power and exposure at 10 while the
     // positions beside it say 100, which can admit an order those limits exist to refuse.
-    runner_.context().set_last_price(event.instrument_, event.bar_.close_);
+    set_price(slot, event);
 
     if (clock_.advance(event, trading_day)) {
       runner_.context().set_phase(clock_.phase());
@@ -934,9 +937,17 @@ public:
 
     if constexpr (Runner::takes_bar_slices) {
       // Cached and clocked now (priced above, so not again); the strategy sees it with the rest of its period.
-      runner_.record_history_only(event);
+      auto& by_interval = slot.interval(event.interval_);
+#if defined(ATL_HAS_EIGEN)
+      forget_pointers_if_replaced();
+      if (by_interval.series_ == nullptr) {
+        by_interval.series_ = &runner::context_detail::PortfolioAccess::series_for(runner_.context(), event);
+      }
+      by_interval.series_->push(event.bar_);
+#endif
       runner_.context().set_now(event.period_end_);
-      pending_.add(event);
+      pending_.add_checked(event);
+      by_interval.pending_ = event.period_end_;
     } else {
       install_portfolio();
       drain_reports(runner_.feed(event));
@@ -944,7 +955,7 @@ public:
     // **After the dispatch, not before it**, so an order this bar's `on_bar` or `on_phase` placed is
     // reported. Before it would report only what settlement had already changed.
     publish_order_updates();
-    previous_ = event;
+    previous_ = std::make_pair(event.interval_, event.period_end_);
   }
 
   /**
@@ -1073,11 +1084,56 @@ public:
   }
 
 private:
+  /**
+   * @brief What the replay keeps of one instrument, so that a bar finds it with one lookup.
+   *
+   * Where its lot is in the ledger (once a fill opened one; lots never move), where the context keeps its last
+   * price and, per interval, its series, and the period end of its latest bar collected for `on_bars`. The two
+   * pointers are into the context; they are dropped whenever the context was replaced
+   * (`forget_pointers_if_replaced`), since a move brings in other storage.
+   */
+  struct InstrumentSlot {
+    /** @brief What is kept per interval of the instrument. */
+    struct ByInterval {
+      /** @brief The interval. */
+      BarInterval interval_{BarInterval::ONE_DAY};
+      /** @brief The period end of its bar in the period being collected, if it has one there. */
+      std::optional<std::chrono::system_clock::time_point> pending_;
+#if defined(ATL_HAS_EIGEN)
+      /** @brief The context's series of it, once found. */
+      analytics::SeriesBuffer* series_{nullptr};
+#endif
+    };
+    /** @brief The lot's place in the ledger, once a fill opened one. */
+    std::optional<std::size_t> lot_;
+    /** @brief The context's last-price entry, once set. */
+    Decimal64* price_{nullptr};
+    /** @brief One entry per interval seen. */
+    std::vector<ByInterval> intervals_;
+
+    /**
+     * @brief Returns the entry of an interval, made if it is the first bar of it.
+     * @param interval The interval.
+     * @return The entry.
+     */
+    ByInterval& interval(BarInterval interval) {
+      for (auto& entry : intervals_) {
+        if (entry.interval_ == interval) {
+          return entry;
+        }
+      }
+      ByInterval added;
+      added.interval_ = interval;
+      intervals_.push_back(added);
+      return intervals_.back();
+    }
+  };
+
   // Refuses a bar a strategy declaring `on_bars` cannot be shown consistently: one for a period already
   // delivered (it would start a second slice for that period, and could meet an order decided on the
   // first), one earlier than the pending period, or a second bar of one instrument and interval in a
   // period. Throws before anything changes.
-  void check_slice_order(const strategy::BarEvent& event) const {
+  void check_slice_order(const strategy::BarEvent& event, InstrumentSlot& slot) {
     if (delivered_through_ && !(*delivered_through_ < event.period_end_)) {
       throw std::invalid_argument(
         "a bar for a period already delivered to on_bars: feed every bar of a period before anything "
@@ -1093,7 +1149,7 @@ private:
         "instruments"
       );
     }
-    if (event.period_end_ == pending_.period_end() && pending_.holds(event)) {
+    if (event.period_end_ == pending_.period_end() && slot.interval(event.interval_).pending_ == event.period_end_) {
       throw std::invalid_argument(
         "a second bar of one instrument and interval for the same period end: on_bars receives one bar "
         "per instrument"
@@ -1278,7 +1334,7 @@ private:
   //
   // The queue is never emptied, so an order this loop has not reached yet is outstanding, visible in
   // every portfolio installed along the way, and addressable by a cancellation from any callback.
-  void settle_queued_against(const strategy::BarEvent& event) {
+  void settle_queued_against(const strategy::BarEvent& event, InstrumentSlot& slot) {
     // With nothing queued nothing can expire, fill or be assigned a session; only the publication at the end
     // has work left (it releases deferred targets).
     if (runner_.executor().queued().empty()) {
@@ -1388,6 +1444,12 @@ private:
         result_.halted_ = std::move(error);
         abort_queue();
         return;
+      }
+      // **Where the lot is, learnt as soon as it exists.** A fill can only open a lot in this bar's own
+      // instrument, and it is recorded here, before anything below (recording, `on_fill`) can throw, so a
+      // handler's exception caught by the caller cannot leave a held lot that is never marked again.
+      if (!slot.lot_) {
+        slot.lot_ = ledger_.lot_of(order.instrument_);
       }
       note_overdraft(*decision.execution_);
       if (decision.intrabar_release_fill_) {
@@ -1676,6 +1738,42 @@ private:
     return nullptr;
   }
 
+  // Drops every slot's pointers into the context if it was replaced since they were taken. Called right before
+  // they are used, since any handler (`on_bars`, `on_phase`, `on_fill`, ...) can move another context into it.
+  void forget_pointers_if_replaced() noexcept {
+    const auto revision = runner::context_detail::PortfolioAccess::replacements(runner_.context());
+    if (revision == slots_context_) {
+      return;
+    }
+    for (auto& entry : slots_) {
+      entry.second.price_ = nullptr;
+#if defined(ATL_HAS_EIGEN)
+      for (auto& by_interval : entry.second.intervals_) {
+        by_interval.series_ = nullptr;
+      }
+#endif
+    }
+    slots_context_ = revision;
+  }
+
+  InstrumentSlot& slot_for(const InstrumentId& instrument) {
+    auto found = slots_.find(instrument);
+    if (found == slots_.end()) {
+      found = slots_.emplace(instrument, InstrumentSlot{}).first;
+    }
+    return found->second;
+  }
+
+  // Sets the bar's close as its instrument's last price, through the slot once the context's entry is known.
+  void set_price(InstrumentSlot& slot, const strategy::BarEvent& event) {
+    forget_pointers_if_replaced();
+    if (slot.price_ != nullptr) {
+      *slot.price_ = event.bar_.close_;
+    } else {
+      slot.price_ = &runner::context_detail::PortfolioAccess::set_price(runner_.context(), event.instrument_, event.bar_.close_);
+    }
+  }
+
   void install_portfolio() {
     // The value a weight is sized against: the ledger's equity in the replay's currency at the
     // latest marks, which is what the equity curve records. Cleared when that total does not fit,
@@ -1885,6 +1983,9 @@ private:
   ReplayResult result_;
   // Whether a bar since the last equity point went unvalued, so the next point carries no return.
   bool equity_gap_{false};
+  // Each instrument's slot (`InstrumentSlot`), and the context's replacement count its pointers belong to.
+  std::unordered_map<InstrumentId, InstrumentSlot, id_detail::InstrumentIdHash> slots_;
+  std::uint64_t slots_context_{0};
   // Under `EquityCurve::PER_PERIOD`, the period end of the last bar marked, whose point is recorded when a bar of
   // a different period end arrives or the replay finishes.
   std::optional<std::chrono::system_clock::time_point> period_point_;
@@ -1897,7 +1998,8 @@ private:
   std::uint64_t edits_seen_{0};
   std::uint64_t references_seen_{0};
   std::uint64_t queue_seen_{0};
-  std::optional<strategy::BarEvent> previous_;
+  // The interval and period end of the previous bar, which is all `ReplayClock::contiguous` reads of it.
+  std::optional<std::pair<BarInterval, std::chrono::system_clock::time_point>> previous_;
   // For a strategy declaring `on_bars`: the bars of the period not yet delivered, and the period end of
   // the last one delivered. A later bar may not join a delivered period, so nothing is decided twice.
   strategy::slice_detail::Bucket pending_;
