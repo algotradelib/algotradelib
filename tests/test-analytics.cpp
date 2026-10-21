@@ -932,3 +932,37 @@ TEST_CASE("turnover names its convention, and both start policies are available"
   REQUIRE_FALSE(observed(skipped[0]));
   REQUIRE(skipped[1] == Catch::Approx(1.0));
 }
+
+TEST_CASE("weighted returns hold each period's weights over a later period's returns") {
+  const auto nan = math::missing();
+  math::Matrix returns(4, 2);
+  returns << nan, nan,
+             0.10, -0.05,
+             0.02, nan,
+             -0.01, 0.03;
+  math::Matrix weights(4, 2);
+  weights << 0.5, 0.5,
+             1.0, -1.0,
+             nan, 0.25,
+             0.0, 0.0;
+  // Held from the next period: 0.5 * 0.10 + 0.5 * -0.05, then 1.0 * 0.02 (B's return missing), then A's weight
+  // missing and 0.25 * 0.03.
+  const auto next = analytics::weighted_returns(returns, weights, 1);
+  REQUIRE(next.size() == 4);
+  CHECK(next[0] == 0.0);
+  CHECK(next[1] == Catch::Approx(0.025));
+  CHECK(next[2] == Catch::Approx(0.02));
+  CHECK(next[3] == Catch::Approx(0.0075));
+  // Held the same period, and two periods on.
+  const auto same = analytics::weighted_returns(returns, weights, 0);
+  CHECK(same[0] == 0.0);
+  CHECK(same[1] == Catch::Approx(0.15));
+  CHECK(same[2] == 0.0);
+  CHECK(same[3] == 0.0);
+  const auto later = analytics::weighted_returns(returns, weights, 2);
+  CHECK(later[0] == 0.0);
+  CHECK(later[1] == 0.0);
+  CHECK(later[2] == Catch::Approx(0.01));
+  CHECK(later[3] == Catch::Approx(-0.01 - 0.03));
+  CHECK_THROWS_AS(analytics::weighted_returns(returns, math::Matrix(4, 3), 1), std::invalid_argument);
+}
