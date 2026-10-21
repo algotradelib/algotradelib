@@ -764,7 +764,7 @@ public:
   )
   : config_(std::move(config)),
     fills_(std::move(fills)),
-    ledger_(config_.cash_, config_.currency_),
+    ledger_(config_.cash_, config_.currency_, ExecutionHistory::NONE),
     clock_(config_.session_),
     runner_(std::move(strategy), config_.limits_, config_.series_capacity_) {
     for (const auto& reference : config_.instruments_) {
@@ -783,6 +783,9 @@ public:
 
   /**
    * @brief Returns the ledger: positions, cash and realized profit.
+   *
+   * It keeps no executions (`ExecutionHistory::NONE`): they are in `result().executions_`, once.
+   *
    * @return The ledger.
    */
   const ReplayLedger& ledger() const noexcept { return ledger_; }
@@ -1458,14 +1461,17 @@ private:
       if (decision.bounded_) {
         ++result_.limit_fills_bounded_;
       }
-      result_.executions_.push_back(*decision.execution_);
+      // Moved, not copied: the result is the only record of a replay's executions. Nothing below adds to
+      // `result_.executions_` before `on_fill` returns, so the reference stays valid.
+      result_.executions_.push_back(std::move(*decision.execution_));
       if constexpr (strategy::strategy_detail::declares_on_fill<Strategy>) {
+        const auto& recorded = result_.executions_.back();
         // **No handler, nothing to show.** For a strategy without `on_fill` the install would be overwritten
         // unread (every later dispatch, and `settle_deferred`, installs first) and the pass would settle an
         // empty instruction list. Skipped at compile time: per fill, the install alone costs a row per queued
         // order and a copy of every position.
         install_portfolio();
-        drain_reports(runner_.feed(decision.execution_->fill_));
+        drain_reports(runner_.feed(recorded.fill_));
       }
     }
     expire_day_orders(event, bar_date, true);

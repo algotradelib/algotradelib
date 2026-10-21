@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -58,6 +59,18 @@ struct Execution {
   Decimal64 tax_;
 };
 
+/** @brief Whether a `ReplayLedger` keeps the executions it applies. */
+enum class ExecutionHistory {
+  /** @brief Keep every execution, readable through `ReplayLedger::executions()`. */
+  KEEP,
+  /**
+   * @brief Keep none, for an owner that records them itself (a `Backtester`, in `ReplayResult::executions_`).
+   *
+   * Positions, cash, realized profit and equity are the same as with `KEEP`.
+   */
+  NONE
+};
+
 /**
  * @brief Positions, cash and realized profit, updated by each execution of a replay.
  *
@@ -69,8 +82,10 @@ public:
    * @brief Constructs a ledger holding only cash.
    * @param cash The starting cash.
    * @param currency Its currency.
+   * @param history Whether to keep the executions applied (`executions()`).
    */
-  ReplayLedger(Decimal64 cash, Currency currency) : own_(currency) {
+  ReplayLedger(Decimal64 cash, Currency currency, ExecutionHistory history = ExecutionHistory::KEEP)
+  : history_(history), own_(currency) {
     cash_.push_back(Money{std::move(cash), std::move(currency)});
     recount();
   }
@@ -91,6 +106,7 @@ public:
     cash_(std::move(other.cash_)),
     realized_(std::move(other.realized_)),
     executions_(std::move(other.executions_)),
+    history_(other.history_),
     held_(std::move(other.held_)),
     lots_(std::move(other.lots_)),
     changed_(std::move(other.changed_)),
@@ -113,6 +129,7 @@ public:
       cash_ = std::move(other.cash_);
       realized_ = std::move(other.realized_);
       executions_ = std::move(other.executions_);
+      history_ = other.history_;
       held_ = std::move(other.held_);
       lots_ = std::move(other.lots_);
       changed_ = std::move(other.changed_);
@@ -201,10 +218,24 @@ public:
   const std::vector<HoldingPosition>& positions() const noexcept { return positions_; }
 
   /**
+   * @brief Returns whether the ledger keeps the executions it applies.
+   * @return The setting it was constructed with.
+   */
+  ExecutionHistory history() const noexcept { return history_; }
+
+  /**
    * @brief Returns every execution applied.
    * @return The executions, oldest first.
+   * @throws std::logic_error If the ledger keeps none (`ExecutionHistory::NONE`, as a `Backtester`'s does: its
+   *   executions are in `ReplayResult::executions_`).
    */
-  const std::vector<Execution>& executions() const noexcept { return executions_; }
+  const std::vector<Execution>& executions() const {
+    if (history_ == ExecutionHistory::NONE) {
+      throw std::logic_error("this ledger keeps no executions (ExecutionHistory::NONE); "
+        "a Backtester's are in ReplayResult::executions_");
+    }
+    return executions_;
+  }
 
   /**
    * @brief Returns total equity in the ledger's own currency (the constructor's), as `equity_in` would.
@@ -235,7 +266,8 @@ public:
    * profit against the old average, and opens the remainder at the new price. Commission,
    * institution fee and tax are deducted from cash.
    *
-   * @param execution_in The execution; it may be one of `executions()`.
+   * @param execution_in The execution; it may be one of `executions()`. Kept (copied) only with
+   *   `ExecutionHistory::KEEP`.
    * @param currency_in The instrument's currency.
    * @return `false`, with the ledger unchanged, if the arithmetic does not fit, or if `currency_in`
    *   differs from the currency of a non-flat position in the instrument; `true` otherwise.
@@ -243,11 +275,16 @@ public:
    */
   bool apply(const Execution& execution_in, const Currency& currency_in) {
     // **Owned copies first.** The execution passed in may be one of `executions()`, which reserving room
-    // below can move, and `currency_in` may be its currency; every read below is of these copies.
-    auto recorded = execution_in;
+    // below can move, and `currency_in` may be its currency (or a position's, which opening a lot can move);
+    // every read below is of these copies. A ledger that keeps no history copies only the currency: nothing
+    // it changes can hold an execution.
+    std::optional<Execution> recorded;
+    if (history_ == ExecutionHistory::KEEP) {
+      recorded.emplace(execution_in);
+    }
     const auto currency = currency_in;
-    const auto& execution = recorded;
-    const auto& fill = recorded.fill_;
+    const auto& execution = recorded ? *recorded : execution_in;
+    const auto& fill = execution.fill_;
     const auto zero = Decimal64(0, 0);
 
     // Signed quantity: a sale reduces the position.
@@ -371,7 +408,7 @@ public:
     if (realized_total) {
       reserve_entry(realized_, currency);
     }
-    if (executions_.size() == executions_.capacity()) {
+    if (recorded && executions_.size() == executions_.capacity()) {
       executions_.reserve(std::max<std::size_t>(8, 2 * executions_.capacity()));
     }
 
@@ -402,7 +439,9 @@ public:
     }
     static_assert(std::is_nothrow_move_constructible<Execution>::value,
       "the execution is moved into room made for it, which must not throw");
-    executions_.push_back(std::move(recorded));
+    if (recorded) {
+      executions_.push_back(std::move(*recorded));
+    }
     const auto at = static_cast<std::size_t>(lot - positions_.data());
     note_changed(at);
     retrack(at);
@@ -757,6 +796,7 @@ private:
   std::vector<Money> cash_;
   std::vector<Money> realized_;
   std::vector<Execution> executions_;
+  ExecutionHistory history_{ExecutionHistory::KEEP};
   // Where the lots with a non-zero quantity are in `positions_`, ascending; `apply` keeps it.
   std::vector<std::size_t> held_;
 

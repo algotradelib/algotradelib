@@ -506,6 +506,74 @@ TEST_CASE("equity counts the lots held, as a scan of every lot does", "[ledger]"
   }
 }
 
+TEST_CASE("a ledger keeping no executions holds what a ledger keeping them holds", "[ledger]") {
+  const auto id = [](int k) {
+    return InstrumentId{Country::KR, all_venues[static_cast<std::size_t>(k % 4)], "S" + std::to_string(k / 4)};
+  };
+  std::uint32_t state = 20261021;
+  const auto draw = [&state](std::uint32_t below) {
+    state = state * 1664525u + 1013904223u;
+    return (state >> 8) % below;
+  };
+  const std::array<const char*, 4> quantities{"0", "1", "3", "7"};
+  const std::array<const char*, 4> prices{"1000", "1250.5", "980", "1000000000000000000"};
+  backtest::ReplayLedger kept(Decimal64::parse("900000000000"), krw());
+  backtest::ReplayLedger unkept(Decimal64::parse("900000000000"), krw(), backtest::ExecutionHistory::NONE);
+  CHECK(kept.history() == backtest::ExecutionHistory::KEEP);
+  CHECK(unkept.history() == backtest::ExecutionHistory::NONE);
+
+  const auto require_same = [&]() {
+    REQUIRE(unkept.positions().size() == kept.positions().size());
+    for (std::size_t at = 0; at < kept.positions().size(); ++at) {
+      const auto& a = kept.positions()[at];
+      const auto& b = unkept.positions()[at];
+      REQUIRE(b.instrument_ == a.instrument_);
+      REQUIRE(b.quantity_ == a.quantity_);
+      REQUIRE(b.average_purchase_price_ == a.average_purchase_price_);
+      REQUIRE(b.last_price_ == a.last_price_);
+      REQUIRE(b.market_value_ == a.market_value_);
+    }
+    for (const auto& currency : {krw(), Currency{"USD"}}) {
+      REQUIRE(unkept.cash_in(currency) == kept.cash_in(currency));
+      REQUIRE(unkept.realized_in(currency) == kept.realized_in(currency));
+      REQUIRE(unkept.equity_in(currency) == kept.equity_in(currency));
+    }
+    REQUIRE(unkept.equity() == kept.equity());
+  };
+  std::size_t applied = 0;
+  for (int at = 0; at < 600; ++at) {
+    INFO("step " << at);
+    const int k = static_cast<int>(draw(41));
+    if (draw(4) == 0) {
+      const auto price = Decimal64::parse(prices[draw(3)]);
+      REQUIRE(unkept.mark(id(k), price) == kept.mark(id(k), price));
+    } else {
+      auto execution = filled(draw(2) == 0 ? OrderSide::BUY : OrderSide::SELL, quantities[draw(4)], prices[draw(4)]);
+      execution.fill_.instrument_ = id(k);
+      const auto currency = draw(9) == 0 ? Currency{"USD"} : krw();
+      const bool done = kept.apply(execution, currency);
+      REQUIRE(unkept.apply(execution, currency) == done);
+      applied += done ? 1 : 0;
+    }
+    require_same();
+  }
+  CHECK(kept.executions().size() == applied);
+  CHECK_THROWS_AS(unkept.executions(), std::logic_error);
+
+  // Copies and moves carry the setting.
+  auto copied = unkept;
+  auto assigned = opening();
+  assigned = unkept;
+  auto moved = std::move(copied);
+  for (const auto* each : {&assigned, &moved}) {
+    CHECK(each->history() == backtest::ExecutionHistory::NONE);
+    CHECK_THROWS_AS(each->executions(), std::logic_error);
+  }
+  auto kept_again = unkept;
+  kept_again = kept;
+  CHECK(kept_again.executions().size() == applied);
+}
+
 TEST_CASE("equity adds the lots held in the order they were opened", "[ledger]") {
   // An earlier lot reopened after a later one: summed in the order of `positions()` the total fits; summed with
   // the reopened lot last it would pass the largest decimal on the way.
@@ -1007,6 +1075,21 @@ TEST_CASE("an order is never filled from the bar that produced it") {
   REQUIRE(engine.strategy().fill_prices_.size() == 1);
   // The next bar's open, not anything from the signal's own bar.
   REQUIRE(engine.strategy().fill_prices_[0] == Decimal64::parse("80000"));
+}
+
+TEST_CASE("a replay records each execution once and in its result only", "[ledger]") {
+  auto config = replay_config();
+  config.cash_ = Decimal64::parse("500000");
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, std::move(config));
+  engine.feed(bar_at(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000"));
+  engine.feed(bar_at(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000"));
+  engine.finish();
+
+  REQUIRE(engine.result().executions_.size() == 1);
+  CHECK(engine.result().executions_[0].fill_.quantity_ == Decimal64::parse("10"));
+  CHECK(engine.ledger().history() == backtest::ExecutionHistory::NONE);
+  CHECK_THROWS_AS(engine.ledger().executions(), std::logic_error);
+  CHECK(engine.ledger().quantity_of(samsung()) == std::optional<Decimal64>(Decimal64::parse("10")));
 }
 
 TEST_CASE("a replay that fills a buy its cash cannot pay for says it borrowed", "[overdraft]") {
