@@ -155,24 +155,29 @@ class PortfolioAccess {
 // A context's bar history: each series' trailing bars, or, when the context keeps none, each series' newest bar
 // time only (to refuse a bar that is not later). Whether it keeps them belongs to the context object, not to
 // its contents: a move assignment keeps the destination's, so a context moved into a runner's place cannot turn
-// on reads the runner never records for, and what it brings is converted to the destination's form.
+// on reads the runner never records for, and what it brings is converted to the destination's form in place,
+// without allocating, so moving a context still cannot throw.
 struct BarHistory {
-  using Series = std::map<BarInterval, analytics::SeriesBuffer>;
-  using Times = std::map<BarInterval, std::optional<std::chrono::system_clock::time_point>>;
+  // One series of an instrument at an interval.
+  struct Entry {
+    // Its bars; never made in a context keeping no history.
+    std::optional<analytics::SeriesBuffer> series_;
+    // Its newest bar time where it has no bars: kept instead of them, or brought by a context keeping none,
+    // when it bounds the first bar pushed.
+    std::optional<std::chrono::system_clock::time_point> newest_;
+  };
+  using ByInterval = std::map<BarInterval, Entry>;
 
-  // Node-based both ways, so a series or a time never moves once made.
-  std::unordered_map<InstrumentId, Series, id_detail::InstrumentIdHash> series_;
-  // Only in a context keeping no history, or one such context was moved into.
-  std::unordered_map<InstrumentId, Times, id_detail::InstrumentIdHash> times_;
+  // Node-based both ways, so an entry never moves once made.
+  std::unordered_map<InstrumentId, ByInterval, id_detail::InstrumentIdHash> entries_;
   bool kept_{true};
 
   BarHistory() = default;
   BarHistory(const BarHistory&) = delete;
   BarHistory& operator=(const BarHistory&) = delete;
   BarHistory(BarHistory&&) = default;
-  BarHistory& operator=(BarHistory&& other) {
-    series_ = std::move(other.series_);
-    times_ = std::move(other.times_);
+  BarHistory& operator=(BarHistory&& other) noexcept {
+    entries_ = std::move(other.entries_);
     if (!kept_) {
       keep_times_only();
     }
@@ -180,26 +185,25 @@ struct BarHistory {
   }
 
   // For a runner whose strategy reads no history.
-  void stop_keeping() {
+  void stop_keeping() noexcept {
     kept_ = false;
     keep_times_only();
   }
 
 private:
   // Replaces each series by its newest bar time, keeping the later where both exist.
-  void keep_times_only() {
-    for (const auto& [id, by_interval] : series_) {
-      for (const auto& [interval, series] : by_interval) {
-        if (series.empty()) {
-          continue;
+  void keep_times_only() noexcept {
+    for (auto& [id, by_interval] : entries_) {
+      for (auto& [interval, entry] : by_interval) {
+        if (entry.series_ && !entry.series_->empty()) {
+          const auto newest = entry.series_->newest_instant();
+          if (!entry.newest_ || *entry.newest_ < newest) {
+            entry.newest_ = newest;
+          }
         }
-        auto& newest = times_[id][interval];
-        if (!newest || *newest < series.newest_instant()) {
-          newest = series.newest_instant();
-        }
+        entry.series_.reset();
       }
     }
-    series_.clear();
   }
 };
 #endif
@@ -390,12 +394,15 @@ public:
     BarInterval interval = BarInterval::ONE_DAY
   ) const {
     require_bar_history();
-    const auto found = history_.series_.find(id);
-    if (found == history_.series_.end()) {
+    const auto found = history_.entries_.find(id);
+    if (found == history_.entries_.end()) {
       return nullptr;
     }
-    const auto series = found->second.find(interval);
-    return series == found->second.end() ? nullptr : &series->second;
+    const auto entry = found->second.find(interval);
+    if (entry == found->second.end() || !entry->second.series_) {
+      return nullptr;
+    }
+    return &*entry->second.series_;
   }
 #endif
 
@@ -520,36 +527,29 @@ private:
 
 #if defined(ATL_HAS_EIGEN)
   // The series a bar of `event`'s instrument and interval goes into, made if it is the first; found by hash,
-  // without building a key, and the instrument copied only for its first bar.
+  // without building a key, and the instrument copied only for its first bar. A series without bars refuses
+  // a bar not later than a newest bar time a context keeping no history brought in; its first push then sets
+  // a later one.
   analytics::SeriesBuffer& series_for(const BarEvent& event) {
-    auto found = history_.series_.find(event.instrument_);
-    if (found == history_.series_.end()) {
-      found = history_.series_.emplace(event.instrument_, context_detail::BarHistory::Series{}).first;
+    auto& entry = entry_for(event);
+    if (!entry.series_) {
+      entry.series_.emplace(series_capacity_);
     }
-    auto& by_interval = found->second;
-    auto series = by_interval.find(event.interval_);
-    if (series == by_interval.end()) {
-      series = by_interval.emplace(event.interval_, analytics::SeriesBuffer(series_capacity_)).first;
+    if (entry.newest_ && entry.series_->empty() && !(*entry.newest_ < event.bar_.timestamp_)) {
+      throw std::invalid_argument("a series buffer observation must be later than the last");
     }
-    // A context moved in may bring only that series' newest bar time (it kept no history); an empty series
-    // must not accept a bar that time already passed. Its first push then sets a later newest bar.
-    if (series->second.empty() && !history_.times_.empty()) {
-      const auto times = history_.times_.find(event.instrument_);
-      if (times != history_.times_.end()) {
-        const auto newest = times->second.find(event.interval_);
-        if (newest != times->second.end() && newest->second && !(*newest->second < event.bar_.timestamp_)) {
-          throw std::invalid_argument("a series buffer observation must be later than the last");
-        }
-      }
-    }
-    return series->second;
+    return *entry.series_;
   }
 
-  // The newest bar time of `event`'s series, made empty if it is the first.
+  // The newest bar time of `event`'s series, for a context keeping no history; made empty if it is the first.
   std::optional<std::chrono::system_clock::time_point>& bar_time_for(const BarEvent& event) {
-    auto found = history_.times_.find(event.instrument_);
-    if (found == history_.times_.end()) {
-      found = history_.times_.emplace(event.instrument_, context_detail::BarHistory::Times{}).first;
+    return entry_for(event).newest_;
+  }
+
+  context_detail::BarHistory::Entry& entry_for(const BarEvent& event) {
+    auto found = history_.entries_.find(event.instrument_);
+    if (found == history_.entries_.end()) {
+      found = history_.entries_.emplace(event.instrument_, context_detail::BarHistory::ByInterval{}).first;
     }
     return found->second[event.interval_];
   }

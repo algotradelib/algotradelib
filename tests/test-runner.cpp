@@ -8,6 +8,7 @@
 #include <chrono>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 using namespace algotradelib;
@@ -1019,6 +1020,14 @@ TEST_CASE("a cached series stays where it is as more instruments and intervals a
   REQUIRE(context.bars(InstrumentId{Country::KR, Venue::COMBINED, "N600"}) == nullptr);
 }
 #endif
+
+TEST_CASE("a context moves without throwing") {
+  // Moving a context into a runner's place (from a handler, or between runners) must not fail halfway; the bar
+  // history's conversion between keeping and not keeping bars is done in place for that reason.
+  using Ctx = runner::DryRunner<BuyEachBar>::Context;
+  STATIC_REQUIRE(std::is_nothrow_move_constructible_v<Ctx>);
+  STATIC_REQUIRE(std::is_nothrow_move_assignable_v<Ctx>);
+}
 
 #if defined(ATL_HAS_EIGEN)
 namespace {
