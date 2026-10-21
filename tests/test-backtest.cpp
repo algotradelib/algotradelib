@@ -17,6 +17,7 @@ void equity(const Equity& running, const Equity& summed);
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
 
 #include <array>
 #include <chrono>
@@ -5478,6 +5479,117 @@ TEST_CASE("a replay keeps pricing and caching bars after a context is moved into
   // Two bars cached before the move, then the moved-in context's own series starts again from the next bar.
   CHECK(seen.series_sizes_ == std::vector<std::size_t>{1, 2, 1, 2, 3});
   CHECK(seen.prices_ == std::vector<std::string>{"70000", "70100", "70200", "70300", "70400"});
+}
+#endif
+
+#if defined(ATL_HAS_EIGEN)
+namespace {
+
+/** Buys on its second bar and sells part on its fourth; reads no history, and says so unless `Reads`. */
+template <bool Reads>
+struct TradesWithoutHistory {
+  static constexpr bool reads_bar_history = Reads;
+  int bars_{0};
+
+  template <class Ctx>
+  void act(Ctx& ctx, const InstrumentId& id) {
+    ++bars_;
+    if (bars_ == 2) {
+      ctx.submit(strategy::OrderIntent::market(id, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))));
+    } else if (bars_ == 4) {
+      ctx.submit(strategy::OrderIntent::market(id, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("4"))));
+    }
+  }
+};
+
+template <bool Reads>
+struct BarTradesWithoutHistory : TradesWithoutHistory<Reads> {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) { this->act(ctx, bar.instrument_); }
+};
+
+template <bool Reads>
+struct SliceTradesWithoutHistory : TradesWithoutHistory<Reads> {
+  template <class Ctx>
+  void on_bars(Ctx& ctx, const strategy::BarSlice& slice) { this->act(ctx, slice.bars_.front().instrument_); }
+};
+
+template <class Strategy>
+backtest::ReplayResult replay_six_minutes() {
+  backtest::Backtester<Strategy> engine(Strategy{}, replay_config());
+  const char* closes[] = {"70000", "70100", "70200", "70300", "70400", "70500"};
+  for (int minute = 1; minute <= 6; ++minute) {
+    engine.feed(moving_bar(session_minute(minute), BarInterval::ONE_MINUTE, closes[minute - 1], closes[minute - 1]));
+  }
+  engine.finish();
+  return engine.result();
+}
+
+void require_same_replay(const backtest::ReplayResult& kept, const backtest::ReplayResult& dropped) {
+  REQUIRE(kept.executions_.size() == 2);
+  REQUIRE(dropped.executions_.size() == kept.executions_.size());
+  for (std::size_t at = 0; at < kept.executions_.size(); ++at) {
+    CHECK(dropped.executions_[at].fill_.price_ == kept.executions_[at].fill_.price_);
+    CHECK(dropped.executions_[at].fill_.quantity_ == kept.executions_[at].fill_.quantity_);
+    CHECK(dropped.executions_[at].fill_.at_ == kept.executions_[at].fill_.at_);
+  }
+  REQUIRE(dropped.equity_.size() == kept.equity_.size());
+  for (std::size_t at = 0; at < kept.equity_.size(); ++at) {
+    CHECK(dropped.equity_[at].at_ == kept.equity_[at].at_);
+    CHECK(dropped.equity_[at].equity_ == kept.equity_[at].equity_);
+  }
+  CHECK(dropped.bars_ == kept.bars_);
+}
+
+/** Reads no history; on its second period moves a fresh context into its own, then reads the history. */
+struct ReadsAfterMovingAContextIn {
+  static constexpr bool reads_bar_history = false;
+  int periods_{0};
+
+  template <class Ctx>
+  void on_bars(Ctx& ctx, const strategy::BarSlice& slice) {
+    if (++periods_ == 2) {
+      Ctx replacement;
+      replacement.set_now(ctx.now());
+      ctx = std::move(replacement);
+      static_cast<void>(ctx.bars(slice.bars_.front().instrument_, slice.interval_));
+    }
+  }
+};
+
+} // namespace
+
+TEST_CASE("a replay of a strategy reading no bar history matches one keeping it") {
+  require_same_replay(
+    replay_six_minutes<BarTradesWithoutHistory<true>>(), replay_six_minutes<BarTradesWithoutHistory<false>>()
+  );
+  require_same_replay(replay_six_minutes<SliceTradesWithoutHistory<true>>(), replay_six_minutes<SliceTradesWithoutHistory<false>>());
+}
+
+TEST_CASE("a replay keeping no bar history refuses a read after a context is moved into its own") {
+  backtest::Backtester<ReadsAfterMovingAContextIn> engine(ReadsAfterMovingAContextIn{}, replay_config());
+  const auto feed_all = [&engine] {
+    for (int minute = 1; minute <= 4; ++minute) {
+      engine.feed(moving_bar(session_minute(minute), BarInterval::ONE_MINUTE, "70000", "70000"));
+    }
+  };
+  CHECK_THROWS_AS(feed_all(), std::logic_error);
+  CHECK(engine.strategy().periods_ == 2);
+}
+
+TEST_CASE("a slice replay refuses a bar stamped no later than its series' last with or without history") {
+  // Two periods whose bars carry the same timestamp: the period ends move on, the series does not.
+  const auto replay = [](auto strategy) {
+    backtest::Backtester<decltype(strategy)> engine(strategy, replay_config());
+    auto first = moving_bar(session_minute(1), BarInterval::ONE_MINUTE, "70000", "70000");
+    auto second = first;
+    second.period_end_ = session_minute(2);
+    engine.feed(first);
+    engine.feed(second);
+  };
+  const std::string later = "a series buffer observation must be later than the last";
+  CHECK_THROWS_WITH(replay(SliceTradesWithoutHistory<true>{}), later);
+  CHECK_THROWS_WITH(replay(SliceTradesWithoutHistory<false>{}), later);
 }
 #endif
 

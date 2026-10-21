@@ -43,6 +43,13 @@ namespace strategy {
  * interval with every instrument's bar for it, after all of them are cached. A strategy declares one of
  * the two; declaring both does not compile, so neither runs in silence beside the other.
  *
+ * With a linear algebra backend, a runner keeps each instrument's trailing bars for `ctx.bars()`. A
+ * strategy that never calls it, from any handler or anything a handler calls, may declare
+ * `static constexpr bool reads_bar_history = false;`: its runners, live and replay, then keep none, and
+ * `ctx.bars()` throws `std::logic_error`. Bars are still delivered, warm-up included, and a bar not later than
+ * its series' last is still refused. A derived strategy inherits the declaration; one that reads the history
+ * declares `true`. Without the declaration the history is kept.
+ *
  * Because the handlers are templates, the same strategy runs under every runner: a dry run, a
  * live session with any broker, and a backtest. Take the context by reference; a context cannot
  * be copied, so a handler that takes it by value does not compile.
@@ -89,8 +96,38 @@ ATL_DETECT_DECLARED(on_quote);
 ATL_DETECT_DECLARED(on_fill);
 ATL_DETECT_DECLARED(on_order_update);
 ATL_DETECT_DECLARED(on_phase);
+ATL_DETECT_DECLARED(reads_bar_history);
 
 #undef ATL_DETECT_DECLARED
+
+// Whether `S::reads_bar_history` names an accessible static data member of type `const bool`.
+template <typename S, typename = void>
+struct names_static_bool_reads_bar_history : std::false_type {};
+template <typename S>
+struct names_static_bool_reads_bar_history<S, std::void_t<decltype(&S::reads_bar_history)>>
+: std::is_same<decltype(&S::reads_bar_history), const bool*> {};
+
+template <typename S, bool Declared = declares_reads_bar_history<S>>
+struct bar_history_policy {
+  static constexpr bool value = true;
+};
+
+template <typename S>
+struct bar_history_policy<S, true> {
+  static_assert(
+    names_static_bool_reads_bar_history<S>::value,
+    "reads_bar_history must be a public `static constexpr bool`; a declaration of any other kind is "
+    "refused rather than read as absent, which would keep the history it asked to drop, or the reverse"
+  );
+  static constexpr bool value = S::reads_bar_history;
+};
+
+/**
+ * Whether a runner keeps the bar history (`Context::bars`) for `S`: `true` unless `S` declares
+ * `static constexpr bool reads_bar_history = false;`.
+ */
+template <typename S>
+constexpr bool reads_bar_history = bar_history_policy<S>::value;
 
 /** Whether `S` declares any handler at all. */
 template <typename S>
@@ -686,6 +723,9 @@ struct StrategyConformance {
     "a strategy declares on_bar or on_bars, not both: on_bar receives each bar, on_bars every "
     "instrument's bar of a period at once; keep the one this strategy decides with"
   );
+
+  // Instantiated so a malformed `reads_bar_history` is refused here too.
+  static_assert(strategy_detail::reads_bar_history<S> || !strategy_detail::reads_bar_history<S>);
 
   /** @brief Always `true`; reading it compiles every handler call the runner makes with `Ctx`. */
   static constexpr bool value = strategy_detail::compiles_every_handler_call<S, Ctx>();

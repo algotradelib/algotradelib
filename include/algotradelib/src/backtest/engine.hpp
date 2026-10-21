@@ -705,7 +705,10 @@ struct ReplayConfig {
    * the KRX close.
    */
   strategy::SessionWindow session_{strategy::SessionWindow::krx()};
-  /** @brief How many trailing bars the context caches per series, for indicators; must be positive. */
+  /**
+   * @brief How many trailing bars the context caches per series, for indicators; must be positive.
+   *   Unused for a strategy declaring `reads_bar_history = false`, which keeps none.
+   */
   std::size_t series_capacity_{512};
   /**
    * @brief Which points the equity curve records: one per period end (the default), one per bar, or none.
@@ -942,11 +945,19 @@ public:
       // Cached and clocked now (priced above, so not again); the strategy sees it with the rest of its period.
       auto& by_interval = slot.interval(event.interval_);
 #if defined(ATL_HAS_EIGEN)
+      using Access = runner::context_detail::PortfolioAccess;
       forget_pointers_if_replaced();
-      if (by_interval.series_ == nullptr) {
-        by_interval.series_ = &runner::context_detail::PortfolioAccess::series_for(runner_.context(), event);
+      if constexpr (Runner::records_bar_history) {
+        if (by_interval.series_ == nullptr) {
+          by_interval.series_ = &Access::series_for(runner_.context(), event);
+        }
+        by_interval.series_->push(event.bar_);
+      } else {
+        if (by_interval.bar_time_ == nullptr) {
+          by_interval.bar_time_ = &Access::bar_time_for(runner_.context(), event);
+        }
+        Access::advance_bar_time(*by_interval.bar_time_, event);
       }
-      by_interval.series_->push(event.bar_);
 #endif
       runner_.context().set_now(event.period_end_);
       pending_.add_checked(event);
@@ -1091,7 +1102,7 @@ private:
    * @brief What the replay keeps of one instrument, so that a bar finds it with one lookup.
    *
    * Where its lot is in the ledger (once a fill opened one; lots never move), where the context keeps its last
-   * price and, per interval, its series, and the period end of its latest bar collected for `on_bars`. The two
+   * price and, per interval, its series (or its newest bar time), and the period end of its latest bar collected for `on_bars`. The
    * pointers are into the context; they are dropped whenever the context was replaced
    * (`forget_pointers_if_replaced`), since a move brings in other storage.
    */
@@ -1105,6 +1116,8 @@ private:
 #if defined(ATL_HAS_EIGEN)
       /** @brief The context's series of it, once found. */
       analytics::SeriesBuffer* series_{nullptr};
+      /** @brief With no bar history kept, the context's newest bar time of it instead, once found. */
+      std::optional<std::chrono::system_clock::time_point>* bar_time_{nullptr};
 #endif
     };
     /** @brief The lot's place in the ledger, once a fill opened one. */
@@ -1756,6 +1769,7 @@ private:
 #if defined(ATL_HAS_EIGEN)
       for (auto& by_interval : entry.second.intervals_) {
         by_interval.series_ = nullptr;
+        by_interval.bar_time_ = nullptr;
       }
 #endif
     }

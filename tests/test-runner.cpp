@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
 
 #include <array>
 #include <chrono>
@@ -1016,5 +1017,138 @@ TEST_CASE("a cached series stays where it is as more instruments and intervals a
   REQUIRE(context.bars(samsung(), BarInterval::ONE_HOUR) == nullptr);
   REQUIRE(context.bars(InstrumentId{Country::KR, Venue::COMBINED, "N599"}) != nullptr);
   REQUIRE(context.bars(InstrumentId{Country::KR, Venue::COMBINED, "N600"}) == nullptr);
+}
+#endif
+
+#if defined(ATL_HAS_EIGEN)
+namespace {
+
+strategy::BarEvent minute_bar(int minute) {
+  Bar bar;
+  bar.timestamp_ = utc(2026, 3, 10, 1, minute);
+  bar.open_ = bar.high_ = bar.low_ = bar.close_ = Decimal64::parse("70000");
+  bar.volume_ = Decimal64::parse("1");
+  return strategy::make_bar_event(samsung(), BarInterval::ONE_MINUTE, BarStamp::CLOSE, bar);
+}
+
+/** Says it reads no bar history; counts its bars. */
+struct KeepsNoHistory {
+  static constexpr bool reads_bar_history = false;
+  int bars_{0};
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) { ++bars_; }
+};
+
+/** The same, taking slices. */
+struct SlicesKeepingNoHistory {
+  static constexpr bool reads_bar_history = false;
+  template <class Ctx>
+  void on_bars(Ctx&, const strategy::BarSlice&) {}
+};
+
+/** Inherits the declaration, then reads the history from a handler that is not a bar handler. */
+struct BreaksTheDeclaration : KeepsNoHistory {
+  template <class Ctx>
+  void on_phase(Ctx& ctx, const strategy::MarketPhase&) { static_cast<void>(ctx.bars(samsung())); }
+};
+
+/** Inherits the declaration and overrides it. */
+struct ReadsAfterAll : KeepsNoHistory {
+  static constexpr bool reads_bar_history = true;
+};
+
+struct DeclaresANonStatic {
+  const bool reads_bar_history = false;
+};
+struct DeclaresAnInt {
+  static constexpr int reads_bar_history = 0;
+};
+class DeclaresAPrivate {
+  static constexpr bool reads_bar_history = false;
+};
+struct DeclaresAFunction {
+  static constexpr bool reads_bar_history() { return false; }
+};
+
+} // namespace
+
+TEST_CASE("reads_bar_history is read only from a public static bool and defaults to keeping history") {
+  namespace detail = strategy::strategy_detail;
+  STATIC_REQUIRE(runner::DryRunner<BuyEachBar>::records_bar_history);
+  STATIC_REQUIRE_FALSE(runner::DryRunner<KeepsNoHistory>::records_bar_history);
+  STATIC_REQUIRE_FALSE(runner::DryRunner<BreaksTheDeclaration>::records_bar_history);
+  STATIC_REQUIRE(runner::DryRunner<ReadsAfterAll>::records_bar_history);
+  // Declared but of another kind: found, and refused by bar_history_policy's static_assert rather than read as
+  // absent, which would silently keep (or drop) the history.
+  STATIC_REQUIRE(detail::declares_reads_bar_history<DeclaresANonStatic>);
+  STATIC_REQUIRE(detail::declares_reads_bar_history<DeclaresAnInt>);
+  STATIC_REQUIRE(detail::declares_reads_bar_history<DeclaresAPrivate>);
+  STATIC_REQUIRE(detail::declares_reads_bar_history<DeclaresAFunction>);
+  STATIC_REQUIRE_FALSE(detail::names_static_bool_reads_bar_history<DeclaresANonStatic>::value);
+  STATIC_REQUIRE_FALSE(detail::names_static_bool_reads_bar_history<DeclaresAnInt>::value);
+  STATIC_REQUIRE_FALSE(detail::names_static_bool_reads_bar_history<DeclaresAPrivate>::value);
+  STATIC_REQUIRE_FALSE(detail::names_static_bool_reads_bar_history<DeclaresAFunction>::value);
+  STATIC_REQUIRE(detail::names_static_bool_reads_bar_history<KeepsNoHistory>::value);
+}
+
+TEST_CASE("ctx.bars throws when the runner keeps no bar history") {
+  runner::DryRunner<KeepsNoHistory> dry;
+  // Before any bar too: a missing history is not the same as one not filled yet.
+  CHECK_THROWS_AS(dry.context().bars(samsung(), BarInterval::ONE_MINUTE), std::logic_error);
+  dry.feed(minute_bar(1));
+  CHECK(dry.strategy().bars_ == 1);
+  CHECK(dry.context().last_price(samsung()) == Decimal64::parse("70000"));
+  CHECK(dry.context().now() == utc(2026, 3, 10, 1, 1));
+  CHECK_THROWS_AS(dry.context().bars(samsung(), BarInterval::ONE_MINUTE), std::logic_error);
+  // Nor can it be filled by hand.
+  CHECK_THROWS_AS(dry.context().record_bar(minute_bar(2)), std::logic_error);
+
+  // A read from any handler is refused, not answered with nullptr as if the series were empty.
+  runner::DryRunner<BreaksTheDeclaration> breaks;
+  CHECK_THROWS_AS(breaks.feed(strategy::MarketPhase::OPEN), std::logic_error);
+
+  // An unseen series of a runner keeping history is still nullptr.
+  runner::DryRunner<ReadsAfterAll> reads;
+  CHECK(reads.context().bars(samsung(), BarInterval::ONE_MINUTE) == nullptr);
+  reads.feed(minute_bar(1));
+  REQUIRE(reads.context().bars(samsung(), BarInterval::ONE_MINUTE) != nullptr);
+}
+
+TEST_CASE("a runner keeping no bar history still refuses a bar not later than its series' last") {
+  const std::string later = "a series buffer observation must be later than the last";
+  runner::DryRunner<KeepsNoHistory> dry;
+  dry.feed(minute_bar(2));
+  CHECK_THROWS_WITH(dry.feed(minute_bar(2)), later);
+  CHECK_THROWS_WITH(dry.feed_warmup(minute_bar(1)), later);
+  CHECK(dry.strategy().bars_ == 1);
+  dry.feed_warmup(minute_bar(3));
+  CHECK(dry.strategy().bars_ == 2);
+
+  runner::DryRunner<SlicesKeepingNoHistory> slices;
+  slices.record(minute_bar(2));
+  CHECK_THROWS_WITH(slices.record(minute_bar(2)), later);
+  CHECK_THROWS_WITH(slices.record_history_only(minute_bar(1)), later);
+  slices.record_history_only(minute_bar(3));
+  CHECK_THROWS_WITH(slices.record(minute_bar(3)), later);
+  CHECK(slices.context().last_price(samsung()) == Decimal64::parse("70000"));
+}
+
+TEST_CASE("a runner keeping no bar history keeps refusing reads after its context or itself is moved") {
+  using Runner = runner::DryRunner<KeepsNoHistory>;
+  using Ctx = Runner::Context;
+  Runner dry;
+  dry.feed(minute_bar(1));
+  // A context moved into the runner's place keeps the runner's setting, not the one it was made with.
+  Ctx fresh;
+  dry.context() = std::move(fresh);
+  CHECK_THROWS_AS(dry.context().bars(samsung(), BarInterval::ONE_MINUTE), std::logic_error);
+  Runner moved(std::move(dry));
+  CHECK_THROWS_AS(moved.context().bars(samsung(), BarInterval::ONE_MINUTE), std::logic_error);
+  moved.feed(minute_bar(2));
+  CHECK(moved.strategy().bars_ == 2);
+  // A context of one's own keeps its history whatever is moved into it.
+  Ctx own;
+  own = std::move(moved.context());
+  CHECK(own.bars(samsung(), BarInterval::ONE_MINUTE) == nullptr);
 }
 #endif

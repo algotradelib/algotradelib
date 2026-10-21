@@ -324,6 +324,13 @@ public:
   static constexpr bool takes_bar_slices = strategy::strategy_detail::declares_on_bars<Strategy>;
 
   /**
+   * @brief `true` unless the strategy declares `static constexpr bool reads_bar_history = false;`. When
+   *   `false` this runner keeps no bar history: `context().bars()` throws `std::logic_error`, and each bar
+   *   fed is still refused unless later than its series' last.
+   */
+  static constexpr bool records_bar_history = strategy::strategy_detail::reads_bar_history<Strategy>;
+
+  /**
    * @brief `true` when this runner keeps each order it sends in `Portfolio::working_` until a broker
    *   listing accounts for it: a live runner whose broker lists working orders (every shipped
    *   binding).
@@ -346,6 +353,7 @@ public:
    * @param limits The risk limits.
    * @param series_capacity How many trailing bars each cached series keeps; must be positive with a
    *   linear algebra backend, or the first bar fed throws `std::invalid_argument`.
+   *   Unused when `records_bar_history` is `false`.
    * @param executor Where instructions are sent.
    */
   explicit Runner(
@@ -357,7 +365,13 @@ public:
   : strategy_(std::move(strategy)),
     guard_(std::move(limits)),
     context_(series_capacity),
-    executor_(std::move(executor)) {}
+    executor_(std::move(executor)) {
+#if defined(ATL_HAS_EIGEN)
+    if constexpr (!records_bar_history) {
+      context_detail::PortfolioAccess::stop_bar_history(context_);
+    }
+#endif
+  }
 
   /**
    * @brief Returns the executor.
@@ -1522,9 +1536,7 @@ public:
    *   cached series' newest bar.
    */
   Report feed(const strategy::BarEvent& event) {
-#if defined(ATL_HAS_EIGEN)
-    context_.record_bar(event);
-#endif
+    record_bar(event);
     context_.set_last_price(event.instrument_, event.bar_.close_);
     context_.set_now(event.period_end_);
     confirm_reservations();
@@ -1551,9 +1563,7 @@ public:
    *   cached series' newest bar.
    */
   void feed_warmup(const strategy::BarEvent& event) {
-#if defined(ATL_HAS_EIGEN)
-    context_.record_bar(event);
-#endif
+    record_bar(event);
     context_.set_last_price(event.instrument_, event.bar_.close_);
     context_.set_now(event.period_end_);
     dispatch::bar(strategy_, context_, event);
@@ -1572,9 +1582,7 @@ public:
    *   cached series' newest bar.
    */
   void record(const strategy::BarEvent& event) {
-#if defined(ATL_HAS_EIGEN)
-    context_.record_bar(event);
-#endif
+    record_bar(event);
     context_.set_last_price(event.instrument_, event.bar_.close_);
     context_.set_now(event.period_end_);
   }
@@ -1584,18 +1592,14 @@ public:
    *
    * For a bar that arrives after its period was already delivered: its own series stays complete, while
    * a newer price or a later clock is not overwritten by an older bar. Does nothing without a linear
-   * algebra backend.
+   * algebra backend; with no bar history kept (`records_bar_history`), only checks the bar's order.
    *
    * @param event The bar.
    * @throws std::invalid_argument (with a linear algebra backend) if the bar is not later than the
    *   cached series' newest bar.
    */
   void record_history_only(const strategy::BarEvent& event) {
-#if defined(ATL_HAS_EIGEN)
-    context_.record_bar(event);
-#else
-    static_cast<void>(event);
-#endif
+    record_bar(event);
   }
 
   /**
@@ -1692,6 +1696,20 @@ public:
   }
 
 private:
+  // Caches a bar in its series, or with no bar history kept, refuses it unless later than its series' last.
+  void record_bar(const strategy::BarEvent& event) {
+#if defined(ATL_HAS_EIGEN)
+    if constexpr (records_bar_history) {
+      context_.record_bar(event);
+    } else {
+      using Access = context_detail::PortfolioAccess;
+      Access::advance_bar_time(Access::bar_time_for(context_, event), event);
+    }
+#else
+    static_cast<void>(event);
+#endif
+  }
+
   // Drains the queue and turns it into a report.
   //
   // **Cancellations are collected before any order is placed**, across the whole queue, rather than

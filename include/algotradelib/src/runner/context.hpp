@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -125,8 +126,45 @@ class PortfolioAccess {
   static analytics::SeriesBuffer& series_for(Ctx& context, const BarEvent& event) {
     return context.series_for(event);
   }
+
+  // The newest bar time of `event`'s instrument and interval, kept instead of a series when the strategy reads
+  // no history; made empty if it is the first, and it stays where it is for the context's life.
+  template <typename Ctx>
+  static std::optional<std::chrono::system_clock::time_point>& bar_time_for(Ctx& context, const BarEvent& event) {
+    return context.bar_time_for(event);
+  }
+
+  // Refuses `event` unless it is later than its series' newest bar, then makes it the newest; the check a series
+  // push makes, without the series.
+  static void advance_bar_time(std::optional<std::chrono::system_clock::time_point>& newest, const BarEvent& event) {
+    if (newest && !(*newest < event.bar_.timestamp_)) {
+      throw std::invalid_argument("a series buffer observation must be later than the last");
+    }
+    newest = event.bar_.timestamp_;
+  }
+
+  // For a runner whose strategy declares it reads no bar history: `Context::bars` throws from now on.
+  template <typename Ctx>
+  static void stop_bar_history(Ctx& context) noexcept {
+    context.bar_history_.kept_ = false;
+  }
 #endif
 };
+
+#if defined(ATL_HAS_EIGEN)
+// Whether a context keeps bar history. It belongs to the context object, not to its contents: a move
+// assignment keeps the destination's, so a context moved into a runner's place cannot turn on reads the
+// runner never records for.
+struct BarHistoryKept {
+  bool kept_{true};
+
+  BarHistoryKept() = default;
+  BarHistoryKept(const BarHistoryKept&) = delete;
+  BarHistoryKept& operator=(const BarHistoryKept&) = delete;
+  BarHistoryKept(BarHistoryKept&& other) noexcept : kept_(other.kept_) {}
+  BarHistoryKept& operator=(BarHistoryKept&&) noexcept { return *this; }
+};
+#endif
 
 } // namespace context_detail
 
@@ -306,11 +344,14 @@ public:
    * @param interval The bar interval.
    * @return A pointer to the cache (valid until the next bar is recorded), or `nullptr` if no bar
    *   of that series has been seen.
+   * @throws std::logic_error if the runner keeps no bar history, because its strategy declares
+   *   `reads_bar_history = false`; also before any bar.
    */
   const analytics::SeriesBuffer* bars(
     const InstrumentId& id,
     BarInterval interval = BarInterval::ONE_DAY
   ) const {
+    require_bar_history();
     const auto found = series_.find(id);
     if (found == series_.end()) {
       return nullptr;
@@ -424,8 +465,10 @@ public:
    * @param event The bar.
    * @throws std::invalid_argument if the bar is not later than the series' newest bar, or the series
    *   capacity is zero.
+   * @throws std::logic_error if the context keeps no bar history (see `bars`).
    */
   void record_bar(const BarEvent& event) {
+    require_bar_history();
     series_for(event).push(event.bar_);
   }
 #endif
@@ -452,6 +495,23 @@ private:
     }
     return series->second;
   }
+
+  std::optional<std::chrono::system_clock::time_point>& bar_time_for(const BarEvent& event) {
+    auto found = bar_times_.find(event.instrument_);
+    if (found == bar_times_.end()) {
+      found = bar_times_.emplace(event.instrument_, BarTimes{}).first;
+    }
+    return found->second[event.interval_];
+  }
+
+  void require_bar_history() const {
+    if (!bar_history_.kept_) {
+      throw std::logic_error(
+        "ctx.bars() read by a strategy declaring reads_bar_history = false, so its runner keeps no bar "
+        "history; remove the declaration or declare it true"
+      );
+    }
+  }
 #endif
 
   std::size_t series_capacity_;
@@ -469,6 +529,11 @@ private:
 #if defined(ATL_HAS_EIGEN)
   // Each instrument's cached series, by interval. Node-based both ways, so a series never moves once made.
   std::unordered_map<InstrumentId, std::map<BarInterval, analytics::SeriesBuffer>, InstrumentHash> series_;
+  // In place of `series_` when the strategy reads no history: each series' newest bar time, to refuse a bar
+  // that is not later.
+  using BarTimes = std::map<BarInterval, std::optional<std::chrono::system_clock::time_point>>;
+  std::unordered_map<InstrumentId, BarTimes, InstrumentHash> bar_times_;
+  context_detail::BarHistoryKept bar_history_;
 #endif
   std::vector<Instruction<BrokerTag>> queued_;
   Log log_;
