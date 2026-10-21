@@ -48,16 +48,17 @@ using namespace algotradelib;
 namespace {
 
 /**
- * Skips a case whose operation constructs a string or a container inside a `noexcept` function where the standard
- * library allocates for it: MSVC's, with iterator debugging on (the default in a Debug build), gives every string
- * and container a proxy allocated as it is constructed, default and move construction included. A failure injected
- * there ends the process in `std::terminate`, and a Debug build's abort can then wait on a dialog nobody closes.
- * Copies are not exempt: a copy made whole and then moved in, or one whose `noexcept` members start empty (a
- * slice's index), allocates there too.
+ * Skips a case whose operation reaches, inside a `noexcept` function, a construction the standard library allocates
+ * for: MSVC's, with iterator debugging on (the default in a Debug build), allocates a proxy for a string or container
+ * as it is constructed, default and move construction included, and its hash map's copy builds its bucket vector
+ * through such a `noexcept` constructor. Here: growing a vector of strings or containers (moves), copying a
+ * `BarSlice` (its index's empty `noexcept` copy constructor default-constructs a vector) and copying the replay
+ * queue (its map by instrument). A failure injected there ends the process in `std::terminate`, and a Debug build's
+ * abort can then wait on a dialog nobody closes.
  */
 void skip_where_moves_allocate() {
 #if defined(_MSVC_STL_VERSION) && _ITERATOR_DEBUG_LEVEL != 0
-  SKIP("MSVC's iterator debugging allocates in noexcept move constructors");
+  SKIP("MSVC's iterator debugging allocates inside noexcept constructions here");
 #endif
 }
 
