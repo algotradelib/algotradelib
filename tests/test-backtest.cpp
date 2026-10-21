@@ -5144,3 +5144,67 @@ TEST_CASE("a replay's queue keeps placement order and finds orders by reference 
   CHECK(executor.last_ref()->primary_ == "41");
   CHECK(executor.queued().size() == 1);
 }
+
+TEST_CASE("a replay's queue moved away leaves its source empty and usable") {
+  const auto order_in = [](const char* symbol) {
+    strategy::PlannedOrder order;
+    order.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, symbol};
+    order.type_ = OrderType::MARKET;
+    order.time_in_force_ = TimeInForce::DAY;
+    order.quantity_ = Decimal64(1, 0);
+    return order;
+  };
+  // The source answers as an empty queue everywhere, and takes orders again; the destination holds what moved.
+  const auto require_empty_and_usable = [&order_in](ReplayExecutor& source) {
+    CHECK(source.queued().empty());
+    CHECK(source.queued().size() == 0);
+    CHECK(source.queued().begin() == source.queued().end());
+    std::size_t visited = 0;
+    source.for_each_queued_in(InstrumentId{Country::KR, Venue::COMBINED, "A"}, [&visited](const auto&) { ++visited; });
+    CHECK(visited == 0);
+    REQUIRE(source.place(order_in("A")) == runner::SendOutcome::ACCEPTED);
+    CHECK(source.queued().size() == 1);
+    CHECK(source.withdraw(*source.last_ref()));
+    CHECK(source.queued().empty());
+  };
+  const auto filled = [&order_in] {
+    ReplayExecutor executor;
+    REQUIRE(executor.place(order_in("A")) == runner::SendOutcome::ACCEPTED);
+    REQUIRE(executor.place(order_in("B")) == runner::SendOutcome::ACCEPTED);
+    return executor;
+  };
+  SECTION("by construction") {
+    auto source = filled();
+    const auto before = source.changes();
+    ReplayExecutor destination(std::move(source));
+    CHECK(destination.queued().size() == 2);
+    CHECK(destination.changes() != before);
+    require_empty_and_usable(source);
+  }
+  SECTION("by assignment") {
+    auto source = filled();
+    ReplayExecutor destination;
+    const auto destination_before = destination.changes();
+    destination = std::move(source);
+    CHECK(destination.queued().size() == 2);
+    CHECK(destination.changes() != destination_before);
+    require_empty_and_usable(source);
+  }
+  SECTION("onto itself") {
+    auto executor = filled();
+    auto& same = executor;
+    executor = std::move(same);
+    CHECK(executor.queued().size() == 2);
+  }
+  SECTION("a copy, then a copy assigned") {
+    const auto source = filled();
+    ReplayExecutor copy(source);
+    CHECK(copy.queued().size() == 2);
+    ReplayExecutor assigned;
+    assigned = source;
+    CHECK(assigned.queued().size() == 2);
+    CHECK(assigned.withdraw(OrderRef<backtest::BacktestTag>{"1", ""}));
+    CHECK(assigned.queued().size() == 1);
+    CHECK(source.queued().size() == 2);
+  }
+}

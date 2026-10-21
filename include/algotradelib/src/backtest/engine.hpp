@@ -92,6 +92,68 @@ class QueueingExecutor {
   struct Slot;
 
 public:
+  /** @brief An executor with nothing queued. */
+  QueueingExecutor() = default;
+
+  /**
+   * @brief Copies an executor and its queue.
+   * @param other The executor to copy.
+   */
+  QueueingExecutor(const QueueingExecutor& other) = default;
+
+  /**
+   * @brief Moves an executor; the source is left with nothing queued.
+   * @param other The executor to move from.
+   */
+  QueueingExecutor(QueueingExecutor&& other) noexcept
+  : slots_(std::move(other.slots_)),
+    live_(other.live_),
+    by_instrument_(std::move(other.by_instrument_)),
+    last_ref_(std::move(other.last_ref_)),
+    issued_(other.issued_),
+    bar_(other.bar_),
+    changes_(other.changes_ + 1),
+    deciding_at_(other.deciding_at_),
+    decision_is_exact_(other.decision_is_exact_) {
+    other.forget_queue();
+  }
+
+  /**
+   * @brief Replaces this executor with a move of another, which is left with nothing queued.
+   * @param other The executor to move from.
+   * @return This executor.
+   */
+  QueueingExecutor& operator=(QueueingExecutor&& other) noexcept {
+    if (this != &other) {
+      slots_ = std::move(other.slots_);
+      live_ = other.live_;
+      by_instrument_ = std::move(other.by_instrument_);
+      last_ref_ = std::move(other.last_ref_);
+      issued_ = other.issued_;
+      bar_ = other.bar_;
+      // The queue changed, whatever its count was: a replay comparing the count must see it move.
+      changes_ = (changes_ > other.changes_ ? changes_ : other.changes_) + 1;
+      deciding_at_ = other.deciding_at_;
+      decision_is_exact_ = other.decision_is_exact_;
+      other.forget_queue();
+    }
+    return *this;
+  }
+
+  /**
+   * @brief Replaces this executor with a copy of another, entirely or not at all.
+   * @param other The executor to copy.
+   * @return This executor.
+   * @throws std::bad_alloc If the copy cannot be made; this executor is then unchanged.
+   */
+  QueueingExecutor& operator=(const QueueingExecutor& other) {
+    if (this != &other) {
+      QueueingExecutor copy(other);
+      *this = std::move(copy);
+    }
+    return *this;
+  }
+
 
   /** @brief `false`: a replay reaches no broker. */
   static constexpr bool reaches_a_broker = false;
@@ -374,7 +436,8 @@ public:
     }
     // **Marked removed where it is, not erased.** Erasing moved every later order (each with three strings)
     // one place down, for every fill; the storage is compacted instead once removed orders outnumber the
-    // rest, which keeps placement order and costs each removal a constant on average.
+    // rest, which keeps placement order and costs each removal a constant on average. Finding the order in
+    // its instrument's list is linear in that instrument's outstanding orders, usually one.
     auto& slot = slots_[*at];
     slot.live_ = false;
     --live_;
@@ -467,6 +530,15 @@ private:
       return std::nullopt;
     }
     return at;
+  }
+
+  // Leaves a moved-from executor with nothing queued, its count of changes moved on.
+  void forget_queue() noexcept {
+    slots_.clear();
+    by_instrument_.clear();
+    live_ = 0;
+    last_ref_.reset();
+    ++changes_;
   }
 
   // Drops the removed orders, keeping the rest in placement order. Moves orders; allocates nothing.
