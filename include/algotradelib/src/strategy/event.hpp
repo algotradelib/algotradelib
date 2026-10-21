@@ -433,10 +433,12 @@ public:
     return false;
   }
 
-  /** Adds a bar; the caller has checked `holds` and that its period end matches a non-empty bucket. */
-  // Adds a bar its caller has already checked is the first of its instrument and interval in this period,
-  // without keeping the table `holds` reads (a replay tracks that itself); the table is built when the slice is
-  // delivered. A bucket filled this way answers `holds` only for slices narrow enough to scan.
+  /**
+   * Adds a bar its caller knows is the first of its instrument and interval in this period, and whose period end
+   * matches a non-empty bucket, without keeping the table `holds` reads (a replay tracks membership itself); the
+   * table is built when the slice is delivered. A bucket filled this way answers `holds` only for slices narrow
+   * enough to scan, so its caller does not ask.
+   */
   void add_checked(const BarEvent& event) {
     if (slices_.empty()) {
       period_end_ = event.period_end_;
@@ -454,6 +456,7 @@ public:
     slices_.push_back(std::move(slice));
   }
 
+  /** Adds a bar; the caller has checked `holds` and that its period end matches a non-empty bucket. */
   void add(const BarEvent& event) {
     if (slices_.empty()) {
       period_end_ = event.period_end_;
@@ -538,8 +541,6 @@ private:
     return nullptr;
   }
 
-  // Refills the interval's table from its slice, which has just passed `id_detail::scan_limit` bars. On a
-  // failure the table is left empty, and the caller takes the bar back out, so nothing reads it.
   // Moves the table of a wide slice into it, with the bars it describes, so `BarSlice::find` can use it after
   // the slice is delivered. Moving a slice keeps its bars' storage, so the table stays valid for it; the bucket's
   // own table is rebuilt (`widen`) when a later period's slice grows wide again.
@@ -565,6 +566,9 @@ private:
     }
   }
 
+  // Refills the interval's table from its slice, which has just passed `id_detail::scan_limit` bars (or is being
+  // delivered). On a failure the table is left empty, and the caller takes the bar back out or scans, so nothing
+  // reads it.
   void widen(const BarSlice& slice) {
     Wide* entry = wide(slice.interval_);
     if (entry == nullptr) {

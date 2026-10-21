@@ -878,12 +878,7 @@ public:
     if (period_point_ && *period_point_ != event.period_end_) {
       record_point(*period_point_);
     }
-    const auto executions_before = result_.executions_.size();
-    settle_queued_against(event);
-    // A fill can only open a lot in this bar's own instrument; where the lot is, is learnt once.
-    if (!slot.lot_ && result_.executions_.size() != executions_before) {
-      slot.lot_ = ledger_.lot_of(event.instrument_);
-    }
+    settle_queued_against(event, slot);
     // **The halt stops this bar too, not merely the next one.** Returning only from settlement left
     // `feed` to mark the book, record an equity point, advance the clock and call `on_phase` and
     // `on_bar` on the very bar whose fill could not be costed -- so the strategy decided once more
@@ -1339,7 +1334,7 @@ private:
   //
   // The queue is never emptied, so an order this loop has not reached yet is outstanding, visible in
   // every portfolio installed along the way, and addressable by a cancellation from any callback.
-  void settle_queued_against(const strategy::BarEvent& event) {
+  void settle_queued_against(const strategy::BarEvent& event, InstrumentSlot& slot) {
     // With nothing queued nothing can expire, fill or be assigned a session; only the publication at the end
     // has work left (it releases deferred targets).
     if (runner_.executor().queued().empty()) {
@@ -1449,6 +1444,12 @@ private:
         result_.halted_ = std::move(error);
         abort_queue();
         return;
+      }
+      // **Where the lot is, learnt as soon as it exists.** A fill can only open a lot in this bar's own
+      // instrument, and it is recorded here, before anything below (recording, `on_fill`) can throw, so a
+      // handler's exception caught by the caller cannot leave a held lot that is never marked again.
+      if (!slot.lot_) {
+        slot.lot_ = ledger_.lot_of(order.instrument_);
       }
       note_overdraft(*decision.execution_);
       if (decision.intrabar_release_fill_) {

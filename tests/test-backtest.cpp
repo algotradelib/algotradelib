@@ -5397,3 +5397,44 @@ TEST_CASE("a replay keeps pricing and caching bars after a context is moved into
   CHECK(seen.prices_ == std::vector<std::string>{"70000", "70100", "70200", "70300", "70400"});
 }
 #endif
+
+namespace {
+
+/** Buys one on its first bar; its fill handler throws once. */
+struct ThrowsOnItsFirstFill {
+  int bars_{0};
+  bool thrown_{false};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (++bars_ == 1) {
+      ctx.submit(strategy::OrderIntent::market(bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))));
+    }
+  }
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill&) {
+    if (!thrown_) {
+      thrown_ = true;
+      throw std::runtime_error("the fill handler failed");
+    }
+  }
+};
+
+} // namespace
+
+TEST_CASE("a lot opened by a fill whose handler threw is still marked on later bars") {
+  // The replay learns where a new lot is as soon as the ledger has it, before `on_fill` runs: a caller that
+  // catches the handler's exception and keeps feeding must see the position marked at each later close.
+  backtest::Backtester<ThrowsOnItsFirstFill> engine(ThrowsOnItsFirstFill{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  CHECK_THROWS_AS(
+    engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000")), std::runtime_error);
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "71000", "72000"));
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "72000", "73000"));
+  REQUIRE(engine.ledger().positions().size() == 1);
+  CHECK(engine.ledger().positions()[0].quantity_ == Decimal64::parse("1"));
+  CHECK(engine.ledger().positions()[0].last_price_ == Decimal64::parse("73000"));
+  const auto cash = engine.ledger().cash_in(Currency{"KRW"});
+  REQUIRE(cash);
+  CHECK(engine.ledger().equity_in(Currency{"KRW"}) == decimal_add(*cash, Decimal64::parse("73000")));
+}
