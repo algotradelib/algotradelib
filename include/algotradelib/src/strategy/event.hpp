@@ -286,6 +286,47 @@ inline BarEvent make_bar_event(
   return event;
 }
 
+struct BarSlice;
+
+/// \cond ATL_SLICE_DETAIL
+namespace slice_detail {
+
+// Where each bar of a delivered slice is, by instrument, and the bars it was built over (their storage and
+// count). Only the period bucket fills it, on the slice it delivers; **a copy or a move of a slice starts with
+// none**, so the only slice that can use it is the one the library built and hands to a handler as a const
+// reference, whose bars nobody changes. A slice copied, moved, built or changed by its holder is scanned.
+class SliceIndex {
+public:
+  SliceIndex() = default;
+  SliceIndex(const SliceIndex&) noexcept {}
+  SliceIndex(SliceIndex&&) noexcept {}
+  SliceIndex& operator=(const SliceIndex&) noexcept {
+    forget();
+    return *this;
+  }
+  SliceIndex& operator=(SliceIndex&&) noexcept {
+    forget();
+    return *this;
+  }
+
+private:
+  friend struct strategy::BarSlice;
+  friend class Bucket;
+
+  void forget() noexcept {
+    table_.reset();
+    built_over_ = nullptr;
+    count_ = 0;
+  }
+
+  id_detail::PositionTable table_;
+  const void* built_over_{nullptr};
+  std::size_t count_{0};
+};
+
+} // namespace slice_detail
+/// \endcond
+
 /**
  * @brief Every instrument's bar of one interval for one period end, delivered to `on_bars`.
  *
@@ -307,14 +348,15 @@ struct BarSlice {
   /**
    * @brief Finds an instrument's bar.
    *
-   * A slice a runner delivers finds it by hash; any other slice, or one whose bars changed since, by a scan.
+   * The slice a runner hands to `on_bars` finds it by hash; a copy, a move, or a slice built by its holder, by a
+   * scan.
    *
    * @param id The instrument.
    * @return Its bar, or `nullptr` if it has none for this period.
    */
   const BarEvent* find(const InstrumentId& id) const noexcept {
-    if (!index_.empty() && index_for_ == bars_.data() && index_size_ == bars_.size()) {
-      const auto at = index_.find(id, Ids{&bars_});
+    if (!index_.table_.empty() && index_.built_over_ == bars_.data() && index_.count_ == bars_.size()) {
+      const auto at = index_.table_.find(id, Ids{&bars_});
       return at ? &bars_[*at] : nullptr;
     }
     for (const auto& event : bars_) {
@@ -326,12 +368,9 @@ struct BarSlice {
   }
 
   /// \cond ATL_SLICE_DETAIL
-  // Where each bar is, by instrument, as the period bucket built it, and the bars it was built over (their
-  // storage and count). `find` uses it only for those very bars, so a copy, or a slice whose bars were changed
-  // or replaced since, is searched by a scan; the table compares the instrument of every position it returns.
-  id_detail::PositionTable index_;
-  const BarEvent* index_for_{nullptr};
-  std::size_t index_size_{0};
+  // The bucket's table of where each bar is, on the slice it delivers only (`slice_detail::SliceIndex`). The
+  // storage and count are checked too, so a holder that clears or refills the bars falls back to a scan.
+  slice_detail::SliceIndex index_;
 
   // The instrument at a position of `bars_`, for the table.
   struct Ids {
@@ -425,8 +464,9 @@ public:
 
   /** Takes the first slice out; the bucket must not be empty. */
   BarSlice take_first() {
-    hand_index_to(slices_.front());
+    // Moved out first, since a move does not carry the table (`SliceIndex`); the bars keep their storage.
     BarSlice slice = std::move(slices_.front());
+    hand_index_to(slice);
     slices_.erase(slices_.begin());
     return slice;
   }
@@ -482,10 +522,10 @@ private:
       return;
     }
     if (auto* entry = wide(slice.interval_)) {
-      slice.index_ = std::move(entry->table_);
+      slice.index_.table_ = std::move(entry->table_);
       entry->table_.reset();
-      slice.index_for_ = slice.bars_.data();
-      slice.index_size_ = slice.bars_.size();
+      slice.index_.built_over_ = slice.bars_.data();
+      slice.index_.count_ = slice.bars_.size();
     }
   }
 

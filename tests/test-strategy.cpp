@@ -2009,7 +2009,8 @@ TEST_CASE("a target's plan is the same with a pass's index of the portfolio's ro
 
 TEST_CASE("a delivered slice finds every bar as a scan does") {
   // A slice the period bucket delivers carries the bucket's table of where each bar is; `find` must answer
-  // exactly as a scan would, for a slice taken whole or first, and for a copy or a changed slice, which scan.
+  // exactly as a scan would on it. A copy or a move carries no table, so whatever its holder then does to the
+  // bars -- reorder, replace, clear and refill in the same storage, or reuse freed storage -- it is scanned.
   const auto id_of = [](int k) { return InstrumentId{Country::KR, Venue::COMBINED, "S" + std::to_string(k)}; };
   const auto bar_of = [&id_of](int k, BarInterval interval) {
     Bar bar;
@@ -2031,6 +2032,31 @@ TEST_CASE("a delivered slice finds every bar as a scan does") {
       REQUIRE(slice.find(id_of(k)) == scan(slice, id_of(k)));
     }
   };
+  // Every way the holder of a slice it may change can rearrange its bars, each checked against a scan.
+  const auto rearrange_and_check = [&](strategy::BarSlice& slice, int bars) {
+    std::swap(slice.bars_.front(), slice.bars_.back());
+    require_as_scanned(slice, bars);
+    slice.bars_.front().instrument_ = id_of(bars + 1);
+    require_as_scanned(slice, bars + 2);
+    slice.bars_.front().instrument_ = slice.bars_.back().instrument_;
+    require_as_scanned(slice, bars + 2);
+    slice.bars_.erase(slice.bars_.begin());
+    slice.bars_.push_back(bar_of(bars + 2, BarInterval::ONE_HOUR));
+    require_as_scanned(slice, bars + 3);
+    const auto size = slice.bars_.size();
+    slice.bars_.clear();
+    for (std::size_t k = 0; k < size; ++k) {
+      slice.bars_.push_back(bar_of(static_cast<int>(size - 1 - k) + 1000, BarInterval::ONE_HOUR));
+    }
+    require_as_scanned(slice, bars + 1100);
+    slice.bars_.clear();
+    slice.bars_.shrink_to_fit();
+    slice.bars_.reserve(size);
+    for (std::size_t k = 0; k < size; ++k) {
+      slice.bars_.push_back(bar_of(static_cast<int>(k) + 2000, BarInterval::ONE_HOUR));
+    }
+    require_as_scanned(slice, bars + 2100);
+  };
   for (const int bars : {1, 16, 17, 18, 64, 600}) {
     INFO(bars << " bars");
     strategy::slice_detail::Bucket bucket;
@@ -2043,16 +2069,20 @@ TEST_CASE("a delivered slice finds every bar as a scan does") {
     auto rest = bucket.take();
     REQUIRE(rest.size() == 1);
     require_as_scanned(rest[0], bars);
-    // Moved, the slice keeps its bars where they were, and its table with them.
-    const auto moved = std::move(rest[0]);
-    require_as_scanned(moved, bars);
-    // A copy, and a copy whose bars changed: both scanned.
-    auto copy = moved;
+    // A copy, and the slice moved out itself: both start with no table.
+    auto copy = rest[0];
     require_as_scanned(copy, bars);
-    copy.bars_.erase(copy.bars_.begin());
-    copy.bars_.push_back(bar_of(bars + 1, BarInterval::ONE_HOUR));
-    require_as_scanned(copy, bars + 2);
-    std::swap(copy.bars_.front(), copy.bars_.back());
-    require_as_scanned(copy, bars + 2);
+    rearrange_and_check(copy, bars);
+    auto moved = std::move(rest[0]);
+    require_as_scanned(moved, bars);
+    rearrange_and_check(moved, bars);
+    // A delivered slice assigned over drops its table too.
+    strategy::slice_detail::Bucket again;
+    for (int k = 0; k < bars; ++k) {
+      again.add(bar_of(k, BarInterval::ONE_DAY));
+    }
+    auto delivered = again.take();
+    delivered[0] = first;
+    rearrange_and_check(delivered[0], bars);
   }
 }
