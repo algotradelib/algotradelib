@@ -932,3 +932,74 @@ TEST_CASE("turnover names its convention, and both start policies are available"
   REQUIRE_FALSE(observed(skipped[0]));
   REQUIRE(skipped[1] == Catch::Approx(1.0));
 }
+
+TEST_CASE("weighted returns hold each period's weights over a later period's returns") {
+  const auto nan = math::missing();
+  math::Matrix returns(4, 2);
+  returns << nan, nan,
+             0.10, -0.05,
+             0.02, nan,
+             -0.01, 0.03;
+  math::Matrix weights(4, 2);
+  weights << 0.5, 0.5,
+             1.0, -1.0,
+             nan, 0.25,
+             0.0, 0.0;
+  // Held from the next period: nothing before it, then 0.5 * 0.10 + 0.5 * -0.05, then 1.0 * 0.02 (B's return
+  // missing), then A's weight missing and 0.25 * 0.03.
+  const auto next = analytics::weighted_returns(returns, weights, 1);
+  REQUIRE(next.size() == 4);
+  CHECK_FALSE(math::observed(next[0]));
+  CHECK(next[1] == Catch::Approx(0.025));
+  CHECK(next[2] == Catch::Approx(0.02));
+  CHECK(next[3] == Catch::Approx(0.0075));
+  // Held the same period: row 0 has no return at all, row 2's only product is missing.
+  const auto same = analytics::weighted_returns(returns, weights, 0);
+  CHECK_FALSE(math::observed(same[0]));
+  CHECK(same[1] == Catch::Approx(0.15));
+  CHECK_FALSE(math::observed(same[2]));
+  CHECK(same[3] == 0.0);
+  const auto later = analytics::weighted_returns(returns, weights, 2);
+  CHECK_FALSE(math::observed(later[0]));
+  CHECK_FALSE(math::observed(later[1]));
+  CHECK(later[2] == Catch::Approx(0.01));
+  CHECK(later[3] == Catch::Approx(-0.01 - 0.03));
+  // A lag of the whole history or more, however large, leaves every period missing and reads nothing before row 0.
+  for (const std::size_t lag : {std::size_t{4}, std::size_t{5}, std::numeric_limits<std::size_t>::max()}) {
+    const auto none = analytics::weighted_returns(returns, weights, lag);
+    REQUIRE(none.size() == 4);
+    CHECK_FALSE(none.array().unaryExpr([](double v) { return math::observed(v); }).any());
+  }
+  CHECK(analytics::weighted_returns(math::Matrix(0, 3), math::Matrix(0, 3), 1).size() == 0);
+  CHECK_THROWS_AS(analytics::weighted_returns(returns, math::Matrix(4, 3), 1), std::invalid_argument);
+  CHECK_THROWS_AS(analytics::weighted_returns(returns, math::Matrix(3, 2), 1), std::invalid_argument);
+  // A sum that became NaN stays NaN whatever comes after it, in any column order; so do opposite products that
+  // overflow; a portfolio of no instruments has nothing to sum.
+  const auto inf = std::numeric_limits<double>::infinity();
+  for (const auto& order : {std::vector<double>{inf, -inf, 0.05}, std::vector<double>{0.05, inf, -inf},
+                            std::vector<double>{inf, 0.05, -inf}}) {
+    math::Matrix r(1, 3);
+    r << order[0], order[1], order[2];
+    CHECK_FALSE(math::observed(analytics::weighted_returns(r, math::Matrix::Ones(1, 3), 0)[0]));
+  }
+  math::Matrix huge(1, 3);
+  huge << std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), 0.1;
+  math::Matrix opposite(1, 3);
+  opposite << 2.0, -2.0, 0.5;
+  CHECK_FALSE(math::observed(analytics::weighted_returns(huge, opposite, 0)[0]));
+  const auto no_columns = analytics::weighted_returns(math::Matrix(3, 0), math::Matrix(3, 0), 1);
+  REQUIRE(no_columns.size() == 3);
+  CHECK_FALSE(no_columns.array().unaryExpr([](double v) { return math::observed(v); }).any());
+  // Blocks of larger matrices, read with their strides.
+  math::Matrix wide_returns = math::Matrix::Zero(6, 5);
+  math::Matrix wide_weights = math::Matrix::Zero(6, 5);
+  wide_returns.block(1, 2, 4, 2) = returns;
+  wide_weights.block(1, 2, 4, 2) = weights;
+  const auto blocked = analytics::weighted_returns(wide_returns.block(1, 2, 4, 2), wide_weights.block(1, 2, 4, 2), 1);
+  for (math::Index row = 0; row < 4; ++row) {
+    CHECK(math::observed(blocked[row]) == math::observed(next[row]));
+    if (math::observed(next[row])) {
+      CHECK(blocked[row] == Catch::Approx(next[row]));
+    }
+  }
+}
