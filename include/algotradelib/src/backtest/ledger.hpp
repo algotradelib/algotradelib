@@ -8,6 +8,9 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <type_traits>
+#include <cstdint>
+#include <limits>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -67,8 +70,9 @@ public:
    * @param cash The starting cash.
    * @param currency Its currency.
    */
-  ReplayLedger(Decimal64 cash, Currency currency) {
+  ReplayLedger(Decimal64 cash, Currency currency) : own_(currency) {
     cash_.push_back(Money{std::move(cash), std::move(currency)});
+    recount();
   }
 
   /**
@@ -81,7 +85,20 @@ public:
    * @brief Moves a ledger.
    * @param other The ledger to move from.
    */
-  ReplayLedger(ReplayLedger&& other) = default;
+  ReplayLedger(ReplayLedger&& other) noexcept
+  : positions_(std::move(other.positions_)),
+    index_(std::move(other.index_)),
+    cash_(std::move(other.cash_)),
+    realized_(std::move(other.realized_)),
+    executions_(std::move(other.executions_)),
+    held_(std::move(other.held_)),
+    lots_(std::move(other.lots_)),
+    changed_(std::move(other.changed_)),
+    changed_count_(other.changed_count_),
+    own_(other.own_),
+    running_(other.running_) {
+    other.forget_tracking();
+  }
 
   /**
    * @brief Replaces this ledger with a move of another; moving a ledger into itself leaves it unchanged.
@@ -97,6 +114,12 @@ public:
       realized_ = std::move(other.realized_);
       executions_ = std::move(other.executions_);
       held_ = std::move(other.held_);
+      lots_ = std::move(other.lots_);
+      changed_ = std::move(other.changed_);
+      changed_count_ = other.changed_count_;
+      own_ = other.own_;
+      running_ = other.running_;
+      other.forget_tracking();
     }
     return *this;
   }
@@ -184,6 +207,28 @@ public:
   const std::vector<Execution>& executions() const noexcept { return executions_; }
 
   /**
+   * @brief Returns total equity in the ledger's own currency (the constructor's), as `equity_in` would.
+   *
+   * The same value, digit for digit and in the same representation, as `equity_in` for that currency,
+   * without adding up every position: the ledger keeps a running total. It uses it only while the
+   * magnitudes of the cash and of every position it counts, added up and written at the largest scale
+   * among them, fit -- which guarantees that `equity_in`'s own additions, in any order, cannot overflow --
+   * and otherwise calls `equity_in`.
+   *
+   * @return The equity, or `std::nullopt` if the arithmetic does not fit.
+   */
+  std::optional<Decimal64> equity() const {
+    if (!running_.valid_ || !fits_at(running_.bound_, running_.scale_)) {
+      return equity_in(own_);
+    }
+    // With nothing counted, `equity_in` returns the cash as it is stored, without normalizing it.
+    if (running_.counted_ == 0) {
+      return cash_in(own_).value_or(Decimal64(0, 0));
+    }
+    return running_.total_;
+  }
+
+  /**
    * @brief Applies one execution to the position, cash and realized profit.
    *
    * A trade through flat (selling 150 from a long of 100) closes the old position, realizing its
@@ -194,11 +239,11 @@ public:
    * @param currency The instrument's currency.
    * @return `false`, with the ledger unchanged, if the arithmetic does not fit, or if `currency`
    *   differs from the currency of a non-flat position in the instrument; `true` otherwise.
-   * @note If an allocation throws partway, the ledger can be left partly updated.
+   * @throws std::bad_alloc If an allocation fails; the ledger is then unchanged.
    */
   bool apply(const Execution& execution, const Currency& currency) {
     const auto& fill = execution.fill_;
-    const auto zero = Decimal64::parse("0");
+    const auto zero = Decimal64(0, 0);
 
     // Signed quantity: a sale reduces the position.
     const auto signed_quantity = fill.side_ == OrderSide::BUY ?
@@ -314,6 +359,17 @@ public:
     if (resulting->coefficient() != 0 && held_.size() == held_.capacity()) {
       held_.reserve(std::max<std::size_t>(8, 2 * held_.capacity()));
     }
+    // **And every other allocation, so that a failed one leaves the ledger as it was.** A currency seen for
+    // the first time gets its cash and realized entries' room here, and the execution is copied and given
+    // room now; after `find_or_open` below (which undoes itself if it fails), nothing allocates.
+    reserve_entry(cash_, currency);
+    if (realized_total) {
+      reserve_entry(realized_, currency);
+    }
+    auto recorded = execution;
+    if (executions_.size() == executions_.capacity()) {
+      executions_.reserve(std::max<std::size_t>(8, 2 * executions_.capacity()));
+    }
 
     // --- No arithmetic below can fail, and nothing below returns false -----------------------
     auto* lot = find_or_open(fill.instrument_);
@@ -340,7 +396,15 @@ public:
     if (realized_total) {
       set_amount(realized_, currency, *realized_total);
     }
-    executions_.push_back(execution);
+    static_assert(std::is_nothrow_move_constructible<Execution>::value,
+      "the execution is moved into room made for it, which must not throw");
+    executions_.push_back(std::move(recorded));
+    const auto at = static_cast<std::size_t>(lot - positions_.data());
+    note_changed(at);
+    retrack(at);
+    if (currency == own_) {
+      retrack_cash(*cash_total);
+    }
     return true;
   }
 
@@ -371,6 +435,8 @@ public:
     }
     lot.last_price_ = price;
     lot.market_value_ = Money{*valued, lot.market_value_.currency_};
+    note_changed(*slot);
+    retrack(*slot);
     return true;
   }
 
@@ -411,6 +477,72 @@ public:
     }
     portfolio.as_of_ = as_of;
     return portfolio;
+  }
+
+  /**
+   * @brief Brings a portfolio built by `snapshot` up to date, changing only what changed since.
+   *
+   * Afterwards its positions, sellable basis, cash, buying power and `as_of_` are what `snapshot` would
+   * return now; its working orders and everything else are left alone. Only the lots that `apply` or `mark`
+   * changed since `snapshot`, `clear_changed` or the last `update` are rewritten, plus any opened since,
+   * so a bar that marked one lot rewrites one row.
+   *
+   * The portfolio must be one this ledger's `snapshot` built, whose positions only `update` has changed
+   * since; anything else written to them stays.
+   *
+   * @tparam BrokerTag The order-reference tag of the portfolio.
+   * @param portfolio The portfolio to update.
+   * @param as_of The time, for `as_of_` and the buying-power stamps.
+   * @throws std::bad_alloc If a row, the cash or the buying power cannot be copied; the ledger still lists
+   *   every changed lot, so a later `update` completes it.
+   */
+  template <typename BrokerTag>
+  void update(strategy::Portfolio<BrokerTag>& portfolio, std::chrono::system_clock::time_point as_of) {
+    auto& rows = portfolio.positions_;
+    for (std::size_t k = 0; k < changed_count_; ++k) {
+      const auto at = changed_[k];
+      if (at >= rows.size()) {
+        continue;
+      }
+      // The fields `apply` and `mark` write; a lot's instrument never changes.
+      const auto& lot = positions_[at];
+      auto& row = rows[at];
+      row.quantity_ = lot.quantity_;
+      row.sellable_quantity_ = lot.quantity_;
+      row.average_purchase_price_ = lot.average_purchase_price_;
+      row.last_price_ = lot.last_price_;
+      row.market_value_ = lot.market_value_;
+    }
+    if (rows.size() < positions_.size()) {
+      rows.reserve(positions_.size());
+      while (rows.size() < positions_.size()) {
+        rows.push_back(positions_[rows.size()]);
+        rows.back().sellable_quantity_ = rows.back().quantity_;
+      }
+    }
+    portfolio.sellable_basis_ = SellableBasis{
+      SellableBasis::Coverage::WHOLE_HOLDING,
+      SellableBasis::RestingTreatment::DEDUCT,
+      false,
+    };
+    portfolio.cash_ = cash_;
+    portfolio.buying_power_.clear();
+    portfolio.buying_power_.reserve(cash_.size());
+    for (const auto& amount : cash_) {
+      portfolio.buying_power_.push_back(BuyingPower{amount, as_of});
+    }
+    portfolio.as_of_ = as_of;
+    clear_changed();
+  }
+
+  /**
+   * @brief Forgets which lots changed, after a `snapshot` that already shows them.
+   */
+  void clear_changed() noexcept {
+    for (std::size_t k = 0; k < changed_count_; ++k) {
+      lots_[changed_[k]].changed_ = false;
+    }
+    changed_count_ = 0;
   }
 
   /**
@@ -478,10 +610,16 @@ private:
     }
     HoldingPosition opened;
     opened.instrument_ = instrument;
-    opened.quantity_ = Decimal64::parse("0");
-    opened.average_purchase_price_ = Decimal64::parse("0");
-    opened.last_price_ = Decimal64::parse("0");
+    opened.quantity_ = Decimal64(0, 0);
+    opened.average_purchase_price_ = Decimal64(0, 0);
+    opened.last_price_ = Decimal64(0, 0);
+    // Room in the lists kept beside `positions_` first, so that after the lot is added nothing below can leave
+    // them disagreeing with it.
+    grow_for(lots_, positions_.size() + 1);
+    grow_for(changed_, positions_.size() + 1);
     positions_.push_back(std::move(opened));
+    lots_.emplace_back();
+    changed_.push_back(0);
     if (index_.empty() && positions_.size() <= id_detail::scan_limit) {
       return &positions_.back();
     }
@@ -500,6 +638,8 @@ private:
       }
     } catch (...) {
       positions_.pop_back();
+      lots_.pop_back();
+      changed_.pop_back();
       throw;
     }
     return &positions_.back();
@@ -510,7 +650,7 @@ private:
     const Decimal64& held,
     const Decimal64& traded
   ) {
-    const auto zero = Decimal64::parse("0");
+    const auto zero = Decimal64(0, 0);
     const bool long_held = decimal_less(zero, held);
     const bool short_held = decimal_less(held, zero);
     const bool buying = decimal_less(zero, traded);
@@ -527,7 +667,7 @@ private:
 
   // Returns whether the trade opened from flat or crossed through it.
   static bool crossed_or_opened(const Decimal64& held, const Decimal64& resulting) {
-    const auto zero = Decimal64::parse("0");
+    const auto zero = Decimal64(0, 0);
     if (held.coefficient() == 0) {
       return true;
     }
@@ -536,7 +676,7 @@ private:
 
   // Returns whether the trade added to a position rather than reducing it.
   static bool adding(const Decimal64& held, const Decimal64& traded) {
-    const auto zero = Decimal64::parse("0");
+    const auto zero = Decimal64(0, 0);
     return decimal_less(zero, held) == decimal_less(zero, traded);
   }
 
@@ -547,7 +687,7 @@ private:
     const Decimal64& traded,
     const Decimal64& traded_price
   ) {
-    const auto zero = Decimal64::parse("0");
+    const auto zero = Decimal64(0, 0);
     const auto held_magnitude = decimal_less(held, zero) ? decimal_subtract(zero, held) : held;
     const auto traded_magnitude =
       decimal_less(traded, zero) ? decimal_subtract(zero, traded) : traded;
@@ -596,6 +736,180 @@ private:
   std::vector<Execution> executions_;
   // Where the lots with a non-zero quantity are in `positions_`, ascending; `apply` keeps it.
   std::vector<std::size_t> held_;
+
+  // What the ledger keeps about each lot, beside `positions_` and in the same order.
+  struct LotTrack {
+    // Listed in `changed_`.
+    bool changed_{false};
+    // The value `running_` counts for this lot: its market value, while it is held in `own_`.
+    std::optional<Decimal64> counted_;
+  };
+  std::vector<LotTrack> lots_;
+  // The lots changed since the last `update` or `clear_changed`, in its first `changed_count_` places. As
+  // long as `positions_`, so that listing a lot never allocates.
+  std::vector<std::size_t> changed_;
+  std::size_t changed_count_{0};
+
+  // The running equity in `own_` that `equity()` returns, and what proves it equal to `equity_in`'s.
+  struct Running {
+    // False when an update did not fit and counting everything again did not either.
+    bool valid_{false};
+    // The cash plus every counted value.
+    Decimal64 total_;
+    // The magnitudes of the cash and of every counted value, added up.
+    Decimal64 bound_;
+    // The largest scale among the cash and the counted values seen; never lowered.
+    std::uint8_t scale_{0};
+    // The cash counted in `total_`.
+    Decimal64 cash_;
+    // How many lots are counted: those held (non-zero quantity) in `own_`, whatever their value.
+    std::size_t counted_{0};
+  };
+  // The constructor's currency.
+  Currency own_;
+  Running running_;
+
+  // Makes room for `currency`'s entry in `amounts` if it has none, so `set_amount` will not allocate.
+  static void reserve_entry(std::vector<Money>& amounts, const Currency& currency) {
+    for (const auto& amount : amounts) {
+      if (amount.currency_ == currency) {
+        return;
+      }
+    }
+    amounts.reserve(amounts.size() + 1);
+  }
+
+  // Makes room for `size` entries, doubling, so opening lots one at a time does not copy every list each time.
+  template <typename T>
+  static void grow_for(std::vector<T>& list, std::size_t size) {
+    if (list.capacity() < size) {
+      list.reserve(std::max<std::size_t>(size, 2 * list.capacity()));
+    }
+  }
+
+  // Lists lot `at` as changed; never allocates, since `changed_` has a place for every lot.
+  void note_changed(std::size_t at) noexcept {
+    if (!lots_[at].changed_) {
+      lots_[at].changed_ = true;
+      changed_[changed_count_++] = at;
+    }
+  }
+
+  static std::optional<Decimal64> magnitude(const Decimal64& value) {
+    return value.coefficient() < 0 ? decimal_subtract(Decimal64(0, 0), value) : std::optional<Decimal64>(value);
+  }
+
+  // Returns whether a non-negative `value` still fits when written at `scale`.
+  static bool fits_at(const Decimal64& value, std::uint8_t scale) noexcept {
+    auto coefficient = value.coefficient();
+    for (auto step = value.scale(); step < scale; ++step) {
+      if (coefficient > std::numeric_limits<std::int64_t>::max() / 10) {
+        return false;
+      }
+      coefficient *= 10;
+    }
+    return true;
+  }
+
+  // Replaces `before` with `after` in the running totals, or marks them invalid if that does not fit.
+  void replace_counted(const std::optional<Decimal64>& before, const std::optional<Decimal64>& after) noexcept {
+    std::optional<Decimal64> total = running_.total_;
+    std::optional<Decimal64> bound = running_.bound_;
+    if (before) {
+      const auto size = magnitude(*before);
+      total = decimal_subtract(*total, *before);
+      bound = size ? decimal_subtract(*bound, *size) : std::nullopt;
+    }
+    if (after && total && bound) {
+      const auto size = magnitude(*after);
+      total = decimal_add(*total, *after);
+      bound = size ? decimal_add(*bound, *size) : std::nullopt;
+      running_.scale_ = std::max(running_.scale_, after->scale());
+    }
+    if (!total || !bound) {
+      running_.valid_ = false;
+      return;
+    }
+    running_.total_ = *total;
+    running_.bound_ = *bound;
+  }
+
+  // Brings lot `at`'s counted value up to date.
+  void retrack(std::size_t at) noexcept {
+    const auto& lot = positions_[at];
+    std::optional<Decimal64> value;
+    if (lot.quantity_.coefficient() != 0 && lot.market_value_.currency_ == own_) {
+      value = lot.market_value_.amount_;
+    }
+    auto& counted = lots_[at].counted_;
+    if (counted == value) {
+      return;
+    }
+    if (counted.has_value() != value.has_value()) {
+      running_.counted_ = value ? running_.counted_ + 1 : running_.counted_ - 1;
+    }
+    if (running_.valid_) {
+      replace_counted(counted, value);
+    }
+    counted = value;
+    if (!running_.valid_) {
+      recount();
+    }
+  }
+
+  // Brings the counted cash up to date.
+  void retrack_cash(const Decimal64& cash) noexcept {
+    if (running_.valid_) {
+      replace_counted(running_.cash_, cash);
+    }
+    running_.cash_ = cash;
+    if (!running_.valid_) {
+      recount();
+    }
+  }
+
+  // Leaves a ledger whose contents were moved out consistent with what it now holds (no lots, and whatever
+  // cash a moved-from vector keeps): nothing listed as changed, the running equity counted again.
+  void forget_tracking() noexcept {
+    lots_.clear();
+    changed_.clear();
+    changed_count_ = 0;
+    recount();
+  }
+
+  // Counts everything again: at construction, and after an update that did not fit.
+  void recount() noexcept {
+    Running fresh;
+    fresh.cash_ = cash_in(own_).value_or(Decimal64(0, 0));
+    fresh.total_ = fresh.cash_;
+    fresh.scale_ = fresh.cash_.scale();
+    const auto cash_size = magnitude(fresh.cash_);
+    fresh.valid_ = cash_size.has_value();
+    if (cash_size) {
+      fresh.bound_ = *cash_size;
+    }
+    for (const auto at : held_) {
+      const auto& value = lots_[at].counted_;
+      if (!value) {
+        continue;
+      }
+      ++fresh.counted_;
+      fresh.scale_ = std::max(fresh.scale_, value->scale());
+      if (!fresh.valid_) {
+        continue;
+      }
+      const auto size = magnitude(*value);
+      const auto total = decimal_add(fresh.total_, *value);
+      const auto bound = size ? decimal_add(fresh.bound_, *size) : std::nullopt;
+      if (!total || !bound) {
+        fresh.valid_ = false;
+        continue;
+      }
+      fresh.total_ = *total;
+      fresh.bound_ = *bound;
+    }
+    running_ = fresh;
+  }
 };
 
 } // namespace backtest
