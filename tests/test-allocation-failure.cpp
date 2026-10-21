@@ -48,11 +48,12 @@ using namespace algotradelib;
 namespace {
 
 /**
- * Skips a case whose operation move-constructs a string or a container (growing a vector of them, say) where the
- * standard library allocates in those `noexcept` constructors: MSVC's, with iterator debugging on (the default in
- * a Debug build), gives every string and container a proxy allocated as it is constructed, moves included. A
- * failure injected there ends the process in `std::terminate`, and a Debug build's abort can then wait on a dialog
- * nobody closes. A case that only copies and then move-assigns allocates nowhere it cannot throw, so it runs.
+ * Skips a case whose operation constructs a string or a container inside a `noexcept` function where the standard
+ * library allocates for it: MSVC's, with iterator debugging on (the default in a Debug build), gives every string
+ * and container a proxy allocated as it is constructed, default and move construction included. A failure injected
+ * there ends the process in `std::terminate`, and a Debug build's abort can then wait on a dialog nobody closes.
+ * Copies are not exempt: a copy made whole and then moved in, or one whose `noexcept` members start empty (a
+ * slice's index), allocates there too.
  */
 void skip_where_moves_allocate() {
 #if defined(_MSVC_STL_VERSION) && _ITERATOR_DEBUG_LEVEL != 0
@@ -331,6 +332,7 @@ TEST_CASE("a reservation that cannot be recorded leaves the rows and the buying 
 }
 
 TEST_CASE("a replay queue copy that fails leaves the destination as it was") {
+  skip_where_moves_allocate();
   // The queue keeps its orders and an index of them by instrument; a copy assigned whole or not at all leaves
   // the two agreeing, so every order the destination lists is found, walked and withdrawn.
   const auto order_in = [](const std::string& symbol) {
@@ -432,6 +434,7 @@ TEST_CASE("a period bucket adding a bar keeps its slice and its ids together aft
 }
 
 TEST_CASE("a period bucket copy that fails leaves the destination as it was") {
+  skip_where_moves_allocate();
   strategy::slice_detail::Bucket source;
   strategy::slice_detail::Bucket bucket;
   for (int k = 0; k < 25; ++k) {
