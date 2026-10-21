@@ -1089,22 +1089,38 @@ public:
   }
 
 private:
-  // What the replay keeps of one instrument so that a bar finds it with one lookup: where its lot is in the
-  // ledger (once a fill opened one; lots never move), where the context keeps its last price and, per interval,
-  // its series, and the period end of its latest bar collected for `on_bars`. The two pointers are into the
-  // context; they are dropped whenever the context was replaced (`slot_for`), since a move brings in other storage.
+  /**
+   * @brief What the replay keeps of one instrument, so that a bar finds it with one lookup.
+   *
+   * Where its lot is in the ledger (once a fill opened one; lots never move), where the context keeps its last
+   * price and, per interval, its series, and the period end of its latest bar collected for `on_bars`. The two
+   * pointers are into the context; they are dropped whenever the context was replaced
+   * (`forget_pointers_if_replaced`), since a move brings in other storage.
+   */
   struct InstrumentSlot {
+    /** @brief What is kept per interval of the instrument. */
     struct ByInterval {
+      /** @brief The interval. */
       BarInterval interval_{BarInterval::ONE_DAY};
+      /** @brief The period end of its bar in the period being collected, if it has one there. */
       std::optional<std::chrono::system_clock::time_point> pending_;
 #if defined(ATL_HAS_EIGEN)
+      /** @brief The context's series of it, once found. */
       analytics::SeriesBuffer* series_{nullptr};
 #endif
     };
+    /** @brief The lot's place in the ledger, once a fill opened one. */
     std::optional<std::size_t> lot_;
+    /** @brief The context's last-price entry, once set. */
     Decimal64* price_{nullptr};
+    /** @brief One entry per interval seen. */
     std::vector<ByInterval> intervals_;
 
+    /**
+     * @brief Returns the entry of an interval, made if it is the first bar of it.
+     * @param interval The interval.
+     * @return The entry.
+     */
     ByInterval& interval(BarInterval interval) {
       for (auto& entry : intervals_) {
         if (entry.interval_ == interval) {
