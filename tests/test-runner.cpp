@@ -6,9 +6,11 @@
 
 #include <array>
 #include <chrono>
+#include <map>
 #include <optional>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 using namespace algotradelib;
@@ -1025,8 +1027,13 @@ TEST_CASE("a context moves without throwing") {
   // Moving a context into a runner's place (from a handler, or between runners) must not fail halfway; the bar
   // history's conversion between keeping and not keeping bars is done in place for that reason.
   using Ctx = runner::DryRunner<BuyEachBar>::Context;
-  STATIC_REQUIRE(std::is_nothrow_move_constructible_v<Ctx>);
   STATIC_REQUIRE(std::is_nothrow_move_assignable_v<Ctx>);
+  // Move construction is as nothrow as the standard library's maps make it: MSVC's allocate a node when
+  // move-constructed, so there a context never moved into a new one without the chance of a throw.
+  constexpr bool maps_move_without_throwing =
+    std::is_nothrow_move_constructible_v<std::map<int, int>> &&
+    std::is_nothrow_move_constructible_v<std::unordered_map<int, int>>;
+  STATIC_REQUIRE((!maps_move_without_throwing || std::is_nothrow_move_constructible_v<Ctx>));
 }
 
 #if defined(ATL_HAS_EIGEN)
