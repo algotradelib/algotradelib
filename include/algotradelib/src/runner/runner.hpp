@@ -2001,7 +2001,7 @@ private:
       // The currency the order is priced in, which only the reference data knows. A buying-power
       // limit is per currency, and an unresolved instrument leaves it absent rather than defaulting
       // to one: guessing here would spend one currency's budget on another's order.
-      const auto reference = context_.instrument(order.instrument_);
+      const auto* reference = context_.find_instrument(order.instrument_);
       inputs.order_currency_ =
         reference ? std::optional<Currency>(reference->currency_) : std::nullopt;
       // `evaluate` rather than `check`, for one fact `check` drops: whether the phase limit admitted
@@ -3359,12 +3359,14 @@ private:
     if (!keeps_sent_orders_until_listed && !sells && !buys && !capped && !exposed && !conditional) {
       return;
     }
-    auto persisted = context_.portfolio();
+    // **In place, all or nothing.** `reserve` builds the row in a local first, so the append is its first
+    // write to the portfolio, and the append either happens whole or leaves the rows as they were; what
+    // follows it (lowering one buying power) is decimal arithmetic and assignment, which cannot throw.
+    // Copying the whole portfolio to add one row cost a copy of every position per order placed.
     reserve(
-      persisted, order, reference_price, currency, ref,
+      context_detail::PortfolioAccess::for_runner_edit(context_), order, reference_price, currency, ref,
       guard_.limits().enforce_buying_power_
     );
-    context_.set_portfolio(std::move(persisted));
   }
 
   // Resolves what every instrument the exposure ceiling must value is denominated in, and marked at.
@@ -3437,7 +3439,7 @@ private:
         }
       }
 
-      const auto reference = context_.instrument(id);
+      const auto* reference = context_.find_instrument(id);
       if (!reference) {
         continue;
       }
@@ -4162,11 +4164,11 @@ private:
   // change.
   strategy::Plan<Tag> plan_for(const Instruction<Tag>& instruction) {
     const auto id = instrument_of(instruction);
-    const auto reference = context_.instrument(id);
+    const auto* reference = context_.find_instrument(id);
     const auto band = band_for(id);
 
     strategy::ReconcileInputs inputs;
-    inputs.instrument_ = reference ? &*reference : nullptr;
+    inputs.instrument_ = reference;
     inputs.reference_price_ = context_.last_price(id);
     inputs.limits_ = band.applied_;
     inputs.portfolio_value_ = portfolio_value_;

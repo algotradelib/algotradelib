@@ -12,6 +12,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <map>
 #include <optional>
 #include <string>
@@ -43,6 +44,56 @@ using strategy::TargetPosition;
  */
 template <typename Broker>
 using Instruction = std::variant<OrderIntent, TargetPosition, CancelIntent<Broker>>;
+
+template <typename Strategy, typename CapsType, typename BrokerTag, typename Executor>
+class Runner;
+
+} // namespace runner
+
+namespace backtest {
+template <typename Strategy, typename CapsType>
+class Backtester;
+} // namespace backtest
+
+namespace runner {
+namespace context_detail {
+
+// In-place access to a context's portfolio, for the runner and the replay only.
+//
+// A strategy reads its portfolio through `Context::portfolio()`, a const reference; it gets no mutable
+// one from here, since everything below is private and only `Runner` and `Backtester` are friends. The
+// counts tell a replay what changed since it last brought the portfolio up to date: a replacement
+// (`Context::set_portfolio`), a runner's edit of its working rows, or new reference data.
+class PortfolioAccess {
+  template <typename Strategy, typename CapsType, typename BrokerTag, typename Executor>
+  friend class runner::Runner;
+  template <typename Strategy, typename CapsType>
+  friend class backtest::Backtester;
+
+  // For a runner editing working rows and buying power in place; counted as a runner edit.
+  template <typename Ctx>
+  static auto& for_runner_edit(Ctx& context) noexcept {
+    ++context.runner_edits_;
+    return context.portfolio_;
+  }
+
+  // For a replay bringing the portfolio up to date; not counted.
+  template <typename Ctx>
+  static auto& for_replay_sync(Ctx& context) noexcept {
+    return context.portfolio_;
+  }
+
+  template <typename Ctx>
+  static std::uint64_t replacements(const Ctx& context) noexcept { return context.replacements_; }
+
+  template <typename Ctx>
+  static std::uint64_t runner_edits(const Ctx& context) noexcept { return context.runner_edits_; }
+
+  template <typename Ctx>
+  static std::uint64_t reference_changes(const Ctx& context) noexcept { return context.reference_changes_; }
+};
+
+} // namespace context_detail
 
 /** @brief Identifies one cached bar series: an instrument at one bar interval. */
 struct SeriesKey {
@@ -183,6 +234,20 @@ public:
   }
 
   /**
+   * @brief Returns an instrument's reference data without copying it.
+   *
+   * Valid until the instrument's reference data is replaced (`set_instrument`) or the context is destroyed;
+   * read it at once rather than keeping it.
+   *
+   * @param id The instrument.
+   * @return The reference data, or a null pointer if the runner has not loaded it.
+   */
+  const Instrument* find_instrument(const InstrumentId& id) const {
+    const auto found = instruments_.find(id);
+    return found == instruments_.end() ? nullptr : &found->second;
+  }
+
+  /**
    * @brief Returns the latest price seen for an instrument (a quote's last price or a bar's close).
    * @param id The instrument.
    * @return The price, or `std::nullopt` if none has been seen.
@@ -293,7 +358,10 @@ public:
    * @brief Replaces the portfolio (for runners).
    * @param portfolio The portfolio.
    */
-  void set_portfolio(Portfolio<BrokerTag> portfolio) { portfolio_ = std::move(portfolio); }
+  void set_portfolio(Portfolio<BrokerTag> portfolio) {
+    portfolio_ = std::move(portfolio);
+    ++replacements_;
+  }
 
   /**
    * @brief Adds or replaces an instrument's reference data.
@@ -302,6 +370,7 @@ public:
   void set_instrument(Instrument reference) {
     auto key = reference.id_;
     instruments_.insert_or_assign(std::move(key), std::move(reference));
+    ++reference_changes_;
   }
 
   /**
@@ -331,6 +400,8 @@ public:
 #endif
 
 private:
+  friend class context_detail::PortfolioAccess;
+
   // The two per-instrument tables below are looked up by id and never iterated, so their order is
   // nobody's to observe.
   using InstrumentHash = id_detail::InstrumentIdHash;
@@ -340,6 +411,11 @@ private:
   MarketPhase phase_{MarketPhase::UNKNOWN};
   TradingCalendar calendar_;
   Portfolio<BrokerTag> portfolio_;
+  // Counted for `context_detail::PortfolioAccess`: replacements of the portfolio, runners' edits of it in
+  // place, and changes of reference data.
+  std::uint64_t replacements_{0};
+  std::uint64_t runner_edits_{0};
+  std::uint64_t reference_changes_{0};
   std::unordered_map<InstrumentId, Instrument, InstrumentHash> instruments_;
   std::unordered_map<InstrumentId, Decimal64, InstrumentHash> prices_;
 #if defined(ATL_HAS_EIGEN)
