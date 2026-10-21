@@ -423,26 +423,45 @@ public:
   bool mark(const InstrumentId& instrument, const Decimal64& price) {
     // An instrument has at most one lot: `find_or_open` opens one only when none matches.
     const auto slot = slot_of(instrument);
-    if (!slot) {
-      return true;
-    }
-    auto& lot = positions_[*slot];
+    return slot ? mark_lot(*slot, price) : true;
+  }
+
+  /**
+   * @brief Returns where an instrument's lot is in `positions()`, if a fill ever opened one.
+   *
+   * A lot keeps its place for the ledger's life (lots are never removed or reordered), so a caller marking the
+   * same instrument every bar can look it up once and use `mark_lot`.
+   *
+   * @param instrument The instrument.
+   * @return Its place, or `std::nullopt` if no fill opened a lot in it.
+   */
+  std::optional<std::size_t> lot_of(const InstrumentId& instrument) const { return slot_of(instrument); }
+
+  /**
+   * @brief Marks the lot at a place `lot_of` returned to a price, as `mark` does for its instrument.
+   * @param lot The lot's place in `positions()`.
+   * @param price The new mark.
+   * @return As `mark`.
+   */
+  bool mark_lot(std::size_t lot, const Decimal64& price) {
+    auto& position = positions_[lot];
     // **Both fields move or neither does, and the caller is told which.** Two earlier versions
     // each lost one half of that. Advancing the price and leaving the old `market_value_`
     // handed a strategy reading `positions()` or `snapshot()` a stale number presented as
     // current, with no error anywhere; skipping the row silently declined to apply a price the
     // caller asked for. The currency is the one `apply` recorded -- a lot exists only because a
     // fill opened it -- and it is the half nothing can invalidate.
-    const auto valued = decimal_multiply(lot.quantity_, price);
+    const auto valued = decimal_multiply(position.quantity_, price);
     if (!valued) {
       return false;
     }
-    lot.last_price_ = price;
-    lot.market_value_ = Money{*valued, lot.market_value_.currency_};
-    note_changed(*slot);
-    retrack(*slot);
+    position.last_price_ = price;
+    position.market_value_ = Money{*valued, position.market_value_.currency_};
+    note_changed(lot);
+    retrack(lot);
     return true;
   }
+
 
   /**
    * @brief Returns the portfolio a strategy sees.
