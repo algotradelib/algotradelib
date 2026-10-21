@@ -571,9 +571,10 @@ enum class EquityCurve {
    *   many instruments trade. A ratio over the curve (`summarize`) is then per period.
    *
    * Precisely, one point for each run of consecutive bars sharing a period end, after the run's last bar: a
-   * replay fed in period-end order (every `on_bars` replay, and an `on_bar` replay of one interval) gets one
-   * per period; bars of mixed intervals whose period ends interleave get a point at each change, so none is
-   * lost. The last period's point is recorded by `finish`.
+   * replay fed in period-end order (every `on_bars` replay, and an `on_bar` replay of one interval and one stamp
+   * convention) gets one per period; bars whose period ends interleave (mixed intervals, or open- and
+   * close-stamped bars) get a point at each change, so none is lost. The last period's point is recorded by
+   * `finish`.
    */
   PER_PERIOD,
   /**
@@ -1884,8 +1885,8 @@ private:
   ReplayResult result_;
   // Whether a bar since the last equity point went unvalued, so the next point carries no return.
   bool equity_gap_{false};
-  // Under `EquityCurve::PER_PERIOD`, the period end of the last bar marked, whose point is recorded when a later
-  // period begins or the replay finishes.
+  // Under `EquityCurve::PER_PERIOD`, the period end of the last bar marked, whose point is recorded when a bar of
+  // a different period end arrives or the replay finishes.
   std::optional<std::chrono::system_clock::time_point> period_point_;
   // The rule for an instrument without reference data, kept so `rule_for` can return it by reference.
   PriceRule unknown_rule_{PriceRule::unknown("no reference data supplied to the replay")};
