@@ -3,7 +3,9 @@
 #include <algotradelib/core>
 
 #include <chrono>
+#include <cstddef>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 namespace algotradelib {
@@ -35,6 +37,36 @@ inline bool order_is_open(OrderStatus status) {
   }
   return true;
 }
+
+namespace portfolio_detail {
+
+// Adds a position row's quantity to a running net quantity; `false` if the sum does not fit.
+inline bool add_net(Decimal64& total, const HoldingPosition& position) {
+  const auto sum = decimal_add(total, position.quantity_);
+  if (!sum) {
+    return false;
+  }
+  total = *sum;
+  return true;
+}
+
+// Adds what a working row still has to fill, if it is open and on `side`; a row reporting more filled than
+// ordered, or a sum that does not fit, adds nothing.
+template <typename Working>
+void add_working(Decimal64& total, const Working& order, OrderSide side) {
+  if (order.order_.side_ != side || !order_is_open(order.order_.status_)) {
+    return;
+  }
+  const auto remaining = decimal_subtract(order.order_.quantity_, order.order_.execution_.filled_quantity_);
+  if (!remaining || decimal_less(*remaining, Decimal64(0, 0))) {
+    return;
+  }
+  if (const auto sum = decimal_add(total, *remaining)) {
+    total = *sum;
+  }
+}
+
+} // namespace portfolio_detail
 
 /**
  * @brief What the account holds and which orders are still working, as a strategy sees it.
@@ -138,16 +170,11 @@ struct Portfolio {
    *   (a broken snapshot, which must not be treated as flat).
    */
   std::optional<Decimal64> net_quantity_of(const InstrumentId& instrument) const {
-    auto total = Decimal64::parse("0");
+    auto total = Decimal64(0, 0);
     for (const auto& position : positions_) {
-      if (!(position.instrument_ == instrument)) {
-        continue;
-      }
-      const auto sum = decimal_add(total, position.quantity_);
-      if (!sum) {
+      if (position.instrument_ == instrument && !portfolio_detail::add_net(total, position)) {
         return std::nullopt;
       }
-      total = *sum;
     }
     return total;
   }
@@ -163,25 +190,11 @@ struct Portfolio {
    * @return The remaining quantity, zero if there is none.
    */
   Decimal64 working_quantity(const InstrumentId& instrument, OrderSide side) const {
-    Decimal64 total = Decimal64::parse("0");
+    Decimal64 total = Decimal64(0, 0);
     for (const auto& order : working_) {
-      if (!(order.order_.instrument_ == instrument) || order.order_.side_ != side) {
-        continue;
+      if (order.order_.instrument_ == instrument) {
+        portfolio_detail::add_working(total, order, side);
       }
-      if (!order_is_open(order.order_.status_)) {
-        continue;
-      }
-      const auto remaining = decimal_subtract(
-        order.order_.quantity_, order.order_.execution_.filled_quantity_
-      );
-      if (!remaining || decimal_less(*remaining, Decimal64::parse("0"))) {
-        continue;
-      }
-      const auto sum = decimal_add(total, *remaining);
-      if (!sum) {
-        continue;
-      }
-      total = *sum;
     }
     return total;
   }
@@ -310,6 +323,52 @@ struct Portfolio {
     return nullptr;
   }
 
+};
+
+/**
+ * @brief Where each instrument's rows are in one portfolio: its position rows and its working rows, in order.
+ *
+ * Built once for a pass that reconciles many targets against the same portfolio, so that each target finds
+ * its own rows instead of scanning all of them (see `ReconcileInputs::rows_`). Describes the portfolio it was
+ * built from only while that portfolio's `positions_` and `working_` are unchanged.
+ */
+class PortfolioRows {
+public:
+  /** @brief Where one instrument's rows are. */
+  struct Rows {
+    /** @brief Places in `positions_`, ascending. */
+    std::vector<std::size_t> positions_;
+    /** @brief Places in `working_`, ascending. */
+    std::vector<std::size_t> working_;
+  };
+
+  /**
+   * @brief Indexes a portfolio.
+   * @tparam Broker The portfolio's broker tag.
+   * @param portfolio The portfolio.
+   */
+  template <typename Broker>
+  explicit PortfolioRows(const Portfolio<Broker>& portfolio) {
+    for (std::size_t at = 0; at < portfolio.positions_.size(); ++at) {
+      rows_[portfolio.positions_[at].instrument_].positions_.push_back(at);
+    }
+    for (std::size_t at = 0; at < portfolio.working_.size(); ++at) {
+      rows_[portfolio.working_[at].order_.instrument_].working_.push_back(at);
+    }
+  }
+
+  /**
+   * @brief Returns where an instrument's rows are.
+   * @param instrument The instrument.
+   * @return Its rows, or a null pointer if it has none.
+   */
+  const Rows* of(const InstrumentId& instrument) const {
+    const auto found = rows_.find(instrument);
+    return found == rows_.end() ? nullptr : &found->second;
+  }
+
+private:
+  std::unordered_map<InstrumentId, Rows, id_detail::InstrumentIdHash> rows_;
 };
 
 } // namespace strategy

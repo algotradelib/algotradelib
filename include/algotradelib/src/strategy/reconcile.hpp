@@ -282,9 +282,101 @@ struct ReconcileInputs {
    * of those rows, so a filled reservation is not traded twice.
    */
   bool reserved_rows_are_unconfirmed_{false};
+  /**
+   * @brief Where each instrument's rows are in the portfolio being reconciled, or a null pointer to scan for them.
+   *
+   * A runner reconciling many targets in one pass builds it once (`PortfolioRows`); the plans are the same
+   * either way. It must describe that very portfolio, unchanged since it was built.
+   */
+  const PortfolioRows* rows_{nullptr};
 };
 
 namespace reconcile_detail {
+
+// One instrument's working rows in a portfolio, in their order: from the pass's index when there is one, else
+// by a scan that skips every other instrument's rows. Iterated like the rows themselves.
+template <typename Broker>
+class WorkingRowsOf {
+public:
+  WorkingRowsOf(const Portfolio<Broker>& portfolio, const PortfolioRows* rows, const InstrumentId& instrument)
+  : working_(&portfolio.working_), instrument_(&instrument) {
+    if (rows != nullptr) {
+      const auto* found = rows->of(instrument);
+      places_ = found != nullptr ? &found->working_ : &none_;
+    }
+  }
+
+  class iterator {
+  public:
+    const WorkingOrder<Broker>& operator*() const { return (*owner_->working_)[at_]; }
+    iterator& operator++() {
+      ++step_;
+      settle();
+      return *this;
+    }
+    friend bool operator!=(const iterator& lhs, const iterator& rhs) { return lhs.step_ != rhs.step_; }
+
+  private:
+    friend class WorkingRowsOf;
+    iterator(const WorkingRowsOf* owner, std::size_t step) : owner_(owner), step_(step) { settle(); }
+    // Points `at_` at the row for `step_`: the step-th indexed place, or the next row of the instrument.
+    void settle() {
+      if (owner_->places_ != nullptr) {
+        if (step_ < owner_->places_->size()) {
+          at_ = (*owner_->places_)[step_];
+        }
+        return;
+      }
+      while (step_ < owner_->working_->size() &&
+             !((*owner_->working_)[step_].order_.instrument_ == *owner_->instrument_)) {
+        ++step_;
+      }
+      at_ = step_;
+    }
+    const WorkingRowsOf* owner_;
+    std::size_t step_;
+    std::size_t at_{0};
+  };
+
+  iterator begin() const { return iterator(this, 0); }
+  iterator end() const { return iterator(this, places_ != nullptr ? places_->size() : working_->size()); }
+
+  // What the rows still have to fill on `side`, as `Portfolio::working_quantity` sums it.
+  Decimal64 working_quantity(OrderSide side) const {
+    auto total = Decimal64(0, 0);
+    for (const auto& order : *this) {
+      portfolio_detail::add_working(total, order, side);
+    }
+    return total;
+  }
+
+private:
+  const std::vector<WorkingOrder<Broker>>* working_;
+  const InstrumentId* instrument_;
+  const std::vector<std::size_t>* places_{nullptr};
+  static inline const std::vector<std::size_t> none_{};
+};
+
+// An instrument's net quantity, as `Portfolio::net_quantity_of` sums it, from the pass's index when there is one.
+template <typename Broker>
+std::optional<Decimal64> net_quantity(
+  const Portfolio<Broker>& portfolio,
+  const PortfolioRows* rows,
+  const InstrumentId& instrument
+) {
+  if (rows == nullptr) {
+    return portfolio.net_quantity_of(instrument);
+  }
+  auto total = Decimal64(0, 0);
+  if (const auto* found = rows->of(instrument)) {
+    for (const auto at : found->positions_) {
+      if (!portfolio_detail::add_net(total, portfolio.positions_[at])) {
+        return std::nullopt;
+      }
+    }
+  }
+  return total;
+}
 
 /** Returns the lot size to round quantities onto, or nothing when none is known. */
 inline std::optional<Decimal64> lot_of(const Instrument& instrument) {
@@ -503,9 +595,11 @@ Plan<Broker> reconcile(
     return reject(RejectReason::NO_REFERENCE_DATA);
   }
 
-  const auto zero = Decimal64::parse("0");
+  const auto zero = Decimal64(0, 0);
   // Net across every position row, as the guards read it: a holding can be split across lots.
-  const auto net = portfolio.net_quantity_of(target.instrument_);
+  const auto net = reconcile_detail::net_quantity(portfolio, inputs.rows_, target.instrument_);
+  // This instrument's working rows, in order; the loops below read only these.
+  const reconcile_detail::WorkingRowsOf<Broker> rows(portfolio, inputs.rows_, target.instrument_);
   if (!net) {
     // A snapshot whose own rows will not add up cannot say what reaching a target would take, and
     // `value_or(zero)` here would read a broken listing as flat and order the whole target.
@@ -525,7 +619,7 @@ Plan<Broker> reconcile(
   // otherwise, and that row may be a released stop.
   const auto is_stop = [](const OrderSnapshot& order) { return is_stop_order(order); };
   bool stop_resting = false;
-  for (const auto& working : portfolio.working_) {
+  for (const auto& working : rows) {
     if (working.order_.instrument_ == target.instrument_ &&
         order_is_open(working.order_.status_) && is_stop(working.order_)) {
       stop_resting = true;
@@ -533,7 +627,7 @@ Plan<Broker> reconcile(
   }
   if (stop_resting) {
     const bool met = !buying && !selling;
-    for (const auto& working : portfolio.working_) {
+    for (const auto& working : rows) {
       if (!(working.order_.instrument_ == target.instrument_) ||
           !order_is_open(working.order_.status_)) {
         continue;
@@ -562,7 +656,7 @@ Plan<Broker> reconcile(
   // Only orders that can still trade are withdrawn. A snapshot may carry an order that has since
   // filled or been cancelled, and asking a broker to cancel one of those is a request that can
   // only fail -- noise on a path where a real cancellation failure has to be noticed.
-  for (const auto& working : portfolio.working_) {
+  for (const auto& working : rows) {
     if (!(working.order_.instrument_ == target.instrument_) ||
         !order_is_open(working.order_.status_)) {
       continue;
@@ -579,7 +673,7 @@ Plan<Broker> reconcile(
 
   const OrderSide side = buying ? OrderSide::BUY : OrderSide::SELL;
   const auto magnitude = buying ? *needed : decimal_subtract(zero, *needed).value_or(zero);
-  const auto already = portfolio.working_quantity(target.instrument_, side);
+  const auto already = rows.working_quantity(side);
 
   // Step 3: only the part not already in the market.
   auto remaining = decimal_subtract(magnitude, already);
@@ -615,7 +709,7 @@ Plan<Broker> reconcile(
   // its history settles what it filled, and a later pass places the rest.
   if (decimal_less(*remaining, zero)) {
     Decimal64 reserved = zero;
-    for (const auto& working : portfolio.working_) {
+    for (const auto& working : rows) {
       if (working.order_.instrument_ == target.instrument_ &&
           working.order_.side_ == side && order_is_open(working.order_.status_)) {
         plan.cancel_.push_back(working.ref_);

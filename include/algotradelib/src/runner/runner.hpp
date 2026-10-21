@@ -1713,6 +1713,19 @@ private:
     confirm_reservations();
 
     Report report;
+    // **One index of the portfolio's rows for a pass with many instructions**, so each target finds its own
+    // rows instead of scanning all of them (`strategy::PortfolioRows`). Valid for the planning loop below:
+    // nothing changes the context's portfolio until the placements after it. Built before the instructions
+    // are taken, so a failed allocation leaves them queued; cleared on every way out of the pass.
+    std::optional<strategy::PortfolioRows> rows;
+    if (context_.queued().size() > id_detail::scan_limit) {
+      rows.emplace(context_.portfolio());
+    }
+    struct ForgetRows {
+      const strategy::PortfolioRows*& rows_;
+      ~ForgetRows() { rows_ = nullptr; }
+    } forget_rows{pass_rows_};
+    pass_rows_ = rows ? &*rows : nullptr;
     auto instructions = context_.drain();
     kept_this_pass_.clear();
     drop_superseded_deferred(instructions);
@@ -1904,6 +1917,8 @@ private:
         origin.push_back(&instruction);
       }
     }
+    // Placements below change the portfolio (`persist_reservation`), so the index ends with the planning.
+    pass_rows_ = nullptr;
 
     strategy::GuardInputs inputs;
     // When the order actually goes out (`send_instant`): a target kept at a ledger mark, or one
@@ -4175,6 +4190,7 @@ private:
     inputs.portfolio_value_currency_ = portfolio_value_currency_;
     inputs.tolerance_ = tolerance_;
     inputs.reserved_rows_are_unconfirmed_ = keeps_sent_orders_until_listed;
+    inputs.rows_ = pass_rows_;
 
     auto plan = [&] {
       if (const auto* target = std::get_if<strategy::TargetPosition>(&instruction)) {
@@ -4493,6 +4509,8 @@ private:
   std::size_t kept_intents_dropped_{0};
   // The instructions kept for the phase in the current pass, so each is kept once.
   std::vector<const Instruction<Tag>*> kept_this_pass_;
+  // The index of the portfolio's rows for the planning loop of the pass in progress, or null (`settle`).
+  const strategy::PortfolioRows* pass_rows_{nullptr};
   // True only inside a deferred release's settle, which `plan_withhold_reason` exempts.
   bool releasing_deferred_{false};
   // How many were ever deferred; see `targets_deferred`.
