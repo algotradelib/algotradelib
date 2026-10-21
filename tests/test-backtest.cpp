@@ -5349,3 +5349,51 @@ TEST_CASE("bars whose period ends interleave lose no point of the equity curve")
     CHECK(per_period.equity_[at].equity_ == per_bar.equity_[at].equity_);
   }
 }
+
+#if defined(ATL_HAS_EIGEN)
+namespace {
+
+/**
+ * Reads its series and last price on every period; on the second, moves a fresh context into its own, which
+ * brings in other price and series storage than the replay found before.
+ */
+struct MovesAContextInEachPeriod {
+  int periods_{0};
+  std::vector<std::size_t> series_sizes_;
+  std::vector<std::string> prices_;
+
+  template <class Ctx>
+  void on_bars(Ctx& ctx, const strategy::BarSlice& slice) {
+    ++periods_;
+    const auto& id = slice.bars_.front().instrument_;
+    const auto* series = ctx.bars(id, slice.interval_);
+    series_sizes_.push_back(series != nullptr ? series->size() : 0);
+    const auto price = ctx.last_price(id);
+    prices_.push_back(price ? price->str() : "-");
+    if (periods_ == 2) {
+      Ctx replacement;
+      replacement.set_now(ctx.now());
+      replacement.set_phase(ctx.phase());
+      ctx = std::move(replacement);
+    }
+  }
+};
+
+} // namespace
+
+TEST_CASE("a replay keeps pricing and caching bars after a context is moved into its own") {
+  // The replay finds an instrument's price and series once and keeps where they are; a move into the context
+  // replaces that storage, so the replay must find them again rather than write into what the move freed.
+  backtest::Backtester<MovesAContextInEachPeriod> engine(MovesAContextInEachPeriod{}, replay_config());
+  const char* closes[] = {"70000", "70100", "70200", "70300", "70400"};
+  for (int minute = 1; minute <= 5; ++minute) {
+    engine.feed(moving_bar(session_minute(minute), BarInterval::ONE_MINUTE, closes[minute - 1], closes[minute - 1]));
+  }
+  engine.finish();
+  const auto& seen = engine.strategy();
+  REQUIRE(seen.periods_ == 5);
+  // Two bars cached before the move, then the moved-in context's own series starts again from the next bar.
+  CHECK(seen.series_sizes_ == std::vector<std::size_t>{1, 2, 1, 2, 3});
+  CHECK(seen.prices_ == std::vector<std::string>{"70000", "70100", "70200", "70300", "70400"});
+}
+#endif
