@@ -94,8 +94,12 @@ backtest::Execution bought(const InstrumentId& id, const char* quantity) {
   return execution;
 }
 
-backtest::ReplayLedger holding(const std::string& prefix, int lots) {
-  backtest::ReplayLedger ledger(Decimal64::parse("9000000000000000"), krw());
+backtest::ReplayLedger holding(
+  const std::string& prefix,
+  int lots,
+  backtest::ExecutionHistory history = backtest::ExecutionHistory::KEEP
+) {
+  backtest::ReplayLedger ledger(Decimal64::parse("9000000000000000"), krw(), history);
   for (int k = 0; k < lots; ++k) {
     REQUIRE(ledger.apply(bought(named(prefix + std::to_string(k)), "1"), krw()));
   }
@@ -147,7 +151,10 @@ void require_unchanged(const backtest::ReplayLedger& ledger, const backtest::Rep
     REQUIRE(ledger.positions()[at].last_price_ == before.positions()[at].last_price_);
   }
   REQUIRE(ledger.cash_in(krw()) == before.cash_in(krw()));
-  REQUIRE(ledger.executions().size() == before.executions().size());
+  REQUIRE(ledger.history() == before.history());
+  if (ledger.history() == backtest::ExecutionHistory::KEEP) {
+    REQUIRE(ledger.executions().size() == before.executions().size());
+  }
 }
 
 bool lists(const backtest::ReplayLedger& ledger, const InstrumentId& id) {
@@ -201,10 +208,12 @@ TEST_CASE("a ledger opening a lot finds every lot it lists after a failed alloca
   // At 0, 1 and 8 lots before the fill, narrow ledgers whose list of held lots must grow first (a copy's list has
   // no room to spare, and 8 fills the first growth); at 16, 17, 20 and 32: the last scan, the index being built,
   // the index extended, and the index growing its storage.
+  // Both with the execution history and without it (a replay's ledger), which reserves nothing for it.
+  for (const auto history : {backtest::ExecutionHistory::KEEP, backtest::ExecutionHistory::NONE})
   for (const int lots : {0, 1, 8, 16, 17, 20, 32}) {
-    INFO(lots << " lots before the fill");
+    INFO(lots << " lots before the fill; history kept: " << (history == backtest::ExecutionHistory::KEEP));
     const auto opened = named("NEW");
-    const auto before = holding("S", lots);
+    const auto before = holding("S", lots, history);
     auto ledger = before;
     const auto fill = bought(opened, "3");
     bool applied = false;
