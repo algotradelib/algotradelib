@@ -5275,9 +5275,12 @@ TEST_CASE("a replay records its equity curve per period, per bar or not at all")
   }
   // The return of a period is measured from the previous period's point.
   CHECK(std::isnan(per_period.equity_[0].period_return_));
+  const auto scalar = [](const Decimal64& value) {
+    return static_cast<double>(value.coefficient()) / std::pow(10.0, value.scale());
+  };
   for (std::size_t day = 1; day < 5; ++day) {
-    const auto then = analytics::to_scalar(per_period.equity_[day - 1].equity_);
-    const auto now = analytics::to_scalar(per_period.equity_[day].equity_);
+    const auto then = scalar(per_period.equity_[day - 1].equity_);
+    const auto now = scalar(per_period.equity_[day].equity_);
     // Divided to eight places, as the replay does.
     CHECK(per_period.equity_[day].period_return_ == Catch::Approx((now - then) / then).margin(1e-8));
   }
@@ -5309,5 +5312,40 @@ TEST_CASE("one instrument's equity curve is the same per period as per bar") {
     CHECK(per_bar[at].equity_ == per_period[at].equity_);
     CHECK((per_bar[at].period_return_ == per_period[at].period_return_ ||
            (std::isnan(per_bar[at].period_return_) && std::isnan(per_period[at].period_return_))));
+  }
+}
+
+namespace {
+
+/** Trades nothing. */
+struct Idles {
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
+};
+
+} // namespace
+
+TEST_CASE("bars whose period ends interleave lose no point of the equity curve") {
+  // An open-stamped day ends at the next midnight, after the minute bars fed later in time order: period ends
+  // that go back. Each change of period end records the run before it, so per period records every point per
+  // bar does here, with the same instants and equities.
+  const auto run = [](backtest::EquityCurve curve) {
+    auto config = replay_config();
+    config.equity_curve_ = curve;
+    backtest::Backtester<Idles> engine(Idles{}, config);
+    engine.feed(open_stamped(utc(2026, 3, 10, 0, 0), BarInterval::ONE_DAY, "70000", "70000"));
+    engine.feed(moving_bar(utc(2026, 3, 10, 1, 0), BarInterval::ONE_MINUTE, "70000", "70000"));
+    engine.feed(moving_bar(utc(2026, 3, 10, 2, 0), BarInterval::ONE_MINUTE, "70000", "70000"));
+    engine.finish();
+    return engine.result();
+  };
+  const auto per_bar = run(backtest::EquityCurve::PER_BAR);
+  const auto per_period = run(backtest::EquityCurve::PER_PERIOD);
+  REQUIRE(per_bar.bars_ == 3);
+  REQUIRE(per_bar.equity_.size() == 3);
+  REQUIRE(per_period.equity_.size() == 3);
+  for (std::size_t at = 0; at < 3; ++at) {
+    CHECK(per_period.equity_[at].at_ == per_bar.equity_[at].at_);
+    CHECK(per_period.equity_[at].equity_ == per_bar.equity_[at].equity_);
   }
 }

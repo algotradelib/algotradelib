@@ -140,9 +140,10 @@ struct ReportCaveats {
   /**
    * @brief Bars whose equity total could not be computed exactly (`ReplayResult::unvalued_bars_`).
    *
-   * Each has no point on the equity curve and the point after it no return, so the return series is
-   * shorter than the bar count by at least this much. Weight-sized intents on such a bar are rejected
-   * for want of a portfolio value.
+   * Under `EquityCurve::PER_BAR` each has no point on the equity curve and the point after it no return,
+   * so the return series is shorter than the bar count by at least this much; per period, a period whose last
+   * bar is unvalued has no point, and the next point no return. Weight-sized intents on such a bar are
+   * rejected for want of a portfolio value.
    */
   std::size_t unvalued_bars_{0};
   /** @brief The period end of the first unvalued bar, if any. */

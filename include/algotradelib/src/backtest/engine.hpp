@@ -569,6 +569,11 @@ enum class EquityCurve {
   /**
    * @brief One point per period end, after the last bar of that period: one a day for daily bars, however
    *   many instruments trade. A ratio over the curve (`summarize`) is then per period.
+   *
+   * Precisely, one point for each run of consecutive bars sharing a period end, after the run's last bar: a
+   * replay fed in period-end order (every `on_bars` replay, and an `on_bar` replay of one interval) gets one
+   * per period; bars of mixed intervals whose period ends interleave get a point at each change, so none is
+   * lost. The last period's point is recorded by `finish`.
    */
   PER_PERIOD,
   /**
@@ -796,8 +801,10 @@ public:
   /**
    * @brief Replays one bar.
    *
-   * In order: fill orders resting from earlier bars against this bar (and call `on_fill`), mark
-   * positions at the close and record an equity point, advance the clock to the bar's period end
+   * In order: record the previous period's equity point if this bar begins another period
+   * (`EquityCurve::PER_PERIOD`), fill orders resting from earlier bars against this bar (and call `on_fill`),
+   * mark positions at the close (recording this bar's point under `EquityCurve::PER_BAR`), advance the clock
+   * to the bar's period end
    * (calling `on_phase` on a change), then call `on_bar`, whose orders wait for a later bar. After a
    * halt it does nothing.
    *
@@ -861,9 +868,10 @@ public:
     // though it had been decided inside March's period and was deferred to April.
     runner_.executor().deciding_at(event.period_end_, period_end_is_exact(event));
 
-    // A period's point is recorded once its last bar is in, which is when a later period's first bar arrives:
-    // before that bar fills anything, so the point is the equity the period ended with.
-    if (period_point_ && *period_point_ < event.period_end_) {
+    // A period's point is recorded once its last bar is in, which is when a bar of another period arrives:
+    // before that bar fills anything, so the point is the equity the period ended with. Any other period end,
+    // later or (bars of mixed intervals) earlier, ends the run, so no period is lost.
+    if (period_point_ && *period_point_ != event.period_end_) {
       record_point(*period_point_);
     }
     settle_queued_against(event);

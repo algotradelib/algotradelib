@@ -280,7 +280,10 @@ the sellable half, and the library does not have one yet.
 ## The equity curve is one currency's
 
 `ReplayConfig::currency_` names the currency the report is in, and the equity curve is
-`ledger.equity_in()` of it at every bar.
+`ledger.equity_in()` of it: by default one point per period end, after the period's last bar
+(`EquityCurve::PER_PERIOD`; call `finish` for the last one), so a ratio over a replay of many instruments is per
+period; `EquityCurve::PER_BAR` records one per bar fed, and `EquityCurve::NONE` none (`summarize` then reports no
+ratios). Choose it with `ReplayConfig::equity_curve_`.
 
 It counts only positions in the currency being asked about (adding a won-quoted holding into a
 dollar curve at a rate of one would corrupt every derived metric), and the ledger records each
