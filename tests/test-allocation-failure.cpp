@@ -8,11 +8,13 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <new>
 #include <optional>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -52,9 +54,9 @@ namespace {
  * for: MSVC's, with iterator debugging on (the default in a Debug build), allocates a proxy for a string or container
  * as it is constructed, default and move construction included, and its hash map's copy builds its bucket vector
  * through such a `noexcept` constructor. Here: growing a vector of strings or containers (moves), copying a
- * `BarSlice` (its index's empty `noexcept` copy constructor default-constructs a vector) and copying the replay
- * queue (its map by instrument). A failure injected there ends the process in `std::terminate`, and a Debug build's
- * abort can then wait on a dialog nobody closes.
+ * `BarSlice` (its index's empty `noexcept` copy constructor default-constructs a vector), copying the replay queue
+ * (its map by instrument) and moving it (its vector of orders). A failure injected there ends the process in
+ * `std::terminate`, and a Debug build's abort can then wait on a dialog nobody closes.
  */
 void skip_where_moves_allocate() {
 #if defined(_MSVC_STL_VERSION) && _ITERATOR_DEBUG_LEVEL != 0
@@ -204,6 +206,12 @@ static_assert(std::is_nothrow_move_assignable<backtest::ReplayLedger>::value);
 static_assert(std::is_nothrow_move_constructible<backtest::ReplayLedger>::value);
 static_assert(std::is_nothrow_move_assignable<strategy::slice_detail::Bucket>::value);
 static_assert(std::is_nothrow_move_constructible<strategy::slice_detail::Bucket>::value);
+// The replay queue promises not to throw on a move only where its map's move does not.
+static_assert(
+  std::is_nothrow_move_constructible<backtest::QueueingExecutor<backtest::BacktestTag>>::value ==
+  std::is_nothrow_move_constructible<
+    std::unordered_map<InstrumentId, std::vector<std::uint64_t>, id_detail::InstrumentIdHash>>::value
+);
 
 TEST_CASE("a ledger opening a lot finds every lot it lists after a failed allocation") {
   skip_where_moves_allocate();
@@ -381,6 +389,28 @@ TEST_CASE("a replay queue copy that fails leaves the destination as it was") {
     REQUIRE(destination.withdraw(ref));
   }
   CHECK(destination.queued().empty());
+}
+
+TEST_CASE("a replay queue move that fails leaves the source as it was") {
+  skip_where_moves_allocate();
+  // Only Microsoft's map allocates when moved; elsewhere the move makes no allocation and the loop ends at once.
+  using Queue = backtest::QueueingExecutor<backtest::BacktestTag>;
+  Queue source;
+  strategy::PlannedOrder order;
+  order.instrument_ = named("QUEUED");
+  order.type_ = OrderType::MARKET;
+  order.time_in_force_ = TimeInForce::DAY;
+  order.quantity_ = Decimal64::parse("1");
+  REQUIRE(source.place(order) == runner::SendOutcome::ACCEPTED);
+  std::optional<Queue> moved;
+  fail_each_allocation([&] { moved.emplace(std::move(source)); }, [&] {
+    REQUIRE(source.queued().size() == 1);
+    std::size_t found = 0;
+    source.for_each_queued_in(order.instrument_, [&](const auto&) { ++found; });
+    REQUIRE(found == 1);
+  });
+  REQUIRE(moved->queued().size() == 1);
+  CHECK(source.queued().empty());
 }
 
 TEST_CASE("a ledger copy that fails leaves the destination as it was") {

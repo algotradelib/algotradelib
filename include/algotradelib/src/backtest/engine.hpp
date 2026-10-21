@@ -18,6 +18,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -90,6 +91,9 @@ struct QueuedOrder {
 template <typename BrokerTag>
 class QueueingExecutor {
   struct Slot;
+  // Each instrument's outstanding orders by serial, oldest first.
+  using ByInstrument =
+    std::unordered_map<InstrumentId, std::vector<std::uint64_t>, id_detail::InstrumentIdHash>;
 
 public:
   /** @brief An executor with nothing queued. */
@@ -103,12 +107,17 @@ public:
 
   /**
    * @brief Moves an executor; the source is left with nothing queued.
+   *
+   * `noexcept` exactly when the standard library moves an `std::unordered_map` without throwing (libc++ and
+   * libstdc++ do; Microsoft's allocates).
+   *
    * @param other The executor to move from.
+   * @throws std::bad_alloc If the map cannot be moved; the source is then unchanged.
    */
-  QueueingExecutor(QueueingExecutor&& other) noexcept
-  : slots_(std::move(other.slots_)),
+  QueueingExecutor(QueueingExecutor&& other) noexcept(std::is_nothrow_move_constructible<ByInstrument>::value)
+  : by_instrument_(std::move(other.by_instrument_)),
+    slots_(std::move(other.slots_)),
     live_(other.live_),
-    by_instrument_(std::move(other.by_instrument_)),
     last_ref_(std::move(other.last_ref_)),
     issued_(other.issued_),
     bar_(other.bar_),
@@ -549,10 +558,10 @@ private:
     );
   }
 
+  // First, so that a move whose map throws has moved nothing else.
+  ByInstrument by_instrument_;
   std::vector<Slot> slots_;
   std::size_t live_{0};
-  // Each instrument's outstanding orders by serial, oldest first.
-  std::unordered_map<InstrumentId, std::vector<std::uint64_t>, id_detail::InstrumentIdHash> by_instrument_;
   std::optional<OrderRef<BrokerTag>> last_ref_;
   std::uint64_t issued_{0};
   std::uint64_t bar_{0};
