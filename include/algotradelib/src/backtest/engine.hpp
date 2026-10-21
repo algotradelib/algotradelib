@@ -561,11 +561,36 @@ private:
   bool decision_is_exact_{true};
 };
 
-/** @brief One point on a replay's equity curve, recorded per bar. */
+/**
+ * @brief Which points a replay records on its equity curve (`ReplayResult::equity_`); see
+ *   `ReplayConfig::equity_curve_`.
+ */
+enum class EquityCurve {
+  /**
+   * @brief One point per period end, after the last bar of that period: one a day for daily bars, however
+   *   many instruments trade. A ratio over the curve (`summarize`) is then per period.
+   *
+   * Precisely, one point for each run of consecutive bars sharing a period end, after the run's last bar: a
+   * replay fed in period-end order (every `on_bars` replay, and an `on_bar` replay of one interval and one stamp
+   * convention) gets one per period; bars whose period ends interleave (mixed intervals, or open- and
+   * close-stamped bars) get a point at each change, so none is lost. The last period's point is recorded by
+   * `finish`.
+   */
+  PER_PERIOD,
+  /**
+   * @brief One point per bar fed. A replay of many instruments records one per instrument per period, all at
+   *   the same instant, and a ratio over them is per bar, not per period.
+   */
+  PER_BAR,
+  /** @brief No points, for a run that does not read the curve; `summarize` then reports no ratio. */
+  NONE,
+};
+
+/** @brief One point on a replay's equity curve: per period end, or per bar (`EquityCurve`). */
 struct EquityPoint {
-  /** @brief The bar's period end. */
+  /** @brief The period end of the bar it was recorded after. */
   std::chrono::system_clock::time_point at_{};
-  /** @brief Cash plus positions marked at the bar's close, in the replay's currency. */
+  /** @brief Cash plus positions marked at the latest closes, in the replay's currency. */
   Decimal64 equity_;
   /**
    * @brief The return since the previous point; `missing()` on the first point, after an unvalued bar,
@@ -580,7 +605,10 @@ struct EquityPoint {
 
 /** @brief Everything a replay produced; `summarize` turns it into a `Report`. */
 struct ReplayResult {
-  /** @brief One point per bar that could be valued, in order. */
+  /**
+   * @brief The equity curve, in order: one point per period end, or per bar, or none
+   *   (`ReplayConfig::equity_curve_`), each where the equity could be valued.
+   */
   std::vector<EquityPoint> equity_;
   /** @brief Every execution, in order. */
   std::vector<Execution> executions_;
@@ -680,6 +708,12 @@ struct ReplayConfig {
   /** @brief How many trailing bars the context caches per series, for indicators; must be positive. */
   std::size_t series_capacity_{512};
   /**
+   * @brief Which points the equity curve records: one per period end (the default), one per bar, or none.
+   *
+   * The bar counts (`overdrawn_bars_`, `unvalued_bars_`) are counted per bar whichever is chosen.
+   */
+  EquityCurve equity_curve_{EquityCurve::PER_PERIOD};
+  /**
    * @brief The calendar `ctx.calendar()` returns, for a strategy asking about dates it has no bar
    *   for (such as whether tomorrow trades).
    *
@@ -768,8 +802,10 @@ public:
   /**
    * @brief Replays one bar.
    *
-   * In order: fill orders resting from earlier bars against this bar (and call `on_fill`), mark
-   * positions at the close and record an equity point, advance the clock to the bar's period end
+   * In order: record the previous period's equity point if this bar begins another period
+   * (`EquityCurve::PER_PERIOD`), fill orders resting from earlier bars against this bar (and call `on_fill`),
+   * mark positions at the close (recording this bar's point under `EquityCurve::PER_BAR`), advance the clock
+   * to the bar's period end
    * (calling `on_phase` on a change), then call `on_bar`, whose orders wait for a later bar. After a
    * halt it does nothing.
    *
@@ -833,6 +869,12 @@ public:
     // though it had been decided inside March's period and was deferred to April.
     runner_.executor().deciding_at(event.period_end_, period_end_is_exact(event));
 
+    // A period's point is recorded once its last bar is in, which is when a bar of another period arrives:
+    // before that bar fills anything, so the point is the equity the period ended with. Any other period end,
+    // later or (bars of mixed intervals) earlier, ends the run, so no period is lost.
+    if (period_point_ && *period_point_ != event.period_end_) {
+      record_point(*period_point_);
+    }
     settle_queued_against(event);
     // **The halt stops this bar too, not merely the next one.** Returning only from settlement left
     // `feed` to mark the book, record an equity point, advance the clock and call `on_phase` and
@@ -861,7 +903,7 @@ public:
       abort_queue();
       return;
     }
-    record_equity(event);
+    count_bar(event);
 
     // **The price moves with the portfolio, not after it.** `Runner::settle` values a market order
     // at `context_.last_price`, so a view whose positions are marked to this bar while the price is
@@ -1017,6 +1059,10 @@ public:
           return;
         }
       }
+    }
+    // The last period's point: nothing has filled since its last bar.
+    if (period_point_) {
+      record_point(*period_point_);
     }
     install_portfolio();
     drain_reports(runner_.stop());
@@ -1413,8 +1459,8 @@ private:
     }
   }
 
-  // Records equity at this bar, and the return since the previous point.
-  void record_equity(const strategy::BarEvent& event) {
+  // Counts this bar's overdrawn and unvalued state, and records its point or keeps its period's for later.
+  void count_bar(const strategy::BarEvent& event) {
     if (const auto cash = ledger_.cash_in(config_.currency_);
         cash && cash->coefficient() < 0) {
       ++result_.overdrawn_bars_;
@@ -1435,14 +1481,39 @@ private:
         result_.first_unvalued_ = event.period_end_;
       }
       equity_gap_ = true;
-      return;
     }
+    switch (config_.equity_curve_) {
+      case EquityCurve::PER_BAR:
+        if (equity) {
+          record_point(event.period_end_, *equity);
+        }
+        break;
+      case EquityCurve::PER_PERIOD:
+        period_point_ = event.period_end_;
+        break;
+      case EquityCurve::NONE:
+        break;
+    }
+  }
+
+  // Records the point of the period ending `at`, at the equity now: the period's last bar is the last one marked.
+  void record_point(std::chrono::system_clock::time_point at) {
+    period_point_.reset();
+    if (const auto equity = ledger_.equity()) {
+      record_point(at, *equity);
+    } else {
+      equity_gap_ = true;
+    }
+  }
+
+  // Records a point, and the return since the previous point.
+  void record_point(std::chrono::system_clock::time_point at, const Decimal64& equity) {
     EquityPoint point;
-    point.at_ = event.period_end_;
-    point.equity_ = *equity;
+    point.at_ = at;
+    point.equity_ = equity;
     point.period_return_ = math::missing();
-    // **No return across an omitted point.** The one below would measure two or more bars and be
-    // handed to the Sharpe ratio and the annualization as one bar's return, so the first point
+    // **No return across an omitted point.** The one below would measure two or more periods and be
+    // handed to the Sharpe ratio and the annualization as one period's return, so the first point
     // after a gap carries none -- as the first point of the run does.
     const bool after_gap = equity_gap_;
     equity_gap_ = false;
@@ -1451,7 +1522,7 @@ private:
       // Only from positive equity. From a negative total the ratio's sign is reversed: a further loss
       // reads as a gain, and a run that lost more than its capital reported a positive Sharpe ratio.
       if (previous.coefficient() > 0) {
-        const auto moved = decimal_subtract(*equity, previous);
+        const auto moved = decimal_subtract(equity, previous);
         if (moved) {
           const auto ratio = decimal_divide(*moved, previous, 8);
           if (ratio) {
@@ -1814,6 +1885,9 @@ private:
   ReplayResult result_;
   // Whether a bar since the last equity point went unvalued, so the next point carries no return.
   bool equity_gap_{false};
+  // Under `EquityCurve::PER_PERIOD`, the period end of the last bar marked, whose point is recorded when a bar of
+  // a different period end arrives or the replay finishes.
+  std::optional<std::chrono::system_clock::time_point> period_point_;
   // The rule for an instrument without reference data, kept so `rule_for` can return it by reference.
   PriceRule unknown_rule_{PriceRule::unknown("no reference data supplied to the replay")};
   // What `install_portfolio` last saw: whether it installed at all, the context's counts of replacements,

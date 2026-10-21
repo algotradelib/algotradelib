@@ -2252,42 +2252,52 @@ TEST_CASE("a mark that will not fit halts the replay before the strategy decides
   // Continuing -- which this used to do, skipping only the equity point -- ran `on_bar` with the
   // bar's close as the last price beside a lot valued one bar ago, and the orders placed from that
   // view filled on the next bar.
-  backtest::Backtester<PlacesTwoEachBar> engine(PlacesTwoEachBar{}, replay_config());
-  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  REQUIRE_FALSE(engine.result().halted_);
-  REQUIRE(engine.strategy().bars_seen_ == 2);
-  const auto fills_before = engine.strategy().fills_;
-  const auto equity_before = engine.result().equity_.size();
-  const auto phases_before = engine.strategy().phases_seen_;
+  // Per bar, so the second bar's point is in before the third arrives; per period, the third bar records
+  // the second's point as it begins, and then none of its own (checked below by instant).
+  for (const auto curve : {backtest::EquityCurve::PER_BAR, backtest::EquityCurve::PER_PERIOD}) {
+    INFO((curve == backtest::EquityCurve::PER_BAR ? "per bar" : "per period"));
+    auto config = replay_config();
+    config.equity_curve_ = curve;
+    backtest::Backtester<PlacesTwoEachBar> engine(PlacesTwoEachBar{}, config);
+    engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+    engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+    REQUIRE_FALSE(engine.result().halted_);
+    REQUIRE(engine.strategy().bars_seen_ == 2);
+    const auto fills_before = engine.strategy().fills_;
+    const auto equity_before = std::size_t{2};
+    const auto second = engine.result().equity_.empty() ? Clock::time_point{} : engine.result().equity_.back().at_;
+    const auto phases_before = engine.strategy().phases_seen_;
 
-  engine.feed(moving_bar(
-    utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "9223372036854775807"
-  ));
+    engine.feed(moving_bar(
+      utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "9223372036854775807"
+    ));
 
-  REQUIRE(engine.result().halted_);
-  CHECK(engine.result().halted_->broker_code_ == "mark_not_representable");
-  CHECK(engine.result().halted_->message_.find("005930") != std::string::npos);
-  CHECK_FALSE(engine.result().halted_->reached_broker_);
-  // The orders resting from the second bar filled at the third bar's open, before the mark...
-  CHECK(engine.strategy().fills_ > fills_before);
-  // ...and nothing decided on the unmarked book: no `on_phase`, no `on_bar`, so no order from it.
-  CHECK(engine.strategy().bars_seen_ == 2);
-  CHECK(engine.strategy().phases_seen_ == phases_before);
-  CHECK(engine.result().equity_.size() == equity_before);
-  // The lot is still coherent at its previous mark.
-  for (const auto& lot : engine.ledger().positions()) {
-    CHECK(lot.last_price_ == Decimal64::parse("70000"));
+    REQUIRE(engine.result().halted_);
+    CHECK(engine.result().halted_->broker_code_ == "mark_not_representable");
+    CHECK(engine.result().halted_->message_.find("005930") != std::string::npos);
+    CHECK_FALSE(engine.result().halted_->reached_broker_);
+    // The orders resting from the second bar filled at the third bar's open, before the mark...
+    CHECK(engine.strategy().fills_ > fills_before);
+    // ...and nothing decided on the unmarked book: no `on_phase`, no `on_bar`, so no order from it.
+    CHECK(engine.strategy().bars_seen_ == 2);
+    CHECK(engine.strategy().phases_seen_ == phases_before);
+    CHECK(engine.result().equity_.size() == equity_before);
+    CHECK(engine.result().equity_.back().at_ >= second);
+    CHECK(engine.result().equity_.back().at_ < utc(2026, 3, 12, 6, 30));
+    // The lot is still coherent at its previous mark.
+    for (const auto& lot : engine.ledger().positions()) {
+      CHECK(lot.last_price_ == Decimal64::parse("70000"));
+    }
+
+    // A later ordinary bar changes nothing: the replay stopped.
+    engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+    CHECK(engine.strategy().bars_seen_ == 2);
+    CHECK(engine.result().equity_.size() == equity_before);
+
+    const auto report = backtest::summarize(engine.result(), engine.fills());
+    REQUIRE(report.halted_);
+    CHECK(report.halted_->broker_code_ == "mark_not_representable");
   }
-
-  // A later ordinary bar changes nothing: the replay stopped.
-  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  CHECK(engine.strategy().bars_seen_ == 2);
-  CHECK(engine.result().equity_.size() == equity_before);
-
-  const auto report = backtest::summarize(engine.result(), engine.fills());
-  REQUIRE(report.halted_);
-  CHECK(report.halted_->broker_code_ == "mark_not_representable");
 }
 #endif
 
@@ -5206,5 +5216,136 @@ TEST_CASE("a replay's queue moved away leaves its source empty and usable") {
     CHECK(assigned.withdraw(OrderRef<backtest::BacktestTag>{"1", ""}));
     CHECK(assigned.queued().size() == 1);
     CHECK(source.queued().size() == 2);
+  }
+}
+
+namespace {
+
+/** Buys one share of each instrument on its first bar and holds it. */
+struct BuysEachOnce {
+  std::vector<std::string> bought_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    for (const auto& symbol : bought_) {
+      if (symbol == bar.instrument_.symbol_) {
+        return;
+      }
+    }
+    bought_.push_back(bar.instrument_.symbol_);
+    ctx.submit(strategy::OrderIntent::market(bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))));
+  }
+};
+
+} // namespace
+
+TEST_CASE("a replay records its equity curve per period, per bar or not at all") {
+  // Three instruments over five days: per bar, three points a day at the same instant; per period, one a day,
+  // equal to that day's last per-bar point; none, no points. The bar counts are the same either way.
+  const auto run = [](backtest::EquityCurve curve) {
+    auto config = replay_config();
+    config.equity_curve_ = curve;
+    for (const char* symbol : {"000660", "035420"}) {
+      auto reference = samsung_reference();
+      reference.id_ = InstrumentId{Country::KR, Venue::COMBINED, symbol};
+      config.instruments_.push_back(reference);
+    }
+    backtest::Backtester<BuysEachOnce> engine(BuysEachOnce{}, config);
+    const char* closes[] = {"70000", "71000", "69500", "72000", "70500"};
+    for (int day = 0; day < 5; ++day) {
+      for (const char* symbol : {"005930", "000660", "035420"}) {
+        auto bar = moving_bar(utc(2026, 3, 10 + day, 6, 30), BarInterval::ONE_DAY, closes[day], closes[day]);
+        bar.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, symbol};
+        engine.feed(bar);
+      }
+    }
+    engine.finish();
+    return engine.result();
+  };
+  const auto per_bar = run(backtest::EquityCurve::PER_BAR);
+  const auto per_period = run(backtest::EquityCurve::PER_PERIOD);
+  const auto none = run(backtest::EquityCurve::NONE);
+  REQUIRE(per_bar.equity_.size() == 15);
+  REQUIRE(per_period.equity_.size() == 5);
+  CHECK(none.equity_.empty());
+  for (std::size_t day = 0; day < 5; ++day) {
+    const auto& last_of_day = per_bar.equity_[3 * day + 2];
+    CHECK(per_period.equity_[day].at_ == last_of_day.at_);
+    CHECK(per_period.equity_[day].equity_ == last_of_day.equity_);
+  }
+  // The return of a period is measured from the previous period's point.
+  CHECK(std::isnan(per_period.equity_[0].period_return_));
+  const auto scalar = [](const Decimal64& value) {
+    return static_cast<double>(value.coefficient()) / std::pow(10.0, value.scale());
+  };
+  for (std::size_t day = 1; day < 5; ++day) {
+    const auto then = scalar(per_period.equity_[day - 1].equity_);
+    const auto now = scalar(per_period.equity_[day].equity_);
+    // Divided to eight places, as the replay does.
+    CHECK(per_period.equity_[day].period_return_ == Catch::Approx((now - then) / then).margin(1e-8));
+  }
+  for (const auto* result : {&per_period, &none}) {
+    CHECK(result->bars_ == per_bar.bars_);
+    CHECK(result->executions_.size() == per_bar.executions_.size());
+    CHECK(result->overdrawn_bars_ == per_bar.overdrawn_bars_);
+    CHECK(result->unvalued_bars_ == per_bar.unvalued_bars_);
+  }
+}
+
+TEST_CASE("one instrument's equity curve is the same per period as per bar") {
+  const auto run = [](backtest::EquityCurve curve) {
+    auto config = replay_config();
+    config.equity_curve_ = curve;
+    backtest::Backtester<PlacesTwoEachBar> engine(PlacesTwoEachBar{}, config);
+    const char* closes[] = {"70000", "71000", "69500", "72000", "70500", "70100"};
+    for (int day = 0; day < 6; ++day) {
+      engine.feed(moving_bar(utc(2026, 3, 10 + day, 6, 30), BarInterval::ONE_DAY, closes[day], closes[day]));
+    }
+    engine.finish();
+    return engine.result().equity_;
+  };
+  const auto per_bar = run(backtest::EquityCurve::PER_BAR);
+  const auto per_period = run(backtest::EquityCurve::PER_PERIOD);
+  REQUIRE(per_bar.size() == per_period.size());
+  for (std::size_t at = 0; at < per_bar.size(); ++at) {
+    CHECK(per_bar[at].at_ == per_period[at].at_);
+    CHECK(per_bar[at].equity_ == per_period[at].equity_);
+    CHECK((per_bar[at].period_return_ == per_period[at].period_return_ ||
+           (std::isnan(per_bar[at].period_return_) && std::isnan(per_period[at].period_return_))));
+  }
+}
+
+namespace {
+
+/** Trades nothing. */
+struct Idles {
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
+};
+
+} // namespace
+
+TEST_CASE("bars whose period ends interleave lose no point of the equity curve") {
+  // An open-stamped day ends at the next midnight, after the minute bars fed later in time order: period ends
+  // that go back. Each change of period end records the run before it, so per period records every point per
+  // bar does here, with the same instants and equities.
+  const auto run = [](backtest::EquityCurve curve) {
+    auto config = replay_config();
+    config.equity_curve_ = curve;
+    backtest::Backtester<Idles> engine(Idles{}, config);
+    engine.feed(open_stamped(utc(2026, 3, 10, 0, 0), BarInterval::ONE_DAY, "70000", "70000"));
+    engine.feed(moving_bar(utc(2026, 3, 10, 1, 0), BarInterval::ONE_MINUTE, "70000", "70000"));
+    engine.feed(moving_bar(utc(2026, 3, 10, 2, 0), BarInterval::ONE_MINUTE, "70000", "70000"));
+    engine.finish();
+    return engine.result();
+  };
+  const auto per_bar = run(backtest::EquityCurve::PER_BAR);
+  const auto per_period = run(backtest::EquityCurve::PER_PERIOD);
+  REQUIRE(per_bar.bars_ == 3);
+  REQUIRE(per_bar.equity_.size() == 3);
+  REQUIRE(per_period.equity_.size() == 3);
+  for (std::size_t at = 0; at < 3; ++at) {
+    CHECK(per_period.equity_[at].at_ == per_bar.equity_[at].at_);
+    CHECK(per_period.equity_[at].equity_ == per_bar.equity_[at].equity_);
   }
 }
