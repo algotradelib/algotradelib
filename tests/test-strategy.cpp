@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 using namespace algotradelib;
 
@@ -1631,6 +1632,29 @@ TEST_CASE("forgetting old sends bounds the memory a long session accumulates") {
 
   guard.forget_before(start + std::chrono::seconds(40));
   REQUIRE(guard.recent_orders(start + std::chrono::seconds(60)) == 10);
+}
+
+TEST_CASE("a send recorded out of time order is counted where it belongs") {
+  // A clock can step back (NTP live, an out-of-order quote in a replay); the count must equal a scan.
+  RiskLimits limits;
+  limits.max_orders_per_window_ = 100;
+  limits.rate_window_ = std::chrono::seconds(60);
+  RiskGuard guard(limits);
+  const auto start = utc(2026, 3, 10, 3, 0);
+  const std::vector<int> offsets{0, 50, 20, 100, 70, 70, 10, 130};
+  for (const int at : offsets) {
+    guard.note_sent(start + std::chrono::seconds(at));
+  }
+
+  for (int now = -10; now <= 200; ++now) {
+    std::size_t scanned = 0;
+    for (const int at : offsets) {
+      if (std::chrono::seconds(now - at) < limits.rate_window_) {
+        ++scanned;
+      }
+    }
+    CHECK(guard.recent_orders(start + std::chrono::seconds(now)) == scanned);
+  }
 }
 
 TEST_CASE("every guard reason has a stable name") {

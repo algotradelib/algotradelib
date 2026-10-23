@@ -6,6 +6,7 @@
 
 #include <algotradelib/core>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -852,7 +853,13 @@ public:
    * @param when When the order was sent.
    */
   void note_sent(std::chrono::system_clock::time_point when) {
-    sent_.push_back(when);
+    // Kept in time order so `recent_orders` can count by binary search; a clock that stepped back
+    // inserts rather than appends.
+    if (sent_.empty() || !(when < sent_.back())) {
+      sent_.push_back(when);
+    } else {
+      sent_.insert(std::upper_bound(sent_.begin(), sent_.end(), when), when);
+    }
     ++total_sent_;
   }
 
@@ -872,13 +879,10 @@ public:
    * @return The count.
    */
   std::size_t recent_orders(std::chrono::system_clock::time_point now) const {
-    std::size_t count = 0;
-    for (const auto when : sent_) {
-      if (now - when < limits_.rate_window_) {
-        ++count;
-      }
-    }
-    return count;
+    // `now - when < rate_window_` is `when > now - rate_window_`: every send after that instant,
+    // including any later than `now`.
+    const auto first = std::upper_bound(sent_.begin(), sent_.end(), now - limits_.rate_window_);
+    return static_cast<std::size_t>(sent_.end() - first);
   }
 
   /**
