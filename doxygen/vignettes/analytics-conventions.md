@@ -228,32 +228,19 @@ where they break:
   Appropriate for an application that owns its whole build; not for a header-only library other
   people include.
 
-And one place where the honest answer is a flag rather than a number:
-
-- **The decompositions are Eigen's own, exposed as aliases**, not wrapped. `math::Llt`,
-  `math::Ldlt`, `math::HouseholderQr`, `math::ColPivQr`, `math::FullPivQr`, `math::FullPivLu`,
-  `math::Svd` and `math::SelfAdjointEigen` are used directly, so one factorization solves many
-  right-hand sides, a right-hand side may be a matrix as easily as a vector, and the rank,
-  permutation, singular values and `info()` a decomposition already knows are all still there.
-  Wrapping each in a result struct would have copied the factors out and thrown the rest away.
-
-  Which to reach for is a trade-off the caller makes: `ColPivQr` for a design matrix of market
-  data, where nearly collinear columns are the normal case and the normal equations square the
-  condition number; `Llt` when the system is known symmetric positive definite and speed
-  matters; `Ldlt` when it is only semi-definite; `Svd` when the answer must be the minimum-norm
-  one or the conditioning is itself the question.
-
-  For decompositions the backend seam is a naming convention rather than a portability
-  guarantee, because no two libraries agree on what a factorization object exposes. The numeric
-  vocabulary — `Matrix`, `Vector`, `SeriesView` — really is portable. That distinction is worth
-  stating instead of letting a uniform-looking `math::` prefix imply more than it delivers.
+- **The library publishes no decomposition.** Use Eigen's own on a `math::Matrix`, such as
+  `x.colPivHouseholderQr().solve(y)` or `normal.llt()`: one factorization solves many right-hand
+  sides, and its rank, permutation and `info()` are all still there. Which to reach for is a
+  trade-off the caller makes: a pivoting QR for a design matrix of market data, where nearly
+  collinear columns are the normal case; LLT when the system is known symmetric positive
+  definite; an SVD when the answer must be the minimum-norm one.
 
 ## What this layer deliberately does not compute
 
 There is no regression and no covariance estimator, and the omission is settled rather than
 pending.
 
-Fitting is one call — `math::ColPivQr(x).solve(y)`, where `y` may be a matrix of targets and the
+Fitting is one call — `x.colPivHouseholderQr().solve(y)`, where `y` may be a matrix of targets and the
 result a matrix of coefficients. A sample covariance of a complete observation matrix is two lines:
 
 ```cpp

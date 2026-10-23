@@ -11,28 +11,13 @@ namespace math {
 
 /**
  * @file
- * @brief The `math` types and decompositions, implemented with Eigen.
+ * @brief The `math` types, implemented with Eigen.
  *
  * Include `math/matrix.hpp` rather than this header. Write against the `math::` names
- * (`math::SeriesView`, `math::ColPivQr`, ...) rather than the Eigen types behind them.
+ * (`math::SeriesView`, `math::Matrix`, ...) rather than the Eigen types behind them.
  *
- * The decompositions are Eigen's own classes under `math::` names; use their Eigen interfaces
- * directly:
- *
- * ```cpp
- * // One factorization, many right-hand sides; `b` may be a vector or a matrix.
- * const math::ColPivQr qr(a);
- * const math::Matrix coefficients = qr.solve(b);
- * if (qr.rank() < a.cols()) { ... }  // the columns were not independent
- *
- * // LLT for a symmetric positive-definite system, LDLT when it is only semi-definite,
- * // Svd for the minimum-norm solution, HouseholderQr when pivoting is not needed.
- * const math::Llt chol(normal);
- * if (chol.info() == math::SUCCESS) { x = chol.solve(b); }
- * ```
- *
- * `Matrix::ldlt()`, `Matrix::colPivHouseholderQr()` and the other member forms work too, as
- * does `A.fullPivLu().solve(b)` for a square system where no structure is known.
+ * For a decomposition, use Eigen's member forms on a `math::Matrix` directly, such as
+ * `a.colPivHouseholderQr().solve(b)` or `normal.llt()`.
  */
 // The only header that names Eigen in a public signature; a second backend is a sibling header.
 
@@ -145,73 +130,76 @@ inline Vector both_present(const Vector& left, const Vector& right) {
   return left.cwiseProduct(right);
 }
 
-/**
- * @brief Selects the lower triangle, as in `matrix.selfadjointView<math::LOWER>()`.
- *
- * A self-adjoint view tells a decomposition to read one triangle and assume the other.
- */
-inline constexpr unsigned int LOWER = Eigen::Lower;
-/** @brief Selects the upper triangle. */
-inline constexpr unsigned int UPPER = Eigen::Upper;
-/** @brief Selects the lower triangle with an implicit unit diagonal. */
-inline constexpr unsigned int UNIT_LOWER = Eigen::UnitLower;
-/** @brief Selects the upper triangle with an implicit unit diagonal. */
-inline constexpr unsigned int UNIT_UPPER = Eigen::UnitUpper;
-
-/** @brief Cholesky decomposition of a symmetric positive-definite matrix. Check `info()`. */
-using Llt = Eigen::LLT<Matrix>;
-
-/** @brief Pivoting Cholesky (LDLT) decomposition of a symmetric, possibly semi-definite matrix. */
-using Ldlt = Eigen::LDLT<Matrix>;
-
-/** @brief Householder QR decomposition: the fastest QR, with no rank information. */
-using HouseholderQr = Eigen::HouseholderQR<Matrix>;
-
-/**
- * @brief Column-pivoting Householder QR: a least-squares solution and a rank.
- *
- * A good default for a regression on market data, where nearly collinear columns are common;
- * check `rank()` against the number of columns.
- */
-using ColPivQr = Eigen::ColPivHouseholderQR<Matrix>;
-
-/** @brief Full-pivoting Householder QR: slower than `ColPivQr`, with the most reliable rank. */
-using FullPivQr = Eigen::FullPivHouseholderQR<Matrix>;
-
-/** @brief LU decomposition with full pivoting, for a square system with no known structure. */
-using FullPivLu = Eigen::FullPivLU<Matrix>;
-
-/**
- * @brief Divide-and-conquer SVD: minimum-norm least-squares solutions and singular values.
- *
- * Construct it with `thin_svd()`, which requests the thin factors `solve()` needs on every
- * supported Eigen release.
- */
-#if EIGEN_VERSION_AT_LEAST(3, 4, 90)
-using Svd = Eigen::BDCSVD<Matrix, Eigen::ComputeThinU | Eigen::ComputeThinV>;
-#else
-using Svd = Eigen::BDCSVD<Matrix>;
-#endif
-
-/**
- * @brief Computes a thin SVD, ready to `solve()`.
- *
- * @param a The matrix to decompose.
- * @return The decomposition of `a`.
- */
-inline Svd thin_svd(const Matrix& a) {
-#if EIGEN_VERSION_AT_LEAST(3, 4, 90)
-  return Svd(a);
-#else
-  return Svd(a, Eigen::ComputeThinU | Eigen::ComputeThinV);
-#endif
-}
-
-/** @brief Eigenvalues (ascending) and eigenvectors of a symmetric matrix. Check `info()`. */
-using SelfAdjointEigen = Eigen::SelfAdjointEigenSolver<Matrix>;
-
-/** @brief The value a decomposition's `info()` returns on success. */
-inline constexpr auto SUCCESS = Eigen::Success;
+// The decompositions below have no caller in the library. They are commented out because
+// `thin_svd`, a non-template inline function, made every file that includes this header
+// instantiate Eigen's SVD (about two seconds of compile time each).
+// /**
+//  * @brief Selects the lower triangle, as in `matrix.selfadjointView<math::LOWER>()`.
+//  *
+//  * A self-adjoint view tells a decomposition to read one triangle and assume the other.
+//  */
+// inline constexpr unsigned int LOWER = Eigen::Lower;
+// /** @brief Selects the upper triangle. */
+// inline constexpr unsigned int UPPER = Eigen::Upper;
+// /** @brief Selects the lower triangle with an implicit unit diagonal. */
+// inline constexpr unsigned int UNIT_LOWER = Eigen::UnitLower;
+// /** @brief Selects the upper triangle with an implicit unit diagonal. */
+// inline constexpr unsigned int UNIT_UPPER = Eigen::UnitUpper;
+//
+// /** @brief Cholesky decomposition of a symmetric positive-definite matrix. Check `info()`. */
+// using Llt = Eigen::LLT<Matrix>;
+//
+// /** @brief Pivoting Cholesky (LDLT) decomposition of a symmetric, possibly semi-definite matrix. */
+// using Ldlt = Eigen::LDLT<Matrix>;
+//
+// /** @brief Householder QR decomposition: the fastest QR, with no rank information. */
+// using HouseholderQr = Eigen::HouseholderQR<Matrix>;
+//
+// /**
+//  * @brief Column-pivoting Householder QR: a least-squares solution and a rank.
+//  *
+//  * A good default for a regression on market data, where nearly collinear columns are common;
+//  * check `rank()` against the number of columns.
+//  */
+// using ColPivQr = Eigen::ColPivHouseholderQR<Matrix>;
+//
+// /** @brief Full-pivoting Householder QR: slower than `ColPivQr`, with the most reliable rank. */
+// using FullPivQr = Eigen::FullPivHouseholderQR<Matrix>;
+//
+// /** @brief LU decomposition with full pivoting, for a square system with no known structure. */
+// using FullPivLu = Eigen::FullPivLU<Matrix>;
+//
+// /**
+//  * @brief Divide-and-conquer SVD: minimum-norm least-squares solutions and singular values.
+//  *
+//  * Construct it with `thin_svd()`, which requests the thin factors `solve()` needs on every
+//  * supported Eigen release.
+//  */
+// #if EIGEN_VERSION_AT_LEAST(3, 4, 90)
+// using Svd = Eigen::BDCSVD<Matrix, Eigen::ComputeThinU | Eigen::ComputeThinV>;
+// #else
+// using Svd = Eigen::BDCSVD<Matrix>;
+// #endif
+//
+// /**
+//  * @brief Computes a thin SVD, ready to `solve()`.
+//  *
+//  * @param a The matrix to decompose.
+//  * @return The decomposition of `a`.
+//  */
+// inline Svd thin_svd(const Matrix& a) {
+// #if EIGEN_VERSION_AT_LEAST(3, 4, 90)
+//   return Svd(a);
+// #else
+//   return Svd(a, Eigen::ComputeThinU | Eigen::ComputeThinV);
+// #endif
+// }
+//
+// /** @brief Eigenvalues (ascending) and eigenvectors of a symmetric matrix. Check `info()`. */
+// using SelfAdjointEigen = Eigen::SelfAdjointEigenSolver<Matrix>;
+//
+// /** @brief The value a decomposition's `info()` returns on success. */
+// inline constexpr auto SUCCESS = Eigen::Success;
 
 } // namespace math
 } // namespace algotradelib
