@@ -853,13 +853,12 @@ public:
    * @param when When the order was sent.
    */
   void note_sent(std::chrono::system_clock::time_point when) {
-    // Kept in time order so `recent_orders` can count by binary search; a clock that stepped back
-    // inserts rather than appends.
-    if (sent_.empty() || !(when < sent_.back())) {
-      sent_.push_back(when);
-    } else {
-      sent_.insert(std::upper_bound(sent_.begin(), sent_.end(), when), when);
+    // While every send arrives in time order, `recent_orders` can binary-search; a clock that
+    // stepped back makes it scan, as it always did.
+    if (!sent_.empty() && when < sent_.back()) {
+      in_time_order_ = false;
     }
+    sent_.push_back(when);
     ++total_sent_;
   }
 
@@ -879,9 +878,16 @@ public:
    * @return The count.
    */
   std::size_t recent_orders(std::chrono::system_clock::time_point now) const {
-    // `now - when < rate_window_` is `when > now - rate_window_`: every send after that instant,
-    // including any later than `now`.
-    const auto first = std::upper_bound(sent_.begin(), sent_.end(), now - limits_.rate_window_);
+    const auto in_window = [&](std::chrono::system_clock::time_point when) {
+      return now - when < limits_.rate_window_;
+    };
+    if (!in_time_order_) {
+      return static_cast<std::size_t>(std::count_if(sent_.begin(), sent_.end(), in_window));
+    }
+    // In time order, the sends outside the window come first; the same test finds where they end.
+    const auto first = std::partition_point(
+      sent_.begin(), sent_.end(), [&](std::chrono::system_clock::time_point when) { return !in_window(when); }
+    );
     return static_cast<std::size_t>(sent_.end() - first);
   }
 
@@ -1162,6 +1168,8 @@ private:
   std::array<std::string, halt_reason_count> details_;
   // Timestamps of orders sent, oldest first; a sliding window, not a counter reset on a boundary.
   std::deque<std::chrono::system_clock::time_point> sent_;
+  // Whether `sent_` has never had a send earlier than the one before it.
+  bool in_time_order_{true};
   std::size_t total_sent_{0};
 };
 

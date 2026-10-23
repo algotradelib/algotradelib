@@ -1634,27 +1634,43 @@ TEST_CASE("forgetting old sends bounds the memory a long session accumulates") {
   REQUIRE(guard.recent_orders(start + std::chrono::seconds(60)) == 10);
 }
 
-TEST_CASE("a send recorded out of time order is counted where it belongs") {
-  // A clock can step back (NTP live, an out-of-order quote in a replay); the count must equal a scan.
-  RiskLimits limits;
-  limits.max_orders_per_window_ = 100;
-  limits.rate_window_ = std::chrono::seconds(60);
-  RiskGuard guard(limits);
+TEST_CASE("the recent-order count equals a scan in or out of time order") {
+  // A clock can step back (NTP live, an out-of-order quote in a replay); either way the count is the
+  // scan's. In time order it is found by binary search, so the edges of the window are checked too.
   const auto start = utc(2026, 3, 10, 3, 0);
-  const std::vector<int> offsets{0, 50, 20, 100, 70, 70, 10, 130};
-  for (const int at : offsets) {
-    guard.note_sent(start + std::chrono::seconds(at));
+  const std::vector<std::vector<int>> orders{{0, 10, 20, 50, 70, 70, 100, 130}, {0, 50, 20, 100, 70, 70, 10, 130}};
+  for (const auto& offsets : orders) {
+    RiskLimits limits;
+    limits.max_orders_per_window_ = 100;
+    limits.rate_window_ = std::chrono::seconds(60);
+    RiskGuard guard(limits);
+    for (const int at : offsets) {
+      guard.note_sent(start + std::chrono::seconds(at));
+    }
+    for (int now = -10; now <= 200; ++now) {
+      std::size_t scanned = 0;
+      for (const int at : offsets) {
+        if (std::chrono::seconds(now - at) < limits.rate_window_) {
+          ++scanned;
+        }
+      }
+      CHECK(guard.recent_orders(start + std::chrono::seconds(now)) == scanned);
+    }
   }
 
-  for (int now = -10; now <= 200; ++now) {
-    std::size_t scanned = 0;
-    for (const int at : offsets) {
-      if (std::chrono::seconds(now - at) < limits.rate_window_) {
-        ++scanned;
-      }
-    }
-    CHECK(guard.recent_orders(start + std::chrono::seconds(now)) == scanned);
-  }
+  // Forgetting drops only from the front, so a send behind a later one stays counted after the
+  // clock steps back.
+  RiskGuard stepped_back{RiskLimits{}};
+  stepped_back.note_sent(start + std::chrono::seconds(100));
+  stepped_back.note_sent(start);
+  stepped_back.forget_before(start + std::chrono::seconds(40));
+  CHECK(stepped_back.recent_orders(start + std::chrono::seconds(50)) == 2);
+
+  // The earliest instant a clock can hold: nothing is subtracted from it.
+  RiskGuard earliest{RiskLimits{}};
+  const auto minimum = std::chrono::system_clock::time_point::min();
+  earliest.note_sent(minimum);
+  CHECK(earliest.recent_orders(minimum) == 1);
 }
 
 TEST_CASE("every guard reason has a stable name") {
