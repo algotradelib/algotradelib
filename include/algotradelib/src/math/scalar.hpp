@@ -38,8 +38,8 @@ inline bool observed(Scalar value) { return !std::isnan(value); }
 /**
  * @brief Returns the value that stands for "the data was there, but the statistic does not exist".
  *
- * Examples: a z-score over a window with no dispersion, a correlation against a constant, a
- * Sortino ratio over a series that never fell below its target. It differs from `missing()`,
+ * Examples: a z-score over a window with no dispersion, a Sortino ratio over a series that never
+ * fell below its target. It differs from `missing()`,
  * which means there was no data. Both are quiet `NaN`s, so `observed()` is `false` for both and
  * reductions skip both; only `is_undefined()` tells them apart.
  *

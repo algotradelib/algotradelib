@@ -262,16 +262,17 @@ push, in storage taken once: `2n` rows, compacted at an amortized one row moved 
 `compactions()` exposing the bound. It is a buffer and computes nothing: the trailing statistics are
 the functions in `rolling.hpp`. "Rolling window" keeps the meaning the `rolling_*` functions give it,
 and "rolling" and "expanding" windows the one they have in walk-forward evaluation. There is
-deliberately **no unbounded buffer**: the statistics that would want one — a cumulative return, an
-all-time high, the worst drawdown so far — need a running value the strategy keeps, such as a peak or a
+deliberately **no unbounded buffer**: the statistics that would want one — an all-time high, the
+worst drawdown so far — need a running value the strategy keeps, such as a peak or a
 sum, not the history.
 
 The exponential average is the one worth a sentence of its own. It depends on all of its history, so
 recomputing one over a trailing `SeriesBuffer` reseeds it every bar and does not reproduce what a live
 loop would have produced; a strategy fitted over frames and traded that way would be trading a slightly
 different indicator, and the difference does not announce itself. A live strategy keeps the level
-instead: `level = level + alpha * (close - level)` once per bar (seeded with the first close) makes
-the same update `ema` makes over a series, bit for bit.
+instead, the way `ema` does: seeded with the first observed close, skipping a bar whose close is
+unobserved, and updated on every later observed close as `level = level + alpha * (close - level)`, in
+that order. That is the same update `ema` makes over a series, bit for bit.
 
 ## What is single-owner, and where parallelism goes
 

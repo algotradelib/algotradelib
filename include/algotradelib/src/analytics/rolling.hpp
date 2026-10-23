@@ -355,9 +355,10 @@ inline void check_alpha(Scalar alpha) {
  * @return The levels, one per row.
  * @throws std::invalid_argument unless `0 < alpha <= 1`, or if `min_observed` is zero (even for an
  *   empty series).
- * @warning In a live loop, keep the level yourself: `level + alpha * (value - level)` once per bar,
- *   written in that order to match `ema` exactly. Running `ema` over a trailing `SeriesBuffer` view
- *   reseeds from the oldest row each time and gives different levels.
+ * @warning In a live loop, keep the level yourself, as this function does: seed it with the first
+ *   observed value, skip an unobserved one, and update on each later observed value as
+ *   `level + alpha * (value - level)`, in that order, to match it exactly. Running `ema` over a
+ *   trailing `SeriesBuffer` view reseeds from the oldest row each time and gives different levels.
  */
 inline math::Vector ema(math::SeriesView values, Scalar alpha, std::size_t min_observed = 1) {
   rolling_detail::check_alpha(alpha);
