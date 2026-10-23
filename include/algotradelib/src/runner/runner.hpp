@@ -1963,16 +1963,31 @@ private:
     // target and a limit have to size against, and why the rows are marked so that anything inferring
     // the broker's behaviour from the listing can tell them apart.
     //
-    // **Copied only when something is pending.** The view and the exposure basis serve the placements
-    // below and nothing after them, so a pass with nothing to place -- most passes: a bar the strategy
-    // answers with no order -- skips a copy of every position and working row.
-    auto view = pending.empty() ? strategy::Portfolio<Tag>{} : context_.portfolio();
+    // **Copied only when a later order needs it.** Until this pass places an order, the view is the context's
+    // portfolio as it stands (a sellable figure filled in is written to both), so orders are checked against
+    // the portfolio itself. The first order sent with more to check after it takes the copy, before it is sent
+    // so the send is followed by no more allocation than a reservation, and each placed order is reserved in
+    // it; a pass with one order to place, or none -- most passes -- copies nothing.
+    std::optional<strategy::Portfolio<Tag>> reserved_view;
+    const auto view = [&]() -> const strategy::Portfolio<Tag>& {
+      return reserved_view ? *reserved_view : context_.portfolio();
+    };
+    const auto reserve_for_later = [&](std::size_t at, const strategy::PlannedOrder& order,
+                                       const std::optional<OrderRef<Tag>>& ref) {
+      if (!reserved_view || at + 1 == pending.size()) {
+        return;
+      }
+      reserve(
+        *reserved_view, order, inputs.reference_price_, inputs.order_currency_, ref,
+        guard_.limits().enforce_buying_power_
+      );
+    };
     // Resolved once for the pass. The currencies and marks do not move as orders are accepted --
     // only quantities do, and the guard reads those from the view -- and resolving per order would
     // repeat a map lookup per instrument for every instrument. Built only when the ceiling is on, so
     // a caller who has not asked for it pays nothing.
     if (!pending.empty() && guard_.limits().max_gross_exposure_) {
-      inputs.exposure_basis_ = exposure_basis_for(view, pending);
+      inputs.exposure_basis_ = exposure_basis_for(view(), pending);
     }
     for (std::size_t at = 0; at < pending.size(); ++at) {
       auto& order = pending[at];
@@ -2031,7 +2046,7 @@ private:
         baseline = context_.portfolio().net_quantity_of(order.instrument_);
       }
 
-      fill_sellable_if_needed(view, order);
+      fill_sellable_if_needed(reserved_view, order);
 
       inputs.reference_price_ = context_.last_price(order.instrument_);
       // The currency the order is priced in, which only the reference data knows. A buying-power
@@ -2045,7 +2060,7 @@ private:
       // order, the portfolio and the report all look the same either way -- and it is the one thing
       // an operator needs to see, because it is this library sending into a session the operator's
       // own limits said not to trade in.
-      auto decision = guard_.evaluate(order, view, inputs);
+      auto decision = guard_.evaluate(order, view(), inputs);
       if (decision.rejection_) {
         // **Counted here and not at the send site, because there is no send.** A buy left above a
         // withheld ceiling is the larger notional, so every limit that multiplies quantity by price
@@ -2060,6 +2075,12 @@ private:
         }
         report.refused_.push_back(std::move(*decision.rejection_));
         continue;
+      }
+
+      // The copy later orders are checked against, taken before this one is sent (see above).
+      if (!reserved_view && at + 1 < pending.size()) {
+        reserved_view = context_.portfolio();
+        reserved_view->working_.reserve(reserved_view->working_.size() + pending.size() - at);
       }
 
       // **The route it is sent with, written into the order before anything records it.** A
@@ -2108,10 +2129,7 @@ private:
           ++placements_at_broker_;
           // And it is working now, as far as anything later in this pass is concerned, and its
           // money is spent. An `INDETERMINATE` send is counted the same way below, with no reference.
-          reserve(
-            view, order, inputs.reference_price_, inputs.order_currency_, last_ref(),
-            guard_.limits().enforce_buying_power_
-          );
+          reserve_for_later(at, order, last_ref());
           persist_reservation(order, inputs.reference_price_, inputs.order_currency_, last_ref());
           track_unconfirmed(order, last_ref(), /*indeterminate=*/false, baseline);
           report.would_place_.push_back(std::move(order));
@@ -2159,10 +2177,7 @@ private:
           // accounted for.
           if constexpr (keeps_sent_orders_until_listed) {
             if (serialized() || runner_detail::reports_last_ref<Executor>::value) {
-              reserve(
-                view, order, inputs.reference_price_, inputs.order_currency_, std::nullopt,
-                guard_.limits().enforce_buying_power_
-              );
+              reserve_for_later(at, order, std::nullopt);
               persist_reservation(order, inputs.reference_price_, inputs.order_currency_, std::nullopt);
               track_unconfirmed(order, std::nullopt, /*indeterminate=*/true, baseline);
             }
@@ -2239,19 +2254,19 @@ private:
   // - the order is a sell, since the figure says nothing about buying;
   // - and the snapshot has not already answered, which at a `HOLDINGS` broker it always has.
   //
-  // The answer is written to the context's portfolio as well as to this pass's view, so a later
+  // The answer is written to the context's portfolio as well as to this pass's copy, if it has one, so a later
   // pass in the same holdings cycle reuses it rather than asking again. The next holdings poll
   // replaces the positions wholesale and the figure goes with them, which is the right lifetime: it
   // is exactly as fresh as the position it describes.
   void fill_sellable_if_needed(
-    strategy::Portfolio<Tag>& view,
+    std::optional<strategy::Portfolio<Tag>>& reserved_view,
     const strategy::PlannedOrder& order
   ) {
     if constexpr (runner_detail::fills_sellable<Executor>::value) {
       if (!guard_.limits().enforce_sellable_quantity_ || order.side_ != OrderSide::SELL) {
         return;
       }
-      if (view.sellable_quantity_of(order.instrument_)) {
+      if ((reserved_view ? *reserved_view : context_.portfolio()).sellable_quantity_of(order.instrument_)) {
         return;
       }
       const auto answered = executor_.sellable_quantity(order.instrument_);
@@ -2260,12 +2275,14 @@ private:
         // establish the figure as a sellable quantity of zero would be a different claim.
         return;
       }
-      write_sellable(view, order.instrument_, *answered);
+      if (reserved_view) {
+        write_sellable(*reserved_view, order.instrument_, *answered);
+      }
       auto persisted = context_.portfolio();
       write_sellable(persisted, order.instrument_, *answered);
       context_.set_portfolio(std::move(persisted));
     } else {
-      static_cast<void>(view);
+      static_cast<void>(reserved_view);
       static_cast<void>(order);
     }
   }

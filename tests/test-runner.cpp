@@ -145,6 +145,20 @@ void arrange(R& dry) {
   dry.context().set_last_price(samsung(), Decimal64::parse("70000"));
 }
 
+/** Sells the same instrument twice in one pass, each order fitting the sellable quantity alone. */
+struct SellTwice {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    for (int i = 0; i < 2; ++i) {
+      ctx.submit(
+        strategy::OrderIntent::market(
+          bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("60"))
+        )
+      );
+    }
+  }
+};
+
 } // namespace
 
 TEST_CASE("the same reference cancelled twice by the strategy is one request") {
@@ -165,6 +179,42 @@ TEST_CASE("the same reference cancelled twice by the strategy is one request") {
 
   const auto report = dry.feed(bar_at(10, "70000"));
   REQUIRE(report.would_cancel_.size() == 1);
+}
+
+TEST_CASE("a second sell in one pass is sized against the first and not the same snapshot") {
+  // The portfolio on the context is what the *broker* last reported, and nothing puts a locally
+  // accepted order into it. So every order in a pass used to be checked from the same starting
+  // point: a hundred sellable, two sells of sixty, both permitted, twenty shares sold that were
+  // never there. The pass now checks each order against a view carrying what it has already sent.
+  strategy::RiskLimits limits;
+  limits.enforce_sellable_quantity_ = true;
+  runner::DryRunner<SellTwice> dry(SellTwice{}, limits);
+  arrange(dry);
+
+  strategy::Portfolio<runner::DryRunner<SellTwice>::Tag> portfolio;
+  HoldingPosition held;
+  held.instrument_ = samsung();
+  held.quantity_ = Decimal64::parse("100");
+  held.sellable_quantity_ = Decimal64::parse("100");
+  portfolio.positions_.push_back(held);
+  // Standing for a broker that published the figure and stated what it covers. An unstated basis
+  // refuses, which is its own test rather than a surprise here.
+  portfolio.sellable_basis_ = SellableBasis{
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
+  dry.context().set_portfolio(portfolio);
+
+  const auto report = dry.feed(bar_at(10, "70000"));
+
+  REQUIRE(report.would_place_.size() == 1);
+  REQUIRE(report.would_place_[0].quantity_ == Decimal64::parse("60"));
+  REQUIRE(report.refused_.size() == 1);
+  REQUIRE(report.refused_[0].reason_ == strategy::GuardReason::QUANTITY_NOT_SELLABLE);
+  // Sixty already sent plus sixty more against a hundred sellable, so the numbers name the breach.
+  REQUIRE(report.refused_[0].limit_ == Decimal64::parse("100"));
+  REQUIRE(report.refused_[0].attempted_ == Decimal64::parse("120"));
 }
 
 TEST_CASE("an unresolved position refuses the exposure ceiling rather than being left out") {
