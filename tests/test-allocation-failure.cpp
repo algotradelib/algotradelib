@@ -391,6 +391,36 @@ TEST_CASE("a replay queue copy that fails leaves the destination as it was") {
   CHECK(destination.queued().empty());
 }
 
+TEST_CASE("a risk guard copy that fails leaves the destination counting as it was") {
+  skip_where_moves_allocate();
+  // A guard counts recent sends by binary search while they are in time order. A copy assigned in part could leave
+  // the source's out-of-order sends in a destination still marked in order, and miscount.
+  strategy::RiskLimits limits;
+  limits.max_orders_per_window_ = 1;
+  limits.rate_window_ = std::chrono::seconds(60);
+  const auto start = std::chrono::system_clock::time_point{} + std::chrono::hours(24);
+  const auto at = [&](int seconds) { return start + std::chrono::seconds(seconds); };
+  strategy::RiskGuard destination(limits);
+  destination.note_sent(at(0));
+  destination.note_sent(at(10));
+  strategy::RiskGuard source(limits);
+  source.note_sent(at(100));
+  for (int k = 0; k < 2000; ++k) {
+    source.note_sent(at(0));
+  }
+  const int failures = fail_each_allocation(
+    [&] { destination = source; },
+    [&] {
+      REQUIRE(destination.recent_orders(at(30)) == 2);
+      REQUIRE(destination.recent_orders(at(65)) == 1);
+      REQUIRE(destination.recent_orders(at(70)) == 0);
+    }
+  );
+  CHECK(failures > 0);
+  CHECK(destination.recent_orders(at(30)) == 2001);
+  CHECK(destination.recent_orders(at(70)) == 1);
+}
+
 TEST_CASE("a replay queue move that fails leaves the source as it was") {
   skip_where_moves_allocate();
   // Only Microsoft's map allocates when moved; elsewhere the move makes no allocation and the loop ends at once.

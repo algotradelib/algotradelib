@@ -713,6 +713,38 @@ public:
   explicit RiskGuard(RiskLimits limits = {}) : limits_(std::move(limits)) {}
 
   /**
+   * @brief Copies a guard.
+   * @param other The guard to copy.
+   */
+  RiskGuard(const RiskGuard& other) = default;
+  /**
+   * @brief Moves a guard.
+   * @param other The guard to move from.
+   */
+  RiskGuard(RiskGuard&& other) = default;
+  /**
+   * @brief Replaces this guard with a move of another.
+   * @param other The guard to move from.
+   * @return This guard.
+   */
+  RiskGuard& operator=(RiskGuard&& other) = default;
+
+  /**
+   * @brief Replaces this guard with a copy of another, entirely or not at all.
+   * @param other The guard to copy.
+   * @return This guard.
+   * @throws std::bad_alloc If the copy cannot be made; this guard is then unchanged.
+   */
+  RiskGuard& operator=(const RiskGuard& other) {
+    // Copied whole first: a send list copied in part could be out of time order while still marked in it.
+    if (this != &other) {
+      RiskGuard copy(other);
+      *this = std::move(copy);
+    }
+    return *this;
+  }
+
+  /**
    * @brief Returns the limits.
    * @return The limits in force.
    */
