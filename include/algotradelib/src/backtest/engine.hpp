@@ -1819,9 +1819,10 @@ private:
     // copy of every position. Afterwards the portfolio is what a fresh snapshot with a row per queued order
     // would be. Built whole on the first install and after anything replaced the portfolio outright
     // (`Context::set_portfolio`); otherwise the ledger rewrites the lots it changed and the cash, and the
-    // working rows are rebuilt when the queue gained or lost an order, a runner edited them in place
-    // (`Runner::persist_reservation`), or reference data (a row's currency) changed. What was seen is
-    // acknowledged only once everything is in, so the next install finishes what one that threw left undone.
+    // working rows are brought up to date when the queue gained or lost an order or a runner edited them in
+    // place (`Runner::persist_reservation`), and rebuilt when reference data (a row's currency) changed. What was
+    // seen is acknowledged only once everything is in, so the next install finishes what one that threw left
+    // undone.
     if (!installed_ || Access::replacements(context) != replacements_seen_) {
       auto portfolio = ledger_.snapshot<Tag>(clock_.now());
       portfolio.working_.reserve(queued.size());
@@ -1839,11 +1840,13 @@ private:
         Access::reference_changes(context) != references_seen_;
       auto& portfolio = Access::for_replay_sync(context);
       ledger_.update(portfolio, clock_.now());
-      if (rows_stale) {
+      if (rows_stale && Access::reference_changes(context) != references_seen_) {
         portfolio.working_.clear();
         for (const auto& entry : queued) {
           portfolio.working_.push_back(working_row(entry));
         }
+      } else if (rows_stale) {
+        refresh_rows(portfolio.working_, queued);
       }
       // `update` set the buying power back to the cash, so every open buy is taken out again; a market
       // buy is valued at the last price, which moves.
@@ -1870,6 +1873,40 @@ private:
       ATL_REPLAY_CHECK_PORTFOLIO(context.portfolio(), fresh, ledger_.equity(), ledger_.equity_in(config_.currency_));
     }
 #endif
+  }
+
+  // Brings the working rows up to date with the queue, in place, at the cost of what changed.
+  //
+  // The queue keeps its order and takes a new order only at its end; the rows this replay built lead the list in
+  // that order, and a runner's reservations (`reserved_`) follow them. So a row whose order is still queued is
+  // kept, the others and the reservations are dropped, and rows are built only for the orders queued since. An
+  // install that threw partway left a prefix of this, which the next one completes the same way.
+  template <typename Queue>
+  void refresh_rows(std::vector<WorkingOrder<Tag>>& rows, const Queue& queued) const {
+    std::size_t built = 0;
+    while (built < rows.size() && !rows[built].reserved_) {
+      ++built;
+    }
+    std::size_t kept = 0;
+    std::size_t next = 0;
+    auto entry = queued.begin();
+    for (; entry != queued.end(); ++entry) {
+      while (next < built && !(rows[next].ref_ == entry->ref_)) {
+        ++next;
+      }
+      if (next == built) {
+        break;  // this order has no row, so neither has any later one
+      }
+      if (kept != next) {
+        rows[kept] = std::move(rows[next]);
+      }
+      ++kept;
+      ++next;
+    }
+    rows.erase(rows.begin() + static_cast<std::ptrdiff_t>(kept), rows.end());
+    for (; entry != queued.end(); ++entry) {
+      rows.push_back(working_row(*entry));
+    }
   }
 
   // Returns the working-order row for an outstanding replay order.
