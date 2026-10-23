@@ -1963,11 +1963,13 @@ private:
     // target and a limit have to size against, and why the rows are marked so that anything inferring
     // the broker's behaviour from the listing can tell them apart.
     //
-    // **Copied only when a later order needs it.** Until this pass places an order, the view is the context's
-    // portfolio as it stands (a sellable figure filled in is written to both), so orders are checked against
-    // the portfolio itself. The first order sent with more to check after it takes the copy, before it is sent
-    // so the send is followed by no more allocation than a reservation, and each placed order is reserved in
-    // it; a pass with one order to place, or none -- most passes -- copies nothing.
+    // **Copied only when it can differ from the context's.** Until this pass places an order or asks the
+    // executor anything, the view is the context's portfolio as it stands, so orders are checked against the
+    // portfolio itself. The copy is taken before the first call out to the executor that could change that:
+    // a sellable inquiry (an executor may publish a new portfolio while answering), or a send with more
+    // orders to check after it, taken before the send so it is followed by no more allocation than a
+    // reservation. Each placed order is reserved in it. A pass with one order to place and no inquiry, or
+    // none -- most passes -- copies nothing.
     std::optional<strategy::Portfolio<Tag>> reserved_view;
     const auto view = [&]() -> const strategy::Portfolio<Tag>& {
       return reserved_view ? *reserved_view : context_.portfolio();
@@ -2046,7 +2048,7 @@ private:
         baseline = context_.portfolio().net_quantity_of(order.instrument_);
       }
 
-      fill_sellable_if_needed(reserved_view, order);
+      fill_sellable_if_needed(reserved_view, pending.size() - at, order);
 
       inputs.reference_price_ = context_.last_price(order.instrument_);
       // The currency the order is priced in, which only the reference data knows. A buying-power
@@ -2254,12 +2256,13 @@ private:
   // - the order is a sell, since the figure says nothing about buying;
   // - and the snapshot has not already answered, which at a `HOLDINGS` broker it always has.
   //
-  // The answer is written to the context's portfolio as well as to this pass's copy, if it has one, so a later
+  // The answer is written to the context's portfolio as well as to this pass's copy, so a later
   // pass in the same holdings cycle reuses it rather than asking again. The next holdings poll
   // replaces the positions wholesale and the figure goes with them, which is the right lifetime: it
   // is exactly as fresh as the position it describes.
   void fill_sellable_if_needed(
     std::optional<strategy::Portfolio<Tag>>& reserved_view,
+    std::size_t orders_left,
     const strategy::PlannedOrder& order
   ) {
     if constexpr (runner_detail::fills_sellable<Executor>::value) {
@@ -2269,20 +2272,24 @@ private:
       if ((reserved_view ? *reserved_view : context_.portfolio()).sellable_quantity_of(order.instrument_)) {
         return;
       }
+      // The view is fixed before the executor is asked: it may replace the context's portfolio meanwhile.
+      if (!reserved_view) {
+        reserved_view = context_.portfolio();
+        reserved_view->working_.reserve(reserved_view->working_.size() + orders_left);
+      }
       const auto answered = executor_.sellable_quantity(order.instrument_);
       if (!answered) {
         // Left absent, so the guard refuses for the reason it already has. Reporting a failure to
         // establish the figure as a sellable quantity of zero would be a different claim.
         return;
       }
-      if (reserved_view) {
-        write_sellable(*reserved_view, order.instrument_, *answered);
-      }
+      write_sellable(*reserved_view, order.instrument_, *answered);
       auto persisted = context_.portfolio();
       write_sellable(persisted, order.instrument_, *answered);
       context_.set_portfolio(std::move(persisted));
     } else {
       static_cast<void>(reserved_view);
+      static_cast<void>(orders_left);
       static_cast<void>(order);
     }
   }

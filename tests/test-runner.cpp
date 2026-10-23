@@ -6,6 +6,7 @@
 
 #include <array>
 #include <chrono>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -137,6 +138,36 @@ struct SellSixty {
   }
 };
 
+/** Reaches a broker and answers a sellable inquiry after running whatever the test set to happen meanwhile. */
+struct InquiringExecutor {
+  static constexpr bool reaches_a_broker = true;
+  std::function<void()> meanwhile = [] {};
+  std::optional<Decimal64> answer = Decimal64::parse("100");
+  int sends = 0;
+  static constexpr SellableBasis sellable_inquiry_basis() {
+    return {SellableBasis::Coverage::WHOLE_HOLDING, SellableBasis::RestingTreatment::DEDUCT, false};
+  }
+  std::optional<Decimal64> sellable_quantity(const InstrumentId&) {
+    meanwhile();
+    return answer;
+  }
+  std::optional<OrderRef<runner::DryTag>> last_ref() const {
+    OrderRef<runner::DryTag> ref;
+    ref.primary_ = std::to_string(sends);
+    return ref;
+  }
+  runner::SendOutcome place(const strategy::PlannedOrder&) {
+    ++sends;
+    return runner::SendOutcome::ACCEPTED;
+  }
+  runner::SendOutcome cancel(const WorkingOrder<runner::DryTag>&) { return runner::SendOutcome::ACCEPTED; }
+};
+
+/** Capabilities of a broker that lists working orders. */
+struct ListsWorkingOrders : strategy::NoCaps {
+  static constexpr bool has_working_orders = true;
+};
+
 /** Arranges a runner with reference data, an open market, and a last price. */
 template <typename R>
 void arrange(R& dry) {
@@ -215,6 +246,47 @@ TEST_CASE("a second sell in one pass is sized against the first and not the same
   // Sixty already sent plus sixty more against a hundred sellable, so the numbers name the breach.
   REQUIRE(report.refused_[0].limit_ == Decimal64::parse("100"));
   REQUIRE(report.refused_[0].attempted_ == Decimal64::parse("120"));
+}
+
+TEST_CASE("a pass is checked against the portfolio as it stood before a sellable inquiry") {
+  // An executor may publish a new portfolio while it answers. Here it lists no working order before holdings
+  // account for the sixty already sent; the pass must still count that reservation, whether the inquiry
+  // returns a figure or not.
+  const bool answers = GENERATE(true, false);
+  runner::Runner<SellSixty, ListsWorkingOrders, runner::DryTag, InquiringExecutor> live;
+  arrange(live);
+  strategy::Portfolio<runner::DryTag> portfolio;
+  HoldingPosition held;
+  held.instrument_ = samsung();
+  held.quantity_ = Decimal64::parse("100");
+  portfolio.positions_.push_back(held);
+  const auto first = bar_at(10, "70000");
+  portfolio.as_of_ = first.bar_.timestamp_;
+  live.context().set_portfolio(portfolio);
+  REQUIRE(live.feed(first).would_place_.size() == 1);
+
+  auto after = live.context().portfolio();
+  REQUIRE(after.working_.size() == 1);
+  after.positions_[0].sellable_quantity_.reset();
+  live.context().set_portfolio(after);
+  if (!answers) {
+    live.executor().answer = std::nullopt;
+  }
+  live.executor().meanwhile = [&] {
+    auto listed = after;
+    listed.working_.clear();
+    listed.positions_[0].sellable_quantity_ = Decimal64::parse("100");
+    live.context().set_portfolio(std::move(listed));
+  };
+
+  const auto report = live.feed(bar_at(11, "70000"));
+  CHECK(report.would_place_.empty());
+  CHECK(live.executor().sends == 1);
+  REQUIRE(report.refused_.size() == 1);
+  if (answers) {
+    CHECK(report.refused_[0].reason_ == strategy::GuardReason::QUANTITY_NOT_SELLABLE);
+    CHECK(report.refused_[0].attempted_ == Decimal64::parse("120"));
+  }
 }
 
 TEST_CASE("an unresolved position refuses the exposure ceiling rather than being left out") {
