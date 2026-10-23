@@ -13,7 +13,7 @@ namespace analytics {
 
 /**
  * @file
- * @brief Trailing-window statistics: sums, means, deviations, extremes and moving averages.
+ * @brief Trailing-window statistics: means, deviations, extremes and moving averages.
  *
  * Every series function returns a series as long as its input: row `i` of the result describes the
  * window ending at row `i` of the input. A row that cannot be computed is `missing()`.
@@ -115,45 +115,6 @@ inline math::Index window_start(math::Index row, std::size_t window) {
 }
 
 } // namespace rolling_detail
-
-/**
- * @brief Computes the trailing sum of the observed values.
- *
- * @param values The series; `NaN` entries are unobserved and skipped.
- * @param window The number of trailing rows each result looks at, observed or not.
- * @param min_observed How many of those rows must be observed for a result to be reported.
- * @return The sums, one per row; `missing()` where fewer than `min_observed` rows are observed.
- * @throws std::invalid_argument if `window` or `min_observed` is zero, or `min_observed > window`.
- */
-inline math::Vector rolling_sum(
-  math::SeriesView values,
-  std::size_t window,
-  std::size_t min_observed
-) {
-  rolling_detail::check(window, min_observed);
-  const auto parts = math::observed_parts(values);
-  math::Vector result = math::unobserved(static_cast<std::size_t>(values.size()));
-  for (math::Index row = 0; row < values.size(); ++row) {
-    const math::Index first = rolling_detail::window_start(row, window);
-    const auto reduced = rolling_detail::reduce(parts, first, row - first + 1);
-    if (reduced.count_ >= min_observed) {
-      result[row] = reduced.sum_;
-    }
-  }
-  return result;
-}
-
-/**
- * @brief Computes the trailing sum, requiring every row of the window.
- *
- * @param values The series; `NaN` entries are unobserved.
- * @param window The number of trailing rows each result looks at; all must be observed.
- * @return The sums, one per row; `missing()` where any row of the window is unobserved.
- * @throws std::invalid_argument if `window` is zero.
- */
-inline math::Vector rolling_sum(math::SeriesView values, std::size_t window) {
-  return rolling_sum(values, window, window);
-}
 
 /**
  * @brief Computes the trailing mean of the observed values.
@@ -350,58 +311,6 @@ inline math::Vector sma(math::SeriesView values, std::size_t window) {
 }
 
 /**
- * @brief Computes the linearly weighted moving average.
- *
- * Weights rise `1, 2, ..., n` across the window, the most recent row heaviest. The result is
- * divided by the sum of the weights of the observed rows only.
- *
- * @param values The series; `NaN` entries are unobserved and skipped.
- * @param window The number of trailing rows each result looks at, observed or not.
- * @param min_observed How many of those rows must be observed for a result to be reported.
- * @return The averages, one per row; `missing()` where fewer than `min_observed` rows are observed.
- * @throws std::invalid_argument if `window` or `min_observed` is zero, or `min_observed > window`.
- */
-inline math::Vector wma(
-  math::SeriesView values,
-  std::size_t window,
-  std::size_t min_observed
-) {
-  rolling_detail::check(window, min_observed);
-  const auto parts = math::observed_parts(values);
-  math::Vector weights(static_cast<math::Index>(window));
-  for (math::Index at = 0; at < weights.size(); ++at) {
-    weights[at] = static_cast<Scalar>(at + 1);
-  }
-
-  math::Vector result = math::unobserved(static_cast<std::size_t>(values.size()));
-  for (math::Index row = 0; row < values.size(); ++row) {
-    const math::Index first = rolling_detail::window_start(row, window);
-    const math::Index length = row - first + 1;
-    if (parts.present_.segment(first, length).sum() < static_cast<Scalar>(min_observed)) {
-      continue;
-    }
-    const auto used = weights.head(length);
-    const Scalar divisor = parts.present_.segment(first, length).dot(used);
-    if (divisor > Scalar{0}) {
-      result[row] = parts.values_.segment(first, length).dot(used) / divisor;
-    }
-  }
-  return result;
-}
-
-/**
- * @brief Computes the linearly weighted moving average, requiring every row of the window.
- *
- * @param values The series; `NaN` entries are unobserved.
- * @param window The number of trailing rows each result looks at; all must be observed.
- * @return The averages, one per row; `missing()` where any row of the window is unobserved.
- * @throws std::invalid_argument if `window` is zero.
- */
-inline math::Vector wma(math::SeriesView values, std::size_t window) {
-  return wma(values, window, window);
-}
-
-/**
  * @brief Converts an EMA span to its smoothing factor, `2 / (span + 1)`.
  *
  * This is the convention charting packages and `pandas.ewm(span=...)` use:
@@ -431,42 +340,10 @@ inline void check_alpha(Scalar alpha) {
 } // namespace rolling_detail
 
 /**
- * @brief Advances an exponential moving average by one value.
- *
- * Use it in a live strategy that keeps its own level from bar to bar; it computes the same levels
- * as `ema` over the same bars:
- *
- *     Scalar level = missing();
- *     level = ema_step(level, close, alpha);   // once per bar
- *
- * @param level The previous level, or `missing()` before the first observation.
- * @param value The new value; if unobserved, `level` is returned unchanged.
- * @param alpha The smoothing factor, in `(0, 1]`; see `alpha_from_span`.
- * @return `alpha * value + (1 - alpha) * level`, or `value` itself if `level` is unobserved.
- * @throws std::invalid_argument unless `0 < alpha <= 1`.
- * @note If the arithmetic itself overflows to `NaN` (infinities of opposite sign), the next
- *   observed value reseeds the level, whereas `ema` keeps the `NaN`.
- */
-inline Scalar ema_step(Scalar level, Scalar value, Scalar alpha) {
-  rolling_detail::check_alpha(alpha);
-  if (!observed(value)) {
-    return level;
-  }
-  return observed(level) ? level + alpha * (value - level) : value;
-}
-
-/**
- * @brief Deleted: an integer here would be a span. Pass `alpha_from_span(span)` instead.
- *
- * A `long double` smoothing factor is ambiguous between the overloads; cast it to `Scalar`.
- */
-Scalar ema_step(Scalar level, Scalar value, std::size_t span) = delete;
-
-/**
  * @brief Computes the exponentially weighted moving average of a series.
  *
  * The level is seeded with the first observed value and then updated as
- * `alpha * value + (1 - alpha) * level` (the update `ema_step` makes). An unobserved value is
+ * `alpha * value + (1 - alpha) * level`. An unobserved value is
  * skipped: the level carries over it and that row is `missing()`. On observed rows the result
  * equals `pandas.Series.ewm(alpha=alpha, adjust=False, ignore_na=True, min_periods=min_observed)
  * .mean()` up to rounding.
@@ -478,8 +355,9 @@ Scalar ema_step(Scalar level, Scalar value, std::size_t span) = delete;
  * @return The levels, one per row.
  * @throws std::invalid_argument unless `0 < alpha <= 1`, or if `min_observed` is zero (even for an
  *   empty series).
- * @warning In a live loop, keep the level yourself with `ema_step`. Running `ema` over a trailing
- *   `SeriesBuffer` view reseeds from the oldest row each time and gives different levels.
+ * @warning In a live loop, keep the level yourself: `level + alpha * (value - level)` once per bar,
+ *   written in that order to match `ema` exactly. Running `ema` over a trailing `SeriesBuffer` view
+ *   reseeds from the oldest row each time and gives different levels.
  */
 inline math::Vector ema(math::SeriesView values, Scalar alpha, std::size_t min_observed = 1) {
   rolling_detail::check_alpha(alpha);

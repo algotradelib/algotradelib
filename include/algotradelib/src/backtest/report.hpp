@@ -521,8 +521,7 @@ inline Report summarize(
   }
 
   // Turnover from the executions rather than from a weight matrix, because a replay knows what it
-  // actually traded. One-way, matching `analytics::one_way_turnover`: the fraction of equity that
-  // changed hands.
+  // actually traded. One-way: the fraction of equity that changed hands.
   // Same money on both sides, or no figure at all.
   report.total_turnover_ = !(opening > math::Scalar{0}) ? math::undefined() : math::Scalar{0};
   if (outside > 0) {

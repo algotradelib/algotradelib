@@ -18,13 +18,12 @@ const analytics::SeriesFrame frame = analytics::from_bars(bars);
 
 const auto close = frame.close();               // a view, not a copy
 const auto average = analytics::sma(close, 20);
-const auto bands = analytics::bollinger(close, 20, 2.0);
 const auto strength = analytics::rsi(close, 14);
 
 // And the one route back to something a broker will accept.
 const auto rule = algotradelib::price_rule_for(bars.instrument_.country_, algotradelib::SecurityType::STOCK);
 const auto limit = analytics::round_scalar_to_tick(
-  bands.upper_[close.size() - 1], rule, algotradelib::OrderSide::SELL
+  average[close.size() - 1], rule, algotradelib::OrderSide::SELL
 );
 ```
 
@@ -97,9 +96,8 @@ that did not hold enough data — all of them, so a caller learns one check,
 `math::observed(value)`.
 
 There is a second: `math::undefined()`, for "the data was there and the statistic does not exist
-for it". A z-score over a window with no dispersion. A correlation against a constant series. A
-Sortino ratio over returns that never fell below their target. A beta against a market that did
-not move. A drawdown ratio on an equity curve whose peak is zero.
+for it". A z-score over a window with no dispersion. A Sortino ratio over returns that never fell
+below their target. A drawdown ratio on an equity curve whose peak is zero.
 
 Both are quiet `NaN`s, so `observed()` is false for both and every reduction masks both — nothing
 downstream has to know the difference. It is readable only through `math::is_undefined()`, and it
@@ -119,8 +117,7 @@ not a claim.
 
 One thing neither covers: an infinity. `NaN` is masked everywhere; `inf` would survive every
 reduction and arrive at a comparison as the best result ever measured. So the functions that could
-produce one refuse instead — a return over a zero prior price, a Sortino ratio with no downside, a
-beta against a market that did not move.
+produce one refuse instead — a return over a zero prior price, a Sortino ratio with no downside.
 
 ## Convention 3: a result is as long as its input
 
@@ -131,8 +128,7 @@ impossibly well.
 
 So the warm-up region is *present* and unobserved, not absent. `returns(prices)` has the
 same length as `prices` with an unobserved row 0. `rolling_mean(values, 20)` has nineteen
-unobserved rows before its first answer. A fitted regression's residuals carry `missing()`
-on the rows the fit could not use.
+unobserved rows before its first answer.
 
 ## Convention 4: two numbers describe a window, and nothing is annualized for you
 
@@ -168,20 +164,13 @@ decorating them:
 
 | Function | Convention, and the other one |
 | --- | --- |
-| `ema`, `ema_step` | take the smoothing factor `alpha`; `alpha_from_span(n)` is the span convention `2 / (n + 1)`; seeded on the first observed value. `ema_step` is the one-value update; `ema` over a series matches, on observed rows, `pandas` `ewm(alpha=..., adjust=False, ignore_na=True, min_periods=min_observed)` (it reports nothing before `min_observed` observations), which also fills a missing row with the carried level |
-| `rsi`, `atr` | Wilder's `1 / n` with Wilder's seed, not `2 / (n + 1)` |
-| `rolling_stdev`, `rolling_cov` | sample divisor `count - 1`, not the population `count` |
+| `ema` | takes the smoothing factor `alpha`; `alpha_from_span(n)` is the span convention `2 / (n + 1)`; seeded on the first observed value. Over a series it matches, on observed rows, `pandas` `ewm(alpha=..., adjust=False, ignore_na=True, min_periods=min_observed)` (it reports nothing before `min_observed` observations), which also fills a missing row with the carried level |
+| `rsi` | Wilder's `1 / n` with Wilder's seed, not `2 / (n + 1)` |
+| `rolling_stdev` | sample divisor `count - 1`, not the population `count` |
 | `sortino` | shortfalls divided by **all** observations, not by the losing ones |
-| `one_way_turnover` | `0.5 * sum(abs(delta w))`; `two_way_turnover` is exactly twice it |
 | `sharpe` | per period. `annualize_ratio` is separate, and scales by `sqrt(periods)` |
 
-Two of those are named rather than parameterized on purpose. `one_way_turnover` and
-`two_way_turnover` exist as separate functions because turnover is usually multiplied by a cost per
-unit traded, and a silent factor of two there separates a profitable strategy from a losing one —
-the convention belongs in the name, not only in the documentation. `TurnoverStart` then chooses
-whether the first period is measured against an all-cash portfolio — the default, because building a
-position is real trading — or left unobserved, which is what you want when comparing strategies
-whose histories start on different dates. Annualization is a separate call
+Annualization is a separate call
 because the factor is the square root of the period count, not the count (confusing them overstates
 a daily Sharpe ratio about sixteenfold), and because the period count is a calendar question — 245
 KRX trading days, 252 US, 12 months — that no default answers correctly for everyone.
@@ -212,14 +201,14 @@ where they break:
   The remaining `O(rows x window)` structure is deliberate. A prefix-sum would make it linear and
   would lose exactly the significant digits the two-pass variance exists to protect.
 
-  The recursive ones are the exceptions and cannot be vectorized at all: `ema` (and `macd`, built on
-  it), Wilder's smoothing in `rsi` and `atr`, and `cumulative_returns`. Each value depends on the one
-  before it, so there is no reduction to hand a backend.
+  The recursive ones are the exceptions and cannot be vectorized at all: `ema` and Wilder's
+  smoothing in `rsi`. Each value depends on the one before it, so there is no reduction to hand a
+  backend.
 
-- **The masking vocabulary lives in the seam, not in the indicators.** `observed_parts`,
-  `observed_or` and `both_present` are defined in `math/eigen.hpp`, so the indicators do not spell
-  their own absence test. The layer above still uses the backend's expression API for its
-  arithmetic (sums, norms, segments), so a second backend would supply more than these three.
+- **The masking vocabulary lives in the seam, not in the indicators.** `observed_parts` and
+  `observed_or` are defined in `math/eigen.hpp`, so the indicators do not spell their own absence
+  test. The layer above still uses the backend's expression API for its arithmetic (sums, norms,
+  segments), so a second backend would supply more than these two.
 
   Eigen's plugin macros (`EIGEN_MATRIXBASE_PLUGIN` and friends) would allow `series.observedSum()`
   instead, and are deliberately not used: they must be defined before any Eigen header anywhere in
@@ -227,13 +216,6 @@ where they break:
   `Eigen::Matrix` than this library's own translation units — an ODR violation with no diagnostic.
   Appropriate for an application that owns its whole build; not for a header-only library other
   people include.
-
-- **The library publishes no decomposition.** Use Eigen's own on a `math::Matrix`, such as
-  `x.colPivHouseholderQr().solve(y)` or `normal.llt()`: one factorization solves many right-hand
-  sides, and its rank, permutation and `info()` are all still there. Which to reach for is a
-  trade-off the caller makes: a pivoting QR for a design matrix of market data, where nearly
-  collinear columns are the normal case; LLT when the system is known symmetric positive
-  definite; an SVD when the answer must be the minimum-norm one.
 
 ## What this layer deliberately does not compute
 
@@ -254,17 +236,11 @@ incomplete row is dropped or imputed, pairwise or listwise deletion. Those are m
 and answering them with defaults would make a strategy's choices while appearing to offer a utility.
 
 **The line, stated so it can be applied again:** ship what has one right answer everyone agrees on;
-defer what requires choosing. `macd(12, 26, 9)` means one thing, and the value of shipping it is
-that Wilder's seed and the span convention are got right once instead of re-derived. `sortino`
+defer what requires choosing. `rsi(14)` means one thing, and the value of shipping it is that
+Wilder's seed is got right once instead of re-derived. `sortino`
 ships with its divisor documented rather than parameterized because there *is* a correct answer.
 "Covariance of series with gaps" has no canonical answer, so it waits for a consumer that can say
 what it needs.
-
-Note that this is not the same rule as "ship only what the first strategies use". Applied that way
-it would also delete `macd`, `bollinger`, `atr`, `wma`, `sharpe`, `one_way_turnover`,
-and `max_drawdown`, since the first set of vanilla strategies needs only `sma`,
-`ema`, `alpha_from_span`, `rolling_min`/`rolling_max`, `zscore`, `rsi`, `returns`, `rolling_stdev` and
-`to_decimal`.
 
 ## Where the numbers live
 
@@ -294,9 +270,8 @@ The exponential average is the one worth a sentence of its own. It depends on al
 recomputing one over a trailing `SeriesBuffer` reseeds it every bar and does not reproduce what a live
 loop would have produced; a strategy fitted over frames and traded that way would be trading a slightly
 different indicator, and the difference does not announce itself. A live strategy keeps the level
-instead: `level = ema_step(level, close, alpha)` once per bar makes the same update `ema` makes over a
-series, bit for bit unless the arithmetic itself produces a `NaN` (an infinity, an overflow), after
-which `ema` stays unobserved and a kept level reseeds.
+instead: `level = level + alpha * (close - level)` once per bar (seeded with the first close) makes
+the same update `ema` makes over a series, bit for bit.
 
 ## What is single-owner, and where parallelism goes
 

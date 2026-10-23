@@ -122,22 +122,18 @@ int main() {
   const math::Vector smoothed = analytics::ema(close, analytics::alpha_from_span(5));
   const math::Vector strength = analytics::rsi(close, 5);
   const math::Vector score = analytics::zscore(close, 5);
-  const auto bands = analytics::bollinger(close, 5, 2.0);
-  const math::Vector range = analytics::atr(frame.high(), frame.low(), close, 5);
+  const math::Vector spread = analytics::rolling_stdev(close, 5);
   const math::Vector period_returns = analytics::returns(close);
-  const math::Vector growth = analytics::cumulative_returns(period_returns);
 
   std::cout << bars.instrument_.symbol_ << ", " << bars.bars_.size()
             << " daily bars, no network\n\n";
-  std::cout << "row   close     open     sma5     ema5     rsi5    zscore"
-            << "    upper    lower     atr5   cumret\n";
+  std::cout << "row   close     open     sma5     ema5     rsi5    zscore   stdev5   return\n";
   for (math::Index row = 0; row < close.size(); ++row) {
     std::cout << std::setw(3) << row << " " << cell(close[row]) << " "
               << cell(open[row]) << " " << cell(average[row]) << " "
               << cell(smoothed[row]) << " " << cell(strength[row]) << " "
-              << cell(score[row]) << " " << cell(bands.upper_[row]) << " "
-              << cell(bands.lower_[row]) << " " << cell(range[row]) << " "
-              << cell(growth[row] * 100.0) << "\n";
+              << cell(score[row]) << " " << cell(spread[row]) << " "
+              << cell(period_returns[row] * 100.0) << "\n";
   }
 
   // Row 3 has no open. Notice it is a dash above rather than a zero, and that the
@@ -160,24 +156,14 @@ int main() {
             << "  worst drawdown        "
             << analytics::max_drawdown(close).magnitude_ * 100.0 << " %\n";
 
-  // What a live loop keeps for an exponential average: one number, updated once per bar. It
-  // agrees with the vectorized `ema` exactly, which is the property that keeps a backtest and a
-  // live loop computing the same thing.
-  const math::Scalar alpha = analytics::alpha_from_span(5);
-  math::Scalar level = math::missing();
-  for (math::Index row = 0; row < close.size(); ++row) {
-    level = analytics::ema_step(level, close[row], alpha);
-  }
-  std::cout << "  ema_step == ema       " << (level == smoothed[last] ? "yes" : "no") << "\n";
-
-  // The one sanctioned route back to something a broker will accept. The upper band is a
-  // computed scalar; an order needs an exact decimal on the instrument's own tick grid.
+  // The one sanctioned route back to something a broker will accept. Two deviations above the
+  // average is a computed scalar; an order needs an exact decimal on the instrument's own tick grid.
   const auto rule =
     algotradelib::price_rule_for(bars.instrument_.country_, SecurityType::STOCK);
   const auto limit = analytics::round_scalar_to_tick(
-    bands.upper_[last], rule, OrderSide::SELL
+    average[last] + 2.0 * spread[last], rule, OrderSide::SELL
   );
-  std::cout << "\nA sell limit at the upper band, rounded onto the KRX tick grid: "
+  std::cout << "\nA sell limit two deviations above the average, rounded onto the KRX tick grid: "
             << (limit ? limit->str() : std::string("refused")) << "\n";
 
   return 0;

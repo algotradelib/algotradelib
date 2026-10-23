@@ -388,7 +388,7 @@ Two habits in that snippet are worth copying. **Slice before computing**: an ind
 whole cache is `O(rows × window)` per bar, and you need only the last value or two, so
 `trailing(...)` keeps the per-bar cost from growing with the cache. And **test observability rather
 than a value**: `math::observed()` is false for the warm-up (`missing()`) *and* for a window with no
-dispersion (`undefined()`), where a z-score or a correlation genuinely does not exist.
+dispersion (`undefined()`), where a z-score genuinely does not exist.
 `math::is_undefined()` separates those two if you care.
 
 ## Reaching a broker-specific feature

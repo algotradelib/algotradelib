@@ -11,7 +11,7 @@ namespace analytics {
 
 /**
  * @file
- * @brief Performance metrics: maximum drawdown, Sharpe and Sortino ratios, annualization, turnover.
+ * @brief Performance metrics: maximum drawdown, Sharpe and Sortino ratios, annualization.
  *
  * Each function states the convention it implements. Ratios are per period; annualize them
  * explicitly with `annualize_ratio`.
@@ -202,63 +202,6 @@ inline Scalar annualize_ratio(Scalar ratio, Scalar periods_per_year) {
     throw std::invalid_argument("periods per year must be positive");
   }
   return observed(ratio) ? ratio * std::sqrt(periods_per_year) : ratio;
-}
-
-/** @brief How turnover treats the first period. */
-enum class TurnoverStart {
-  /** @brief Row 0 measures the first positions against an all-cash start. Use it to cost one strategy. */
-  FROM_CASH,
-  /** @brief Row 0 is `missing()`. Use it to compare strategies whose histories start on different dates. */
-  SKIP,
-};
-
-/**
- * @brief Computes the one-way turnover of each period, `0.5 * sum(|w[i] - w[i - 1]|)`.
- *
- * One-way: moving the whole portfolio from one instrument to another is `1`.
- *
- * @param weights Portfolio weights, one row per period and one column per instrument. A `NaN`
- *   weight counts as no position.
- * @param start How row 0 is treated.
- * @return The turnover, one value per row.
- * @see two_way_turnover for the convention that counts both sides (twice this).
- */
-inline math::Vector one_way_turnover(
-  math::MatrixView weights,
-  TurnoverStart start = TurnoverStart::FROM_CASH
-) {
-  // Masked once for the whole panel, so each period is a plain vectorized row difference.
-  const math::Matrix held =
-    (weights.array() == weights.array()).select(weights, Scalar{0});
-  math::Vector result = math::unobserved(static_cast<std::size_t>(weights.rows()));
-  for (math::Index row = 0; row < held.rows(); ++row) {
-    if (row == 0) {
-      if (start == TurnoverStart::SKIP) {
-        continue;
-      }
-      result[row] = Scalar{0.5} * held.row(0).cwiseAbs().sum();
-      continue;
-    }
-    result[row] = Scalar{0.5} * (held.row(row) - held.row(row - 1)).cwiseAbs().sum();
-  }
-  return result;
-}
-
-/**
- * @brief Computes the two-way turnover of each period, `sum(|w[i] - w[i - 1]|)`.
- *
- * Exactly twice `one_way_turnover`: moving the whole portfolio from one instrument to another is `2`.
- *
- * @param weights Portfolio weights, one row per period and one column per instrument. A `NaN`
- *   weight counts as no position.
- * @param start How row 0 is treated.
- * @return The turnover, one value per row.
- */
-inline math::Vector two_way_turnover(
-  math::MatrixView weights,
-  TurnoverStart start = TurnoverStart::FROM_CASH
-) {
-  return Scalar{2} * one_way_turnover(weights, start);
 }
 
 } // namespace analytics

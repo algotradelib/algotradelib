@@ -15,9 +15,6 @@ namespace math {
  *
  * Include `math/matrix.hpp` rather than this header. Write against the `math::` names
  * (`math::SeriesView`, `math::Matrix`, ...) rather than the Eigen types behind them.
- *
- * For a decomposition, use Eigen's member forms on a `math::Matrix` directly, such as
- * `a.colPivHouseholderQr().solve(b)` or `normal.llt()`.
  */
 // The only header that names Eigen in a public signature; a second backend is a sibling header.
 
@@ -114,20 +111,6 @@ inline Observed observed_parts(SeriesView values) {
  */
 inline Vector observed_or(SeriesView values, Scalar filler) {
   return (values.array() == values.array()).select(values, filler);
-}
-
-/**
- * @brief Combines two presence masks: `1` only where both series are observed.
- *
- * Use it to restrict a co-moment (covariance, correlation) and both series' deviations to the
- * same rows; otherwise a correlation can fall outside `[-1, 1]`.
- *
- * @param left The first series' `Observed::present_`.
- * @param right The second series' `Observed::present_`, of the same length.
- * @return The elementwise product of the two masks.
- */
-inline Vector both_present(const Vector& left, const Vector& right) {
-  return left.cwiseProduct(right);
 }
 
 // The decompositions below have no caller in the library. They are commented out because

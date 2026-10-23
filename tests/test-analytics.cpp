@@ -477,38 +477,9 @@ TEST_CASE("a simple return refuses a negative prior price") {
   REQUIRE(result[3] == Catch::Approx(0.2));
 }
 
-TEST_CASE("log returns add where simple returns compound") {
-  const math::Vector prices = series({100.0, 110.0, 99.0, 99.0, 108.9});
-  const math::Vector result = analytics::log_returns(prices);
-
-  REQUIRE_FALSE(observed(result[0]));
-  REQUIRE(result[1] == Catch::Approx(0.09531017980432493));
-  REQUIRE(result[2] == Catch::Approx(-0.10536051565782628));
-  REQUIRE(result[3] == Catch::Approx(0.0));
-  REQUIRE(result[4] == Catch::Approx(0.09531017980432493));
-
-  // The property that makes them worth having: their sum is the total log return.
-  const Scalar total = result[1] + result[2] + result[3] + result[4];
-  REQUIRE(total == Catch::Approx(std::log(108.9 / 100.0)));
-}
-
-TEST_CASE("cumulative returns compound to the total the price series implies") {
-  const math::Vector prices = series({100.0, 110.0, 99.0, 99.0, 108.9});
-  const math::Vector result = analytics::cumulative_returns(analytics::returns(prices));
-
-  // No capital has been at risk before the first observed return.
-  REQUIRE_FALSE(observed(result[0]));
-  REQUIRE(result[1] == Catch::Approx(0.1));
-  REQUIRE(result[2] == Catch::Approx(-0.01));
-  REQUIRE(result[3] == Catch::Approx(-0.01));
-  // Which is exactly the return of holding from the first price to the last.
-  REQUIRE(result[4] == Catch::Approx(108.9 / 100.0 - 1.0));
-}
-
 TEST_CASE("trailing statistics report nothing until their window is full") {
   const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
 
-  const math::Vector sum = analytics::rolling_sum(values, 3);
   const math::Vector mean = analytics::rolling_mean(values, 3);
   const math::Vector smallest = analytics::rolling_min(values, 3);
   const math::Vector largest = analytics::rolling_max(values, 3);
@@ -516,37 +487,17 @@ TEST_CASE("trailing statistics report nothing until their window is full") {
   // The warm-up region is asserted explicitly. An indicator that answers from a
   // partially filled window is a lookahead bug that looks like a good backtest.
   for (math::Index row = 0; row < 2; ++row) {
-    REQUIRE_FALSE(observed(sum[row]));
     REQUIRE_FALSE(observed(mean[row]));
     REQUIRE_FALSE(observed(smallest[row]));
     REQUIRE_FALSE(observed(largest[row]));
   }
 
-  REQUIRE(sum[2] == Catch::Approx(6.0));
-  REQUIRE(sum[3] == Catch::Approx(9.0));
-  REQUIRE(sum[4] == Catch::Approx(12.0));
   REQUIRE(mean[2] == Catch::Approx(2.0));
   REQUIRE(mean[4] == Catch::Approx(4.0));
   REQUIRE(smallest[2] == Catch::Approx(1.0));
   REQUIRE(smallest[4] == Catch::Approx(3.0));
   REQUIRE(largest[2] == Catch::Approx(3.0));
   REQUIRE(largest[4] == Catch::Approx(5.0));
-}
-
-TEST_CASE("a weighted average leans on its most recent row and renormalizes over gaps") {
-  const math::Vector values = series({1.0, 2.0, 3.0});
-  const math::Vector weighted = analytics::wma(values, 3);
-
-  REQUIRE_FALSE(observed(weighted[0]));
-  REQUIRE_FALSE(observed(weighted[1]));
-  // (1*1 + 2*2 + 3*3) / (1 + 2 + 3)
-  REQUIRE(weighted[2] == Catch::Approx(14.0 / 6.0));
-
-  // Dropping a row drops its weight with it. Keeping the weight in the divisor would
-  // bias every window containing a gap toward zero.
-  const math::Vector gapped = series({1.0, missing(), 3.0});
-  const math::Vector over_gap = analytics::wma(gapped, 3, 2);
-  REQUIRE(over_gap[2] == Catch::Approx((1.0 * 1.0 + 3.0 * 3.0) / (1.0 + 3.0)));
 }
 
 TEST_CASE("an impossible window is refused rather than answered with nothing") {
@@ -569,15 +520,6 @@ struct ema_accepts<
   std::void_t<decltype(analytics::ema(std::declval<math::SeriesView>(), std::declval<Smoothing>()))>
 > : std::true_type {};
 
-/** Whether `ema_step(level, value, smoothing)` is a well-formed call. */
-template <typename Smoothing, typename = void>
-struct ema_step_accepts : std::false_type {};
-template <typename Smoothing>
-struct ema_step_accepts<
-  Smoothing,
-  std::void_t<decltype(analytics::ema_step(Scalar{}, Scalar{}, std::declval<Smoothing>()))>
-> : std::true_type {};
-
 } // namespace
 
 // An integer where the smoothing factor goes is an old span. It must not compile as alpha = 12,
@@ -586,9 +528,6 @@ static_assert(ema_accepts<Scalar>::value, "ema takes a smoothing factor");
 static_assert(ema_accepts<float>::value, "a float is promoted, not ambiguous");
 static_assert(!ema_accepts<int>::value, "an int is a span: alpha_from_span");
 static_assert(!ema_accepts<std::size_t>::value, "a size_t is a span: alpha_from_span");
-static_assert(ema_step_accepts<Scalar>::value, "ema_step takes a smoothing factor");
-static_assert(!ema_step_accepts<int>::value, "an int is a span: alpha_from_span");
-static_assert(!ema_step_accepts<std::size_t>::value, "a size_t is a span: alpha_from_span");
 
 TEST_CASE("an exponential average refuses a smoothing factor outside (0, 1]") {
   const math::Vector values = series({1.0, 2.0, 3.0});
@@ -597,46 +536,21 @@ TEST_CASE("an exponential average refuses a smoothing factor outside (0, 1]") {
     REQUIRE_THROWS_AS(analytics::ema(values, alpha), std::invalid_argument);
     // Before anything is read: an empty series refuses too.
     REQUIRE_THROWS_AS(analytics::ema(empty, alpha), std::invalid_argument);
-    REQUIRE_THROWS_AS(analytics::ema_step(1.0, 2.0, alpha), std::invalid_argument);
   }
 }
 
 TEST_CASE("the exponential average keeps its arithmetic, digit for digit") {
   // `level + alpha * (value - level)`, in that order. The algebraically equal
   // `alpha * value + (1 - alpha) * level` rounds differently on values like these, and would move
-  // every EMA, MACD and crossover line in the last place.
+  // every EMA and crossover line in the last place.
   const math::Vector values = series({54.689, 897.428});
   REQUIRE(analytics::ema(values, analytics::alpha_from_span(3))[1] == 476.05850000000004);
-  REQUIRE(analytics::ema_step(54.689, 897.428, analytics::alpha_from_span(3)) == 476.05850000000004);
-  // IEEE, unfused (the suite is built with -ffp-contract=off): a fused multiply-add gives 67.227042735042758.
-  REQUIRE(analytics::macd(values).macd_[1] == 67.22704273504274);
 }
 
 // ---------------------------------------------------------------------------
 // Named indicators
 // ---------------------------------------------------------------------------
 
-TEST_CASE("Bollinger bands straddle the trailing mean by the deviation asked for") {
-  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
-  const auto bands = analytics::bollinger(values, 3, 2.0);
-
-  REQUIRE(bands.middle_.size() == values.size());
-  REQUIRE_FALSE(observed(bands.upper_[1]));
-  // Window {1,2,3}: mean 2, sample deviation 1.
-  REQUIRE(bands.middle_[2] == Catch::Approx(2.0));
-  REQUIRE(bands.upper_[2] == Catch::Approx(4.0));
-  REQUIRE(bands.lower_[2] == Catch::Approx(0.0));
-
-  // A flat window's band genuinely has zero width, and nothing here divides by the
-  // deviation, so all three lines collapse onto the mean and are reported. That is the
-  // deliberate difference from `zscore`, which is undefined on the very same window.
-  const math::Vector flat = series({7.0, 7.0, 7.0});
-  const auto collapsed = analytics::bollinger(flat, 3);
-  REQUIRE(collapsed.middle_[2] == Catch::Approx(7.0));
-  REQUIRE(collapsed.upper_[2] == Catch::Approx(7.0));
-  REQUIRE(collapsed.lower_[2] == Catch::Approx(7.0));
-  REQUIRE_FALSE(observed(analytics::zscore(flat, 3)[2]));
-}
 
 TEST_CASE("the relative strength index matches Wilder's published series") {
   // Wilder's own fixture, as reproduced in every reference table for the indicator. The
@@ -670,83 +584,9 @@ TEST_CASE("the relative strength index decides its degenerate cases instead of d
   REQUIRE(analytics::rsi(flat, 3)[3] == Catch::Approx(50.0));
 }
 
-TEST_CASE("the average true range seeds on a simple mean then smooths Wilder's way") {
-  const math::Vector highs = series({10.0, 11.0, 12.5, 11.5, 13.0});
-  const math::Vector lows = series({9.0, 9.5, 11.0, 10.0, 11.5});
-  const math::Vector closes = series({9.5, 10.5, 12.0, 10.5, 12.5});
-  const math::Vector average = analytics::atr(highs, lows, closes, 3);
-
-  REQUIRE_FALSE(observed(average[0]));
-  REQUIRE_FALSE(observed(average[1]));
-  // The seed is the simple mean of the first three true ranges, 1.0, 1.5 and 2.0.
-  REQUIRE(average[2] == Catch::Approx(1.5));
-  // Then (1.5 * 2 + 2.0) / 3.
-  REQUIRE(average[3] == Catch::Approx(5.0 / 3.0));
-  REQUIRE(average[4] == Catch::Approx(1.9444444444444446));
-}
-
-TEST_CASE("a trailing covariance is the sample one over paired rows") {
-  const math::Vector left = series({1.0, 2.0, 3.0, 4.0});
-  const math::Vector right = series({2.0, 4.0, 6.0, 8.0});
-  const math::Vector covariance = analytics::rolling_cov(left, right, 3);
-
-  REQUIRE_FALSE(observed(covariance[1]));
-  REQUIRE(covariance[3] == Catch::Approx(2.0));
-}
-
-TEST_CASE("a trailing correlation is bounded because it uses one sample for all three parts") {
-  const math::Vector left = series({1.0, 2.0, 3.0, 4.0});
-  const math::Vector right = series({2.0, 1.0, 4.0, 3.0});
-  const math::Vector correlation = analytics::rolling_corr(left, right, 3);
-
-  REQUIRE(correlation[3] == Catch::Approx(0.6546536707079771));
-
-  // A series perfectly tracking another correlates at exactly one, and the opposite sign
-  // at exactly minus one. These are the values that a mismatched sample would overshoot.
-  const math::Vector doubled = series({2.0, 4.0, 6.0, 8.0});
-  const math::Vector negated = series({-1.0, -2.0, -3.0, -4.0});
-  REQUIRE(analytics::rolling_corr(left, doubled, 3)[3] == 1.0);
-  REQUIRE(analytics::rolling_corr(left, negated, 3)[3] == -1.0);
-}
-
-TEST_CASE("beta is the covariance over the market's own variance") {
-  const math::Vector asset = series({1.0, 2.0, 3.0, 4.0});
-  const math::Vector market = series({2.0, 1.0, 4.0, 3.0});
-
-  REQUIRE(analytics::beta(asset, market, 3)[3] == Catch::Approx(0.42857142857142855));
-
-  // A market that did not move gives nothing to attribute the asset's movement to, so
-  // beta is unobserved rather than zero or an infinity.
-  const math::Vector still = series({1.0, 1.0, 1.0, 1.0});
-  REQUIRE_FALSE(observed(analytics::beta(asset, still, 3)[3]));
-
-  // And an asset that is exactly the market has a beta of one, whatever the market did.
-  REQUIRE(analytics::beta(market, market, 3)[3] == Catch::Approx(1.0));
-}
-
 // ---------------------------------------------------------------------------
 // Decompositions, used directly
 // ---------------------------------------------------------------------------
-
-namespace {
-
-/** Builds a matrix from a list of columns, so a fixture reads the way a frame is laid out. */
-math::Matrix columns(std::initializer_list<std::initializer_list<Scalar>> values) {
-  const auto width = static_cast<math::Index>(values.size());
-  const auto height = static_cast<math::Index>(values.begin()->size());
-  math::Matrix result(height, width);
-  math::Index column = 0;
-  for (const auto& entries : values) {
-    math::Index row = 0;
-    for (const Scalar value : entries) {
-      result(row++, column) = value;
-    }
-    ++column;
-  }
-  return result;
-}
-
-} // namespace
 
 // The decompositions these cases checked are commented out in `math/eigen.hpp`.
 // TEST_CASE("the caller picks the decomposition, and each reports its own failure") {
@@ -819,12 +659,6 @@ TEST_CASE("a statistic that cannot exist says so, distinctly from having no data
   // Nothing fell short of the target, so there is no downside risk to divide by.
   REQUIRE(math::is_undefined(analytics::sortino(series({0.01, 0.02, 0.03}))));
 
-  // Correlation with a constant, and beta against a market that did not move.
-  const math::Vector moving = series({1.0, 2.0, 3.0, 4.0});
-  const math::Vector still = series({3.0, 3.0, 3.0, 3.0});
-  REQUIRE(math::is_undefined(analytics::rolling_corr(moving, still, 3)[3]));
-  REQUIRE(math::is_undefined(analytics::beta(moving, still, 3)[3]));
-
   // An equity curve at zero has not declined by a percentage; it is gone.
   REQUIRE(math::is_undefined(analytics::max_drawdown(series({0.0, 0.0})).magnitude_));
 }
@@ -832,7 +666,7 @@ TEST_CASE("a statistic that cannot exist says so, distinctly from having no data
 TEST_CASE("equal values that are not binary fractions are still a constant window") {
   // The computed mean of {0.1, 0.1, 0.1} is an ulp away from 0.1, so a deviation about it is tiny but
   // not zero. A test for zero alone read it as dispersion: a z-score near -0.8, a Sharpe near 1e15.
-  // (`rolling_stdev` and Bollinger report that tiny deviation as it is; nothing divides by it there.)
+  // (`rolling_stdev` reports that tiny deviation as it is; nothing divides by it there.)
   const math::Vector tenth = series({0.1, 0.1, 0.1});
   REQUIRE(analytics::rolling_mean(tenth, 3)[2] != 0.1);  // the premise
   CHECK(math::is_undefined(analytics::zscore(tenth, 3)[2]));
@@ -842,38 +676,6 @@ TEST_CASE("equal values that are not binary fractions are still a constant windo
   const math::Vector level = series({12.34, missing(), 12.34, 12.34});
   REQUIRE(analytics::rolling_mean(level, 4, 2)[3] != 12.34);  // the premise
   CHECK(math::is_undefined(analytics::zscore(level, 4, 2)[3]));
-
-  const math::Vector moving = series({0.01, 0.03, 0.02, 0.05});
-  const math::Vector still = series({0.1, 0.1, 0.1, 0.1});
-  CHECK(math::is_undefined(analytics::rolling_corr(moving, still, 3)[3]));
-  CHECK(math::is_undefined(analytics::rolling_corr(still, moving, 3)[3]));
-  CHECK(math::is_undefined(analytics::beta(moving, still, 3)[3]));
-}
-
-TEST_CASE("a dispersion whose sample variance underflows is not a constant window") {
-  // The squared deviations sum to a positive subnormal, and dividing it by `count - 1` rounds to zero;
-  // the values differ, so beta and correlation of the series with itself are still 1.
-  const math::Vector tiny = series({-2e-162, 0.0, 0.0, 0.0, 2e-162});
-  CHECK(analytics::beta(tiny, tiny, 5)[4] == 1.0);
-  CHECK(analytics::rolling_corr(tiny, tiny, 5)[4] == Catch::Approx(1.0));
-}
-
-TEST_CASE("a correlation's denominator neither underflows nor overflows where its parts do not") {
-  // Each squared sum is finite; their product is not (about 1e600 here). The root of each, multiplied,
-  // is. (At the other end, subnormal dispersions lose precision in the sums themselves; only the
-  // underflow of the product is avoided, as in the self-correlation above.)
-  const math::Vector large = series({-2e150, 1e150, 0.0, 2e150});
-  const math::Vector large_other = series({-1e150, 3e150, 0.0, 2e150});
-  const math::Vector plain = series({-2.0, 1.0, 0.0, 2.0});
-  const math::Vector plain_other = series({-1.0, 3.0, 0.0, 2.0});
-  const auto expected = analytics::rolling_corr(plain, plain_other, 4)[3];
-  REQUIRE(observed(expected));
-  CHECK(analytics::rolling_corr(large, large_other, 4)[3] == Catch::Approx(expected));
-  CHECK(analytics::rolling_corr(large, large, 4)[3] == Catch::Approx(1.0));
-  // An ordinary self-correlation is exactly 1, even where the root of a squared sum, squared, is not
-  // the sum (3 here): the product's root is taken, and the bound holds.
-  const math::Vector lone = series({0.0, 0.0, 0.0, 2.0});
-  CHECK(analytics::rolling_corr(lone, lone, 4)[3] == 1.0);
 }
 
 TEST_CASE("a window of values one ulp apart keeps its dispersion") {
@@ -885,8 +687,6 @@ TEST_CASE("a window of values one ulp apart keeps its dispersion") {
   CHECK(analytics::rolling_stdev(close, 3)[2] > 0.0);
   CHECK(observed(analytics::zscore(close, 3)[2]));
   CHECK(observed(analytics::sharpe(close)));
-  CHECK(observed(analytics::beta(series({0.01, 0.03, 0.02}), close, 3)[2]));
-  CHECK(observed(analytics::rolling_corr(series({0.01, 0.03, 0.02}), close, 3)[2]));
 }
 
 TEST_CASE("the window overloads say what the three-argument form spells out") {
@@ -906,30 +706,4 @@ TEST_CASE("the window overloads say what the three-argument form spells out") {
   REQUIRE_THROWS_AS(analytics::rolling_mean(values, 3, 0), std::invalid_argument);
   REQUIRE_THROWS_AS(analytics::rolling_stdev(values, 3, 0), std::invalid_argument);
   REQUIRE_THROWS_AS(analytics::ema(values, 0.5, 0), std::invalid_argument);
-}
-
-TEST_CASE("turnover names its convention, and both start policies are available") {
-  const math::Matrix weights = columns({
-    {1.0, 0.0},
-    {0.0, 1.0},
-  });
-
-  const math::Vector one_way = analytics::one_way_turnover(weights);
-  const math::Vector two_way = analytics::two_way_turnover(weights);
-
-  // Row 1 rotates the whole book: one, one-way; two, two-way. Naming both is what stops a
-  // silent factor of two reaching a cost estimate.
-  REQUIRE(one_way[1] == Catch::Approx(1.0));
-  REQUIRE(two_way[1] == Catch::Approx(2.0));
-  for (math::Index row = 0; row < one_way.size(); ++row) {
-    REQUIRE(two_way[row] == Catch::Approx(2.0 * one_way[row]));
-  }
-
-  // Building the first position from cash counts by default, and can be skipped when comparing
-  // strategies whose histories start on different dates.
-  REQUIRE(one_way[0] == Catch::Approx(0.5));
-  const math::Vector skipped =
-    analytics::one_way_turnover(weights, analytics::TurnoverStart::SKIP);
-  REQUIRE_FALSE(observed(skipped[0]));
-  REQUIRE(skipped[1] == Catch::Approx(1.0));
 }
