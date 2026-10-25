@@ -1,17 +1,17 @@
 # The library, Boost and Eigen installed into one folder per OS, for the CI of other repositories. It is pushed
 # to GHCR as an OCI artifact, not a container image, so any runner can pull it:
 #
-#   ghcr.io/algotradelib/algotradelib-prefix:main-linux-x64     ubuntu-latest, GCC
-#   ghcr.io/algotradelib/algotradelib-prefix:main-macos-arm64   macos-latest, Apple Clang
-#   ghcr.io/algotradelib/algotradelib-prefix:main-windows-x64   windows-latest, MSVC (Release and Debug)
+#   ghcr.io/algotradelib/algotradelib:main-linux-x64     ubuntu-latest, GCC
+#   ghcr.io/algotradelib/algotradelib:main-macos-arm64   macos-latest, Apple Clang
+#   ghcr.io/algotradelib/algotradelib:main-windows-x64   windows-latest, MSVC (Release and Debug)
 #
-# Each holds algotradelib-prefix-<platform>.tar.gz, with one top-level prefix/ folder:
+# Each holds algotradelib-<platform>.tar.gz, with one top-level algotradelib/ folder:
 #
-#   oras pull ghcr.io/algotradelib/algotradelib-prefix:main-linux-x64
-#   tar -xzf algotradelib-prefix-linux-x64.tar.gz
-#   cmake -S . -B build -DCMAKE_PREFIX_PATH="$PWD/prefix"
+#   oras pull ghcr.io/algotradelib/algotradelib:main-linux-x64
+#   tar -xzf algotradelib-linux-x64.tar.gz
+#   cmake -S . -B build -DCMAKE_PREFIX_PATH="$PWD/algotradelib"
 #
-# OpenSSL 3 is not in it: it comes from the runner, as in cmake-check.yaml. Each prefix fits its runner's default
+# OpenSSL 3 is not in it: it comes from the runner, as in cmake-check.yaml. Each package fits its runner's default
 # toolchain: GCC with libstdc++, Apple Clang with libc++, and MSVC with the shared CRT (/MD, /MDd).
 #
 # The annotation org.opencontainers.image.revision names the library commit; pin the digest for a fixed build.
@@ -43,7 +43,7 @@ env:
   BOOST_SHA256: 7da75f171837577a52bbf217e17f8ea576c7c246e4594d617bfde7fafd408be5
   EIGEN_URL: https://gitlab.com/libeigen/eigen/-/archive/3.4.1/eigen-3.4.1.tar.gz
   EIGEN_SHA256: b93c667d1b69265cdb4d9f30ec21f8facbbe8b307cf34c0b9942834c6d4fdbe2
-  PACKAGE: ghcr.io/algotradelib/algotradelib-prefix
+  PACKAGE: ghcr.io/algotradelib/algotradelib
   ORAS_VERSION: 1.3.4
 
 jobs:
@@ -100,7 +100,7 @@ jobs:
       # Paths stay relative, or absolute in the form CMake reads (pwd -W gives D:/a/... in Git Bash).
       - name: Download
         run: |
-          echo "PREFIX=$(pwd -W 2>/dev/null || pwd)/work/prefix" >> "$GITHUB_ENV"
+          echo "PREFIX=$(pwd -W 2>/dev/null || pwd)/work/algotradelib" >> "$GITHUB_ENV"
           mkdir -p work/src
           curl -fsSL -o work/boost.tar.xz "$BOOST_URL"
           curl -fsSL -o work/eigen.tar.gz "$EIGEN_URL"
@@ -123,9 +123,9 @@ jobs:
             cmake --install work/build-boost --config "$config"
           done
 
-      # Installed by its own CMake project, so the prefix has Eigen3Config.cmake. Its BLAS and LAPACK default to
+      # Installed by its own CMake project, so the package has Eigen3Config.cmake. Its BLAS and LAPACK default to
       # ON at top level, and the install then expects their libraries. No package registry entry, so the consumer
-      # check cannot find this build tree instead of the unpacked prefix.
+      # check cannot find this build tree instead of the unpacked copy.
       - name: Eigen
         run: |
           cmake -S work/src/eigen-3.4.1 -B work/build-eigen \
@@ -144,22 +144,22 @@ jobs:
           cmake -S . -B work/build-atl -DCMAKE_PREFIX_PATH="$PREFIX" -DCMAKE_INSTALL_PREFIX="$PREFIX"
           cmake --install work/build-atl --config Release
 
-      # The installed prefix is removed before the check, so the consumer can only find the unpacked copy.
+      # The install folder is removed before the check, so the consumer can only find the unpacked copy.
       - name: Pack
         run: |
-          (cd work && cmake -E tar czf "../algotradelib-prefix-$PLATFORM.tar.gz" prefix)
-          rm -rf work/prefix
-          ls -l "algotradelib-prefix-$PLATFORM.tar.gz"
+          (cd work && cmake -E tar czf "../algotradelib-$PLATFORM.tar.gz" algotradelib)
+          rm -rf work/algotradelib
+          ls -l "algotradelib-$PLATFORM.tar.gz"
 
       - name: Consumer check
         run: |
           mkdir check
-          (cd check && cmake -E tar xzf "../algotradelib-prefix-$PLATFORM.tar.gz")
+          (cd check && cmake -E tar xzf "../algotradelib-$PLATFORM.tar.gz")
           cmake -S .github/package-check -B check/build \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF \
             -DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=OFF \
-            -DCMAKE_PREFIX_PATH="$(pwd -W 2>/dev/null || pwd)/check/prefix"
+            -DCMAKE_PREFIX_PATH="$(pwd -W 2>/dev/null || pwd)/check/algotradelib"
           grep -E '^(algotradelib|Boost|boost_json|Eigen3)_DIR:' check/build/CMakeCache.txt
           for config in $CONFIGS; do
             cmake --build check/build --config "$config"
@@ -168,8 +168,8 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: algotradelib-prefix-${{ matrix.platform }}
-          path: algotradelib-prefix-${{ matrix.platform }}.tar.gz
+          name: algotradelib-${{ matrix.platform }}
+          path: algotradelib-${{ matrix.platform }}.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -194,7 +194,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          pattern: algotradelib-prefix-*
+          pattern: algotradelib-*
           merge-multiple: true
 
       # v2.0.2 is the first release whose version table lists ORAS 1.3.4.
@@ -216,13 +216,13 @@ jobs:
             exit 0
           fi
           for platform in linux-x64 macos-arm64 windows-x64; do
-            [ -f "algotradelib-prefix-$platform.tar.gz" ] || { echo "::error::algotradelib-prefix-$platform.tar.gz is missing"; exit 1; }
+            [ -f "algotradelib-$platform.tar.gz" ] || { echo "::error::algotradelib-$platform.tar.gz is missing"; exit 1; }
           done
           printf '%s' "$TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           for platform in linux-x64 macos-arm64 windows-x64; do
             oras push "$PACKAGE:main-$platform" \
-              --artifact-type application/vnd.algotradelib.prefix.v1 \
+              --artifact-type application/vnd.algotradelib.package.v1 \
               --annotation "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
               --annotation "org.opencontainers.image.revision=$GITHUB_SHA" \
-              "algotradelib-prefix-$platform.tar.gz:application/vnd.oci.image.layer.v1.tar+gzip"
+              "algotradelib-$platform.tar.gz:application/vnd.oci.image.layer.v1.tar+gzip"
           done

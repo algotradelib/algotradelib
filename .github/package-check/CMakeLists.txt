@@ -1,4 +1,4 @@
-# Built by .github/workflows/package.yaml against the unpacked prefix, before the prefix is pushed.
+# Built by .github/workflows/package.yaml against the unpacked package, before it is pushed.
 cmake_minimum_required(VERSION 3.10)
 project(package_check LANGUAGES CXX)
 

@@ -1,4 +1,4 @@
-// Uses each dependency the prefix carries, so a missing or unlinkable piece fails this build or this run.
+// Uses each dependency the package carries, so a missing or unlinkable piece fails this build or this run.
 #include <algotradelib/algotradelib>
 #include <algotradelib/analytics>
 
