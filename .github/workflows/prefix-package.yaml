@@ -1,0 +1,237 @@
+# The library, Boost and Eigen installed into one folder per OS, for the CI of other repositories. It is pushed
+# to GHCR as an OCI artifact, not a container image, so any runner can pull it:
+#
+#   ghcr.io/algotradelib/algotradelib-prefix:main-linux-x64     ubuntu-latest, GCC
+#   ghcr.io/algotradelib/algotradelib-prefix:main-macos-arm64   macos-latest, Apple Clang
+#   ghcr.io/algotradelib/algotradelib-prefix:main-windows-x64   windows-latest, MSVC (Release and Debug)
+#
+# Each holds algotradelib-prefix-<platform>.tar.gz, with one top-level prefix/ folder:
+#
+#   oras pull ghcr.io/algotradelib/algotradelib-prefix:main-linux-x64
+#   tar -xzf algotradelib-prefix-linux-x64.tar.gz
+#   cmake -S . -B build -DCMAKE_PREFIX_PATH="$PWD/prefix"
+#
+# OpenSSL 3 is not in it: it comes from the runner, as in cmake-check.yaml. Each prefix fits its runner's default
+# toolchain: GCC with libstdc++, Apple Clang with libc++, and MSVC with the shared CRT (/MD, /MDd).
+#
+# The annotation org.opencontainers.image.revision names the library commit; pin the digest for a fixed build.
+# The three tags are pushed one by one, so after a failed push they can name different commits.
+
+name: prefix-package
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'CMakeLists.txt'
+      - 'include/**'
+      - 'cmake/**'
+      - '.github/workflows/prefix-package.yaml'
+      - '.github/prefix-consumer/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'CMakeLists.txt'
+      - 'include/**'
+      - 'cmake/**'
+      - '.github/workflows/prefix-package.yaml'
+      - '.github/prefix-consumer/**'
+
+permissions:
+  contents: read
+
+env:
+  # The archives cmake/deps.cmake fetches; the first step fails if its URL and URL_HASH lines differ.
+  BOOST_URL: https://github.com/boostorg/boost/releases/download/boost-1.87.0/boost-1.87.0-cmake.tar.xz
+  BOOST_SHA256: 7da75f171837577a52bbf217e17f8ea576c7c246e4594d617bfde7fafd408be5
+  EIGEN_URL: https://gitlab.com/libeigen/eigen/-/archive/3.4.1/eigen-3.4.1.tar.gz
+  EIGEN_SHA256: b93c667d1b69265cdb4d9f30ec21f8facbbe8b307cf34c0b9942834c6d4fdbe2
+  PACKAGE: ghcr.io/algotradelib/algotradelib-prefix
+  ORAS_VERSION: 1.3.4
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, platform: linux-x64, configs: 'Release'}
+          - {os: macos-latest, platform: macos-arm64, configs: 'Release'}
+          # A /MDd (Debug) consumer cannot link a /MD (Release) Boost, so Windows carries both.
+          - {os: windows-latest, platform: windows-x64, configs: 'Release Debug'}
+
+    name: build (${{ matrix.platform }})
+
+    # A newer push cancels an older build, so the older one never reaches publish.
+    concurrency:
+      group: prefix-package-build-${{ github.ref }}-${{ matrix.platform }}
+      cancel-in-progress: true
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      PLATFORM: ${{ matrix.platform }}
+      CONFIGS: ${{ matrix.configs }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Pins match cmake/deps.cmake
+        run: |
+          # Matches only lines whose first word is the keyword, so a commented-out old pin does not count.
+          for pin in "URL $BOOST_URL" "URL_HASH SHA256=$BOOST_SHA256" "URL $EIGEN_URL" "URL_HASH SHA256=$EIGEN_SHA256"; do
+            awk -v key="${pin%% *}" -v value="${pin#* }" '$1 == key && $2 == value { found = 1 } END { exit !found }' \
+              cmake/deps.cmake || { echo "::error::cmake/deps.cmake has no line '$pin'"; exit 1; }
+          done
+
+      - name: OpenSSL (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+
+      - name: OpenSSL (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew list openssl@3 >/dev/null 2>&1 || HOMEBREW_NO_AUTO_UPDATE=1 brew install openssl@3
+          echo "OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+
+      - name: OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        run: echo "OPENSSL_ROOT_DIR=C:/Program Files/OpenSSL;C:/Program Files/OpenSSL/lib/VC/x64/MD" >> "$GITHUB_ENV"
+
+      # Paths stay relative, or absolute in the form CMake reads (pwd -W gives D:/a/... in Git Bash).
+      - name: Download
+        run: |
+          echo "PREFIX=$(pwd -W 2>/dev/null || pwd)/work/prefix" >> "$GITHUB_ENV"
+          mkdir -p work/src
+          curl -fsSL -o work/boost.tar.xz "$BOOST_URL"
+          curl -fsSL -o work/eigen.tar.gz "$EIGEN_URL"
+          [ "$(cmake -E sha256sum work/boost.tar.xz | cut -d' ' -f1)" = "$BOOST_SHA256" ]
+          [ "$(cmake -E sha256sum work/eigen.tar.gz | cut -d' ' -f1)" = "$EIGEN_SHA256" ]
+          cd work/src
+          cmake -E tar xf ../boost.tar.xz
+          cmake -E tar xf ../eigen.tar.gz
+
+      - name: Boost
+        run: |
+          cmake -S work/src/boost-1.87.0 -B work/build-boost \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DBOOST_INCLUDE_LIBRARIES="asio;beast;crc;json" \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+          for config in $CONFIGS; do
+            cmake --build work/build-boost --config "$config" --parallel
+            cmake --install work/build-boost --config "$config"
+          done
+
+      # Installed by its own CMake project, so the prefix has Eigen3Config.cmake. Its BLAS and LAPACK default to
+      # ON at top level, and the install then expects their libraries. No package registry entry, so the consumer
+      # check cannot find this build tree instead of the unpacked prefix.
+      - name: Eigen
+        run: |
+          cmake -S work/src/eigen-3.4.1 -B work/build-eigen \
+            -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+            -DCMAKE_EXPORT_PACKAGE_REGISTRY=OFF \
+            -DBUILD_TESTING=OFF \
+            -DEIGEN_BUILD_DOC=OFF \
+            -DEIGEN_BUILD_BLAS=OFF \
+            -DEIGEN_BUILD_LAPACK=OFF \
+            -DEIGEN_BUILD_DEMOS=OFF \
+            -DEIGEN_BUILD_PKGCONFIG=OFF
+          cmake --install work/build-eigen --config Release
+
+      - name: algotradelib
+        run: |
+          cmake -S . -B work/build-atl -DCMAKE_PREFIX_PATH="$PREFIX" -DCMAKE_INSTALL_PREFIX="$PREFIX"
+          cmake --install work/build-atl --config Release
+
+      # The installed prefix is removed before the check, so the consumer can only find the unpacked copy.
+      - name: Pack
+        run: |
+          (cd work && cmake -E tar czf "../algotradelib-prefix-$PLATFORM.tar.gz" prefix)
+          rm -rf work/prefix
+          ls -l "algotradelib-prefix-$PLATFORM.tar.gz"
+
+      - name: Consumer check
+        run: |
+          mkdir check
+          (cd check && cmake -E tar xzf "../algotradelib-prefix-$PLATFORM.tar.gz")
+          cmake -S .github/prefix-consumer -B check/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF \
+            -DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=OFF \
+            -DCMAKE_PREFIX_PATH="$(pwd -W 2>/dev/null || pwd)/check/prefix"
+          grep -E '^(algotradelib|Boost|boost_json|Eigen3)_DIR:' check/build/CMakeCache.txt
+          for config in $CONFIGS; do
+            cmake --build check/build --config "$config"
+            ctest --test-dir check/build -C "$config" --output-on-failure
+          done
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: algotradelib-prefix-${{ matrix.platform }}
+          path: algotradelib-prefix-${{ matrix.platform }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  # The only job with packages: write. It runs no repository code: no checkout, only the built tarballs.
+  publish:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    # One publisher at a time, never cancelled mid-push; the check below runs inside this lock.
+    concurrency:
+      group: prefix-package-publish
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: algotradelib-prefix-*
+          merge-multiple: true
+
+      # v2.0.2 is the first release whose version table lists ORAS 1.3.4.
+      - uses: oras-project/setup-oras@v2.0.2
+        with:
+          version: ${{ env.ORAS_VERSION }}
+
+      - name: Push
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s' "$TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # A rerun of an older commit must not replace a newer build. Publish only a commit still on main, and
+          # replace a tag only when its build is older than this commit or no longer on main.
+          on_main=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...main" --jq .status)
+          case "$on_main" in
+            identical|ahead) ;;
+            *) echo "::notice::$GITHUB_SHA is not on main ($on_main); nothing published."; exit 0 ;;
+          esac
+          for platform in linux-x64 macos-arm64 windows-x64; do
+            published=$(oras manifest fetch "$PACKAGE:main-$platform" 2>/dev/null \
+              | jq -r '.annotations["org.opencontainers.image.revision"] // empty' || true)
+            if [ -n "$published" ]; then
+              order=$(gh api "repos/$GITHUB_REPOSITORY/compare/$published...$GITHUB_SHA" --jq .status 2>/dev/null \
+                || echo unknown)
+              case "$order" in
+                identical|behind) echo "::notice::main-$platform holds $published, not older; skipped."; continue ;;
+              esac
+            fi
+            oras push "$PACKAGE:main-$platform" \
+              --artifact-type application/vnd.algotradelib.prefix.v1 \
+              --annotation "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+              --annotation "org.opencontainers.image.revision=$GITHUB_SHA" \
+              "algotradelib-prefix-$platform.tar.gz:application/vnd.oci.image.layer.v1.tar+gzip"
+          done
