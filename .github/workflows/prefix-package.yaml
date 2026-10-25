@@ -184,8 +184,8 @@ jobs:
       packages: write
 
     # One publisher at a time, so the head check and the pushes cannot interleave with another publisher's.
-    # queue: max keeps every waiting publisher (the default keeps one and cancels the rest), and none is
-    # cancelled mid-push.
+    # queue: max keeps up to 100 waiting publishers (the default keeps one and cancels the rest), and none is
+    # cancelled mid-push. Past 100, a new publisher is cancelled; dispatch the workflow on main to publish again.
     concurrency:
       group: prefix-package-publish
       cancel-in-progress: false
@@ -215,6 +215,9 @@ jobs:
             echo "::notice::$GITHUB_SHA is not main's head ($head), whose own run publishes; nothing pushed."
             exit 0
           fi
+          for platform in linux-x64 macos-arm64 windows-x64; do
+            [ -f "algotradelib-prefix-$platform.tar.gz" ] || { echo "::error::algotradelib-prefix-$platform.tar.gz is missing"; exit 1; }
+          done
           printf '%s' "$TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           for platform in linux-x64 macos-arm64 windows-x64; do
             oras push "$PACKAGE:main-$platform" \
