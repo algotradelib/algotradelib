@@ -19,16 +19,12 @@
 
 name: prefix-package
 
+# Every push to main runs, with no path filter: only a run of main's current head publishes, so the newest push
+# must always have a run of its own, including a docs-only commit or a reset to an older commit.
 on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths:
-      - 'CMakeLists.txt'
-      - 'include/**'
-      - 'cmake/**'
-      - '.github/workflows/prefix-package.yaml'
-      - '.github/prefix-consumer/**'
   pull_request:
     branches: [main]
     paths:
@@ -189,11 +185,8 @@ jobs:
       contents: read
       packages: write
 
-    # One publisher at a time, never cancelled mid-push; the check below runs inside this lock.
-    concurrency:
-      group: prefix-package-publish
-      cancel-in-progress: false
-
+    # No concurrency group: a group keeps one pending job, and a rerun could cancel a newer one waiting there. Two
+    # publishers can only overlap while both are main's head, so they push the same build.
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -211,24 +204,15 @@ jobs:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Only main's current head publishes, so a rerun of an older commit cannot replace a newer build. If the
+          # head cannot be read, the step fails and nothing is pushed.
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$head" != "$GITHUB_SHA" ]; then
+            echo "::notice::$GITHUB_SHA is not main's head ($head), whose own run publishes; nothing pushed."
+            exit 0
+          fi
           printf '%s' "$TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          # A rerun of an older commit must not replace a newer build. Publish only a commit still on main, and
-          # replace a tag only when its build is older than this commit or no longer on main.
-          on_main=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...main" --jq .status)
-          case "$on_main" in
-            identical|ahead) ;;
-            *) echo "::notice::$GITHUB_SHA is not on main ($on_main); nothing published."; exit 0 ;;
-          esac
           for platform in linux-x64 macos-arm64 windows-x64; do
-            published=$(oras manifest fetch "$PACKAGE:main-$platform" 2>/dev/null \
-              | jq -r '.annotations["org.opencontainers.image.revision"] // empty' || true)
-            if [ -n "$published" ]; then
-              order=$(gh api "repos/$GITHUB_REPOSITORY/compare/$published...$GITHUB_SHA" --jq .status 2>/dev/null \
-                || echo unknown)
-              case "$order" in
-                identical|behind) echo "::notice::main-$platform holds $published, not older; skipped."; continue ;;
-              esac
-            fi
             oras push "$PACKAGE:main-$platform" \
               --artifact-type application/vnd.algotradelib.prefix.v1 \
               --annotation "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
