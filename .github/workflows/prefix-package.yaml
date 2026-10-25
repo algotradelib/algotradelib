@@ -61,10 +61,8 @@ jobs:
 
     name: build (${{ matrix.platform }})
 
-    # A newer push cancels an older build, so the older one never reaches publish.
-    concurrency:
-      group: prefix-package-build-${{ github.ref }}-${{ matrix.platform }}
-      cancel-in-progress: true
+    # No concurrency group: cancellation goes by arrival, not by commit, so a rerun of an older commit could
+    # cancel the builds of main's head, which would then never publish.
 
     defaults:
       run:
@@ -185,8 +183,14 @@ jobs:
       contents: read
       packages: write
 
-    # No concurrency group: a group keeps one pending job, and a rerun could cancel a newer one waiting there. Two
-    # publishers can only overlap while both are main's head, so they push the same build.
+    # One publisher at a time, so the head check and the pushes cannot interleave with another publisher's.
+    # queue: max keeps every waiting publisher (the default keeps one and cancels the rest), and none is
+    # cancelled mid-push.
+    concurrency:
+      group: prefix-package-publish
+      cancel-in-progress: false
+      queue: max
+
     steps:
       - uses: actions/download-artifact@v8
         with:
