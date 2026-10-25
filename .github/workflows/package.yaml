@@ -17,7 +17,7 @@
 # The annotation org.opencontainers.image.revision names the library commit; pin the digest for a fixed build.
 # The three tags are pushed one by one, so after a failed push they can name different commits.
 
-name: prefix-package
+name: package
 
 # Every push to main runs, with no path filter: only a run of main's current head publishes, so the newest push
 # must always have a run of its own, including a docs-only commit or a reset to an older commit.
@@ -31,8 +31,8 @@ on:
       - 'CMakeLists.txt'
       - 'include/**'
       - 'cmake/**'
-      - '.github/workflows/prefix-package.yaml'
-      - '.github/prefix-consumer/**'
+      - '.github/workflows/package.yaml'
+      - '.github/package-check/**'
 
 permissions:
   contents: read
@@ -155,7 +155,7 @@ jobs:
         run: |
           mkdir check
           (cd check && cmake -E tar xzf "../algotradelib-prefix-$PLATFORM.tar.gz")
-          cmake -S .github/prefix-consumer -B check/build \
+          cmake -S .github/package-check -B check/build \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF \
             -DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=OFF \
@@ -187,7 +187,7 @@ jobs:
     # queue: max keeps up to 100 waiting publishers (the default keeps one and cancels the rest), and none is
     # cancelled mid-push. Past 100, a new publisher is cancelled; dispatch the workflow on main to publish again.
     concurrency:
-      group: prefix-package-publish
+      group: package-publish
       cancel-in-progress: false
       queue: max
 
