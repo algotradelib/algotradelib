@@ -65,10 +65,10 @@ struct HttpRequest {
   /** @brief The HTTP version, `11` for HTTP/1.1. */
   int version_{11};
   /**
-   * @brief The traffic class, for rate limiting, queue priority and, in `AsyncHttpClient`, the connection an order is written on.
+   * @brief The traffic class, for rate limiting and queue priority.
    *
    * The default, `REFERENCE`, has the lowest priority, so an unlabelled request never displaces an order.
-   * Set `TRADING` on every order placement, amendment and cancellation, with or without a rate-limit budget: only a `TRADING` request is always written on a fresh connection.
+   * Set `TRADING` on every order placement, amendment and cancellation, with or without a rate-limit budget: `HttpClientOptions::fresh_connection_for_orders_` applies to `TRADING` requests only.
    */
   RateLimitGroup group_{RateLimitGroup::REFERENCE};
 };
@@ -102,9 +102,22 @@ struct HttpClientOptions {
    * A GET is then sent again, but any other request is not, so its outcome would be unknown.
    * Such a request after a longer idle period is therefore sent on a fresh connection, at the cost of a TLS handshake (once per request in `AsyncHttpClient`; see its description).
    *
-   * In `AsyncHttpClient` an order (`RateLimitGroup::TRADING`) does not depend on this limit: it is always written on a connection no request has used, and this limit only bounds how long such an unused connection may wait for it.
+   * With `fresh_connection_for_orders_` on, an order (`RateLimitGroup::TRADING`) does not depend on this limit: it is written on a connection no request has used, and this limit only bounds how long such an unused connection may wait for it.
    */
   std::chrono::milliseconds unreplayed_idle_limit_{1000};
+
+  /**
+   * @brief Whether `AsyncHttpClient` writes every order (`RateLimitGroup::TRADING`) on a connection no request has used; empty (the default) lets the broker client choose.
+   *
+   * A server may close a connection that has carried requests without saying so, well inside its idle timeout; an order written into it is an order of unknown outcome, never sent again.
+   * On, each order is preceded by a TLS handshake whenever the connection has been used.
+   * Off, an order follows `unreplayed_idle_limit_` like any other request.
+   * Empty is off for `AsyncHttpClient` itself; `kis::KisClient` turns it on for a demo configuration and off for a real one (in October 2026 the KIS demo server closed such connections 0.66 s and 3 s after an order's reply; its real server was not observed doing so).
+   * Kiwoom and Toss leave it off.
+   * It makes a stale connection unlikely, not impossible: an unused connection can be closed too.
+   * The blocking `HttpClient` ignores it.
+   */
+  std::optional<bool> fresh_connection_for_orders_;
 };
 
 /**
@@ -357,9 +370,8 @@ private:
  * fresh connection. With a rate-limit budget, a request waits for admission, and fails with
  * `admission_deadline` if the wait would exceed the timeout.
  *
- * An order (`HttpRequest::group_` `TRADING`) is written only on a connection that no request has begun writing on.
- * When it is admitted and the connection has been used, or has sat unused longer than `unreplayed_idle_limit_` (once per request), the connection is replaced first and admission evaluated again, so each order costs a TLS handshake.
- * This makes a stale connection unlikely, not impossible: a server may still close an unused connection, and then the order's outcome is unknown as before.
+ * With `HttpClientOptions::fresh_connection_for_orders_` on, an order (`HttpRequest::group_` `TRADING`) is written only on a connection that no request has begun writing on.
+ * When it is admitted and the connection has been used, or has sat unused longer than `unreplayed_idle_limit_` (once per request), the connection is replaced first and admission evaluated again, so such an order costs a TLS handshake.
  *
  * A failed request's `BrokerError::reached_broker_` is `false` only if no attempt at it began
  * writing (a failure while resolving, connecting or handshaking, or a refusal in the queue). `true`
@@ -393,7 +405,7 @@ public:
   )
   : strand_(net::make_strand(std::move(executor))), resolver_(strand_), resolve_timer_(strand_),
     admission_timer_(strand_), context_(context), host_(std::move(host)),
-    port_(std::move(port)), options_(options) {
+    port_(std::move(port)), options_(options), fresh_orders_(options.fresh_connection_for_orders_.value_or(false)) {
     if (options_.rate_limit_) {
       limiter_.emplace(*options_.rate_limit_);
     }
@@ -597,6 +609,8 @@ private:
   // Whether any request has begun writing on the current connection.
   // Kept on the connection, not on a request: a request that outranks an order can be written on the connection opened for it.
   bool connection_used_{false};
+  // `HttpClientOptions::fresh_connection_for_orders_`, resolved once.
+  bool fresh_orders_{false};
 
   void enqueue(Pending pending) {
     if (stopped_) {
@@ -679,8 +693,8 @@ private:
     // A request that is never replayed is not written into a connection the server may have closed
     // while it sat idle; see `HttpClientOptions::unreplayed_idle_limit_`. Before admission, so the
     // reconnect spends no rate-limit slot of its own.
-    // An order has its own rule, applied just before it is written (`refresh_for_order`).
-    if (queue_.front().request_.group_ != RateLimitGroup::TRADING &&
+    // With `fresh_orders_` on, an order has its own rule, applied just before it is written (`refresh_for_order`).
+    if (!(fresh_orders_ && queue_.front().request_.group_ == RateLimitGroup::TRADING) &&
         queue_.front().request_.method_ != http::verb::get && !queue_.front().refreshed_ && idle_since_ &&
         std::chrono::steady_clock::now() - *idle_since_ > options_.unreplayed_idle_limit_) {
       queue_.front().refreshed_ = true;
@@ -754,13 +768,16 @@ private:
     start_write();
   }
 
-  // Replaces the connection if the front request is an order (`RateLimitGroup::TRADING`) and the connection cannot carry it; returns whether it did.
+  // With `fresh_orders_` on, replaces the connection if the front request is an order (`RateLimitGroup::TRADING`) and the connection cannot carry it; returns whether it did.
   //
   // An order is never replayed, so one written into a connection the server has closed is an order of unknown outcome.
   // Servers close a connection that has carried requests on their own schedule (KIS has closed one under a second after an order's reply), so an order is written only on a connection no request has begun writing on.
   // Checked just before the write, after any admission wait, so that a request written in between (a token request outranks an order and can overtake it) is seen.
   // A used connection is always replaced; an unused one only when it has sat longer than `HttpClientOptions::unreplayed_idle_limit_` and this request has not been given a fresh connection yet, which bounds the rule for a limit of zero.
   bool refresh_for_order() {
+    if (!fresh_orders_) {
+      return false;
+    }
     auto& front = queue_.front();
     if (front.request_.group_ != RateLimitGroup::TRADING) {
       return false;

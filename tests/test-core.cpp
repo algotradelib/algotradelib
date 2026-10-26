@@ -37,6 +37,10 @@ inline KisConfig live_config() {
 }
 
 struct KisClientTestAccess {
+  static network::HttpClientOptions transport_options(network::HttpClientOptions options, const KisConfig& config) {
+    return KisClient::transport_options(std::move(options), config);
+  }
+
   /** Points `client` at a loopback server in place of KIS's host; its configuration is unchanged. */
   static void connect(KisClient& client, ssl::context& context, const std::string& port) {
     client.http_ = std::make_shared<network::AsyncHttpClient>(client.strand_, context, "localhost", port);
@@ -1292,14 +1296,15 @@ TEST_CASE(
 }
 
 TEST_CASE(
-  "An order is written only on a connection no request has used",
+  "With fresh_connection_for_orders_ on, an order is written only on a connection no request has used",
   "[http][tls][retry][idle]"
 ) {
-  // A server can close a connection that has carried requests well inside its idle timeout (KIS closed one 0.66 s after an order's reply), and an order written into it is an order of unknown outcome.
-  // So an order (`RateLimitGroup::TRADING`) goes on a connection no request has begun writing on, whatever the idle limit says.
+  // A server can close a connection that has carried requests well inside its idle timeout (the KIS demo server closed one 0.66 s after an order's reply), and an order written into it is an order of unknown outcome.
+  // With the option on, an order (`RateLimitGroup::TRADING`) goes on a connection no request has begun writing on, whatever the idle limit says.
   const auto make_client = [](
     test::LocalHttpsServer& server, net::io_context& ioc, ssl::context& context, network::HttpClientOptions options
   ) {
+    options.fresh_connection_for_orders_ = true;
     test::trustLocalhostCertificate(context);
     return std::make_shared<network::AsyncHttpClient>(ioc.get_executor(), context, "localhost", server.port(), options);
   };
@@ -1422,6 +1427,40 @@ TEST_CASE(
     CHECK(server.positionsOnConnection("/order") == std::vector<std::size_t>{1});
   }
 
+  SECTION("off or empty, an order reuses a healthy connection inside the idle limit and takes a fresh one past it") {
+    for (const auto setting : {std::optional<bool>{}, std::optional<bool>{false}}) {
+      const auto read_then_order = [&](std::chrono::milliseconds limit, std::chrono::milliseconds pause) {
+        test::LocalHttpsServer server;
+        net::io_context ioc;
+        ssl::context context(ssl::context::tls_client);
+        test::trustLocalhostCertificate(context);
+        network::HttpClientOptions options;
+        options.unreplayed_idle_limit_ = limit;
+        options.fresh_connection_for_orders_ = setting;
+        auto client = std::make_shared<network::AsyncHttpClient>(ioc.get_executor(), context, "localhost", server.port(), options);
+        network::HttpRequest read;
+        read.target_ = "/read";
+        bool ok = false;
+        client->async_request(std::move(read), [&ok](Result<network::HttpResponse> result) {
+          ok = static_cast<bool>(result);
+        });
+        ioc.run();
+        REQUIRE(ok);
+        std::this_thread::sleep_for(pause);
+        ok = false;
+        client->async_request(order_to("/order"), [&ok](Result<network::HttpResponse> result) {
+          ok = static_cast<bool>(result);
+        });
+        ioc.restart();
+        ioc.run_for(std::chrono::seconds(10));
+        REQUIRE(ok);
+        return server.positionsOnConnection("/order");
+      };
+      CHECK(read_then_order(std::chrono::seconds(10), std::chrono::milliseconds(0)) == std::vector<std::size_t>{2});
+      CHECK(read_then_order(std::chrono::milliseconds(100), std::chrono::milliseconds(300)) == std::vector<std::size_t>{1});
+    }
+  }
+
   SECTION("an order whose connection fails while it is written is not sent again, and may have reached the broker") {
     test::LocalHttpsServer server;
     net::io_context ioc;
@@ -1438,6 +1477,22 @@ TEST_CASE(
     CHECK(outcome->error().reached_broker_);
     CHECK(server.requestCount("/drop-post") == 1);
   }
+}
+
+TEST_CASE("KIS writes orders on a fresh connection by default on demo only", "[kis][http]") {
+  kis::KisConfig demo;
+  demo.is_demo_ = true;
+  kis::KisConfig real;
+  real.is_demo_ = false;
+  using Access = kis::KisClientTestAccess;
+  CHECK(Access::transport_options({}, demo).fresh_connection_for_orders_ == std::optional<bool>{true});
+  CHECK(Access::transport_options({}, real).fresh_connection_for_orders_ == std::optional<bool>{false});
+  network::HttpClientOptions off;
+  off.fresh_connection_for_orders_ = false;
+  CHECK(Access::transport_options(off, demo).fresh_connection_for_orders_ == std::optional<bool>{false});
+  network::HttpClientOptions on;
+  on.fresh_connection_for_orders_ = true;
+  CHECK(Access::transport_options(on, real).fresh_connection_for_orders_ == std::optional<bool>{true});
 }
 
 TEST_CASE(

@@ -26,7 +26,7 @@ namespace network {
 enum class RateLimitGroup {
   /**
    * @brief Order placement, amendment and cancellation.
-   *   `AsyncHttpClient` writes such a request only on a fresh connection.
+   *   `HttpClientOptions::fresh_connection_for_orders_` applies to these requests.
    */
   TRADING,
   /** @brief Access-token issue and refresh. */

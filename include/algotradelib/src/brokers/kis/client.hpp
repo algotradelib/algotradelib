@@ -367,6 +367,7 @@ public:
    * @param context The TLS context; borrowed, and must outlive the client.
    * @param config The credentials and environment (real or demo).
    * @param options HTTP options (set `rate_limit_` to pace requests).
+   *   An empty `fresh_connection_for_orders_` is taken as on for a demo configuration and off for a real one.
    */
   KisClient(
     net::any_io_executor executor,
@@ -381,7 +382,7 @@ public:
         context,
         config_.rest_host(),
         config_.rest_port(),
-        options
+        transport_options(std::move(options), config_)
       )
     ) {}
 
@@ -883,6 +884,14 @@ public:
 
 private:
   friend struct KisClientTestAccess;
+
+  // The transport's options, with KIS's choice of `fresh_connection_for_orders_` when the caller made none: the demo server has closed a connection that carried an order, unannounced, under a second after the reply.
+  static network::HttpClientOptions transport_options(network::HttpClientOptions options, const KisConfig& config) {
+    if (!options.fresh_connection_for_orders_.has_value()) {
+      options.fresh_connection_for_orders_ = config.is_demo_;
+    }
+    return options;
+  }
 
   net::strand<net::any_io_executor> strand_;
   KisConfig config_;
