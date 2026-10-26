@@ -1313,7 +1313,7 @@ TEST_CASE(
   };
 
   SECTION("after a read, inside the idle limit, an order still takes a fresh connection") {
-    // The server closes the read's connection after 100 ms; the order follows 300 ms later, far inside a ten-second limit that would let any other request reuse it, however long the sleep oversleeps.
+    // The server closes the read's connection after 100 ms; the order follows 300 ms later, far inside a ten-second limit that would let any other request reuse it, which leaves a wide margin for scheduling delays.
     test::LocalHttpsServer server;
     server.set_idle_timeout(std::chrono::milliseconds(100));
     net::io_context ioc;
