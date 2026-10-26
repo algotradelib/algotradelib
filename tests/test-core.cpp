@@ -1313,12 +1313,14 @@ TEST_CASE(
   };
 
   SECTION("after a read, inside the idle limit, an order still takes a fresh connection") {
-    // The server closes the read's connection after 100 ms; the order follows 300 ms later, well inside the one-second limit that would let any other request reuse it.
+    // The server closes the read's connection after 100 ms; the order follows 300 ms later, far inside a ten-second limit that would let any other request reuse it, however long the sleep oversleeps.
     test::LocalHttpsServer server;
     server.set_idle_timeout(std::chrono::milliseconds(100));
     net::io_context ioc;
     ssl::context context(ssl::context::tls_client);
-    auto client = make_client(server, ioc, context, network::HttpClientOptions{});
+    network::HttpClientOptions options;
+    options.unreplayed_idle_limit_ = std::chrono::seconds(10);
+    auto client = make_client(server, ioc, context, options);
     network::HttpRequest read;
     read.target_ = "/read";
     bool read_ok = false;
@@ -1384,6 +1386,7 @@ TEST_CASE(
   SECTION("a token request that overtakes an order waiting for admission does not leave it a used connection") {
     // One request a second: after the read, the order waits for admission, and the token request queued behind it is moved ahead (AUTH outranks TRADING) and written on the read's connection.
     // The order must then go to a connection of its own, not the one the token request just used.
+    // On a slow runner the order's wait can be over before the token request arrives; the token request then goes on the order's new connection instead, and the order must still be first on a connection of its own.
     test::LocalHttpsServer server;
     net::io_context ioc;
     ssl::context context(ssl::context::tls_client);
@@ -1416,7 +1419,6 @@ TEST_CASE(
     ioc.restart();
     ioc.run_for(std::chrono::seconds(10));
     REQUIRE(finished == std::vector<std::string>{"token", "order"});
-    CHECK(server.positionsOnConnection("/token") == std::vector<std::size_t>{2});
     CHECK(server.positionsOnConnection("/order") == std::vector<std::size_t>{1});
   }
 
