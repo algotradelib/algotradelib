@@ -13,11 +13,14 @@ it, and an opt-in pacer that decides what goes out and in what order.
 - A failed GET may be replayed once after reconnect. POST requests are never
   replayed automatically. Before a POST is admitted, a connection idle longer than
   `HttpClientOptions::unreplayed_idle_limit_` (one second) is replaced by a fresh
-  one, once per request: both KIS hosts close an idle connection after five
-  seconds, and an order written into one failed as an unknown outcome KIS never
-  received. If the request then waits for rate-limit admission longer than that
-  limit, it is still written on the fresh connection. The refresh costs a TLS
-  handshake; Kiwoom sends its reads as POSTs, so most paced Kiwoom reads pay it.
+  one, once per request. If the request then waits for rate-limit admission longer
+  than that limit, it is still written on the fresh connection. The refresh costs a
+  TLS handshake; Kiwoom sends its reads as POSTs, so most paced Kiwoom reads pay it.
+- An order (a request whose `HttpRequest::group_` is `RateLimitGroup::TRADING`, which every broker client sets on placements, amendments and cancellations) is written only on a connection no request has used: when it is admitted, a used connection is replaced, and so, once, is an unused one older than `unreplayed_idle_limit_`.
+  Each order costs a TLS handshake (about 20 to 30 ms to the KIS and Kiwoom hosts).
+  A server can close a connection that has carried requests well inside its advertised idle timeout: in October 2026 KIS closed one 0.66 s and another 3 s after an order's reply, and an order written into such a connection is an unknown outcome the broker never received.
+  An unused connection is not guaranteed to be open either; it is only far less likely to be closed.
+  An adapter of your own must set `TRADING` on its order requests to get this, with or without a rate-limit budget.
 - Rate-limit refusals surface as `ErrorCategory::RATE_LIMIT` with whatever hints
   the broker published, and requests are paced against the budget described below.
 - TLS sends SNI and installs a host-name check. For the peer to be verified, the

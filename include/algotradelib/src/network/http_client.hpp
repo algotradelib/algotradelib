@@ -65,10 +65,10 @@ struct HttpRequest {
   /** @brief The HTTP version, `11` for HTTP/1.1. */
   int version_{11};
   /**
-   * @brief The traffic class, for rate limiting and queue priority.
+   * @brief The traffic class, for rate limiting, queue priority and, in `AsyncHttpClient`, the connection an order is written on.
    *
-   * The default, `REFERENCE`, has the lowest priority, so an unlabelled request never displaces an
-   * order.
+   * The default, `REFERENCE`, has the lowest priority, so an unlabelled request never displaces an order.
+   * Set `TRADING` on every order placement, amendment and cancellation, with or without a rate-limit budget: only a `TRADING` request is always written on a fresh connection.
    */
   RateLimitGroup group_{RateLimitGroup::REFERENCE};
 };
@@ -98,11 +98,11 @@ struct HttpClientOptions {
    * @brief How long a kept-alive connection may sit idle and still carry a request other than a GET
    *   (one second by default).
    *
-   * A server closes idle connections on its own schedule (KIS after five seconds), and a request
-   * written into a closed connection fails. A GET is then sent again, but any other request (which
-   * may be an order) is not, so its outcome would be unknown. Such a request after a longer idle
-   * period is therefore sent on a fresh connection, at the cost of a TLS handshake (once per request
-   * in `AsyncHttpClient`; see its description).
+   * A server closes idle connections on its own schedule, and a request written into a closed connection fails.
+   * A GET is then sent again, but any other request is not, so its outcome would be unknown.
+   * Such a request after a longer idle period is therefore sent on a fresh connection, at the cost of a TLS handshake (once per request in `AsyncHttpClient`; see its description).
+   *
+   * In `AsyncHttpClient` an order (`RateLimitGroup::TRADING`) does not depend on this limit: it is always written on a connection no request has used, and this limit only bounds how long such an unused connection may wait for it.
    */
   std::chrono::milliseconds unreplayed_idle_limit_{1000};
 };
@@ -357,6 +357,10 @@ private:
  * fresh connection. With a rate-limit budget, a request waits for admission, and fails with
  * `admission_deadline` if the wait would exceed the timeout.
  *
+ * An order (`HttpRequest::group_` `TRADING`) is written only on a connection that no request has begun writing on.
+ * When it is admitted and the connection has been used, or has sat unused longer than `unreplayed_idle_limit_` (once per request), the connection is replaced first and admission evaluated again, so each order costs a TLS handshake.
+ * This makes a stale connection unlikely, not impossible: a server may still close an unused connection, and then the order's outcome is unknown as before.
+ *
  * A failed request's `BrokerError::reached_broker_` is `false` only if no attempt at it began
  * writing (a failure while resolving, connecting or handshaking, or a refusal in the queue). `true`
  * means a write was begun, by this attempt or an earlier one (a retried GET), so the broker may have
@@ -588,8 +592,11 @@ private:
   std::optional<RateLimitController> limiter_;
   std::optional<http::request<http::string_body>> active_request_;
   std::optional<http::response_parser<http::string_body>> parser_;
-  // When the connection last finished a response and was kept alive; empty while there is none.
+  // When the connection last finished a response and was kept alive, or finished its handshake; empty while there is none.
   std::optional<std::chrono::steady_clock::time_point> idle_since_;
+  // Whether any request has begun writing on the current connection.
+  // Kept on the connection, not on a request: a request that outranks an order can be written on the connection opened for it.
+  bool connection_used_{false};
 
   void enqueue(Pending pending) {
     if (stopped_) {
@@ -672,7 +679,9 @@ private:
     // A request that is never replayed is not written into a connection the server may have closed
     // while it sat idle; see `HttpClientOptions::unreplayed_idle_limit_`. Before admission, so the
     // reconnect spends no rate-limit slot of its own.
-    if (queue_.front().request_.method_ != http::verb::get && !queue_.front().refreshed_ && idle_since_ &&
+    // An order has its own rule, applied just before it is written (`refresh_for_order`).
+    if (queue_.front().request_.group_ != RateLimitGroup::TRADING &&
+        queue_.front().request_.method_ != http::verb::get && !queue_.front().refreshed_ && idle_since_ &&
         std::chrono::steady_clock::now() - *idle_since_ > options_.unreplayed_idle_limit_) {
       queue_.front().refreshed_ = true;
       disconnect();
@@ -682,7 +691,9 @@ private:
       return;
     }
     if (!limiter_) {
-      start_write();
+      if (!refresh_for_order()) {
+        start_write();
+      }
       return;
     }
 
@@ -724,6 +735,11 @@ private:
       return;
     }
 
+    // Admitted.
+    // An order still goes to a fresh connection first if this one cannot carry it; the admission is evaluated again after the handshake, and its wait is recorded then, handshake included.
+    if (refresh_for_order()) {
+      return;
+    }
     if (auto& waiting_since = queue_.front().waiting_since_) {
       limiter_->record_delay(
         group,
@@ -736,6 +752,28 @@ private:
     admission_timer_.cancel();
     limiter_->acquire(group);
     start_write();
+  }
+
+  // Replaces the connection if the front request is an order (`RateLimitGroup::TRADING`) and the connection cannot carry it; returns whether it did.
+  //
+  // An order is never replayed, so one written into a connection the server has closed is an order of unknown outcome.
+  // Servers close a connection that has carried requests on their own schedule (KIS has closed one under a second after an order's reply), so an order is written only on a connection no request has begun writing on.
+  // Checked just before the write, after any admission wait, so that a request written in between (a token request outranks an order and can overtake it) is seen.
+  // A used connection is always replaced; an unused one only when it has sat longer than `HttpClientOptions::unreplayed_idle_limit_` and this request has not been given a fresh connection yet, which bounds the rule for a limit of zero.
+  bool refresh_for_order() {
+    auto& front = queue_.front();
+    if (front.request_.group_ != RateLimitGroup::TRADING) {
+      return false;
+    }
+    const bool aged = idle_since_ &&
+      std::chrono::steady_clock::now() - *idle_since_ > options_.unreplayed_idle_limit_;
+    if (!connection_used_ && (!aged || front.refreshed_)) {
+      return false;
+    }
+    front.refreshed_ = true;
+    disconnect();
+    start_resolve();
+    return true;
   }
 
   void start_resolve() {
@@ -810,6 +848,7 @@ private:
         // The idle clock starts here too: a request can wait for admission on a connection that has
         // carried nothing yet, and the server's idle timeout runs all the same.
         self->idle_since_ = std::chrono::steady_clock::now();
+        self->connection_used_ = false;
         self->pump();
       }
     );
@@ -819,6 +858,7 @@ private:
     // Marked here, which is the only moment this can be said truthfully: everything before is
     // resolving, connecting and handshaking, none of which puts the request anywhere.
     queue_.front().sent_ = true;
+    connection_used_ = true;
     const auto& request_value = queue_.front().request_;
     active_request_.emplace(request_value.method_, request_value.target_, request_value.version_);
     active_request_->set(http::field::host, host_header());
@@ -920,6 +960,7 @@ private:
     active_request_.reset();
     state_ = State::DISCONNECTED;
     idle_since_.reset();
+    connection_used_ = false;
   }
 
   std::string host_header() const { return make_host_header(host_, port_); }

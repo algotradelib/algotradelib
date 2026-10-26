@@ -24,7 +24,10 @@ namespace network {
  *   that builds a request sets it.
  */
 enum class RateLimitGroup {
-  /** @brief Order placement, amendment and cancellation. */
+  /**
+   * @brief Order placement, amendment and cancellation.
+   *   `AsyncHttpClient` writes such a request only on a fresh connection.
+   */
   TRADING,
   /** @brief Access-token issue and refresh. */
   AUTH,

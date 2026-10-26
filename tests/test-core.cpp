@@ -1292,6 +1292,153 @@ TEST_CASE(
 }
 
 TEST_CASE(
+  "An order is written only on a connection no request has used",
+  "[http][tls][retry][idle]"
+) {
+  // A server can close a connection that has carried requests well inside its idle timeout (KIS closed one 0.66 s after an order's reply), and an order written into it is an order of unknown outcome.
+  // So an order (`RateLimitGroup::TRADING`) goes on a connection no request has begun writing on, whatever the idle limit says.
+  const auto make_client = [](
+    test::LocalHttpsServer& server, net::io_context& ioc, ssl::context& context, network::HttpClientOptions options
+  ) {
+    test::trustLocalhostCertificate(context);
+    return std::make_shared<network::AsyncHttpClient>(ioc.get_executor(), context, "localhost", server.port(), options);
+  };
+  const auto order_to = [](std::string target) {
+    network::HttpRequest order;
+    order.method_ = http::verb::post;
+    order.target_ = std::move(target);
+    order.body_ = "order-like-payload";
+    order.group_ = network::RateLimitGroup::TRADING;
+    return order;
+  };
+
+  SECTION("after a read, inside the idle limit, an order still takes a fresh connection") {
+    // The server closes the read's connection after 100 ms; the order follows 300 ms later, well inside the one-second limit that would let any other request reuse it.
+    test::LocalHttpsServer server;
+    server.set_idle_timeout(std::chrono::milliseconds(100));
+    net::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    auto client = make_client(server, ioc, context, network::HttpClientOptions{});
+    network::HttpRequest read;
+    read.target_ = "/read";
+    bool read_ok = false;
+    client->async_request(std::move(read), [&read_ok](Result<network::HttpResponse> result) {
+      read_ok = static_cast<bool>(result);
+    });
+    ioc.run();
+    REQUIRE(read_ok);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    std::optional<Result<network::HttpResponse>> outcome;
+    client->async_request(order_to("/order"), [&outcome](Result<network::HttpResponse> result) {
+      outcome.emplace(std::move(result));
+    });
+    ioc.restart();
+    ioc.run_for(std::chrono::seconds(10));
+    REQUIRE(outcome.has_value());
+    REQUIRE(*outcome);
+    CHECK(outcome->value().body() == "/order");
+    CHECK(server.positionsOnConnection("/order") == std::vector<std::size_t>{1});
+    CHECK(server.connectionCount() == 2);
+  }
+
+  SECTION("an order that is a new client's first request opens one connection") {
+    test::LocalHttpsServer server;
+    net::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    auto client = make_client(server, ioc, context, network::HttpClientOptions{});
+    bool ok = false;
+    client->async_request(order_to("/order"), [&ok](Result<network::HttpResponse> result) {
+      ok = static_cast<bool>(result);
+    });
+    ioc.run_for(std::chrono::seconds(10));
+    CHECK(ok);
+    CHECK(server.positionsOnConnection("/order") == std::vector<std::size_t>{1});
+    CHECK(server.connectionCount() == 1);
+  }
+
+  SECTION("orders back to back each take their own connection, with any idle limit") {
+    for (const auto limit : {std::chrono::milliseconds(1000), std::chrono::milliseconds(0), std::chrono::milliseconds(-1)}) {
+      test::LocalHttpsServer server;
+      net::io_context ioc;
+      ssl::context context(ssl::context::tls_client);
+      network::HttpClientOptions options;
+      options.unreplayed_idle_limit_ = limit;
+      auto client = make_client(server, ioc, context, options);
+      int completed = 0;
+      for (int i = 0; i < 3; ++i) {
+        client->async_request(order_to("/order"), [&completed](Result<network::HttpResponse> result) {
+          REQUIRE(result);
+          ++completed;
+        });
+      }
+      // Bounded, so a client that reconnects for ever fails the test instead of hanging it.
+      ioc.run_for(std::chrono::seconds(10));
+      CHECK(completed == 3);
+      CHECK(server.positionsOnConnection("/order") == std::vector<std::size_t>{1, 1, 1});
+      // At a limit of zero or below the first order's own new connection counts as aged once.
+      CHECK(server.connectionCount() == (limit.count() > 0 ? 3u : 4u));
+    }
+  }
+
+  SECTION("a token request that overtakes an order waiting for admission does not leave it a used connection") {
+    // One request a second: after the read, the order waits for admission, and the token request queued behind it is moved ahead (AUTH outranks TRADING) and written on the read's connection.
+    // The order must then go to a connection of its own, not the one the token request just used.
+    test::LocalHttpsServer server;
+    net::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    network::HttpClientOptions options;
+    options.rate_limit_ = network::RateLimitBudget{1, 1, 0};
+    options.unreplayed_idle_limit_ = std::chrono::seconds(5);
+    auto client = make_client(server, ioc, context, options);
+    network::HttpRequest read;
+    read.target_ = "/read";
+    bool read_ok = false;
+    client->async_request(std::move(read), [&read_ok](Result<network::HttpResponse> result) {
+      read_ok = static_cast<bool>(result);
+    });
+    ioc.run();
+    REQUIRE(read_ok);
+
+    std::vector<std::string> finished;
+    client->async_request(order_to("/order"), [&finished](Result<network::HttpResponse> result) {
+      REQUIRE(result);
+      finished.push_back("order");
+    });
+    network::HttpRequest token;
+    token.method_ = http::verb::post;
+    token.target_ = "/token";
+    token.group_ = network::RateLimitGroup::AUTH;
+    client->async_request(std::move(token), [&finished](Result<network::HttpResponse> result) {
+      REQUIRE(result);
+      finished.push_back("token");
+    });
+    ioc.restart();
+    ioc.run_for(std::chrono::seconds(10));
+    REQUIRE(finished == std::vector<std::string>{"token", "order"});
+    CHECK(server.positionsOnConnection("/token") == std::vector<std::size_t>{2});
+    CHECK(server.positionsOnConnection("/order") == std::vector<std::size_t>{1});
+  }
+
+  SECTION("an order whose connection fails while it is written is not sent again, and may have reached the broker") {
+    test::LocalHttpsServer server;
+    net::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    auto client = make_client(server, ioc, context, network::HttpClientOptions{});
+    std::optional<Result<network::HttpResponse>> outcome;
+    client->async_request(order_to("/drop-post"), [&outcome](Result<network::HttpResponse> result) {
+      outcome.emplace(std::move(result));
+    });
+    ioc.run_for(std::chrono::seconds(10));
+    REQUIRE(outcome.has_value());
+    REQUIRE_FALSE(*outcome);
+    CHECK(outcome->error().category_ == ErrorCategory::TRANSPORT);
+    CHECK(outcome->error().reached_broker_);
+    CHECK(server.requestCount("/drop-post") == 1);
+  }
+}
+
+TEST_CASE(
   "Blocking HTTP retries GET once without exception-driven control flow",
   "[http][tls][blocking][retry]"
 ) {
