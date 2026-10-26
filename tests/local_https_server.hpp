@@ -191,6 +191,15 @@ public:
     return found == scripted_counts_.end() ? 0 : found->second;
   }
 
+  /**
+   * Where each request for `target` stood on its connection, in arrival order: 1 for the first request a connection carried, 2 for the second, and so on.
+   */
+  std::vector<std::size_t> positionsOnConnection(std::string_view target) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto found = positions_.find(std::string(target));
+    return found == positions_.end() ? std::vector<std::size_t>{} : found->second;
+  }
+
   /** The body of the last request for `target`, or empty. */
   std::string lastBody(std::string_view target) const {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -222,6 +231,7 @@ private:
   std::map<std::string, std::size_t> scripted_counts_;
   std::map<std::string, std::map<std::string, std::string>> last_headers_;
   std::map<std::string, std::string> last_bodies_;
+  std::map<std::string, std::vector<std::size_t>> positions_;
   std::thread thread_;
 
   void run() noexcept {
@@ -260,6 +270,7 @@ private:
 
     beast::flat_buffer buffer;
     bool served = false;
+    std::size_t position = 0;
     while (!stopped_) {
       // Between requests only, and only when nothing is decrypted and waiting: a request already in
       // the buffer is not lost. This server does not support pipelining.
@@ -284,6 +295,10 @@ private:
 
       const std::string target(request.target());
       const auto count = recordRequest(target);
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        positions_[target].push_back(++position);
+      }
       if ((target == "/drop-get-once" && count == 1) || target == "/drop-post") {
         close(stream);
         return;
