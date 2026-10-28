@@ -5043,6 +5043,8 @@ TEST_CASE(
     // so the series is open-stamped and the bar ends a minute after its timestamp.
     const auto series = kis::KisClientTestAccess::compose_bars(query, bars);
     CHECK(series.stamp_ == BarStamp::OPEN);
+    // The raw time is kept: 09:32:00 KST is 00:32:00 UTC.
+    CHECK(format_iso8601_utc(series.bars_.front().timestamp_) == "2026-03-25T00:32:00Z");
     CHECK(strategy::bar_period_end(series.bars_.front(), series.interval_, series.stamp_) ==
           series.bars_.front().timestamp_ + std::chrono::minutes(1));
   }

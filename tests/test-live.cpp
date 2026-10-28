@@ -2372,6 +2372,50 @@ TEST_CASE("a bar whose period has not ended is not fed, and its close is fed onc
   REQUIRE(live_runner.strategy().closes_ == std::vector<std::string>{"70500", "72000"});
 }
 
+TEST_CASE("a minute bar stamped at its open is fed once its minute has ended", "[forming]") {
+  // KIS and Kiwoom stamp a minute bar with the start of its minute, and the newest row of a read is
+  // the minute in progress. A minute's end comes from its interval's length, not from a daily rule.
+  using LoopRunner = runner::Runner<
+    RecordsCloses, WithWorkingOrders, FakeBroker,
+    live::SessionExecutor<FakeSession<WithWorkingOrders>>
+  >;
+  const auto minutes = [](const char* second_close) {
+    auto series = daily_with_forming(second_close);
+    series.interval_ = BarInterval::ONE_MINUTE;
+    series.bars_[1].timestamp_ = series.bars_[0].timestamp_ + std::chrono::minutes(1);
+    return series;
+  };
+  FakeSession<WithWorkingOrders> session;
+  session.set_bars(minutes("71000"));
+  LoopRunner live_runner(
+    RecordsCloses{}, {}, 512, live::SessionExecutor<FakeSession<WithWorkingOrders>>(session)
+  );
+  live_runner.context().set_instrument(samsung_reference());
+  live::SessionSource<FakeSession<WithWorkingOrders>> source(session, {samsung()});
+  runner::PollSchedule schedule;
+  schedule.bars_ = std::chrono::seconds(10);
+  schedule.tick_ = std::chrono::seconds(10);
+  schedule.calendar_.reset();
+  // Thirty seconds into the second minute: the first has ended, the second has not.
+  const auto inside = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 300) +
+    std::chrono::minutes(1) + std::chrono::seconds(30);
+  runner::PollingLoop<LoopRunner, decltype(source), runner::ManualClock> loop(
+    live_runner, source, schedule, runner::ManualClock{inside});
+  loop.allow_unbounded_portfolio_age();
+  loop.allow_absent_portfolio();
+  runner::StopSource stop;
+
+  loop.run(stop, 2);
+  REQUIRE(live_runner.strategy().closes_ == std::vector<std::string>{"70500"});
+  CHECK(source.bars_not_yet_closed() == 1);
+
+  // The minute ends at 72,000; the next poll feeds it once, and later polls do not repeat it.
+  session.set_bars(minutes("72000"));
+  loop.clock().advance(std::chrono::seconds(40));
+  loop.run(stop, 3);
+  REQUIRE(live_runner.strategy().closes_ == std::vector<std::string>{"70500", "72000"});
+}
+
 namespace {
 
 /** 00:00 KST on day `day` after the epoch, which is how every shipped adapter stamps a daily bar. */

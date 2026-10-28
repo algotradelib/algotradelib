@@ -804,7 +804,7 @@ inline std::optional<BrokerError> unsupported_bar_interval(BarInterval interval)
   error.broker_code_ = "unsupported_interval";
   error.message_ =
     std::string("this Kiwoom client does not request ") + std::string(bar_interval_name(interval)) +
-    " bars yet (Kiwoom serves them through ka10080's tic_scope; how it stamps them is not established)";
+    " bars yet (Kiwoom serves them through ka10080's tic_scope, which this adapter has not observed)";
   return error;
 }
 

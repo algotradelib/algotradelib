@@ -49,6 +49,8 @@ not finished; `live::SessionSource` holds such a bar back until its period end
 (`strategy::bar_period_end`) has passed the instant the loop reported, so a strategy is shown only
 finished bars and each exactly once, with its final close. For a daily bar stamped at local midnight
 that is the following midnight.
+A minute query ends the same way: KIS and Kiwoom answer the minute in progress, stamped with its
+start, and it is fed once that minute has ended.
 
 ## The price grid is the library's own
 
