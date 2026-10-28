@@ -111,8 +111,9 @@ static_assert(
  * @brief Which edge of its period a bar's timestamp marks.
  *
  * Brokers differ: Toss stamps a minute bar at its close (covering `[t - 1m, t)`) and a daily bar
- * at local midnight, its open; KIS reports a daily bar by its trading date. Reading an
- * open-stamped bar as close-stamped looks ahead by one bar.
+ * at local midnight, its open; KIS and Kiwoom stamp a minute bar at the start of its minute and a
+ * daily bar by its trading date, both opens. Reading an open-stamped bar as close-stamped looks
+ * ahead by one bar.
  */
 enum class BarStamp {
   /** @brief The timestamp is the first instant of the period. */

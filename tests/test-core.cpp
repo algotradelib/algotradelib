@@ -37,6 +37,13 @@ inline KisConfig live_config() {
 }
 
 struct KisClientTestAccess {
+  /** The series a bar walk delivers once `descending` (newest first) has been read. */
+  static BarSeries compose_bars(BarQuery query, std::vector<Bar> descending) {
+    KisClient::BarOperation operation(std::move(query), KisClient::BarsHandler());
+    operation.descending_ = std::move(descending);
+    return KisClient::compose_bars(operation);
+  }
+
   static network::HttpClientOptions transport_options(network::HttpClientOptions options, const KisConfig& config) {
     return KisClient::transport_options(std::move(options), config);
   }
@@ -5032,6 +5039,12 @@ TEST_CASE(
     REQUIRE(bars.size() == 1);
     REQUIRE(bars.front().close_ == Decimal64::parse("72050"));
     REQUIRE(bars.front().volume_ == Decimal64::parse("15200"));
+    // `stck_cntg_hour` is the start of the minute (a day's continuous trading ends with a 15:19 row),
+    // so the series is open-stamped and the bar ends a minute after its timestamp.
+    const auto series = kis::KisClientTestAccess::compose_bars(query, bars);
+    CHECK(series.stamp_ == BarStamp::OPEN);
+    CHECK(strategy::bar_period_end(series.bars_.front(), series.interval_, series.stamp_) ==
+          series.bars_.front().timestamp_ + std::chrono::minutes(1));
   }
 
   SECTION("blank padding rows are skipped rather than parsed") {

@@ -389,7 +389,7 @@ public:
   /**
    * @brief Requests bars, reading KIS pages until `count_` bars are collected.
    *
-   * Minute bars are stamped at the close, other intervals at the open. Paging stops early after 50
+   * Every bar is stamped at its open: a minute bar at the start of its minute. Paging stops early after 50
    * pages, when a page returns no bars, or (for minutes) at the start of the trading day. A period page
    * asks for a date window of 100 bars' worth of calendar days, so an empty one means KIS has no older
    * bars or none in that window (a halt longer than the window). A series may therefore be shorter
@@ -1272,8 +1272,8 @@ private:
   // Normalizes one KIS bar.
   //
   // A period bar is reported by its trading date, so its timestamp marks the
-  // period's open. A minute bar carries `stck_cntg_hour`, the execution time the
-  // bar was aggregated to, so it marks the close.
+  // period's open. A minute bar's `stck_cntg_hour` is the start of its minute: a
+  // day's continuous trading (to 15:20:00) ends with a 15:19 row and no 15:20 row.
   //
   // `mod_yn` marks a trading day on which nothing traded, so the bar has no open.
   // An absent open is preserved as absent rather than becoming zero or the
@@ -1313,25 +1313,31 @@ private:
 
   // Reverses the accumulation, trims to the requested count, and completes.
   void finish_bars(const std::shared_ptr<BarOperation>& operation) {
+    auto series = compose_bars(*operation);
+    deliver(std::move(operation->completion_), Result<BarSeries>(std::move(series)));
+  }
+
+  // The series a finished walk delivers.
+  static BarSeries compose_bars(BarOperation& operation) {
     BarSeries series;
-    series.instrument_ = operation->query_.instrument_;
-    series.interval_ = operation->query_.interval_;
-    // A period bar is reported by its trading date, so its timestamp marks the
-    // period's open; a minute bar carries the execution time it aggregated to.
-    series.stamp_ = operation->minutes_ ? BarStamp::CLOSE : BarStamp::OPEN;
+    series.instrument_ = operation.query_.instrument_;
+    series.interval_ = operation.query_.interval_;
+    // A period bar is reported by its trading date and a minute bar by the start of its
+    // minute: both mark the period's open.
+    series.stamp_ = BarStamp::OPEN;
     series.currency_ = Currency::krw();
-    series.adjusted_ = operation->query_.adjusted_;
+    series.adjusted_ = operation.query_.adjusted_;
     series.received_at_ = std::chrono::system_clock::now();
 
-    auto& bars = operation->descending_;
-    if (static_cast<int>(bars.size()) > operation->query_.count_) {
-      bars.resize(static_cast<std::size_t>(operation->query_.count_));
+    auto& bars = operation.descending_;
+    if (static_cast<int>(bars.size()) > operation.query_.count_) {
+      bars.resize(static_cast<std::size_t>(operation.query_.count_));
     }
     series.bars_.assign(bars.rbegin(), bars.rend());
-    if (!series.bars_.empty() && static_cast<int>(series.bars_.size()) < operation->query_.count_) {
+    if (!series.bars_.empty() && static_cast<int>(series.bars_.size()) < operation.query_.count_) {
       series.next_cursor_ = format_iso8601_utc(series.bars_.front().timestamp_);
     }
-    deliver(std::move(operation->completion_), Result<BarSeries>(std::move(series)));
+    return series;
   }
 
   // Requests reference data, which KIS addresses differently from market data.

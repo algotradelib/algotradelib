@@ -2092,6 +2092,18 @@ TEST_CASE("a calendar request to Kiwoom is refused rather than answered", "[kiwo
 // The bar walk
 // ---------------------------------------------------------------------------------------------
 
+TEST_CASE("a Kiwoom minute series is stamped at the start of each minute", "[kiwoom][bars]") {
+  // ka10080's cntr_tm is "봉의 시작시간": a session's first rows are 08:00:00 and 09:00:00, and the
+  // minute in progress carries its own minute. Read as closes, the forming minute would be fed as closed.
+  BarQuery query;
+  query.instrument_ = samsung();
+  query.interval_ = BarInterval::ONE_MINUTE;
+  query.count_ = 3;
+  const auto series = kiwoom::KiwoomClientTestAccess::walk(query, {{3, std::nullopt}});
+  REQUIRE(series);
+  CHECK(series.value().stamp_ == BarStamp::OPEN);
+}
+
 TEST_CASE("a bar walk reports a cursor exactly when it can be acted on", "[kiwoom][bars]") {
   BarQuery query;
   query.instrument_ = samsung();

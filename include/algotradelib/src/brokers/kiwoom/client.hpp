@@ -2330,14 +2330,10 @@ private:
     // it carries: the field defaults to `true`, so a raw request whose result never set it would
     // hand a caller unadjusted prices labelled as adjusted.
     series.adjusted_ = operation.query_.adjusted_;
-    // The same convention the KIS adapter records: Kiwoom stamps a minute bar with the time the
-    // period ended and a period bar with its trading date, which is the period's open. Neither
-    // specification states it in words, and an off-by-one-bar lookahead is the defect `BarStamp`
-    // exists to make visible, so the two adapters agree on the reading rather than differing
-    // silently.
-    series.stamp_ = operation.query_.interval_ == BarInterval::ONE_MINUTE ?
-      BarStamp::CLOSE :
-      BarStamp::OPEN;
+    // Every bar is stamped at its open: a period bar by its trading date, and a minute bar by the
+    // start of its minute (`ka10080`'s `cntr_tm` is "봉의 시작시간"; a session's first rows are 08:00:00
+    // and 09:00:00, and the minute in progress carries its own minute).
+    series.stamp_ = BarStamp::OPEN;
 
     auto& rows = operation.descending_;
     if (static_cast<int>(rows.size()) > operation.query_.count_) {

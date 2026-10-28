@@ -25,8 +25,9 @@ is bounded by a page budget and stops on an empty page.
 ## Two conventions that prevent a silent lookahead
 
 **`BarSeries::stamp_` says which edge of its periods the timestamps mark.** Toss
-stamps a minute bar at its close and a daily bar at local midnight; KIS reports a
-period bar by trading date and a minute bar by execution time. The convention travels
+stamps a minute bar at its close and a daily bar at local midnight; KIS and Kiwoom
+stamp a minute bar at the start of its minute and a period bar by its trading date,
+so every bar from them is open-stamped. The convention travels
 in the value because a timestamp alone cannot reveal it, and reading one as the other
 is a lookahead. `BarSeries::ascending()` makes the ordering invariant checkable — every
 broker sends newest first and its adapter reverses once.
