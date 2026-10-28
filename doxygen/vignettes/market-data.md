@@ -51,8 +51,8 @@ finished bars and each exactly once, with its final close. For a daily bar stamp
 that is the following midnight.
 A minute query ends the same way: KIS and Kiwoom answer the minute in progress, stamped with its
 start, and it is fed once that minute has ended.
-So a live minute read asks for at least two bars: a read of one would answer only the minute in
-progress at every poll, and none would be fed.
+So a live minute read asks for at least two bars: while trading continues, a read of one answers
+only the minute in progress, and no closed minute is fed.
 
 ## The price grid is the library's own
 
