@@ -40,6 +40,8 @@ struct KisClientTestAccess {
   /** The series a bar walk delivers once `descending` (newest first) has been read. */
   static BarSeries compose_bars(BarQuery query, std::vector<Bar> descending) {
     KisClient::BarOperation operation(std::move(query), KisClient::BarsHandler());
+    // As `start_bars` sets it for a real request.
+    operation.minutes_ = operation.query_.interval_ == BarInterval::ONE_MINUTE;
     operation.descending_ = std::move(descending);
     return KisClient::compose_bars(operation);
   }

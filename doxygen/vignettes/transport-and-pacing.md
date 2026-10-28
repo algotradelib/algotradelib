@@ -61,10 +61,12 @@ call is running on the same client: at startup, up to the calendar's 20 seconds.
 **Kiwoom, measured on a demo account (2026-10-07):** a second request to the same API within a few
 milliseconds of the first is refused (`1700`, with the API's id); 300 ms apart it was served, and
 different APIs back to back were too. A quote and a price-limit read are the same API (`ka10007`).
-Kiwoom publishes its limits on its Open API introduction page, not in the specification: per account (token),
-5 order and 5 inquiry requests a second, and on a demo account 1 a second for each API; from 2026-10-29 18:00 KST
-the balance inquiry (`kt00018`, which holdings use) allows 3 a second.
-An unpaced client reading several holdings pages back to back can exceed that.
+Kiwoom publishes its limits on its Open API introduction page and in its notices, not in the specification
+(notice 49, as of 2026-07-02): on a real account, per account (token), 5 domestic-stock order and 5 inquiry
+requests a second; on a demo account, 1 a second for each API.
+From 2026-10-29 18:00 KST the real-account balance inquiry (`kt00018`, which holdings use) allows 3 a second
+(notice 66); a demo account stays at 1.
+An unpaced client reading several holdings pages back to back can exceed either.
 The Kiwoom clients of `example-live-program` and
 `example-kiwoom-account` pace at the same `RateLimitBudget{1, 1, 0}` (`kiwoom_credentials::paced_options` in
 `examples/kiwoom_credentials.hpp`).
