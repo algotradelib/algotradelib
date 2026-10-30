@@ -1,14 +1,17 @@
-// What a failed allocation leaves behind in the lookup tables a wide replay builds. This executable replaces the
-// global allocator so a test can make its n-th allocation fail, and walks n from the first allocation to the
-// last one the operation makes.
+// What a failed allocation leaves behind in the lookup tables a wide replay builds, and in the descriptors a file
+// journal opens. This executable replaces the global allocator so a test can make its n-th allocation fail, and
+// walks n from the first allocation to the last one the operation makes.
 
 #include <algotradelib/backtest>
+#include <algotradelib/runner>
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <new>
 #include <optional>
@@ -16,6 +19,11 @@
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
+
+#if !defined(_WIN32)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -618,3 +626,87 @@ TEST_CASE("a wide bucket moved away leaves its source empty and usable") {
     check_destination(destination);
   }
 }
+
+#if !defined(_WIN32)
+namespace {
+
+// Counts the process's open descriptors.
+long open_descriptors() {
+  const long limit = ::sysconf(_SC_OPEN_MAX);
+  const long last = limit > 0 ? std::min(limit, 65536L) : 1024L;
+  long count = 0;
+  for (long descriptor = 0; descriptor < last; ++descriptor) {
+    if (::fcntl(static_cast<int>(descriptor), F_GETFD) != -1) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+runner::JournalEntry journal_entry() {
+  runner::JournalEntry entry;
+  entry.id_ = "run-1";
+  entry.action_ = runner::JournalAction::PLACE;
+  entry.outcome_ = runner::JournalOutcome::PENDING;
+  entry.recorded_at_ = std::chrono::system_clock::now();
+  entry.instrument_ = named("NEW");
+  entry.side_ = OrderSide::BUY;
+  entry.quantity_ = Decimal64::parse("1");
+  entry.price_ = Decimal64::parse("1000");
+  return entry;
+}
+
+} // namespace
+
+TEST_CASE("a journal refused for another writer's lock closes its descriptor after a failed allocation") {
+  const std::string path = "atl-test-allocation-failure-locked.jsonl";
+  std::remove(path.c_str());
+  {
+    runner::FileJournal first(path, "test:account");
+    REQUIRE(first.open());
+    const auto before = open_descriptors();
+    std::string rejection;
+    const int failures = fail_each_allocation(
+      [&] {
+        runner::FileJournal second(path, "test:account");
+        rejection = second.rejection();
+      },
+      [&] { CHECK(open_descriptors() == before); }
+    );
+    if (failures == 0) {
+      // macOS's sanitizer runtime interposes the allocator the standard library's compiled strings call.
+      SKIP("no allocation the refusal makes reaches the replaced allocator here");
+    }
+    CHECK(rejection.find("one journal, one writer") != std::string::npos);
+    CHECK(open_descriptors() == before);
+    CHECK(first.append(journal_entry()));
+  }
+  {
+    runner::FileJournal third(path, "test:account");
+    REQUIRE(third.open());
+    CHECK(third.replay().entries_.size() == 1);
+  }
+  std::remove(path.c_str());
+}
+
+TEST_CASE("a journal that fails to open for an allocation closes its descriptor and releases its lock") {
+  const std::string path = "atl-test-allocation-failure-open.jsonl";
+  std::remove(path.c_str());
+  const auto before = open_descriptors();
+  bool opened = false;
+  const int failures = fail_each_allocation(
+    [&] {
+      runner::FileJournal journal(path, "test:account");
+      opened = journal.open();
+    },
+    [&] {
+      CHECK(open_descriptors() == before);
+      std::remove(path.c_str());
+    }
+  );
+  CHECK(failures > 0);
+  CHECK(opened);
+  CHECK(open_descriptors() == before);
+  std::remove(path.c_str());
+}
+#endif

@@ -478,6 +478,49 @@ inline bool known_entry_key(std::string_view key) {
   return false;
 }
 
+#if !defined(_WIN32)
+/**
+ * @brief Owns a file descriptor and closes it on destruction unless released.
+ */
+class DescriptorOwner {
+public:
+  /**
+   * @brief Takes `descriptor`, which may be negative for none.
+   * @param descriptor The descriptor.
+   */
+  explicit DescriptorOwner(int descriptor) noexcept : descriptor_(descriptor) {}
+
+  /** @brief Closes the descriptor unless it was released. */
+  ~DescriptorOwner() {
+    if (descriptor_ >= 0) {
+      ::close(descriptor_);
+    }
+  }
+
+  DescriptorOwner(const DescriptorOwner&) = delete;
+  DescriptorOwner& operator=(const DescriptorOwner&) = delete;
+
+  /**
+   * @brief Returns the descriptor, still owned.
+   * @return The descriptor, or negative for none.
+   */
+  int get() const noexcept { return descriptor_; }
+
+  /**
+   * @brief Gives up ownership without closing.
+   * @return The descriptor.
+   */
+  int release() noexcept {
+    const int descriptor = descriptor_;
+    descriptor_ = -1;
+    return descriptor;
+  }
+
+private:
+  int descriptor_;
+};
+#endif
+
 } // namespace journal_detail
 
 /**
@@ -1155,35 +1198,31 @@ public:
     handle_.reset(std::fopen(path_.c_str(), "ab"));
 #else
     // Locked before anything reads or repairs the file, and on the descriptor that becomes the
-    // write handle: the lock lives exactly as long as `open()` is true, every refusal below closes
-    // it, and moving the journal moves it with the handle.
-    const int descriptor = ::open(path_.c_str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0666);
-    if (descriptor < 0) {
+    // write handle: the lock lives exactly as long as `open()` is true, and moving the journal moves
+    // it with the handle. Every refusal or exception below closes the descriptor (a held lock
+    // outliving a failed open would refuse this program's own retry), until the handle takes it.
+    journal_detail::DescriptorOwner descriptor(
+      ::open(path_.c_str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0666)
+    );
+    if (descriptor.get() < 0) {
       const int error = errno;
       rejection_ = "the journal at " + path_ + " could not be opened (" + std::strerror(error) + ")";
       return;
     }
-    if (!lock(descriptor)) {
-      ::close(descriptor);
+    if (!lock(descriptor.get())) {
       return;
     }
-    try {
-      if (!claim_file()) {
-        ::close(descriptor);
-        return;
-      }
-      repair_torn_tail();
-    } catch (...) {
-      // A held lock outliving a failed open would refuse this program's own retry.
-      ::close(descriptor);
-      throw;
+    if (!claim_file()) {
+      return;
     }
-    handle_.reset(::fdopen(descriptor, "ab"));
-    if (!open()) {
+    repair_torn_tail();
+    handle_.reset(::fdopen(descriptor.get(), "ab"));
+    if (open()) {
+      descriptor.release();
+    } else {
       const int error = errno;
       rejection_ =
         "the journal at " + path_ + " could not be opened for appending (" + std::strerror(error) + ")";
-      ::close(descriptor);
     }
 #endif
     if (!open()) {
