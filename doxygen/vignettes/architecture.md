@@ -51,6 +51,7 @@ graph TD
   KT --> NW
   MK --> BR
   MK --> BT
+  MK --> ST
   LV -.binds.-> KT
   NW --> X
 
