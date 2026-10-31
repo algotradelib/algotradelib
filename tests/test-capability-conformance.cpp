@@ -1,5 +1,6 @@
 #include <algotradelib/kis>
 #include <algotradelib/kiwoom>
+#include <algotradelib/mock>
 #include <algotradelib/tossinvest>
 
 #include "mock_broker.hpp"
@@ -28,6 +29,7 @@ ATL_ASSERT_BROKER(tossinvest::TossClient);
 ATL_ASSERT_BROKER(tossinvest::TossBlockingClient);
 ATL_ASSERT_BROKER(kiwoom::KiwoomClient);
 ATL_ASSERT_BROKER(kiwoom::KiwoomBlockingClient);
+ATL_ASSERT_BROKER(mock::MockClient);
 ATL_ASSERT_BROKER(vendor::MockClient);
 ATL_ASSERT_BROKER(vendor::MockBlockingClient);
 
