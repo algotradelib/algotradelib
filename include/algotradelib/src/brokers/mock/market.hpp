@@ -58,8 +58,9 @@ struct MarketSettings {
    *   (`backtest::ReplayConfig::calendar_`).
    *
    * Empty by default: then every local date from the first bar to the last, open where any instrument
-   * has a bar and closed where none has, in the first instrument's country; dates outside are
-   * uncovered.
+   * has a bar and closed where none has, for the country of the first instrument that has bars (KR when
+   * none has); dates outside are uncovered. The local dates are `session_`'s, one offset for every
+   * instrument; give the loop the same window (`runner::PollingLoop::set_session_window`).
    */
   std::optional<TradingCalendar> calendar_;
 };
