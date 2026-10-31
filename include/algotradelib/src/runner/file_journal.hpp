@@ -99,7 +99,9 @@ inline bool flush_to_disk(std::FILE* handle) noexcept {
  * Windows' `gmtime_s` needs. So a paper market's clock may run over history
  * from 1970-01-02 on. A line without a checksum, which only a file begun before
  * checksums can hold, keeps the earlier bound, 2020-01-01: no paper market
- * wrote one, and for it the bound is the only protection.
+ * wrote one, and for it the bound is the only protection. What the lower
+ * bound no longer catches on a checksummed line is a writer's mis-stamp after
+ * the epoch's first day; such a line still has to pass its checksum.
  *
  * The upper bound, 2200-01-01, covers a paper market's dates to the end of 2100
  * and stays inside what `system_clock` holds at nanoseconds (2262): an extreme

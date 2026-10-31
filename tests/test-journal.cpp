@@ -1473,8 +1473,9 @@ TEST_CASE("a line's instant is read from 1970-01-02 to 2200, and from 2020 on a 
   CHECK(reads(line_at(second_day_1970)));
   CHECK(reads(line_at(year_2014)));
   CHECK(reads(line_at(year_2200)));
+  // The upper edge is pinned at year_2200 + 1; a value near INT64_MAX cannot go through the writer, whose conversion to
+  // the clock's own ticks would overflow.
   CHECK_FALSE(reads(line_at(year_2200 + 1)));
-  CHECK_FALSE(reads(line_at(std::numeric_limits<std::int64_t>::max())));
 
   // Without a checksum, as a release before checksums wrote: the bound is its only protection, and stays.
   CHECK_FALSE(reads(without_checksum(line_at(year_2014))));
