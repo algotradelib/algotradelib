@@ -352,6 +352,33 @@ TEST_CASE("the mock market refuses what it cannot model", "[mock]") {
   CHECK_THROWS_AS(market.advance_to(utc(2026, 3, 1, 0, 0)), std::invalid_argument);
 }
 
+TEST_CASE("the mock market publishes the trading days of its bars or the calendar it was given", "[mock]") {
+  // Monday and Wednesday: Tuesday is closed, Thursday is not covered.
+  auto gap = daily({
+    bar(utc(2026, 3, 2, 6, 30), "100", "100", "100", "100"),
+    bar(utc(2026, 3, 4, 6, 30), "100", "100", "100", "100"),
+  });
+  mock::Market market({gap}, cash("1", utc(2026, 3, 5, 0, 0)));
+  const auto calendar = market.calendar(Country::KR);
+  REQUIRE(calendar);
+  CHECK(calendar.value().received_at_ == utc(2026, 3, 5, 0, 0));
+  CHECK(calendar.value().is_trading_day(Date{2026, 3, 2}) == std::optional<bool>(true));
+  CHECK(calendar.value().is_trading_day(Date{2026, 3, 3}) == std::optional<bool>(false));
+  CHECK(calendar.value().is_trading_day(Date{2026, 3, 4}) == std::optional<bool>(true));
+  CHECK_FALSE(calendar.value().is_trading_day(Date{2026, 3, 5}));
+  CHECK(code_of(market.calendar(Country::US).error()) == "unsupported_market");
+
+  auto settings = cash("1", {});
+  TradingCalendar given;
+  given.days_ = {TradingDay{Date{2026, 3, 3}, true}};
+  settings.calendar_ = given;
+  mock::Market stated({gap}, settings);
+  CHECK(stated.calendar(Country::KR).value().is_trading_day(Date{2026, 3, 3}) == std::optional<bool>(true));
+  CHECK(stated.calendar(Country::KR).value().days_.size() == 1);
+  mock::Market empty({}, cash("1", {}));
+  CHECK(empty.calendar(Country::KR).value().days_.empty());
+}
+
 TEST_CASE("the mock market answers the reference data it was given or its default", "[mock]") {
   Instrument given;
   given.id_ = samsung();
@@ -529,6 +556,7 @@ TEST_CASE("the mock broker is a paper broker bound like any other", "[mock]") {
   CHECK(bound.session_.rate_limit_stats() == nullptr);
   CHECK(bound.session_.quote(samsung()).value().last_price_ == dec("105"));
   CHECK(bound.session_.instrument(samsung()));
+  CHECK(bound.session_.calendar(Country::KR).value().is_trading_day(Date{2026, 3, 3}) == std::optional<bool>(true));
 
   // Refused before the client: a trigger price, an idempotency key, a modification, a partial
   // cancellation, a filtered history, an interval no market holds.
@@ -579,6 +607,7 @@ TEST_CASE("mock faults answer the calls they are scripted for", "[mock]") {
     client.fail_next(mock::Call::QUOTE, transport());
     client.fail_next(mock::Call::BARS, transport());
     client.fail_next(mock::Call::INSTRUMENT, transport());
+    client.fail_next(mock::Call::CALENDAR, transport());
     client.fail_next(mock::Call::HOLDINGS, transport());
     client.fail_next(mock::Call::BUYING_POWER, transport());
     client.fail_next(mock::Call::CANCEL, transport());
@@ -588,6 +617,7 @@ TEST_CASE("mock faults answer the calls they are scripted for", "[mock]") {
     query.instrument_ = samsung();
     CHECK_FALSE(client.bars(query));
     CHECK_FALSE(client.instrument(samsung()));
+    CHECK_FALSE(client.calendar(Country::KR));
     CHECK_FALSE(client.holdings());
     CHECK_FALSE(client.buying_power(Currency{"KRW"}));
     CHECK_FALSE(client.cancel(mock::MockAmendment{"1"}));
@@ -701,20 +731,18 @@ struct ScratchFile {
 TEST_CASE("a live run on the mock trades as a backtest of the same bars", "[mock][acceptance]") {
   // The fixture the parity holds in: close-stamped daily bars, a poll on every close (a 15-minute
   // cadence from a start at a close), the run starting just after the first close so nothing is
-  // warm-up, a strategy that decides from the bar alone, and the same reference data, cash, fill
-  // model and limits.
+  // warm-up, a strategy that decides from the bar alone, and the same reference data, calendar, cash,
+  // fill model and limits. Orders are permitted after the close only, where a daily bar is seen: the
+  // live loop knows the phase from the mock's calendar.
   const auto bars = forty_days();
-  Instrument reference;
-  reference.id_ = samsung();
-  reference.currency_ = Currency{"KRW"};
-  reference.lot_size_ = dec("1");
-  reference.price_rule_ = PriceRule::unconstrained();
+  mock::Market market({bars}, cash("1000000", bars.bars_.front().timestamp_));
   strategy::RiskLimits limits;
-  limits.permitted_phases_ = std::nullopt;
+  limits.permitted_phases_ = std::vector<strategy::MarketPhase>{strategy::MarketPhase::POST_CLOSE};
 
   backtest::ReplayConfig config;
   config.cash_ = dec("1000000");
-  config.instruments_ = {reference};
+  config.instruments_ = {market.instrument(samsung()).value()};
+  config.calendar_ = market.calendar(Country::KR).value();
   config.limits_ = limits;
   backtest::Backtester<Flips> replay(Flips{}, config);
   for (const auto& one : bars.bars_) {
@@ -724,7 +752,6 @@ TEST_CASE("a live run on the mock trades as a backtest of the same bars", "[mock
   const auto& replayed = replay.result().executions_;
   REQUIRE(replayed.size() >= 6);
 
-  mock::Market market({bars}, cash("1000000", bars.bars_.front().timestamp_), {reference});
   MockSession bound(market);
   const ScratchFile journal("atl-test-mock-acceptance.jsonl");
   const ScratchFile control("atl-test-mock-acceptance.stop");
@@ -735,7 +762,6 @@ TEST_CASE("a live run on the mock trades as a backtest of the same bars", "[mock
   settings.schedule_.bars_ = std::chrono::minutes(15);
   settings.schedule_.holdings_ = std::chrono::minutes(15);
   settings.schedule_.working_orders_ = std::chrono::minutes(15);
-  settings.schedule_.calendar_.reset();
   settings.bar_count_ = 5;
   settings.maximum_portfolio_age_ = std::chrono::minutes(30);
   settings.journal_path_ = journal.path_;

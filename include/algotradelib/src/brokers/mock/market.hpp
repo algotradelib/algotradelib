@@ -4,13 +4,16 @@
 #include "../../backtest/ledger.hpp"
 #include "../../strategy/event.hpp"
 
+#include "../../core/calendar.hpp"
 #include "../../core/market_data.hpp"
 #include "../../core/types.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -50,6 +53,15 @@ struct MarketSettings {
    *   (`backtest::ReplayConfig::session_`): a `DAY` order lives for one session.
    */
   strategy::SessionWindow session_{strategy::SessionWindow::krx()};
+  /**
+   * @brief The trading days the market publishes, as a backtest is given them
+   *   (`backtest::ReplayConfig::calendar_`).
+   *
+   * Empty by default: then every local date from the first bar to the last, open where any instrument
+   * has a bar and closed where none has, in the first instrument's country; dates outside are
+   * uncovered.
+   */
+  std::optional<TradingCalendar> calendar_;
 };
 
 /**
@@ -69,9 +81,10 @@ struct MarketSettings {
  * Unlike a backtest, the market never fills an order against a bar that began before the order was
  * accepted, even where a backtest cannot tell and allows it (`ReplayResult::unchecked_fill_causality_`).
  *
- * Not modelled: trading hours (an order is accepted at any instant), a calendar, price bands, partial
- * fills, volume, settlement, short selling, interest. Cash is kept in one currency, and may go below
- * zero when a market buy fills above the price it reserved.
+ * Not modelled: trading hours (an order is accepted at any instant; the calendar and the session
+ * window only date the market), price bands, partial fills, volume, settlement, short selling,
+ * interest. Cash is kept in one currency, and may go below zero when a market buy fills above the
+ * price it reserved.
  *
  * If a fill cannot be costed (the fill model's commission has no rate for its date) or recorded (its
  * amount does not fit an exact decimal), or a position cannot be valued at a bar's close, the market
@@ -137,6 +150,7 @@ public:
       }
       found->reference_ = std::move(reference);
     }
+    calendar_ = settings_.calendar_ ? *settings_.calendar_ : calendar_of_bars();
   }
 
   /**
@@ -266,6 +280,21 @@ public:
       return refused<Instrument>("unknown_instrument", "the mock market has no bars of this instrument");
     }
     return Result<Instrument>(listing->reference_);
+  }
+
+  /**
+   * @brief Answers a calendar request.
+   * @param country The market.
+   * @return The trading days (`MarketSettings::calendar_`, or those of the bars), `received_at_` now;
+   *   `INVALID_ARGUMENT` `unsupported_market` for another market.
+   */
+  Result<TradingCalendar> calendar(Country country) const {
+    if (country != calendar_.country_) {
+      return refused<TradingCalendar>("unsupported_market", "the mock market publishes one market's calendar");
+    }
+    auto answer = calendar_;
+    answer.received_at_ = now_;
+    return Result<TradingCalendar>(std::move(answer));
   }
 
   /**
@@ -521,6 +550,35 @@ private:
     return Result<T>(std::move(error));
   }
 
+  /** Returns the trading days of the bars: open on every local date with a bar, closed between them. */
+  TradingCalendar calendar_of_bars() const {
+    using Days = std::chrono::duration<std::int64_t, std::ratio<86400>>;
+    const auto& session = settings_.session_;
+    const auto local_day = [&](std::chrono::system_clock::time_point at) {
+      return std::chrono::floor<Days>(at + session.utc_offset_).time_since_epoch().count();
+    };
+    TradingCalendar calendar;
+    std::set<std::int64_t> open;
+    for (const auto& listing : listings_) {
+      if (listing.series_.bars_.empty()) {
+        continue;
+      }
+      if (open.empty()) {
+        calendar.country_ = listing.series_.instrument_.country_;
+      }
+      for (const auto& bar : listing.series_.bars_) {
+        open.insert(local_day(bar.timestamp_));
+      }
+    }
+    if (open.empty()) {
+      return calendar;
+    }
+    for (auto day = *open.begin(); day <= *open.rbegin(); ++day) {
+      calendar.days_.push_back(TradingDay{date_from_epoch_days(day), open.count(day) > 0});
+    }
+    return calendar;
+  }
+
   /** Returns the listing of an instrument, or `nullptr`. */
   const Listing* find_listing(const InstrumentId& instrument) const {
     for (const auto& listing : listings_) {
@@ -724,6 +782,7 @@ private:
   backtest::ReplayLedger ledger_;
   std::vector<Listing> listings_;
   std::vector<MarketOrder> orders_;
+  TradingCalendar calendar_;
   std::uint64_t last_id_{0};
   std::optional<std::string> halted_;
 };

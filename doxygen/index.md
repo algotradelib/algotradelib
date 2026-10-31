@@ -293,7 +293,7 @@ the environment, and the KIS and Kiwoom ones also from a credentials directory, 
 | KIS | market data, calendar, reference data, holdings, buying power, orders (including stop-limit), order history | default (`KIS_DEMO=0` for live) |
 | Kiwoom | market data, reference data, buying power, orders (including stop-limit) and order history through the session; **no calendar**; **holdings refuse** until you state what its `kt00018` inquiry covers (below); **a strategy runner needs a stated route** (below) | default (`KIWOOM_DEMO=0` for live) |
 | Toss | market data, calendar, reference data, holdings, buying power, orders (no stop-limit), order history | **none** |
-| Mock | an in-memory market over bars you give: quotes, reference data, holdings, buying power, market and limit orders, order history; **no calendar** | always: it reaches no broker |
+| Mock | an in-memory market over bars you give: quotes, calendar, reference data, holdings, buying power, market and limit orders, order history | always: it reaches no broker |
 
 **KIS and Kiwoom are demo unless you say live.** Live — the one choice that moves real money — has
 to be written down: `KIS_DEMO=0` / `KIWOOM_DEMO=0`, `"demo": false` in a credential file, or
@@ -312,10 +312,11 @@ a strategy with a replay or a dry run, or on a KIS or Kiwoom demo account, first
 **The mock broker reaches no broker.**
 `<algotradelib/mock>` (included by no other umbrella) is a broker client like the others, `mock::MockClient` behind a `BlockingSession`, over a `mock::Market`: bars you give, a clock you drive (`mock::MarketClock`, which a polling loop waits on), and one account's cash, holdings and orders.
 Orders fill by the backtest's rule (`backtest::NextBarFillModel`, with its costs) against the first bar that began at or after the instant the market accepted them, and a `DAY` order expires as in a replay.
-It models no trading hours, calendar, price band, partial fill, settlement or short sale, keeps cash in one currency, and persists nothing.
+Reference data and the trading days are what you give it, or defaults: a lot of one share and no price grid, and every date with a bar open.
+It models no trading hours, price band, partial fill, settlement or short sale, keeps cash in one currency, and persists nothing.
 Its environment is always `"paper"` (`mock::environment`): it is not a broker's demo account.
 `mock::MockClient` can fail a call, lose a reply or repeat a stale read on purpose, for testing what a program does with an unknown outcome.
-With no calendar the loop's market phase is unknown, so a run clears `RiskLimits::permitted_phases_` or installs a calendar on its runner.
+Its calendar gives the loop a market phase, so `RiskLimits::permitted_phases_` applies as with a real broker: a daily bar stamped at the close is seen after the close (`POST_CLOSE`), which the default (`OPEN` only) does not permit.
 The library's tests run one example: daily bars, a poll on every close, nothing fed as warm-up, a strategy that decides from each bar alone, and the same reference data, cash, fill model and limits; there a live run on it fills as a backtest of the same bars.
 That is not a general guarantee: a poll that lands after a bar's close accepts an order later, and so may fill it later, and a callback or a check that only one side has can make them differ.
 

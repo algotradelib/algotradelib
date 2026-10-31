@@ -20,8 +20,9 @@ namespace algotradelib {
 /**
  * @brief The mock broker's adaptation: what it implements, and the thunks to `mock::MockClient`.
  *
- * It lists working orders (open orders only), reports buying power and carries the sellable quantity
- * on its holdings rows. It refuses before calling the client: a trigger price, an idempotency key, a
+ * It lists working orders (open orders only), reports buying power, carries the sellable quantity on
+ * its holdings rows, and answers reference data and a calendar (what the market was given, or its
+ * defaults). It refuses before calling the client: a trigger price, an idempotency key, a
  * modification (`replace_unsupported`), a partial cancellation (`partial_cancel_unsupported`), and a
  * history filtered by symbol or limited to a row count.
  */
@@ -95,11 +96,11 @@ struct BrokerTraits<mock::MockClient> {
   static constexpr bool has_reference_data = true;
   /** @brief No reference data. */
   static constexpr bool has_batch_reference_data = false;
-  /** @brief No calendar. */
-  static constexpr bool has_calendar = false;
-  /** @brief No calendar. */
-  static constexpr bool has_calendar_range = false;
-  /** @brief No calendar. */
+  /** @brief Publishes a calendar: what the market was given, or the dates of its bars. */
+  static constexpr bool has_calendar = true;
+  /** @brief One answer covers every date the market has. */
+  static constexpr bool has_calendar_range = true;
+  /** @brief No session hours. */
   static constexpr bool has_calendar_sessions = false;
 
   /**
@@ -125,6 +126,12 @@ struct BrokerTraits<mock::MockClient> {
     }
     return refusal("unsupported_interval", "the mock broker holds minute to daily bars only");
   }
+
+  /**
+   * @brief Admits every calendar request; the market refuses another country itself.
+   * @return Nothing.
+   */
+  static std::optional<BrokerError> validate_calendar(Country, std::optional<Date>) { return std::nullopt; }
 
   /**
    * @brief Refuses an idempotency key, before the client.
@@ -210,6 +217,16 @@ struct BrokerTraits<mock::MockClient> {
    * @return The client's answer.
    */
   static Result<Instrument> instrument(Client& client, InstrumentId instrument) { return client.instrument(instrument); }
+
+  /**
+   * @brief Forwards a calendar request; the answer covers every date the market has, whatever `from`.
+   * @param client The client.
+   * @param country The market.
+   * @return The client's answer.
+   */
+  static Result<TradingCalendar> calendar(Client& client, Country country, std::optional<Date>) {
+    return client.calendar(country);
+  }
 
   /**
    * @brief Forwards a bar request.

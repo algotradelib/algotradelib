@@ -27,6 +27,8 @@ enum class Call {
   BARS,
   /** @brief `instrument`. */
   INSTRUMENT,
+  /** @brief `calendar`. */
+  CALENDAR,
   /** @brief `holdings`. */
   HOLDINGS,
   /** @brief `buying_power`. */
@@ -155,6 +157,18 @@ public:
       return Result<Instrument>(std::move(fault->error_));
     }
     return market_->instrument(instrument);
+  }
+
+  /**
+   * @brief Answers a calendar request.
+   * @param country The market.
+   * @return As `Market::calendar`.
+   */
+  Result<TradingCalendar> calendar(Country country) {
+    if (auto fault = take(Call::CALENDAR)) {
+      return Result<TradingCalendar>(std::move(fault->error_));
+    }
+    return market_->calendar(country);
   }
 
   /**
