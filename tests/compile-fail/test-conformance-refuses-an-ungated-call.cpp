@@ -9,6 +9,6 @@
 
 using namespace algotradelib;
 
-void ungated(BrokerSession<mock::MockClient>& session) {
+void ungated(BrokerSession<vendor::MockClient>& session) {
   session.async_depth(InstrumentId{}, [](Result<DepthSnapshot>) {});
 }

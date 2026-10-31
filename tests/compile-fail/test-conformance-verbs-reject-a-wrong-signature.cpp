@@ -7,14 +7,14 @@
 namespace probe {
 
 /** An adapter whose claimed reference-data thunk forgets the instrument it is asked about. */
-struct WrongArityReferenceData : mock::MockClient {};
+struct WrongArityReferenceData : vendor::MockClient {};
 
 } // namespace probe
 
 namespace algotradelib {
 
 template <>
-struct BrokerTraits<probe::WrongArityReferenceData> : BrokerTraits<mock::MockClient> {
+struct BrokerTraits<probe::WrongArityReferenceData> : BrokerTraits<vendor::MockClient> {
   static constexpr bool has_reference_data = true;
   template <typename Token>
   static void instrument(Client&, Token&&) {}

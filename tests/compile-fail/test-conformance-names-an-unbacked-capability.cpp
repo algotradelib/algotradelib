@@ -7,14 +7,14 @@
 namespace probe {
 
 /** An adapter complete in every respect except the one verb its capabilities claim. */
-struct ClaimsReferenceData : mock::MockClient {};
+struct ClaimsReferenceData : vendor::MockClient {};
 
 } // namespace probe
 
 namespace algotradelib {
 
 template <>
-struct BrokerTraits<probe::ClaimsReferenceData> : BrokerTraits<mock::MockClient> {
+struct BrokerTraits<probe::ClaimsReferenceData> : BrokerTraits<vendor::MockClient> {
   static constexpr bool has_reference_data = true;
 };
 

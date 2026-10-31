@@ -7,7 +7,7 @@
 namespace probe {
 
 /** The in-memory client, which lists working orders, under an adapter that does not answer. */
-struct SilentAboutTerminal : mock::MockClient {};
+struct SilentAboutTerminal : vendor::MockClient {};
 
 } // namespace probe
 

@@ -20,7 +20,8 @@
 #include <vector>
 
 /**
- * A broker that exists only in memory, beside the three the library ships.
+ * A broker that exists only in memory, outside the library, beside the ones it ships. Its namespace is
+ * `vendor`, not `mock`, so it never meets the library's own `algotradelib::mock` under `using namespace`.
  *
  * Its purpose is twofold. It proves that binding a new broker to the port needs
  * no edit to any core or existing broker header — everything below lives in this
@@ -33,7 +34,7 @@
  * timestamp, and the amendable-order result is its own row type. A port that can
  * absorb this shape is not quietly modelled on KIS or Toss.
  */
-namespace mock {
+namespace vendor {
 
 namespace net = boost::asio;
 using algotradelib::BrokerError;
@@ -310,7 +311,7 @@ struct Broker {
   static constexpr std::string_view name = "mock";
 };
 
-} // namespace mock
+} // namespace vendor
 
 namespace algotradelib {
 
@@ -384,28 +385,28 @@ struct Capabilities {
  */
 struct Normalizers {
   /** Configuration type. */
-  using Config = mock::MockConfig;
+  using Config = vendor::MockConfig;
 
   /** Account selector type. */
-  using Account = mock::MockAccount;
+  using Account = vendor::MockAccount;
 
   /** Compile-time identity of the in-memory broker. */
-  using BrokerTag = mock::Broker;
+  using BrokerTag = vendor::Broker;
 
   /** Acknowledgement type. */
-  using PlaceAck = mock::MockAck;
+  using PlaceAck = vendor::MockAck;
 
   /** Amendment type. */
-  using Amendment = mock::MockAmendment;
+  using Amendment = vendor::MockAmendment;
 
   /** History selector type. */
-  using HistoryQuery = mock::MockHistorySelector;
+  using HistoryQuery = vendor::MockHistorySelector;
 
   /** Amendable-order result type. */
-  using WorkingOrdersResult = mock::MockLiveOrders;
+  using WorkingOrdersResult = vendor::MockLiveOrders;
 
   /** Normalized broker name. */
-  static constexpr std::string_view name = mock::Broker::name;
+  static constexpr std::string_view name = vendor::Broker::name;
 
   /**
    * The in-memory broker publishes minute and daily bars, like both real ones, and
@@ -429,8 +430,8 @@ struct Normalizers {
 
 
   /** Returns an opaque reference carrying the broker's ticket. */
-  static OrderRef<mock::Broker> make_ref(std::string ticket) {
-    OrderRef<mock::Broker> ref;
+  static OrderRef<vendor::Broker> make_ref(std::string ticket) {
+    OrderRef<vendor::Broker> ref;
     ref.primary_ = std::move(ticket);
     return ref;
   }
@@ -457,40 +458,40 @@ struct Normalizers {
   }
 
   /** Normalizes the broker's acknowledgement. */
-  static Result<PlacedOrder<mock::Broker>> normalize_place(Result<PlaceAck> raw) {
+  static Result<PlacedOrder<vendor::Broker>> normalize_place(Result<PlaceAck> raw) {
     if (!raw) {
-      return Result<PlacedOrder<mock::Broker>>(std::move(raw.error()));
+      return Result<PlacedOrder<vendor::Broker>>(std::move(raw.error()));
     }
-    PlacedOrder<mock::Broker> placed;
+    PlacedOrder<vendor::Broker> placed;
     placed.ack_.order_id_ = raw.value().ticket_;
     placed.ack_.accepted_at_ = raw.value().stamped_at_;
     placed.ref_ = make_ref(raw.value().ticket_);
-    return Result<PlacedOrder<mock::Broker>>(std::move(placed));
+    return Result<PlacedOrder<vendor::Broker>>(std::move(placed));
   }
 
   /** Normalizes the broker's amendable-order rows. */
-  static Result<WorkingOrders<mock::Broker>> normalize_working_orders(
+  static Result<WorkingOrders<vendor::Broker>> normalize_working_orders(
     Result<WorkingOrdersResult> raw
   ) {
     if (!raw) {
-      return Result<WorkingOrders<mock::Broker>>(std::move(raw.error()));
+      return Result<WorkingOrders<vendor::Broker>>(std::move(raw.error()));
     }
-    WorkingOrders<mock::Broker> orders;
+    WorkingOrders<vendor::Broker> orders;
     orders.received_at_ = raw.value().read_at_;
     orders.orders_.reserve(raw.value().rows_.size());
     for (auto& row : raw.value().rows_) {
-      WorkingOrder<mock::Broker> working;
+      WorkingOrder<vendor::Broker> working;
       working.order_ = std::move(row.order_);
       working.ref_ = make_ref(row.ticket_);
       working.amendable_quantity_ = row.open_quantity_;
       orders.orders_.push_back(std::move(working));
     }
-    return Result<WorkingOrders<mock::Broker>>(std::move(orders));
+    return Result<WorkingOrders<vendor::Broker>>(std::move(orders));
   }
 
   /** Converts a normalized modification, refusing a stated quantity of zero. */
   static Result<Amendment> to_replacement(
-    const OrderRef<mock::Broker>& ref,
+    const OrderRef<vendor::Broker>& ref,
     const AmendInstruction& instruction
   ) {
     ++to_replacement_calls_;
@@ -512,7 +513,7 @@ struct Normalizers {
 
   /** Converts a normalized cancellation. */
   static Result<Amendment> to_cancellation(
-    const OrderRef<mock::Broker>& ref,
+    const OrderRef<vendor::Broker>& ref,
     const AmendInstruction& instruction
   ) {
     return to_replacement(ref, instruction);
@@ -546,7 +547,7 @@ struct Normalizers {
  */
 struct Members : Normalizers {
   /** Concrete client this specialization adapts. */
-  using Client = mock::MockClient;
+  using Client = vendor::MockClient;
 
   /** This client completes through a completion token. */
   static constexpr bool blocking = false;
@@ -608,7 +609,7 @@ struct Members : Normalizers {
 
 /** The in-memory client's adaptation: its members and its capabilities. */
 template <>
-struct BrokerTraits<mock::MockClient> : mock_port::Members, mock_port::Capabilities {
+struct BrokerTraits<vendor::MockClient> : mock_port::Members, mock_port::Capabilities {
   /** Takes orders. */
   static constexpr bool data_only = false;
 
@@ -625,7 +626,7 @@ struct BrokerTraits<mock::MockClient> : mock_port::Members, mock_port::Capabilit
 
 } // namespace algotradelib
 
-namespace mock {
+namespace vendor {
 
 /**
  * A blocking facade over `MockClient`, built the way every shipped blocking client is: it owns an event loop
@@ -698,15 +699,15 @@ private:
   std::shared_ptr<MockClient> client_;
 };
 
-} // namespace mock
+} // namespace vendor
 
 namespace algotradelib {
 
 /** The blocking in-memory client's adaptation: the shared core, the capabilities, and blocking thunks. */
 template <>
-struct BrokerTraits<mock::MockBlockingClient> : mock_port::Normalizers, mock_port::Capabilities {
+struct BrokerTraits<vendor::MockBlockingClient> : mock_port::Normalizers, mock_port::Capabilities {
   /** Concrete client this specialization adapts. */
-  using Client = mock::MockBlockingClient;
+  using Client = vendor::MockBlockingClient;
   /** This client returns each result directly. */
   static constexpr bool blocking = true;
   /** Takes orders. */

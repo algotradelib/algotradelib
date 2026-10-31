@@ -10,7 +10,7 @@
 namespace probe {
 
 /** The in-memory client under an adapter that answers everything except `data_only`. */
-struct SilentAboutDataOnly : mock::MockClient {};
+struct SilentAboutDataOnly : vendor::MockClient {};
 
 } // namespace probe
 

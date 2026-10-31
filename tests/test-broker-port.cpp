@@ -178,7 +178,7 @@ TEST_CASE("a reference from another broker cannot be compiled into a cancellatio
   // rather than a run-time rejection, and costs nothing to enforce.
   static_assert(!can_cancel<BrokerSession<kis::KisClient>, OrderRef<tossinvest::Broker>>::value);
   static_assert(!can_cancel<BrokerSession<tossinvest::TossClient>, OrderRef<kis::Broker>>::value);
-  static_assert(!can_cancel<BrokerSession<kis::KisClient>, OrderRef<mock::Broker>>::value);
+  static_assert(!can_cancel<BrokerSession<kis::KisClient>, OrderRef<vendor::Broker>>::value);
   SUCCEED("broker mismatch is rejected at compile time");
 }
 
@@ -564,10 +564,10 @@ TEST_CASE("Toss maps a history query onto its closed listing") {
 
 TEST_CASE("a pre-flight rejection never reaches the client and never runs inline") {
   net::io_context ioc;
-  auto client = std::make_shared<mock::MockClient>(ioc.get_executor());
-  client->ack_ = mock::MockAck{"ticket-1", std::chrono::system_clock::now()};
+  auto client = std::make_shared<vendor::MockClient>(ioc.get_executor());
+  client->ack_ = vendor::MockAck{"ticket-1", std::chrono::system_clock::now()};
 
-  BrokerSession<mock::MockClient> session(client, mock::MockAccount{"cust", 1});
+  BrokerSession<vendor::MockClient> session(client, vendor::MockAccount{"cust", 1});
   auto strand = net::make_strand(ioc);
 
   OrderRequest order;
@@ -581,7 +581,7 @@ TEST_CASE("a pre-flight rejection never reaches the client and never runs inline
     order,
     net::bind_executor(
       strand,
-      [&](Result<PlacedOrder<mock::Broker>> result) {
+      [&](Result<PlacedOrder<vendor::Broker>> result) {
         completed = true;
         REQUIRE_FALSE(result.has_value());
         REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
@@ -598,13 +598,13 @@ TEST_CASE("a pre-flight rejection never reaches the client and never runs inline
 
 TEST_CASE("the port normalizes and plumbs a full order round trip") {
   net::io_context ioc;
-  auto client = std::make_shared<mock::MockClient>(ioc.get_executor());
+  auto client = std::make_shared<vendor::MockClient>(ioc.get_executor());
   const auto stamped = std::chrono::system_clock::now();
-  client->ack_ = mock::MockAck{"ticket-1", stamped};
+  client->ack_ = vendor::MockAck{"ticket-1", stamped};
 
-  mock::MockLiveOrders live;
+  vendor::MockLiveOrders live;
   live.read_at_ = stamped;
-  mock::MockLiveOrder row;
+  vendor::MockLiveOrder row;
   row.ticket_ = "ticket-1";
   row.open_quantity_ = Decimal64::parse("7");
   row.order_.order_id_ = "ticket-1";
@@ -615,8 +615,8 @@ TEST_CASE("the port normalizes and plumbs a full order round trip") {
   live.rows_.push_back(row);
   client->live_orders_ = live;
 
-  using Session = BrokerSession<mock::MockClient>;
-  Session session(client, mock::MockAccount{"cust", 1});
+  using Session = BrokerSession<vendor::MockClient>;
+  Session session(client, vendor::MockAccount{"cust", 1});
   auto strand = net::make_strand(ioc);
 
   OrderRequest order;
@@ -681,13 +681,13 @@ TEST_CASE("the port normalizes and plumbs a full order round trip") {
 
 TEST_CASE("the port passes an expressible history filter through unchanged") {
   net::io_context ioc;
-  auto client = std::make_shared<mock::MockClient>(ioc.get_executor());
+  auto client = std::make_shared<vendor::MockClient>(ioc.get_executor());
   OrderPage page;
   page.received_at_ = std::chrono::system_clock::now();
   page.next_cursor_ = std::string("next");
   client->history_ = page;
 
-  BrokerSession<mock::MockClient> session(client, mock::MockAccount{"cust-7", 2});
+  BrokerSession<vendor::MockClient> session(client, vendor::MockAccount{"cust-7", 2});
   auto strand = net::make_strand(ioc);
 
   OrderHistoryQuery query;
@@ -734,12 +734,12 @@ TEST_CASE("bar intervals are a per-interval capability, not one flag") {
 
 TEST_CASE("an interval a broker does not publish is refused before any request") {
   net::io_context ioc;
-  auto client = std::make_shared<mock::MockClient>(ioc.get_executor());
+  auto client = std::make_shared<vendor::MockClient>(ioc.get_executor());
   BarSeries scripted;
   scripted.instrument_ = samsung();
   client->bars_ = scripted;
 
-  BrokerSession<mock::MockClient> session(client, mock::MockAccount{"cust", 1});
+  BrokerSession<vendor::MockClient> session(client, vendor::MockAccount{"cust", 1});
   auto strand = net::make_strand(ioc);
 
   BarQuery weekly;
@@ -773,7 +773,7 @@ TEST_CASE("an order book verb exists only on a broker that publishes one") {
   static_assert(BrokerCaps<kis::KisClient>::has_depth);
   static_assert(BrokerCaps<tossinvest::TossClient>::has_depth);
   static_assert(BrokerCaps<kis::KisBlockingClient>::has_depth);
-  static_assert(!BrokerCaps<mock::MockClient>::has_depth);
+  static_assert(!BrokerCaps<vendor::MockClient>::has_depth);
 
   // Unlike a reference from the wrong broker, this one cannot be probed with the
   // detection idiom. A foreign reference fails overload resolution, which is
@@ -801,9 +801,9 @@ TEST_CASE("market-data capabilities record what each broker actually offers") {
   static_assert(BrokerCaps<tossinvest::TossBlockingClient>::has_batch_prices);
 
   // The in-memory broker offers only bars, which is what keeps the gates honest.
-  static_assert(!BrokerCaps<mock::MockClient>::has_price_limits);
-  static_assert(!BrokerCaps<mock::MockClient>::has_trade_prints);
-  static_assert(!BrokerCaps<mock::MockClient>::has_batch_prices);
+  static_assert(!BrokerCaps<vendor::MockClient>::has_price_limits);
+  static_assert(!BrokerCaps<vendor::MockClient>::has_trade_prints);
+  static_assert(!BrokerCaps<vendor::MockClient>::has_batch_prices);
   SUCCEED("market-data support is a compile-time capability");
 }
 
@@ -822,7 +822,7 @@ TEST_CASE("calendar capabilities record how much one request answers") {
   static_assert(!BrokerCaps<kis::KisClient>::has_calendar_sessions);
   static_assert(BrokerCaps<tossinvest::TossClient>::has_calendar_sessions);
 
-  static_assert(!BrokerCaps<mock::MockClient>::has_calendar);
+  static_assert(!BrokerCaps<vendor::MockClient>::has_calendar);
   SUCCEED("calendar reach is a compile-time capability");
 }
 
@@ -856,7 +856,7 @@ TEST_CASE("KIS refuses a calendar for a market it does not publish") {
 TEST_CASE("reference data is answered one instrument at a time by both brokers") {
   static_assert(BrokerCaps<kis::KisClient>::has_reference_data);
   static_assert(BrokerCaps<tossinvest::TossClient>::has_reference_data);
-  static_assert(!BrokerCaps<mock::MockClient>::has_reference_data);
+  static_assert(!BrokerCaps<vendor::MockClient>::has_reference_data);
 
   // Toss answers for up to two hundred symbols and KIS for one, so the port asks for
   // one — which both can do — and a caller building a universe goes through
@@ -884,7 +884,7 @@ TEST_CASE("the terminal-state answer is read only where working orders are liste
   // **Both answers are instantiated here on purpose.** Every shipped adapter answers `false`, so
   // without the mock's `true` that branch of the public member would never be compiled, and a
   // capability constant that nothing instantiates is not checked.
-  static_assert(BrokerCaps<mock::MockClient>::working_orders_state_terminal);
+  static_assert(BrokerCaps<vendor::MockClient>::working_orders_state_terminal);
   // None of the shipped working-order inquiries states a terminal status.
   static_assert(!BrokerCaps<kis::KisClient>::working_orders_state_terminal);
   static_assert(!BrokerCaps<tossinvest::TossClient>::working_orders_state_terminal);
@@ -908,7 +908,7 @@ TEST_CASE("the terminal-state answer is read only where working orders are liste
 TEST_CASE("every adapter states whether it transmits a trigger", "[port][trigger]") {
   // Required on every traits specialization: an adapter that never reads a trigger says `false`, and
   // the session refuses a trigger to it before the adapter runs.
-  static_assert(!BrokerCaps<mock::MockClient>::has_trigger_price);
+  static_assert(!BrokerCaps<vendor::MockClient>::has_trigger_price);
   static_assert(BrokerCaps<kis::KisClient>::has_trigger_price);
   static_assert(BrokerCaps<kis::KisBlockingClient>::has_trigger_price);
   static_assert(!BrokerCaps<tossinvest::TossClient>::has_trigger_price);

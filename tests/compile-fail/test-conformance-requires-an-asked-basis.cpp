@@ -17,7 +17,7 @@ struct InquiresWithoutBasis {
 /** The two names `SessionExecutor` reads from a session before anything else. */
 struct Session {
   using Caps = InquiresWithoutBasis;
-  using BrokerTag = mock::Broker;
+  using BrokerTag = vendor::Broker;
 };
 
 } // namespace probe

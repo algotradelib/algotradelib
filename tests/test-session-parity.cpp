@@ -21,18 +21,18 @@ namespace {
 
 InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
 
-const mock::MockAccount kAccount{"cust", 1};
+const vendor::MockAccount kAccount{"cust", 1};
 
-using Placed = PlacedOrder<mock::Broker>;
-using Ref = OrderRef<mock::Broker>;
+using Placed = PlacedOrder<vendor::Broker>;
+using Ref = OrderRef<vendor::Broker>;
 
 /** The asynchronous session, each verb run to completion on its own loop. */
 struct AsyncDriver {
   net::io_context ioc_;
-  std::shared_ptr<mock::MockClient> client_ = std::make_shared<mock::MockClient>(ioc_.get_executor());
-  BrokerSession<mock::MockClient> session_{client_, kAccount};
+  std::shared_ptr<vendor::MockClient> client_ = std::make_shared<vendor::MockClient>(ioc_.get_executor());
+  BrokerSession<vendor::MockClient> session_{client_, kAccount};
 
-  mock::MockClient& mock() { return *client_; }
+  vendor::MockClient& mock() { return *client_; }
 
   template <typename Future>
   auto finish(Future future) {
@@ -54,10 +54,10 @@ struct AsyncDriver {
 
 /** The blocking session over the blocking mock, which drives the same in-memory client. */
 struct BlockingDriver {
-  std::shared_ptr<mock::MockBlockingClient> client_ = std::make_shared<mock::MockBlockingClient>();
-  BlockingSession<mock::MockBlockingClient> session_{client_, kAccount};
+  std::shared_ptr<vendor::MockBlockingClient> client_ = std::make_shared<vendor::MockBlockingClient>();
+  BlockingSession<vendor::MockBlockingClient> session_{client_, kAccount};
 
-  mock::MockClient& mock() { return client_->mock(); }
+  vendor::MockClient& mock() { return client_->mock(); }
 
   Result<Placed> place(OrderRequest order) { return session_.place(std::move(order)); }
   Result<Placed> replace(const Ref& ref, AmendInstruction instruction) { return session_.replace(ref, instruction); }
@@ -66,8 +66,8 @@ struct BlockingDriver {
 };
 
 /** A resting stop-limit order, as a working-order listing would report it. */
-WorkingOrder<mock::Broker> resting_stop() {
-  WorkingOrder<mock::Broker> working;
+WorkingOrder<vendor::Broker> resting_stop() {
+  WorkingOrder<vendor::Broker> working;
   working.ref_.primary_ = "ticket-1";
   working.order_.instrument_ = samsung();
   working.order_.type_ = OrderType::STOP_LIMIT;
@@ -80,7 +80,7 @@ WorkingOrder<mock::Broker> resting_stop() {
 }
 
 /** A plain resting limit order, with no trigger. */
-WorkingOrder<mock::Broker> resting_limit() {
+WorkingOrder<vendor::Broker> resting_limit() {
   auto working = resting_stop();
   working.order_.type_ = OrderType::LIMIT;
   working.order_.trigger_price_.reset();
@@ -90,7 +90,7 @@ WorkingOrder<mock::Broker> resting_limit() {
 /** Scripts the mock to accept every order instruction, and zeroes the adapter-hook counters. */
 template <typename Driver>
 void accept_orders(Driver& driver) {
-  driver.mock().ack_ = mock::MockAck{"ticket-1", std::chrono::system_clock::now()};
+  driver.mock().ack_ = vendor::MockAck{"ticket-1", std::chrono::system_clock::now()};
   mock_port::Normalizers::validate_place_calls_ = 0;
   mock_port::Normalizers::to_replacement_calls_ = 0;
 }

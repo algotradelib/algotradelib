@@ -8,18 +8,18 @@
 namespace probe {
 
 /** An adapter whose quote thunk keeps a copy of the caller's token. */
-struct CopiesItsToken : mock::MockClient {};
+struct CopiesItsToken : vendor::MockClient {};
 
 } // namespace probe
 
 namespace algotradelib {
 
 template <>
-struct BrokerTraits<probe::CopiesItsToken> : BrokerTraits<mock::MockClient> {
+struct BrokerTraits<probe::CopiesItsToken> : BrokerTraits<vendor::MockClient> {
   template <typename Token>
   static auto quote(Client& client, InstrumentId instrument, Token&& token) {
     std::decay_t<Token> kept = token;
-    return BrokerTraits<mock::MockClient>::quote(client, std::move(instrument), std::move(kept));
+    return BrokerTraits<vendor::MockClient>::quote(client, std::move(instrument), std::move(kept));
   }
 };
 

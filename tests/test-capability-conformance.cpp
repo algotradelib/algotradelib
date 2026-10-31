@@ -28,13 +28,13 @@ ATL_ASSERT_BROKER(tossinvest::TossClient);
 ATL_ASSERT_BROKER(tossinvest::TossBlockingClient);
 ATL_ASSERT_BROKER(kiwoom::KiwoomClient);
 ATL_ASSERT_BROKER(kiwoom::KiwoomBlockingClient);
-ATL_ASSERT_BROKER(mock::MockClient);
-ATL_ASSERT_BROKER(mock::MockBlockingClient);
+ATL_ASSERT_BROKER(vendor::MockClient);
+ATL_ASSERT_BROKER(vendor::MockBlockingClient);
 
 // An adapter whose traits specialization is `final` and inherits no shipped broker's: nothing in the
 // check derives from the traits, so it conforms like any other.
 namespace conformance_fakes {
-struct FinalTraitsClient : mock::MockClient {};
+struct FinalTraitsClient : vendor::MockClient {};
 } // namespace conformance_fakes
 
 namespace algotradelib {

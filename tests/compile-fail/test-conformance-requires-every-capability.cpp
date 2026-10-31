@@ -7,7 +7,7 @@
 namespace probe {
 
 /** The in-memory client again, under an adapter that forgets one answer. */
-struct OmitsHistoryCursor : mock::MockClient {};
+struct OmitsHistoryCursor : vendor::MockClient {};
 
 } // namespace probe
 
