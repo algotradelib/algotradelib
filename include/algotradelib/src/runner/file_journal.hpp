@@ -1280,11 +1280,13 @@ inline JournalReplay read_journal_file(const std::string& path) {
  * lock. A flushed line survives a killed process everywhere; on macOS `fsync` does not guarantee it
  * survives a power loss. Two journals at different paths for one account are not detected.
  *
- * `replay()` keeps what it read. On POSIX a later call reads only the lines appended since, when the
- * file's device, inode, size and modification and status-change times show that only this journal
- * wrote to it; any other change makes it read the whole file. A change by another program that leaves
- * all of them as they were (within the file system's timestamp resolution, or during one of this
- * journal's own writes) is read at the next whole read, which a newly opened journal always does.
+ * `replay()` keeps what it read, so the parsed journal stays in memory while the journal is open. On
+ * POSIX a later call reads only the lines appended since, when the file's device, inode, size and
+ * modification and status-change times show that only this journal wrote to it; a change by another
+ * program between two calls makes it read the whole file. A change by another program that leaves all
+ * of them as they were (within the file system's timestamp resolution), or that happens during one of
+ * this journal's own writes (an in-place write, or a truncation), is read at the next whole read, which
+ * a newly opened journal always does.
  */
 class FileJournal {
 public:
@@ -1411,7 +1413,7 @@ public:
     }
     // Stamped before `fsync`, which changes neither the size nor the times, so the stamp spans only
     // this journal's own write.
-    note_write_ended();
+    note_write_ended(line.size());
     if (!journal_detail::sync_to_disk(handle_.get())) {
       forget_kept();
       return false;
@@ -1488,6 +1490,9 @@ private:
     if (size == parsed_to_) {
       return true;
     }
+    if (size < parsed_to_) {
+      return false;
+    }
     journal_detail::DescriptorOwner reader(::open(path_.c_str(), O_RDONLY | O_CLOEXEC));
     if (reader.get() < 0) {
       return false;
@@ -1531,13 +1536,15 @@ private:
 #endif
   }
 
-  // After this journal's write reached the kernel: the bytes past the parsed offset are its own, so the
-  // stamp now is what the next `replay()` must find.
-  void note_write_ended() {
+  // After this journal's write of `written` bytes reached the kernel: the bytes past the parsed offset are
+  // its own, so the stamp now is what the next `replay()` must find. A file that did not grow by at least
+  // the line (another program truncated it during the write) is left to a whole read.
+  void note_write_ended([[maybe_unused]] std::size_t written) {
 #if !defined(_WIN32)
     struct stat now{};
     if (continuable_) {
-      if (::fstat(::fileno(handle_.get()), &now) == 0) {
+      if (::fstat(::fileno(handle_.get()), &now) == 0 &&
+          static_cast<std::size_t>(now.st_size) >= static_cast<std::size_t>(stamp_.size_) + written) {
         stamp_ = journal_detail::stamp_of(now);
       } else {
         continuable_ = false;
