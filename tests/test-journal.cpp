@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -1444,6 +1445,67 @@ TEST_CASE("a changed terminal line halts recovery rather than being dropped as a
   const auto annotated = body + ",\"crc\":\"" + crc + "\"}";
   REQUIRE(runner::journal_detail::checksum_matches(annotated));
   CHECK_FALSE(runner::journal_entry_from_line(annotated).has_value());
+}
+
+TEST_CASE("a line's instant is read from 1970-01-02 to 2200, and from 2020 on a line without a checksum", "[journal][integrity]") {
+  // Built by the writer, which checksums whatever instant it is given: a paper market's historical clock,
+  // or a writer that stamps the epoch.
+  const auto line_at = [](std::int64_t micros) {
+    auto entry = checked_entry();
+    entry.recorded_at_ = runner::journal_detail::instant_from(micros);
+    return runner::journal_entry_to_line(entry);
+  };
+  const auto reads = [](const std::string& line) {
+    const auto entry = runner::journal_entry_from_line(line);
+    return entry.has_value() && !entry->instrument_.symbol_.empty();
+  };
+  constexpr std::int64_t second_day_1970 = 86400000000LL;
+  constexpr std::int64_t year_2014 = 1393804800000000LL;
+  constexpr std::int64_t year_2020 = 1577836800000000LL;
+  constexpr std::int64_t year_2200 = 7258118400000000LL;
+
+  // Checksummed: the epoch's first day is refused to its last microsecond, so the sweep's day of slack
+  // never reaches before 1970.
+  for (const std::int64_t micros : {std::int64_t{0}, std::int64_t{-1}, std::int64_t{1000}, second_day_1970 - 1}) {
+    INFO("at = " << micros);
+    CHECK_FALSE(reads(line_at(micros)));
+  }
+  CHECK(reads(line_at(second_day_1970)));
+  CHECK(reads(line_at(year_2014)));
+  CHECK(reads(line_at(year_2200)));
+  CHECK_FALSE(reads(line_at(year_2200 + 1)));
+  CHECK_FALSE(reads(line_at(std::numeric_limits<std::int64_t>::max())));
+
+  // Without a checksum, as a release before checksums wrote: the bound is its only protection, and stays.
+  CHECK_FALSE(reads(without_checksum(line_at(year_2014))));
+  CHECK_FALSE(reads(without_checksum(line_at(year_2020 - 1))));
+  CHECK(reads(without_checksum(line_at(year_2020))));
+  CHECK_FALSE(reads(without_checksum(line_at(year_2200 + 1))));
+
+  // An operator-only line records the epoch when it has no time, with or without a checksum.
+  auto operator_only = checked_entry();
+  operator_only.requires_operator_ = true;
+  operator_only.recorded_at_ = Clock::time_point{};
+  const auto salvaged = runner::journal_entry_to_line(operator_only);
+  CHECK(runner::journal_entry_from_line(salvaged).has_value());
+  CHECK(runner::journal_entry_from_line(without_checksum(salvaged)).has_value());
+}
+
+TEST_CASE("a placement stamped at the epoch halts recovery, whoever checksummed it", "[journal][integrity][file]") {
+  // The demonstrated case: a placement whose window sits at the epoch would be resolved NOT_PLACED by
+  // the first sweep, whatever the broker holds. Read as damage, it halts the next start instead.
+  const TempJournal path("epoch-placement");
+  auto placed = sample_entry();
+  placed.recorded_at_ = Clock::time_point{};
+  write_journal(path.str(), runner::journal_entry_to_line(placed) + "\n");
+  const auto replay = runner::read_journal_file(path.str());
+  CHECK(replay.unreadable_lines_ == 1);
+  CHECK(replay.entries_.empty());
+
+  runner::DryRunner<HoldTen> dry;
+  const auto recovery = runner::recover_runner(dry, runner::FileJournal(path.str(), kScope));
+  CHECK(recovery.unreadable_lines_ == 1);
+  CHECK(dry.local_failure().has_value());
 }
 
 TEST_CASE("an entry overwritten by a newline or by the header is counted, not skipped", "[journal][integrity]") {
