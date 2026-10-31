@@ -82,27 +82,34 @@ inline bool flush_to_disk(std::FILE* handle) noexcept {
  * IOC line changed to `"time_in_force":""` or `null` reads as a day order.
  */
 /**
- * Returns whether `micros` could be an instant this library wrote.
+ * Returns whether `micros` could be an instant this library wrote, on a line with or without a checksum.
  *
  * **A bound, not a check.** It catches the demonstrated case -- an `at` changed
  * to `0`, which puts the matching window at the epoch so every real row falls
- * outside it and the sweep writes `NOT_PLACED` for an order that exists -- and
- * it does not catch a stamp that is merely an hour wrong, because nothing in a
- * line can. Distinguishing a valid value from a valid-but-changed one needs the
- * line to carry a digest of itself.
+ * outside it and the sweep writes `NOT_PLACED` for an order that exists -- and a
+ * writer that stamps a default-constructed instant (the epoch) on a line it
+ * checksums itself. It does not catch a stamp that is merely an hour wrong,
+ * because nothing in a line can; on a checksummed line the checksum catches a
+ * changed `at` of any value.
  *
- * The lower bound is 2020-01-01, comfortably before this library existed, and
- * the upper is a century out, which is far enough that clock skew and a
- * deliberately future-dated test cannot trip it while `0`, a negative, and a
- * value near the representable limit all do. The limit matters on its own:
- * `system_clock::duration` is finer than microseconds on some
- * implementations, so an extreme value overflows the conversion rather than
- * merely lying.
+ * The lower bound for a checksummed line is 1970-01-02, for two reasons: the
+ * epoch's first day is where the damage above lands, and it is the earliest
+ * `at` from which the sweep's day of slack (`history_range_for` and the
+ * history reads subtract 24 hours) stays at or above `time_t` 0, which
+ * Windows' `gmtime_s` needs. So a paper market's clock may run over history
+ * from 1970-01-02 on. A line without a checksum, which only a file begun before
+ * checksums can hold, keeps the earlier bound, 2020-01-01: no paper market
+ * wrote one, and for it the bound is the only protection.
+ *
+ * The upper bound, 2200-01-01, covers a paper market's dates to the end of 2100
+ * and stays inside what `system_clock` holds at nanoseconds (2262): an extreme
+ * value would overflow the conversion rather than merely lying.
  */
-inline bool plausible_instant(std::int64_t micros) noexcept {
+inline bool plausible_instant(std::int64_t micros, bool checksummed) noexcept {
+  constexpr std::int64_t kSecondDay1970 = 86400LL * 1000000LL;
   constexpr std::int64_t kYear2020 = 1577836800LL * 1000000LL;
-  constexpr std::int64_t kCenturyOut = 4102444800LL * 1000000LL;
-  return micros >= kYear2020 && micros <= kCenturyOut;
+  constexpr std::int64_t kYear2200 = 7258118400LL * 1000000LL;
+  return micros >= (checksummed ? kSecondDay1970 : kYear2020) && micros <= kYear2200;
 }
 
 inline bool has_field(const json::object& row, std::string_view key) {
@@ -746,8 +753,9 @@ inline JournalEntry unattributable_journal_entry(std::string_view line) {
  * @brief Parses one journal line.
  * @param line The line, without its newline.
  * @return The entry, or `std::nullopt` if the line is not a readable journal entry: not JSON, its
- *   action, outcome or time missing or unreadable, an unknown field, or a checksum that does not
- *   match. If a field describing the order (symbol, country, venue, side, type, quantity, or a
+ *   action, outcome or time missing or unreadable, its time outside 1970-01-02 to 2200-01-01 (after
+ *   2019 on a line without a checksum) unless it is operator-only, an unknown field, or a checksum
+ *   that does not match. If a field describing the order (symbol, country, venue, side, type, quantity, or a
  *   present condition, session, price or trigger) is missing or unreadable, the entry is
  *   operator-only, names no instrument, and its id is suffixed `~damaged`; it keeps its outcome. An
  *   unreadable route leaves the route unknown on an otherwise complete entry.
@@ -774,7 +782,7 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
 
   const auto at = row.if_contains("at");
   if (!action || !outcome || at == nullptr || !at->is_int64() ||
-      (!marked && !journal_detail::plausible_instant(at->as_int64()))) {
+      (!marked && !journal_detail::plausible_instant(at->as_int64(), journal_detail::has_field(row, "crc")))) {
     // A well-formed JSON object that is not a journal line. Treated as damage rather than as an
     // empty entry, because an entry with a default instrument would be a claim about an order.
     return std::nullopt;
@@ -1287,6 +1295,10 @@ inline JournalReplay read_journal_file(const std::string& path) {
  * of them as they were (within the file system's timestamp resolution), or that happens during one of
  * this journal's own writes (an in-place write, or a truncation), is read at the next whole read, which
  * a newly opened journal always does.
+ *
+ * Lines are stamped with the clock the journal's writer is given, and a line whose instant lies outside
+ * 1970-01-02 to 2200-01-01 reads as damage (see `journal_entry_from_line`). So a paper market's clock may
+ * run over history from 1970-01-02 on; earlier history is not supported.
  */
 class FileJournal {
 public:
