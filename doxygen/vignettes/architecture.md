@@ -30,6 +30,7 @@ graph TD
     CO["<b>&lt;core&gt;</b><br/>Decimal64, Money, InstrumentId,<br/>bars, calendar, Result, BrokerError"]
     NW["<b>&lt;network&gt;</b><br/>HTTPS transport, OAuth,<br/>WebSocket, rate-limit pacer"]
     KT["<b>&lt;kis&gt;</b> &nbsp; <b>&lt;tossinvest&gt;</b> &nbsp; <b>&lt;kiwoom&gt;</b><br/>adapters: one BrokerTraits<br/>specialization each"]
+    MK["<b>&lt;mock&gt;</b><br/>an in-memory market over<br/>your bars; no transport"]
   end
 
   X(("KIS / Toss / Kiwoom<br/>HTTPS"))
@@ -48,6 +49,8 @@ graph TD
   BR --> NW
   KT --> BR
   KT --> NW
+  MK --> BR
+  MK --> BT
   LV -.binds.-> KT
   NW --> X
 
@@ -56,7 +59,7 @@ graph TD
   classDef you fill:#e7eefc,stroke:#3f5f9e,color:#123
   class S you
   class V,ST,RU,BT,AN,MA,CO pure
-  class BR,NW,KT,LV io
+  class BR,NW,KT,LV,MK io
 ```
 
 Green is I/O-free. Orange is the broker side; its HTTP and TLS code is in `<network>` and the adapters,
@@ -67,7 +70,9 @@ at compile time by two translation units that include exactly one umbrella heade
 `tests/test-strategy-isolation.cpp` for `<algotradelib/strategy>`, and
 `tests/test-runner-isolation.cpp` for `<algotradelib/runner>`. A third,
 `tests/test-broker-isolation.cpp`, holds `<algotradelib/broker>` to a narrower line: Asio and the
-network module's rate-limit types, but no Beast and no OpenSSL.
+network module's rate-limit types, but no Beast and no OpenSSL. A fourth,
+`tests/test-mock-isolation.cpp`, holds `<algotradelib/mock>` to the same line: the mock broker reaches
+no HTTP, WebSocket or TLS code.
 
 What that assertion does and does not claim is worth being exact about. It establishes that a dry-run
 or replay translation unit **instantiates** no adapter and no transport code, so there is no
