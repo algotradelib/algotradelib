@@ -535,11 +535,11 @@ struct FileStamp {
   ino_t inode_{};
   /** @brief The size in bytes. */
   off_t size_{};
-  /** @brief The last modification, seconds and nanoseconds. */
+  /** @brief The seconds of the last modification. */
   std::int64_t modified_s_{0};
   /** @brief The nanoseconds of the last modification. */
   std::int64_t modified_ns_{0};
-  /** @brief The last status change, which no unprivileged process can set back. */
+  /** @brief The seconds of the last status change, which no unprivileged process can set back. */
   std::int64_t changed_s_{0};
   /** @brief The nanoseconds of the last status change. */
   std::int64_t changed_ns_{0};
