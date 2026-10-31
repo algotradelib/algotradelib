@@ -491,7 +491,9 @@ TEST_CASE("mock faults answer the calls they are scripted for", "[mock]") {
     client.fail_next(mock::Call::CANCEL, transport());
     client.fail_next(mock::Call::ORDER_HISTORY, transport());
     CHECK_FALSE(client.quote(samsung()));
-    CHECK_FALSE(client.bars(BarQuery{samsung()}));
+    BarQuery query;
+    query.instrument_ = samsung();
+    CHECK_FALSE(client.bars(query));
     CHECK_FALSE(client.instrument(samsung()));
     CHECK_FALSE(client.holdings());
     CHECK_FALSE(client.buying_power(Currency{"KRW"}));
@@ -554,8 +556,6 @@ namespace {
 
 /** Holds 10 shares on the first three days of each six, nothing on the others, with limits 2% through the close. */
 struct Flips {
-  static constexpr std::size_t warmup_bars = 1;
-
   template <class Ctx>
   void on_bar(Ctx& ctx, const strategy::BarEvent& event) {
     const auto day = std::chrono::duration_cast<std::chrono::hours>(event.bar_.timestamp_.time_since_epoch()).count() / 24;
