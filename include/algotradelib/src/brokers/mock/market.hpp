@@ -74,9 +74,11 @@ struct MarketSettings {
  * zero when a market buy fills above the price it reserved.
  *
  * If a fill cannot be costed (the fill model's commission has no rate for its date) or recorded (its
- * amount does not fit an exact decimal), the market halts: `advance_to` throws `std::runtime_error`
- * and keeps throwing, the order stays `PENDING`, placements are refused (`market_halted`), and reads
- * answer the state at the halt.
+ * amount does not fit an exact decimal), or a position cannot be valued at a bar's close, the market
+ * halts: `advance_to` throws `std::runtime_error` and keeps throwing, placements are refused
+ * (`market_halted`), and the clock stays at the period end of the bar it halted on. What was done before
+ * the failure stands, including fills of earlier orders on that bar; the order that failed stays
+ * `PENDING`. Reads answer that state.
  *
  * Not thread-safe; nothing is persisted.
  */
@@ -154,8 +156,8 @@ public:
    *   period end across instruments (ties in the order the series were given).
    * @param to The instant; the clock never moves backwards.
    * @throws std::invalid_argument if `to` is before `now()`.
-   * @throws std::runtime_error if the market halts on this call or had halted (see the class); the
-   *   clock then stays where it was.
+   * @throws std::runtime_error if the market halts on this call (the clock then stays at the period end
+   *   of the bar it halted on; see the class) or had halted.
    */
   void advance_to(std::chrono::system_clock::time_point to) {
     if (to < now_) {
@@ -178,6 +180,7 @@ public:
       if (earliest == nullptr || to < period_end(*earliest, earliest->next_)) {
         break;
       }
+      now_ = period_end(*earliest, earliest->next_);
       apply_bar(*earliest);
       if (halted_) {
         throw std::runtime_error(*halted_);
@@ -267,10 +270,12 @@ public:
 
   /**
    * @brief Answers a holdings request.
-   * @return Every position not flat, valued at its last applied bar's close. Every held share is
-   *   sellable (basis: whole holding, resting sells to be deducted by the caller, unverified).
+   * @return Every position not flat, valued at its last applied bar's close, with per-currency totals.
+   *   Every held share is sellable (basis: whole holding, resting sells to be deducted by the caller,
+   *   unverified). `PROTOCOL` `out_of_range` if a row's cost or gain, or a total, does not fit an exact
+   *   decimal.
    */
-  HoldingsSnapshot holdings() const {
+  Result<HoldingsSnapshot> holdings() const {
     HoldingsSnapshot snapshot;
     snapshot.received_at_ = now_;
     snapshot.sellable_basis_ = SellableBasis{
@@ -286,13 +291,19 @@ public:
       row.sellable_quantity_ = row.quantity_;
       const auto currency = lot.market_value_.currency_;
       const auto cost = decimal_multiply(row.quantity_, row.average_purchase_price_);
-      row.purchase_value_ = Money{cost.value_or(Decimal64(0, 0)), currency};
       const auto gain = cost ? decimal_subtract(row.market_value_.amount_, *cost) : std::nullopt;
-      row.unrealized_profit_loss_ = Money{gain.value_or(Decimal64(0, 0)), currency};
-      add_to_totals(snapshot.totals_, row);
+      if (!gain || !add_to_totals(snapshot.totals_, row.market_value_.amount_, *cost, *gain, currency)) {
+        BrokerError error;
+        error.category_ = ErrorCategory::PROTOCOL;
+        error.broker_code_ = "out_of_range";
+        error.message_ = "a holding's value or the holdings' total does not fit an exact decimal";
+        return Result<HoldingsSnapshot>(std::move(error));
+      }
+      row.purchase_value_ = Money{*cost, currency};
+      row.unrealized_profit_loss_ = Money{*gain, currency};
       snapshot.positions_.push_back(std::move(row));
     }
-    return snapshot;
+    return Result<HoldingsSnapshot>(std::move(snapshot));
   }
 
   /**
@@ -575,20 +586,32 @@ private:
     return left;
   }
 
-  /** Adds a holding row to its currency's totals. */
-  static void add_to_totals(std::vector<HoldingsTotals>& totals, const HoldingPosition& row) {
-    const auto& currency = row.market_value_.currency_;
+  /** Adds a holding's figures to its currency's totals; `false`, changing nothing, if a sum does not fit. */
+  static bool add_to_totals(
+    std::vector<HoldingsTotals>& totals,
+    const Decimal64& market_value,
+    const Decimal64& cost,
+    const Decimal64& gain,
+    const Currency& currency
+  ) {
     auto found = std::find_if(totals.begin(), totals.end(), [&](const HoldingsTotals& t) { return t.currency_ == currency; });
+    const auto zero = Decimal64(0, 0);
+    const auto purchase = decimal_add(found == totals.end() ? zero : found->purchase_value_, cost);
+    const auto market = decimal_add(found == totals.end() ? zero : found->market_value_, market_value);
+    const auto unrealized = decimal_add(found == totals.end() ? zero : found->unrealized_profit_loss_, gain);
+    if (!purchase || !market || !unrealized) {
+      return false;
+    }
     if (found == totals.end()) {
       HoldingsTotals fresh;
       fresh.currency_ = currency;
       totals.push_back(fresh);
       found = totals.end() - 1;
     }
-    found->purchase_value_ = decimal_add(found->purchase_value_, row.purchase_value_.amount_).value_or(found->purchase_value_);
-    found->market_value_ = decimal_add(found->market_value_, row.market_value_.amount_).value_or(found->market_value_);
-    found->unrealized_profit_loss_ =
-      decimal_add(found->unrealized_profit_loss_, row.unrealized_profit_loss_.amount_).value_or(found->unrealized_profit_loss_);
+    found->purchase_value_ = *purchase;
+    found->market_value_ = *market;
+    found->unrealized_profit_loss_ = *unrealized;
+    return true;
   }
 
   /** Ends an order unfilled at an instant. */
@@ -667,7 +690,10 @@ private:
       }
     }
     expire_day_orders(listing, date, ends_session, event.period_end_);
-    static_cast<void>(ledger_.mark(series.instrument_, event.bar_.close_));
+    if (!ledger_.mark(series.instrument_, event.bar_.close_)) {
+      halted_ = "the mock market halted: a position's value at the close of " + series.instrument_.symbol_ +
+        " does not fit an exact decimal";
+    }
   }
 
   /** Records a whole fill on an order's snapshot. */

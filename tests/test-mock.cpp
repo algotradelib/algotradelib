@@ -187,7 +187,7 @@ TEST_CASE("a mock market order fills at the open of the next bar", "[mock]") {
   CHECK(market.buying_power(Currency{"KRW"}).value().cash_.amount_ == dec("998950"));
 
   market.advance_to(utc(2026, 3, 3, 6, 29));
-  CHECK(market.holdings().positions_.empty());
+  CHECK(market.holdings().value().positions_.empty());
   market.advance_to(utc(2026, 3, 3, 6, 30));
   const auto& filled = only_order(market);
   CHECK(filled.status_ == OrderStatus::FILLED);
@@ -195,7 +195,7 @@ TEST_CASE("a mock market order fills at the open of the next bar", "[mock]") {
   CHECK(filled.execution_.filled_at_ == utc(2026, 3, 3, 6, 30));
   CHECK(filled.ordered_at_ == utc(2026, 3, 2, 6, 30));
   CHECK(market.working_orders().orders_.empty());
-  const auto holdings = market.holdings();
+  const auto holdings = market.holdings().value();
   REQUIRE(holdings.positions_.size() == 1);
   CHECK(holdings.positions_.front().quantity_ == dec("10"));
   CHECK(holdings.positions_.front().sellable_quantity_ == dec("10"));
@@ -210,7 +210,7 @@ TEST_CASE("a mock market order fills at the open of the next bar", "[mock]") {
   REQUIRE(market.place(market_order(OrderSide::SELL, "10")));
   CHECK(code_of(market.place(market_order(OrderSide::SELL, "1")).error()) == "insufficient_holdings");
   market.advance_to(utc(2026, 3, 4, 6, 30));
-  CHECK(market.holdings().positions_.empty());
+  CHECK(market.holdings().value().positions_.empty());
   CHECK(market.buying_power(Currency{"KRW"}).value().cash_.amount_ == dec("999940"));
 }
 
@@ -390,10 +390,13 @@ TEST_CASE("the mock market halts on a fill it cannot cost or record", "[mock]") 
     CHECK_THROWS_AS(market.advance_to(utc(2026, 3, 3, 6, 30)), std::runtime_error);
     REQUIRE(market.halted());
     CHECK(market.halted()->find("could not be costed") != std::string::npos);
-    CHECK(market.now() == utc(2026, 3, 2, 6, 30));
+    // The clock stops at the bar the market halted on, and a cancellation is stamped there.
+    CHECK(market.now() == utc(2026, 3, 3, 6, 30));
     CHECK(only_order(market).status_ == OrderStatus::PENDING);
     CHECK_THROWS_AS(market.advance_to(utc(2026, 3, 4, 6, 30)), std::runtime_error);
     CHECK(code_of(market.place(market_order(OrderSide::BUY, "1")).error()) == "market_halted");
+    REQUIRE(market.cancel("1"));
+    CHECK(only_order(market).canceled_at_ == utc(2026, 3, 3, 6, 30));
   }
   SECTION("an amount the fill model can price and the ledger cannot record") {
     // Cash just under the largest coefficient; the sale's proceeds fit, cash plus them does not.
@@ -405,15 +408,60 @@ TEST_CASE("the mock market halts on a fill it cannot cost or record", "[mock]") 
     mock::Market market({bars}, cash("9000000000000000000", utc(2026, 3, 2, 6, 30)));
     REQUIRE(market.place(market_order(OrderSide::BUY, "1")));
     market.advance_to(utc(2026, 3, 3, 6, 30));
+    // An earlier order on the bar that halts fills, and stands; the sell after it cannot be recorded.
+    REQUIRE(market.place(limit_buy("1", "1")));
     REQUIRE(market.place(market_order(OrderSide::SELL, "1")));
+    // Asked to move two days, the market stops at the bar it halted on.
+    CHECK_THROWS_AS(market.advance_to(utc(2026, 3, 5, 6, 30)), std::runtime_error);
+    REQUIRE(market.halted());
+    CHECK(market.halted()->find("fill does not fit an exact decimal") != std::string::npos);
+    CHECK(market.now() == utc(2026, 3, 4, 6, 30));
+    const auto page = market.order_history({});
+    REQUIRE(page.orders_.size() == 3);
+    CHECK(page.orders_[1].status_ == OrderStatus::FILLED);
+    CHECK(page.orders_[1].execution_.filled_at_ == utc(2026, 3, 4, 6, 30));
+    CHECK(page.orders_[2].status_ == OrderStatus::PENDING);
+    const auto holdings = market.holdings();
+    REQUIRE(holdings);
+    CHECK(holdings.value().received_at_ == utc(2026, 3, 4, 6, 30));
+    CHECK(holdings.value().positions_.front().quantity_ == dec("2"));
+  }
+  SECTION("a position that cannot be valued at the close") {
+    auto bars = daily({
+      bar(utc(2026, 3, 2, 6, 30), "1", "1", "1", "1"),
+      bar(utc(2026, 3, 3, 6, 30), "1", "5000000000000000000", "1", "5000000000000000000"),
+      bar(utc(2026, 3, 4, 6, 30), "1", "1", "1", "1"),
+    });
+    mock::Market market({bars}, cash("100", utc(2026, 3, 2, 6, 30)));
+    REQUIRE(market.place(market_order(OrderSide::BUY, "2")));
     CHECK_THROWS_AS(market.advance_to(utc(2026, 3, 4, 6, 30)), std::runtime_error);
     REQUIRE(market.halted());
-    CHECK(market.halted()->find("does not fit an exact decimal") != std::string::npos);
-    const auto page = market.order_history({});
-    REQUIRE(page.orders_.size() == 2);
-    CHECK(page.orders_[1].status_ == OrderStatus::PENDING);
-    CHECK(market.holdings().positions_.size() == 1);
+    CHECK(market.halted()->find("value at the close") != std::string::npos);
+    CHECK(market.now() == utc(2026, 3, 3, 6, 30));
+    CHECK(only_order(market).status_ == OrderStatus::FILLED);
+    CHECK(code_of(market.place(market_order(OrderSide::SELL, "1")).error()) == "market_halted");
   }
+}
+
+TEST_CASE("mock holdings fail rather than total less than their rows", "[mock]") {
+  // Each position's value fits; their sum does not.
+  auto first = daily({
+    bar(utc(2026, 3, 2, 6, 30), "1", "1", "1", "1"),
+    bar(utc(2026, 3, 3, 6, 30), "1", "6000000000000000000", "1", "6000000000000000000"),
+  });
+  auto second = first;
+  second.instrument_.symbol_ = "000660";
+  mock::Market market({first, second}, cash("100", utc(2026, 3, 2, 6, 30)));
+  auto other = market_order(OrderSide::BUY, "1");
+  other.instrument_ = second.instrument_;
+  REQUIRE(market.place(market_order(OrderSide::BUY, "1")));
+  REQUIRE(market.place(other));
+  market.advance_to(utc(2026, 3, 3, 6, 30));
+  CHECK_FALSE(market.halted());
+  const auto holdings = market.holdings();
+  REQUIRE_FALSE(holdings);
+  CHECK(holdings.error().category_ == ErrorCategory::PROTOCOL);
+  CHECK(code_of(holdings.error()) == "out_of_range");
 }
 
 TEST_CASE("a mock order fills against an open-stamped daily bar that begins after it", "[mock]") {
@@ -449,7 +497,7 @@ TEST_CASE("the mock market applies bars of several instruments in time order", "
   CHECK(page.orders_[0].status_ == OrderStatus::PENDING);
   CHECK(page.orders_[1].status_ == OrderStatus::FILLED);
   market.advance_to(utc(2026, 3, 3, 6, 30));
-  CHECK(market.holdings().positions_.size() == 2);
+  CHECK(market.holdings().value().positions_.size() == 2);
 }
 
 namespace {

@@ -174,7 +174,7 @@ public:
    * @return As `Market::holdings`.
    */
   Result<HoldingsSnapshot> holdings() {
-    return read(Call::HOLDINGS, last_holdings_, [this] { return Result<HoldingsSnapshot>(market_->holdings()); });
+    return read(Call::HOLDINGS, last_holdings_, [this] { return market_->holdings(); });
   }
 
   /**

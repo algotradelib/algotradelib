@@ -311,12 +311,13 @@ a strategy with a replay or a dry run, or on a KIS or Kiwoom demo account, first
 
 **The mock broker reaches no broker.**
 `<algotradelib/mock>` (included by no other umbrella) is a broker client like the others, `mock::MockClient` behind a `BlockingSession`, over a `mock::Market`: bars you give, a clock you drive (`mock::MarketClock`, which a polling loop waits on), and one account's cash, holdings and orders.
-Orders fill by the backtest's rule (`backtest::NextBarFillModel`, with its costs) against the first bar that began after the market accepted them, and a `DAY` order expires as in a replay.
+Orders fill by the backtest's rule (`backtest::NextBarFillModel`, with its costs) against the first bar that began at or after the instant the market accepted them, and a `DAY` order expires as in a replay.
 It models no trading hours, calendar, price band, partial fill, settlement or short sale, keeps cash in one currency, and persists nothing.
 Its environment is always `"paper"` (`mock::environment`): it is not a broker's demo account.
 `mock::MockClient` can fail a call, lose a reply or repeat a stale read on purpose, for testing what a program does with an unknown outcome.
 With no calendar the loop's market phase is unknown, so a run clears `RiskLimits::permitted_phases_` or installs a calendar on its runner.
-Where every poll lands on a bar's close and nothing is warm-up, a live run on it trades as a backtest of the same bars; a poll that lands later accepts an order later, and so may fill it later.
+The library's tests run one example: daily bars, a poll on every close, nothing fed as warm-up, a strategy that decides from each bar alone, and the same reference data, cash, fill model and limits; there a live run on it fills as a backtest of the same bars.
+That is not a general guarantee: a poll that lands after a bar's close accepts an order later, and so may fill it later, and a callback or a check that only one side has can make them differ.
 
 **Kiwoom's holdings need a statement from you.** `kt00018`, the inquiry holdings come from, takes a
 venue and does not say whether it filters positions by venue or values them by it. Rather than guess,
