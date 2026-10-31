@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <new>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
@@ -707,6 +708,48 @@ TEST_CASE("a journal that fails to open for an allocation closes its descriptor 
   CHECK(failures > 0);
   CHECK(opened);
   CHECK(open_descriptors() == before);
+  std::remove(path.c_str());
+}
+TEST_CASE("a journal's replay interrupted by a failed allocation reads as a whole read at the next call") {
+  const std::string path = "atl-test-allocation-failure-replay.jsonl";
+  std::remove(path.c_str());
+  {
+    runner::FileJournal journal(path, "test:account");
+    REQUIRE(journal.open());
+    REQUIRE(journal.append(journal_entry()));
+    REQUIRE(journal.replay().entries_.size() == 1);
+    const auto same_as_whole_read = [&] {
+      const auto& kept = journal.replay();
+      const auto whole = runner::read_journal_file(path);
+      REQUIRE(kept.entries_.size() == whole.entries_.size());
+      for (std::size_t at = 0; at < kept.entries_.size(); ++at) {
+        CHECK(runner::journal_entry_to_line(kept.entries_[at]) == runner::journal_entry_to_line(whole.entries_[at]));
+      }
+      CHECK(kept.unreadable_lines_ == whole.unreadable_lines_);
+      CHECK(kept.truncated_tail_ == whole.truncated_tail_);
+    };
+    int round = 0;
+    const int failures = fail_each_allocation(
+      [&] {
+        auto entry = journal_entry();
+        entry.id_ = "run-" + std::to_string(++round);
+        // Outside the assertion macros, which would catch the injected failure themselves.
+        const bool placed = journal.append(entry);
+        entry.outcome_ = runner::JournalOutcome::ACCEPTED;
+        const bool answered = journal.append(entry);
+        if (!placed || !answered) {
+          throw std::runtime_error("the journal could not be written");
+        }
+        const auto& kept = journal.replay();
+        (void)kept;
+      },
+      same_as_whole_read
+    );
+    if (failures == 0) {
+      SKIP("no allocation the replay makes reaches the replaced allocator here");
+    }
+    same_as_whole_read();
+  }
   std::remove(path.c_str());
 }
 #endif
