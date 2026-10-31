@@ -5,6 +5,7 @@
 #include "live_program.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <chrono>
 #include <cstdio>
@@ -695,10 +696,9 @@ struct Flips {
   }
 };
 
-/** Daily bars on 40 weekdays from 2026-03-02, a deterministic walk that gaps up to 3.6% at the open, so some limits 2% through the close miss. */
-BarSeries forty_days() {
+/** Daily bars on 40 weekdays from `day` (a Monday's close), a deterministic walk that gaps up to 3.6% at the open, so some limits 2% through the close miss. */
+BarSeries forty_days(Clock::time_point day = utc(2026, 3, 2, 6, 30)) {
   BarSeries series = daily({});
-  auto day = utc(2026, 3, 2, 6, 30);
   long close = 10000;
   for (int k = 0; series.bars_.size() < 40; ++k, day += std::chrono::hours(24)) {
     const auto weekday = (std::chrono::duration_cast<std::chrono::hours>(day.time_since_epoch()).count() / 24 + 4) % 7;
@@ -734,7 +734,12 @@ TEST_CASE("a live run on the mock trades as a backtest of the same bars", "[mock
   // warm-up, a strategy that decides from the bar alone, and the same reference data, calendar, cash,
   // fill model and limits. Orders are permitted after the close only, where a daily bar is seen: the
   // live loop knows the phase from the mock's calendar.
-  const auto bars = forty_days();
+  //
+  // Run over 2026 and over 2014: the journal is stamped with the market's clock, and a journal stamped
+  // in the past must read back whole at the next start.
+  const auto first_close = GENERATE(utc(2026, 3, 2, 6, 30), utc(2014, 3, 3, 6, 30));
+  CAPTURE(first_close.time_since_epoch().count());
+  const auto bars = forty_days(first_close);
   mock::Market market({bars}, cash("1000000", bars.bars_.front().timestamp_));
   strategy::RiskLimits limits;
   limits.permitted_phases_ = std::vector<strategy::MarketPhase>{strategy::MarketPhase::POST_CLOSE};
@@ -793,4 +798,14 @@ TEST_CASE("a live run on the mock trades as a backtest of the same bars", "[mock
     CHECK(filled[k].execution_.average_filled_price_ == replayed[k].fill_.price_);
     CHECK(filled[k].execution_.filled_at_ == replayed[k].fill_.at_);
   }
+
+  // The next start reads every line the run wrote, and owes nothing.
+  const auto written = runner::read_journal_file(journal.path_);
+  INFO(written.detail_);
+  CHECK(written.unreadable_lines_ == 0);
+  CHECK_FALSE(written.entries_.empty());
+  runner::FileJournal reopened(journal.path_, "mock:paper:1");
+  REQUIRE(reopened.open());
+  auto restarted = live::bind_journaled(bound.session_, reopened, Flips{});
+  CHECK(runner::recover_runner(restarted, reopened).clean());
 }
