@@ -293,6 +293,7 @@ the environment, and the KIS and Kiwoom ones also from a credentials directory, 
 | KIS | market data, calendar, reference data, holdings, buying power, orders (including stop-limit), order history | default (`KIS_DEMO=0` for live) |
 | Kiwoom | market data, reference data, buying power, orders (including stop-limit) and order history through the session; **no calendar**; **holdings refuse** until you state what its `kt00018` inquiry covers (below); **a strategy runner needs a stated route** (below) | default (`KIWOOM_DEMO=0` for live) |
 | Toss | market data, calendar, reference data, holdings, buying power, orders (no stop-limit), order history | **none** |
+| Mock | an in-memory market over bars you give: quotes, reference data, holdings, buying power, market and limit orders, order history; **no calendar** | always: it reaches no broker |
 
 **KIS and Kiwoom are demo unless you say live.** Live — the one choice that moves real money — has
 to be written down: `KIS_DEMO=0` / `KIWOOM_DEMO=0`, `"demo": false` in a credential file, or
@@ -307,6 +308,15 @@ and all market data, from the real account's keys with no account selected, or f
 
 **Toss has no paper-trading environment.** A Toss program with credentials trades real money; rehearse
 a strategy with a replay or a dry run, or on a KIS or Kiwoom demo account, first.
+
+**The mock broker reaches no broker.**
+`<algotradelib/mock>` (included by no other umbrella) is a broker client like the others, `mock::MockClient` behind a `BlockingSession`, over a `mock::Market`: bars you give, a clock you drive (`mock::MarketClock`, which a polling loop waits on), and one account's cash, holdings and orders.
+Orders fill by the backtest's rule (`backtest::NextBarFillModel`, with its costs) against the first bar that began after the market accepted them, and a `DAY` order expires as in a replay.
+It models no trading hours, calendar, price band, partial fill, settlement or short sale, keeps cash in one currency, and persists nothing.
+Its environment is always `"paper"` (`mock::environment`): it is not a broker's demo account.
+`mock::MockClient` can fail a call, lose a reply or repeat a stale read on purpose, for testing what a program does with an unknown outcome.
+With no calendar the loop's market phase is unknown, so a run clears `RiskLimits::permitted_phases_` or installs a calendar on its runner.
+Where every poll lands on a bar's close and nothing is warm-up, a live run on it trades as a backtest of the same bars; a poll that lands later accepts an order later, and so may fill it later.
 
 **Kiwoom's holdings need a statement from you.** `kt00018`, the inquiry holdings come from, takes a
 venue and does not say whether it filters positions by venue or values them by it. Rather than guess,

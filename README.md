@@ -109,9 +109,11 @@ Before `--live`, read [Running a strategy live](doxygen/vignettes/running-a-stra
 | KIS | market data, calendar, reference data, holdings, buying power, orders (including stop-limit), order history | default (`KIS_DEMO=0` for live) |
 | Kiwoom | market data, reference data, buying power, orders (including stop-limit), order history; **no calendar**; holdings and strategy orders need settings first | default (`KIWOOM_DEMO=0` for live) |
 | Toss | market data, calendar, reference data, holdings, buying power, orders (no stop-limit), order history | **none** |
+| Mock (`<algotradelib/mock>`) | an in-memory market over bars you give: quotes, reference data, holdings, buying power, market and limit orders, order history; no calendar | always: it reaches no broker |
 
 - **KIS and Kiwoom are demo unless you say live** (`KIS_DEMO=0`, `KIWOOM_DEMO=0`, or `"demo": false` in a credential file). Demo endpoints refuse live keys, so a forgotten setting fails instead of trading.
 - **Toss has no paper-trading environment.** A Toss program with credentials trades real money.
+- **The mock broker sends nothing.** It fills orders against bars you give, by the backtest's rule, as a clock you drive passes them, and can fail calls on purpose for tests. It is not a broker's demo account.
 - **Kiwoom places nothing as shipped.** Its holdings inquiry and its strategy orders refuse until you state what the inquiry covers and which venue orders go to, and with no calendar the default limits open no position.
 - **SOR (`Venue::COMBINED`) is opt-in**, and KRX or NXT is the safer choice until SOR has been seen on an account.
 

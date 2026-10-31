@@ -64,3 +64,8 @@
  * @namespace algotradelib::kiwoom
  * @brief The Kiwoom Securities REST API client.
  */
+
+/**
+ * @namespace algotradelib::mock
+ * @brief The mock broker: an in-memory market over bars the caller gives, bound like any broker.
+ */
