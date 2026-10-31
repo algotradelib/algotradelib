@@ -245,9 +245,10 @@ jobs:
         run: |
           path="${PACKAGE#ghcr.io/}"
           endpoint="orgs/${path%%/*}/packages/container/${path#*/}/versions"
-          # Every page is read before anything is deleted, so a deletion cannot shift a page still to be read.
+          # Every page is read before anything is deleted, so a deletion cannot shift a page still to be read. Only an
+          # empty tags array counts as untagged: a version whose tags are missing or null is kept.
           if ! ids=$(gh api --paginate "$endpoint?per_page=100" \
-            --jq '.[] | select((.metadata.container.tags | length) == 0) | .id'); then
+            --jq '.[] | select((.metadata.container.tags | type) == "array" and (.metadata.container.tags | length) == 0) | .id'); then
             echo "::warning::the package's versions could not be listed; nothing deleted"
             exit 0
           fi
