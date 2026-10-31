@@ -1,0 +1,29 @@
+#pragma once
+
+/**
+ * @file
+ * @brief The mock broker: an in-memory market over bars the caller gives, behind a broker client
+ *   bound like any other (`mock::MockClient`, `BrokerTraits<mock::MockClient>`).
+ *
+ * It trades in a paper environment (`mock::environment`) and sends nothing anywhere. Orders fill by the
+ * backtest's rule as the clock (`mock::MarketClock`) passes each bar; `mock::MockClient` can script
+ * faults per call. Included by no other umbrella.
+ *
+ * @code
+ * mock::MarketSettings settings;
+ * settings.cash_ = Money{Decimal64::parse("10000000"), Currency{"KRW"}};
+ * settings.start_ = first_close;  // bars that ended by then are history
+ * mock::Market market({series}, settings);
+ * auto client = std::make_shared<mock::MockClient>(market);
+ * BlockingSession<mock::MockClient> session(client, mock::MockAccount{});
+ * // Report where this trades: always "paper", never "demo" or "real".
+ * std::cout << session.client().environment() << '\n';
+ * // Bind it as any session (live::bind_journaled, live::SessionSource), and give the polling loop and
+ * // the journal mock::MarketClock(market): each wait moves the market, and fills what it passes.
+ * @endcode
+ */
+
+#include "src/brokers/mock/clock.hpp"
+#include "src/brokers/mock/client.hpp"
+#include "src/brokers/mock/market.hpp"
+#include "src/brokers/mock/traits.hpp"
