@@ -1042,47 +1042,30 @@ inline JournalBytes read_journal_bytes(const std::string& path) {
   return bytes;
 }
 
-/**
- * @brief Parses a journal's bytes, salvaging a torn final line.
- *
- * Unparsed lines are counted and a torn last line is salvaged as an operator-only entry: the
- * instruction it names, or, when it names no instrument, the entry `unattributable_journal_entry`
- * makes, on which recovery halts all trading. An empty line, or a header that is not the first line,
- * counts as damage.
- *
- * @param bytes The bytes and read status; a status other than `READ` is passed through.
- * @return The replay.
- */
-inline JournalReplay parse_journal_bytes(const JournalBytes& bytes) {
-  JournalReplay replay;
-  replay.status_ = bytes.status_;
-  if (bytes.status_ != JournalReadStatus::READ) {
-    replay.detail_ = bytes.detail_;
-    return replay;
-  }
+namespace journal_detail {
 
-  const auto& text = bytes.text_;
+/** @brief What a parse carries from one line to the next, beyond what the replay itself records. */
+struct ParseCarry {
+  /** @brief Whether a checksummed entry line, or a header declaring checksums, has been read. */
+  bool seen_checksum_{false};
+};
+
+/**
+ * @brief Parses every complete line of `text` into `replay`, after the lines already in it.
+ *
+ * Parsing a text in two parts, the first ending in a newline, gives the same replay as parsing it
+ * whole: the header rules read the replay, and `carry` holds the rest.
+ *
+ * @param text The bytes.
+ * @param replay The replay the lines are added to.
+ * @param carry The state carried between lines.
+ * @return The offset just past the last newline; the bytes after it are a torn tail.
+ */
+inline std::size_t parse_complete_lines(std::string_view text, JournalReplay& replay, ParseCarry& carry) {
   std::size_t begin = 0;
-  // Set by the first checksummed entry line; see the check below.
-  bool seen_checksum = false;
   while (begin < text.size()) {
     const auto end = text.find('\n', begin);
-    if (end == std::string::npos) {
-      // Everything after the last newline is a write that never finished. This is the whole reason
-      // the format is line-oriented, and dropping it silently would defeat the feature.
-      replay.truncated_tail_ = true;
-      const std::string_view tail(text.data() + begin, text.size() - begin);
-      if (auto salvaged = salvage_journal_line(tail)) {
-        replay.detail_ = "the final journal line was truncated; it named " +
-          salvaged->instrument_.symbol_ + " and is treated as unresolved";
-        replay.entries_.push_back(std::move(*salvaged));
-      } else {
-        replay.detail_ =
-          "the final journal line was truncated and named no instrument; something was in flight";
-        // The same entry a writer's repair appends for this tail, so recovery halts on it whether or
-        // not the file was repaired, and whatever else is open beside it.
-        replay.entries_.push_back(unattributable_journal_entry(tail));
-      }
+    if (end == std::string_view::npos) {
       break;
     }
     const std::string_view line(text.data() + begin, end - begin);
@@ -1112,11 +1095,11 @@ inline JournalReplay parse_journal_bytes(const JournalBytes& bytes) {
       replay.has_header_ = true;
       replay.scope_ = std::move(*scope);
       // A header that declares checksums protects every entry after it, the first one included.
-      seen_checksum = seen_checksum || journal_header_declares_checksums(line);
+      carry.seen_checksum_ = carry.seen_checksum_ || journal_header_declares_checksums(line);
       continue;
     }
-    const bool checksummed = journal_detail::ends_in_checksum(line);
-    if (seen_checksum && !checksummed) {
+    const bool checksummed = ends_in_checksum(line);
+    if (carry.seen_checksum_ && !checksummed) {
       // **This writer never puts a checksum-less line after a checksummed one, or after a header that
       // declares checksums**, so this is a protected line that lost its checksum -- damage that removed
       // the whole member, which the line's own reader cannot tell from a line written before checksums
@@ -1130,7 +1113,7 @@ inline JournalReplay parse_journal_bytes(const JournalBytes& bytes) {
       }
       continue;
     }
-    seen_checksum = seen_checksum || checksummed;
+    carry.seen_checksum_ = carry.seen_checksum_ || checksummed;
     if (auto entry = journal_entry_from_line(line)) {
       replay.entries_.push_back(std::move(*entry));
     } else {
@@ -1142,6 +1125,58 @@ inline JournalReplay parse_journal_bytes(const JournalBytes& bytes) {
         replay.detail_ = "the journal contains a line this library did not write";
       }
     }
+  }
+  return begin;
+}
+
+/**
+ * @brief Adds a torn final line to `replay`: salvaged as an operator-only entry, or the entry
+ *   `unattributable_journal_entry` makes when it names no instrument.
+ * @param tail The bytes after the last newline; not empty.
+ * @param replay The replay.
+ */
+inline void parse_torn_tail(std::string_view tail, JournalReplay& replay) {
+  // Everything after the last newline is a write that never finished. This is the whole reason
+  // the format is line-oriented, and dropping it silently would defeat the feature.
+  replay.truncated_tail_ = true;
+  if (auto salvaged = salvage_journal_line(tail)) {
+    replay.detail_ = "the final journal line was truncated; it named " +
+      salvaged->instrument_.symbol_ + " and is treated as unresolved";
+    replay.entries_.push_back(std::move(*salvaged));
+  } else {
+    replay.detail_ =
+      "the final journal line was truncated and named no instrument; something was in flight";
+    // The same entry a writer's repair appends for this tail, so recovery halts on it whether or
+    // not the file was repaired, and whatever else is open beside it.
+    replay.entries_.push_back(unattributable_journal_entry(tail));
+  }
+}
+
+} // namespace journal_detail
+
+/**
+ * @brief Parses a journal's bytes, salvaging a torn final line.
+ *
+ * Unparsed lines are counted and a torn last line is salvaged as an operator-only entry: the
+ * instruction it names, or, when it names no instrument, the entry `unattributable_journal_entry`
+ * makes, on which recovery halts all trading. An empty line, or a header that is not the first line,
+ * counts as damage.
+ *
+ * @param bytes The bytes and read status; a status other than `READ` is passed through.
+ * @return The replay.
+ */
+inline JournalReplay parse_journal_bytes(const JournalBytes& bytes) {
+  JournalReplay replay;
+  replay.status_ = bytes.status_;
+  if (bytes.status_ != JournalReadStatus::READ) {
+    replay.detail_ = bytes.detail_;
+    return replay;
+  }
+  const std::string_view text(bytes.text_);
+  journal_detail::ParseCarry carry;
+  const auto parsed = journal_detail::parse_complete_lines(text, replay, carry);
+  if (parsed < text.size()) {
+    journal_detail::parse_torn_tail(text.substr(parsed), replay);
   }
   return replay;
 }

@@ -1473,3 +1473,80 @@ TEST_CASE("an entry overwritten by a newline or by the header is counted, not sk
   CHECK(healthy.first == 0);
   CHECK(healthy.second);
 }
+
+// ---------------------------------------------------------------------------
+// A replay continues from what it already read
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** Whether two replays say the same: every entry as its line, every count, flag and message. */
+bool same_replay(const runner::JournalReplay& a, const runner::JournalReplay& b) {
+  if (a.entries_.size() != b.entries_.size()) {
+    return false;
+  }
+  for (std::size_t at = 0; at < a.entries_.size(); ++at) {
+    const auto& left = a.entries_[at];
+    const auto& right = b.entries_[at];
+    if (runner::journal_entry_to_line(left) != runner::journal_entry_to_line(right) ||
+        left.requires_operator_ != right.requires_operator_ || left.scope_ != right.scope_) {
+      return false;
+    }
+  }
+  return a.unreadable_lines_ == b.unreadable_lines_ && a.truncated_tail_ == b.truncated_tail_ &&
+    a.detail_ == b.detail_ && a.scope_ == b.scope_ && a.has_header_ == b.has_header_ &&
+    a.status_ == b.status_;
+}
+
+/** A journal text with every kind of line the reader tells apart, ending in a torn line. */
+std::string every_kind_of_line(bool header) {
+  auto answered = sample_entry();
+  answered.outcome_ = JournalOutcome::ACCEPTED;
+  answered.order_id_ = "KRX-1";
+  auto other = sample_entry();
+  other.id_ = "run-2";
+  const auto checked = runner::journal_entry_to_line(sample_entry());
+  std::string text;
+  if (header) {
+    text += runner::journal_header_line(kScope) + "\n";
+  } else {
+    // A file an earlier release began: lines without checksums, then checksummed ones.
+    text += without_checksum(runner::journal_entry_to_line(other)) + "\n";
+  }
+  text += checked + "\n";
+  text += runner::journal_entry_to_line(answered) + "\n";
+  text += without_checksum(runner::journal_entry_to_line(other)) + "\n";
+  text += "\n";
+  text += runner::journal_header_line(kScope) + "\n";
+  text += "{\"not\":\"a journal line\"}\n";
+  text += runner::journal_entry_to_line(other) + "\n";
+  text += checked.substr(0, checked.size() / 2);
+  return text;
+}
+
+} // namespace
+
+TEST_CASE("a journal parsed in two parts reads as the same journal parsed whole", "[journal]") {
+  for (const bool header : {true, false}) {
+    runner::JournalBytes bytes;
+    bytes.status_ = runner::JournalReadStatus::READ;
+    bytes.text_ = every_kind_of_line(header);
+    const auto whole = runner::parse_journal_bytes(bytes);
+    REQUIRE(whole.unreadable_lines_ == 4);
+    REQUIRE(whole.truncated_tail_);
+    const std::string_view text(bytes.text_);
+    for (std::size_t cut = 0; cut <= text.size(); ++cut) {
+      if (cut != 0 && text[cut - 1] != '\n') {
+        continue;
+      }
+      INFO("cut after byte " << cut);
+      runner::JournalReplay parts;
+      runner::journal_detail::ParseCarry carry;
+      REQUIRE(runner::journal_detail::parse_complete_lines(text.substr(0, cut), parts, carry) == cut);
+      const auto parsed = cut + runner::journal_detail::parse_complete_lines(text.substr(cut), parts, carry);
+      REQUIRE(parsed < text.size());
+      runner::journal_detail::parse_torn_tail(text.substr(parsed), parts);
+      CHECK(same_replay(parts, whole));
+    }
+  }
+}
