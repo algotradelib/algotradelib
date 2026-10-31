@@ -5466,6 +5466,40 @@ TEST_CASE("a file journal reads back a resolution a startup sweep wrote", "[reco
   CHECK(runner::recover_runner(restarted, next).clean());
 }
 
+TEST_CASE("a working-order poll sees a line another writer appended to the file journal", "[recovery][file]") {
+  // The poll keeps what it read of the journal; a line appended by anything but this journal must still
+  // reach the next sweep, as it did when every poll read the whole file.
+  const TempPath path("atl-test-poll-foreign-line.jsonl");
+  WorkingSession session;
+  session.set_working_orders(WorkingOrders<FakeBroker>{});
+  session.set_history(OrderPage{});
+  runner::FileJournal journal(path.str(), "fake:demo:1");
+  REQUIRE(journal.open());
+  auto live_runner = live::bind_observer(session, CountEvents{});
+  live::SessionSource<WorkingSession, runner::FileJournal> source(session, {samsung()});
+  source.set_journal(journal);
+  const auto now = std::chrono::system_clock::now();
+  live_runner.set_observed_at(now);
+
+  source.poll(runner::PollKind::WORKING_ORDERS, live_runner);
+  CHECK(source.last_reconcile().matches_.empty());
+
+  auto foreign = journaled_placement("other-1");
+  foreign.recorded_at_ = now - std::chrono::seconds(5);
+  foreign.scope_ = "fake:demo:1";
+  {
+    std::FILE* handle = std::fopen(path.str().c_str(), "ab");
+    REQUIRE(handle != nullptr);
+    const auto line = runner::journal_entry_to_line(foreign) + "\n";
+    REQUIRE(std::fwrite(line.data(), 1, line.size(), handle) == line.size());
+    std::fclose(handle);
+  }
+  source.poll(runner::PollKind::WORKING_ORDERS, live_runner);
+  REQUIRE(source.last_reconcile().matches_.size() == 1);
+  CHECK(source.last_reconcile().matches_.front().entry_id_ == "other-1");
+  CHECK_FALSE(source.last_reconcile().settled());
+}
+
 // ---------------------------------------------------------------------------
 // A history page that says there is more is never read as the whole history
 // ---------------------------------------------------------------------------
