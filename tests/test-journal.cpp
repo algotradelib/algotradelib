@@ -13,8 +13,13 @@
 #include <vector>
 
 #if !defined(_WIN32)
+#include <signal.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include <thread>
 #endif
 
 using namespace algotradelib;
@@ -1550,3 +1555,268 @@ TEST_CASE("a journal parsed in two parts reads as the same journal parsed whole"
     }
   }
 }
+
+#if !defined(_WIN32)
+namespace {
+
+/** Checks a journal's replay against a whole read of its file, the reader every poll used before. */
+void check_against_whole_read(const runner::FileJournal& journal) {
+  const auto& kept = journal.replay();
+  const auto whole = runner::read_journal_file(journal.path());
+  CHECK(same_replay(kept, whole));
+}
+
+/** A placement line of its own id, as this journal's executor writes them. */
+JournalEntry numbered(int n, JournalOutcome outcome = JournalOutcome::PENDING) {
+  auto entry = sample_entry();
+  entry.id_ = "run-" + std::to_string(n);
+  entry.outcome_ = outcome;
+  return entry;
+}
+
+/** Appends `text` to the file as another program would, with no lock and no journal. */
+void append_as_another_writer(const std::string& path, const std::string& text) {
+  std::FILE* handle = std::fopen(path.c_str(), "ab");
+  REQUIRE(handle != nullptr);
+  REQUIRE(std::fwrite(text.data(), 1, text.size(), handle) == text.size());
+  std::fclose(handle);
+}
+
+/**
+ * Waits until a change made now gets a later status-change time than the file's last one.
+ *
+ * File systems stamp changes from a clock that ticks in steps (on Linux a few milliseconds), so a change
+ * within one step of the last would carry the same time; that case is the one the class comment states.
+ */
+void wait_past_last_change(const std::string& path) {
+  struct stat status{};
+  REQUIRE(::stat(path.c_str(), &status) == 0);
+  const auto stamp = runner::journal_detail::stamp_of(status);
+  const auto last = std::chrono::system_clock::time_point{} + std::chrono::seconds(stamp.changed_s_) +
+    std::chrono::duration_cast<std::chrono::system_clock::duration>(std::chrono::nanoseconds(stamp.changed_ns_));
+  std::this_thread::sleep_until(last + std::chrono::milliseconds(50));
+}
+
+/** Changes one byte of the file in place, as another program would; the size stays the same. */
+void change_byte_in_place(const std::string& path, long offset) {
+  std::FILE* handle = std::fopen(path.c_str(), "r+b");
+  REQUIRE(handle != nullptr);
+  REQUIRE(std::fseek(handle, offset, SEEK_SET) == 0);
+  const int was = std::fgetc(handle);
+  REQUIRE(was != EOF);
+  REQUIRE(std::fseek(handle, offset, SEEK_SET) == 0);
+  REQUIRE(std::fputc(was == '1' ? '2' : '1', handle) != EOF);
+  std::fclose(handle);
+}
+
+/** The offset of a digit inside the first entry line, after the header. */
+long digit_in_first_entry(const std::string& path) {
+  const auto text = runner::read_journal_bytes(path).text_;
+  const auto entry = text.find('\n') + 1;
+  const auto at = text.find("\"quantity\":\"", entry);
+  REQUIRE(at != std::string::npos);
+  return static_cast<long>(at + 12);
+}
+
+/** Lowers the process's file-size limit, ignoring the signal that would end it, until destroyed. */
+class FileSizeLimit {
+public:
+  explicit FileSizeLimit(rlim_t bytes) {
+    REQUIRE(::getrlimit(RLIMIT_FSIZE, &saved_) == 0);
+    previous_ = ::signal(SIGXFSZ, SIG_IGN);
+    auto lowered = saved_;
+    lowered.rlim_cur = bytes;
+    REQUIRE(::setrlimit(RLIMIT_FSIZE, &lowered) == 0);
+  }
+
+  ~FileSizeLimit() {
+    ::setrlimit(RLIMIT_FSIZE, &saved_);
+    ::signal(SIGXFSZ, previous_);
+  }
+
+  FileSizeLimit(const FileSizeLimit&) = delete;
+  FileSizeLimit& operator=(const FileSizeLimit&) = delete;
+
+private:
+  struct rlimit saved_{};
+  void (*previous_)(int){SIG_DFL};
+};
+
+} // namespace
+
+TEST_CASE("a journal's replay continues over its own appends and reads as the whole file does", "[journal][file]") {
+  const TempJournal path("kept-own-appends");
+  runner::FileJournal journal(path.str(), kScope);
+  REQUIRE(journal.open());
+  check_against_whole_read(journal);
+  REQUIRE(journal.append(numbered(1)));
+  check_against_whole_read(journal);
+  REQUIRE(journal.append(numbered(1, JournalOutcome::ACCEPTED)));
+  REQUIRE(journal.append(numbered(2)));
+  REQUIRE(journal.append(numbered(2, JournalOutcome::INDETERMINATE)));
+  check_against_whole_read(journal);
+  check_against_whole_read(journal);
+  CHECK(journal.replay().entries_.size() == 4);
+  CHECK(runner::unresolved_instructions(journal.replay()).size() == 1);
+}
+
+TEST_CASE("a journal's append leaves an earlier replay as it was", "[journal][file]") {
+  // What `SessionSource` relies on: it reads the replay, then its sweep appends resolutions and its later
+  // search reads the same replay again.
+  const TempJournal path("kept-reference");
+  runner::FileJournal journal(path.str(), kScope);
+  REQUIRE(journal.append(numbered(1)));
+  const auto& kept = journal.replay();
+  REQUIRE(kept.entries_.size() == 1);
+  REQUIRE(journal.append(numbered(1, JournalOutcome::ACCEPTED)));
+  REQUIRE(journal.append(numbered(2)));
+  CHECK(kept.entries_.size() == 1);
+  CHECK(journal.replay().entries_.size() == 3);
+}
+
+TEST_CASE("another writer's append is read at the next replay", "[journal][file]") {
+  const TempJournal path("kept-foreign-append");
+  runner::FileJournal journal(path.str(), kScope);
+  REQUIRE(journal.append(numbered(1)));
+  check_against_whole_read(journal);
+
+  auto foreign = numbered(7);
+  foreign.scope_ = "other:account";
+  append_as_another_writer(path.str(), runner::journal_entry_to_line(foreign) + "\n");
+  check_against_whole_read(journal);
+  CHECK(journal.replay().entries_.size() == 2);
+
+  append_as_another_writer(path.str(), "{\"not\":\"a journal line\"}\n");
+  check_against_whole_read(journal);
+  CHECK(journal.replay().unreadable_lines_ == 1);
+
+  // A torn line, then this journal's own append after it: the two become one line no reader can read.
+  const auto torn = runner::journal_entry_to_line(numbered(8));
+  append_as_another_writer(path.str(), torn.substr(0, torn.size() / 2));
+  check_against_whole_read(journal);
+  CHECK(journal.replay().truncated_tail_);
+  REQUIRE(journal.append(numbered(9)));
+  check_against_whole_read(journal);
+  CHECK(journal.replay().unreadable_lines_ == 2);
+  REQUIRE(journal.append(numbered(10)));
+  check_against_whole_read(journal);
+}
+
+TEST_CASE("another writer's change in place is read at the next replay", "[journal][file]") {
+  const TempJournal path("kept-foreign-change");
+  runner::FileJournal journal(path.str(), kScope);
+  REQUIRE(journal.append(numbered(1)));
+  REQUIRE(journal.append(numbered(1, JournalOutcome::ACCEPTED)));
+  check_against_whole_read(journal);
+  REQUIRE(journal.replay().unreadable_lines_ == 0);
+  const auto offset = digit_in_first_entry(path.str());
+
+  SECTION("then a replay") {
+    wait_past_last_change(path.str());
+    change_byte_in_place(path.str(), offset);
+    check_against_whole_read(journal);
+    CHECK(journal.replay().unreadable_lines_ == 1);
+  }
+  SECTION("with its modification time set back") {
+    // Only the status-change time still shows it: no unprivileged program can set that one back.
+    struct stat before{};
+    REQUIRE(::stat(path.str().c_str(), &before) == 0);
+    wait_past_last_change(path.str());
+    change_byte_in_place(path.str(), offset);
+    const auto stamp = runner::journal_detail::stamp_of(before);
+    struct timespec times[2];
+    times[0].tv_sec = static_cast<time_t>(stamp.modified_s_);
+    times[0].tv_nsec = static_cast<long>(stamp.modified_ns_);
+    times[1] = times[0];
+    REQUIRE(::utimensat(AT_FDCWD, path.str().c_str(), times, 0) == 0);
+    check_against_whole_read(journal);
+    CHECK(journal.replay().unreadable_lines_ == 1);
+  }
+  SECTION("then this journal's own append, then a replay") {
+    // The order that only the check before each append sees: the stamp after the append would otherwise
+    // stand for the change as well.
+    wait_past_last_change(path.str());
+    change_byte_in_place(path.str(), offset);
+    REQUIRE(journal.append(numbered(2)));
+    check_against_whole_read(journal);
+    CHECK(journal.replay().unreadable_lines_ == 1);
+  }
+}
+
+TEST_CASE("a truncated, replaced or deleted journal file reads as a whole read does", "[journal][file]") {
+  const TempJournal path("kept-replaced");
+  const TempJournal copy("kept-replaced-copy");
+  runner::FileJournal journal(path.str(), kScope);
+  REQUIRE(journal.append(numbered(1)));
+  REQUIRE(journal.append(numbered(1, JournalOutcome::ACCEPTED)));
+  check_against_whole_read(journal);
+
+  // The last line cut off whole: shorter, and still ending in a newline.
+  const auto text = runner::read_journal_bytes(path.str()).text_;
+  const auto last = text.rfind('\n', text.size() - 2);
+  REQUIRE(::truncate(path.str().c_str(), static_cast<off_t>(last + 1)) == 0);
+  check_against_whole_read(journal);
+  CHECK(journal.replay().entries_.size() == 1);
+
+  // Another file renamed over the path: this journal still writes to the file it opened, as before.
+  write_journal(copy.str(), runner::journal_entry_to_line(numbered(5)) + "\n");
+  REQUIRE(std::rename(copy.str().c_str(), path.str().c_str()) == 0);
+  check_against_whole_read(journal);
+  REQUIRE(journal.append(numbered(6)));
+  check_against_whole_read(journal);
+  CHECK(journal.replay().entries_.size() == 1);
+
+  REQUIRE(std::remove(path.str().c_str()) == 0);
+  check_against_whole_read(journal);
+  CHECK(journal.replay().status_ == runner::JournalReadStatus::MISSING);
+
+  write_journal(path.str(), runner::journal_entry_to_line(numbered(7)) + "\n");
+  check_against_whole_read(journal);
+  CHECK(journal.replay().entries_.size() == 1);
+}
+
+TEST_CASE("a journal's own write cut short reads as a whole read does", "[journal][file]") {
+  const TempJournal path("kept-short-write");
+  runner::FileJournal journal(path.str(), kScope);
+  REQUIRE(journal.append(numbered(1)));
+  check_against_whole_read(journal);
+  struct stat status{};
+  REQUIRE(::stat(path.str().c_str(), &status) == 0);
+  bool appended = true;
+  {
+    const FileSizeLimit limit(static_cast<rlim_t>(status.st_size) + 20);
+    appended = journal.append(numbered(2));
+  }
+  CHECK_FALSE(appended);
+  check_against_whole_read(journal);
+  REQUIRE(journal.append(numbered(3)));
+  check_against_whole_read(journal);
+}
+
+TEST_CASE("a moved journal's replay reads as a whole read does, from either object", "[journal][file]") {
+  const TempJournal path("kept-moved");
+  const TempJournal other_path("kept-moved-other");
+  runner::FileJournal first(path.str(), kScope);
+  REQUIRE(first.append(numbered(1)));
+  check_against_whole_read(first);
+
+  runner::FileJournal moved(std::move(first));
+  check_against_whole_read(moved);
+  REQUIRE(moved.append(numbered(1, JournalOutcome::ACCEPTED)));
+  check_against_whole_read(moved);
+  // The moved-from journal writes nothing, and reads the whole file.
+  CHECK_FALSE(first.append(numbered(2)));
+  check_against_whole_read(first);
+  check_against_whole_read(first);
+
+  runner::FileJournal other(other_path.str(), kScope);
+  REQUIRE(other.append(numbered(9)));
+  check_against_whole_read(other);
+  other = std::move(moved);
+  check_against_whole_read(other);
+  REQUIRE(other.append(numbered(3)));
+  check_against_whole_read(other);
+  CHECK(other.replay().entries_.size() == 3);
+  check_against_whole_read(moved);
+}
+#endif
