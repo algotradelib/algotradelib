@@ -1117,7 +1117,7 @@ private:
     if (journal_ == nullptr) {
       return;
     }
-    const auto replay = journal_->replay();
+    const auto& replay = journal_->replay();
     const auto open = runner::unresolved_instructions(replay);
     if (open.empty()) {
       reconcile_ = runner::ReconcileReport{};

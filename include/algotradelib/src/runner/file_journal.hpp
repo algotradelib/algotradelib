@@ -23,6 +23,7 @@
 #else
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cstring>
@@ -36,7 +37,8 @@ namespace json = boost::json;
 namespace journal_detail {
 
 /**
- * Pushes a stream's buffered bytes out of the process and asks the kernel to write them.
+ * Asks the kernel to write a file's bytes to the disk; `flush_to_disk` first pushes a stream's buffered
+ * bytes out of the process.
  *
  * Two steps, because they close different windows and only the second one closes the one that
  * matters. `fflush` moves bytes out of the C library's buffer; if the process is killed after that,
@@ -51,15 +53,20 @@ namespace journal_detail {
  * loss on every platform where it means that, and the gap on macOS is a real one an operator should
  * know about rather than a bug to be surprised by.
  */
-inline bool flush_to_disk(std::FILE* handle) noexcept {
-  if (std::fflush(handle) != 0) {
-    return false;
-  }
+inline bool sync_to_disk(std::FILE* handle) noexcept {
 #if defined(_WIN32)
   return ::_commit(::_fileno(handle)) == 0;
 #else
   return ::fsync(::fileno(handle)) == 0;
 #endif
+}
+
+/**
+ * Pushes a stream's buffered bytes out of the process and asks the kernel to write them: `fflush`,
+ * then `sync_to_disk`. See the comment above `sync_to_disk`.
+ */
+inline bool flush_to_disk(std::FILE* handle) noexcept {
+  return std::fflush(handle) == 0 && sync_to_disk(handle);
 }
 
 /** Returns the value of a JSON string field, or an empty string when it is absent or not one. */
@@ -519,6 +526,59 @@ public:
 private:
   int descriptor_;
 };
+
+/** @brief What `stat` says of a journal file: which file it is, its size, and when it last changed. */
+struct FileStamp {
+  /** @brief The device. */
+  dev_t device_{};
+  /** @brief The inode. */
+  ino_t inode_{};
+  /** @brief The size in bytes. */
+  off_t size_{};
+  /** @brief The last modification, seconds and nanoseconds. */
+  std::int64_t modified_s_{0};
+  /** @brief The nanoseconds of the last modification. */
+  std::int64_t modified_ns_{0};
+  /** @brief The last status change, which no unprivileged process can set back. */
+  std::int64_t changed_s_{0};
+  /** @brief The nanoseconds of the last status change. */
+  std::int64_t changed_ns_{0};
+
+  /**
+   * @brief Tests whether two stamps are of the same file in the same state.
+   * @param other The other stamp.
+   * @return `true` if every field is equal.
+   */
+  bool operator==(const FileStamp& other) const noexcept {
+    return device_ == other.device_ && inode_ == other.inode_ && size_ == other.size_ &&
+      modified_s_ == other.modified_s_ && modified_ns_ == other.modified_ns_ &&
+      changed_s_ == other.changed_s_ && changed_ns_ == other.changed_ns_;
+  }
+};
+
+/**
+ * @brief Returns the stamp of a `stat` result.
+ * @param status The result.
+ * @return The stamp.
+ */
+inline FileStamp stamp_of(const struct stat& status) noexcept {
+  FileStamp stamp;
+  stamp.device_ = status.st_dev;
+  stamp.inode_ = status.st_ino;
+  stamp.size_ = status.st_size;
+#if defined(__APPLE__)
+  stamp.modified_s_ = status.st_mtimespec.tv_sec;
+  stamp.modified_ns_ = status.st_mtimespec.tv_nsec;
+  stamp.changed_s_ = status.st_ctimespec.tv_sec;
+  stamp.changed_ns_ = status.st_ctimespec.tv_nsec;
+#else
+  stamp.modified_s_ = status.st_mtim.tv_sec;
+  stamp.modified_ns_ = status.st_mtim.tv_nsec;
+  stamp.changed_s_ = status.st_ctim.tv_sec;
+  stamp.changed_ns_ = status.st_ctim.tv_nsec;
+#endif
+  return stamp;
+}
 #endif
 
 } // namespace journal_detail
@@ -1152,6 +1212,28 @@ inline void parse_torn_tail(std::string_view tail, JournalReplay& replay) {
   }
 }
 
+/**
+ * @brief Parses a journal's bytes into an empty `replay`, as `parse_journal_bytes` does.
+ * @param bytes The bytes and read status; a status other than `READ` is passed through.
+ * @param replay The replay, empty.
+ * @param carry The state carried between lines, as the last complete line left it.
+ * @return Whether the bytes were read and end in a newline (no torn tail).
+ */
+inline bool parse_bytes_into(const JournalBytes& bytes, JournalReplay& replay, ParseCarry& carry) {
+  replay.status_ = bytes.status_;
+  if (bytes.status_ != JournalReadStatus::READ) {
+    replay.detail_ = bytes.detail_;
+    return false;
+  }
+  const std::string_view text(bytes.text_);
+  const auto parsed = parse_complete_lines(text, replay, carry);
+  if (parsed < text.size()) {
+    parse_torn_tail(text.substr(parsed), replay);
+    return false;
+  }
+  return true;
+}
+
 } // namespace journal_detail
 
 /**
@@ -1167,17 +1249,8 @@ inline void parse_torn_tail(std::string_view tail, JournalReplay& replay) {
  */
 inline JournalReplay parse_journal_bytes(const JournalBytes& bytes) {
   JournalReplay replay;
-  replay.status_ = bytes.status_;
-  if (bytes.status_ != JournalReadStatus::READ) {
-    replay.detail_ = bytes.detail_;
-    return replay;
-  }
-  const std::string_view text(bytes.text_);
   journal_detail::ParseCarry carry;
-  const auto parsed = journal_detail::parse_complete_lines(text, replay, carry);
-  if (parsed < text.size()) {
-    journal_detail::parse_torn_tail(text.substr(parsed), replay);
-  }
+  journal_detail::parse_bytes_into(bytes, replay, carry);
   return replay;
 }
 
@@ -1206,6 +1279,12 @@ inline JournalReplay read_journal_file(const std::string& path) {
  * Keep the journal on a local disk (`flock` and `fsync` over NFS are unreliable). Windows takes no
  * lock. A flushed line survives a killed process everywhere; on macOS `fsync` does not guarantee it
  * survives a power loss. Two journals at different paths for one account are not detected.
+ *
+ * `replay()` keeps what it read. On POSIX a later call reads only the lines appended since, when the
+ * file's device, inode, size and modification and status-change times show that only this journal
+ * wrote to it; any other change makes it read the whole file. A change by another program that leaves
+ * all of them as they were (within the file system's timestamp resolution, or during one of this
+ * journal's own writes) is read at the next whole read, which a newly opened journal always does.
  */
 class FileJournal {
 public:
@@ -1324,20 +1403,156 @@ public:
     stamped.scope_ = scope_;
     auto line = journal_entry_to_line(stamped);
     line += '\n';
+    note_write_begins();
     const auto written = std::fwrite(line.data(), 1, line.size(), handle_.get());
-    if (written != line.size()) {
+    if (written != line.size() || std::fflush(handle_.get()) != 0) {
+      forget_kept();
       return false;
     }
-    return journal_detail::flush_to_disk(handle_.get());
+    // Stamped before `fsync`, which changes neither the size nor the times, so the stamp spans only
+    // this journal's own write.
+    note_write_ended();
+    if (!journal_detail::sync_to_disk(handle_.get())) {
+      forget_kept();
+      return false;
+    }
+    return true;
   }
 
   /**
-   * @brief Reads the whole journal back.
+   * @brief Reads the journal back.
+   *
+   * The result is kept by the journal: it stays valid until the next call, or until the journal is
+   * moved or destroyed, and `append` does not change it. So do not call `replay()` while still using
+   * an earlier result, and do not call it from two threads at once. On POSIX only the lines appended
+   * since the last call are read and parsed, when the file shows that only this journal wrote to it;
+   * otherwise, and always on Windows, the whole file is.
+   *
    * @return The replay, reporting anything that could not be read.
    */
-  JournalReplay replay() const { return read_journal_file(path_); }
+  const JournalReplay& replay() const {
+#if !defined(_WIN32)
+    if (continuable_ && open() && continue_replay()) {
+      return kept_;
+    }
+#endif
+    read_whole();
+    return kept_;
+  }
 
 private:
+  // Reads and parses the whole file into the kept replay, and on POSIX keeps a stamp of it when a later
+  // call may continue from it: the file was read whole, ends in a newline, and did not change while it
+  // was read. The path need not be the file this journal writes to (a rotated journal): the stamp is
+  // then of another inode, so this journal's next append finds it changed (`note_write_begins`).
+  //
+  // The old replay is released before the file is read, so a miss holds no more than one replay and
+  // the file's bytes at once.
+  void read_whole() const {
+#if defined(_WIN32)
+    kept_ = JournalReplay{};
+    kept_ = read_journal_file(path_);
+#else
+    continuable_ = false;
+    kept_ = JournalReplay{};
+    carry_ = journal_detail::ParseCarry{};
+    struct stat before{};
+    const bool stated = ::stat(path_.c_str(), &before) == 0;
+    const auto bytes = read_journal_bytes(path_);
+    if (!journal_detail::parse_bytes_into(bytes, kept_, carry_) || !stated) {
+      return;
+    }
+    struct stat after{};
+    const auto stamp = journal_detail::stamp_of(before);
+    if (::stat(path_.c_str(), &after) != 0 || !(stamp == journal_detail::stamp_of(after)) ||
+        static_cast<std::size_t>(stamp.size_) != bytes.text_.size()) {
+      return;
+    }
+    stamp_ = stamp;
+    parsed_to_ = bytes.text_.size();
+    continuable_ = true;
+#endif
+  }
+
+#if !defined(_WIN32)
+  // Continues the kept replay over what this journal appended since it was read, and returns whether it
+  // could. It can only when the path's stamp is the one kept: the file read, then only this journal's
+  // own appends (see `note_write_ended`). Anything else -- another writer, a truncated, replaced or
+  // deleted file, a read that came back short -- is left to `read_whole`.
+  bool continue_replay() const {
+    struct stat now{};
+    if (::stat(path_.c_str(), &now) != 0 || !(journal_detail::stamp_of(now) == stamp_)) {
+      return false;
+    }
+    const auto size = static_cast<std::size_t>(now.st_size);
+    if (size == parsed_to_) {
+      return true;
+    }
+    journal_detail::DescriptorOwner reader(::open(path_.c_str(), O_RDONLY | O_CLOEXEC));
+    if (reader.get() < 0) {
+      return false;
+    }
+    std::string appended(size - parsed_to_, '\0');
+    std::size_t got = 0;
+    while (got < appended.size()) {
+      const auto read = ::pread(
+        reader.get(), &appended[got], appended.size() - got, static_cast<off_t>(parsed_to_ + got)
+      );
+      if (read < 0 && errno == EINTR) {
+        continue;
+      }
+      if (read <= 0) {
+        return false;
+      }
+      got += static_cast<std::size_t>(read);
+    }
+    struct stat read_status{};
+    if (appended.back() != '\n' || ::fstat(reader.get(), &read_status) != 0 ||
+        !(journal_detail::stamp_of(read_status) == stamp_)) {
+      return false;
+    }
+    // Cleared first: a parse that throws leaves the next call reading the whole file.
+    continuable_ = false;
+    journal_detail::parse_complete_lines(appended, kept_, carry_);
+    parsed_to_ = size;
+    continuable_ = true;
+    return true;
+  }
+#endif
+
+  // Before this journal writes: if the file is no longer as the kept replay last saw it, something else
+  // wrote to it, and the stamp taken after this write must not stand for it.
+  void note_write_begins() {
+#if !defined(_WIN32)
+    struct stat now{};
+    if (continuable_ && (::fstat(::fileno(handle_.get()), &now) != 0 || !(journal_detail::stamp_of(now) == stamp_))) {
+      continuable_ = false;
+    }
+#endif
+  }
+
+  // After this journal's write reached the kernel: the bytes past the parsed offset are its own, so the
+  // stamp now is what the next `replay()` must find.
+  void note_write_ended() {
+#if !defined(_WIN32)
+    struct stat now{};
+    if (continuable_) {
+      if (::fstat(::fileno(handle_.get()), &now) == 0) {
+        stamp_ = journal_detail::stamp_of(now);
+      } else {
+        continuable_ = false;
+      }
+    }
+#endif
+  }
+
+  // A write that failed leaves the file in a state no stamp describes.
+  void forget_kept() noexcept {
+#if !defined(_WIN32)
+    continuable_ = false;
+#endif
+  }
+
   // Returns whether this journal may write to the file, deciding ownership from the header alone.
   //
   // **The header, not the records, and that distinction is the fix.** Reading ownership from the
@@ -1485,6 +1700,16 @@ private:
   std::string repaired_;
   std::string rejection_;
   bool needs_header_{false};
+  // What `replay()` last returned.
+  mutable JournalReplay kept_;
+#if !defined(_WIN32)
+  // The parser's state after the kept replay's last line, how many bytes it covers, the file's stamp
+  // as this journal last saw it, and whether a later `replay()` may continue from it.
+  mutable journal_detail::ParseCarry carry_;
+  mutable std::size_t parsed_to_{0};
+  mutable journal_detail::FileStamp stamp_;
+  mutable bool continuable_{false};
+#endif
 };
 
 } // namespace runner

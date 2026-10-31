@@ -1348,7 +1348,7 @@ RecoveryReport recover_into(const Journal& journal, IndeterminacyLedger& ledger)
  */
 template <typename Runner, typename Journal>
 RecoveryReport recover_runner(Runner& runner_instance, const Journal& journal) {
-  const auto replay = journal.replay();
+  const auto& replay = journal.replay();
   auto report = recover_into(replay, runner_instance.ledger());
   // A serialized runner also gets back every order it may still owe (`Runner::restore_obligations`),
   // and places nothing until this has run.
