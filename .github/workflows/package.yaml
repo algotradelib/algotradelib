@@ -14,7 +14,9 @@
 # OpenSSL 3 is not in it: it comes from the runner, as in cmake-check.yaml. Each package fits its runner's default
 # toolchain: GCC with libstdc++, Apple Clang with libc++, and MSVC with the shared CRT (/MD, /MDd).
 #
-# The annotation org.opencontainers.image.revision names the library commit; pin the digest for a fixed build.
+# The annotation org.opencontainers.image.revision names the library commit.
+# Before the first release only the latest build is kept: each publish deletes the untagged builds it replaced, so a
+# digest whose tag has moved lasts only until the next publish; a fixed build waits for a release.
 # The three tags are pushed one by one, so after a failed push they can name different commits.
 
 name: package
@@ -203,6 +205,7 @@ jobs:
           version: ${{ env.ORAS_VERSION }}
 
       - name: Push
+        id: push
         shell: bash
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -226,3 +229,33 @@ jobs:
               --annotation "org.opencontainers.image.revision=$GITHUB_SHA" \
               "algotradelib-$platform.tar.gz:application/vnd.oci.image.layer.v1.tar+gzip"
           done
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      # Each push above leaves the build it replaced as an untagged version; this deletes them, so only the three
+      # tags remain. It runs only after all three pushes succeeded, inside the publish queue, so no other publish of
+      # this workflow interleaves. Untagged is safe to delete here because every version is a standalone manifest
+      # (oras push: no index, no subject), so no tagged version refers to one; a publisher that adds indexes or
+      # referrers must not reuse this as is. Best effort: a refused list or delete warns, and the publish stands.
+      # Deleting needs this repository to have the Admin role in the package's "Manage Actions access".
+      - name: Remove untagged versions
+        if: steps.push.outputs.pushed == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          path="${PACKAGE#ghcr.io/}"
+          endpoint="orgs/${path%%/*}/packages/container/${path#*/}/versions"
+          # Every page is read before anything is deleted, so a deletion cannot shift a page still to be read.
+          if ! ids=$(gh api --paginate "$endpoint?per_page=100" \
+            --jq '.[] | select((.metadata.container.tags | length) == 0) | .id'); then
+            echo "::warning::the package's versions could not be listed; nothing deleted"
+            exit 0
+          fi
+          while IFS= read -r id; do
+            [ -n "$id" ] || continue
+            if gh api -X DELETE "$endpoint/$id" > /dev/null; then
+              echo "deleted untagged version $id"
+            else
+              echo "::warning::untagged version $id could not be deleted (the error is above); left in place"
+            fi
+          done <<< "$ids"
