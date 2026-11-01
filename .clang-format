@@ -35,6 +35,8 @@ BreakBeforeTernaryOperators: false
 PenaltyIndentedWhitespace: 150
 PenaltyBreakScopeResolution: 10000
 PenaltyReturnTypeOnItsOwnLine: 1000
+# Break inside a call's brackets rather than before a member access, which would hang at +4.
+PenaltyBreakBeforeMemberAccess: 1000
 
 # Constructor initializers: the colon at the function's indent.
 BreakConstructorInitializers: BeforeColon
