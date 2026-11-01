@@ -748,8 +748,8 @@ TEST_CASE("a position whose rows will not add up is rejected, not read as flat")
 }
 
 TEST_CASE("a sale too large to negate is rejected and not dropped as a met target") {
-  // A target of INT64_MIN shares from flat needs a sale whose size has no positive decimal. Read as zero, the
-  // failed negation returned an empty plan, which looks like a met target, and withdrew an opposing buy.
+  // From flat, a target whose coefficient is INT64_MIN needs a sale with no positive size. Read as zero, the failed
+  // negation returned an empty plan, which looks like a met target, and withdrew an opposing buy.
   TargetPosition wanted = target("0");
   wanted.target_quantity_ = Decimal64(std::numeric_limits<std::int64_t>::min(), 0);
   const auto reference = samsung_reference();
@@ -770,6 +770,19 @@ TEST_CASE("a sale too large to negate is rejected and not dropped as a met targe
   CHECK(with_a_buy.cancel_.empty());
   REQUIRE(with_a_buy.rejected_.size() == 1);
   CHECK(with_a_buy.rejected_[0].reason_ == strategy::RejectReason::NOT_REPRESENTABLE);
+
+  // A resting stop is left alone too: a target that cannot be sized withdraws nothing.
+  ProbePortfolio stopped;
+  auto stop = working("10", "0", OrderStatus::PENDING, OrderSide::SELL);
+  stop.order_.type_ = OrderType::STOP_LIMIT;
+  stop.order_.price_ = Decimal64::parse("69000");
+  stop.order_.trigger_price_ = Decimal64::parse("69500");
+  stopped.working_.push_back(stop);
+  const auto with_a_stop = strategy::reconcile(wanted, stopped, inputs);
+  CHECK(with_a_stop.place_.empty());
+  CHECK(with_a_stop.cancel_.empty());
+  REQUIRE(with_a_stop.rejected_.size() == 1);
+  CHECK(with_a_stop.rejected_[0].reason_ == strategy::RejectReason::NOT_REPRESENTABLE);
 }
 
 TEST_CASE("over-ordering through reserved rows that may have filled re-sends only what they do not cover") {

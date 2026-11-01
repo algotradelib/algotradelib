@@ -603,6 +603,12 @@ Plan<Broker> reconcile(
 
   const bool buying = decimal_less(zero, *needed);
   const bool selling = decimal_less(*needed, zero);
+  // A sale whose coefficient is INT64_MIN has no positive size: read as zero, it would return an empty plan, as if
+  // the target were met. Checked before the stops, so a target that cannot be sized withdraws nothing.
+  const auto magnitude = buying ? std::optional<Decimal64>(*needed) : decimal_subtract(zero, *needed);
+  if (!magnitude) {
+    return reject(RejectReason::NOT_REPRESENTABLE);
+  }
 
   // **Stops first; see `RejectReason::STOP_ORDER_RESTING`.** A row is a stop when its basis says so
   // or it carries a trigger -- an adapter records a positive trigger even on a row whose basis reads
@@ -662,11 +668,6 @@ Plan<Broker> reconcile(
   }
 
   const OrderSide side = buying ? OrderSide::BUY : OrderSide::SELL;
-  // A sale of INT64_MIN shares has no positive size: read as zero, it would return an empty plan, a met target.
-  const auto magnitude = buying ? std::optional<Decimal64>(*needed) : decimal_subtract(zero, *needed);
-  if (!magnitude) {
-    return reject(RejectReason::NOT_REPRESENTABLE);
-  }
   const auto already = rows.working_quantity(side);
 
   // Step 3: only the part not already in the market.
