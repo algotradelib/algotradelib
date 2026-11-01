@@ -1490,6 +1490,15 @@ TEST_CASE("a line's instant is read from 1970-01-02 to 2200, and from 2020 on a 
   const auto salvaged = runner::journal_entry_to_line(operator_only);
   CHECK(runner::journal_entry_from_line(salvaged).has_value());
   CHECK(runner::journal_entry_from_line(without_checksum(salvaged)).has_value());
+  // Any other instant keeps the bound: an extreme one would overflow a nanosecond clock (Linux).
+  constexpr auto lowest = std::numeric_limits<std::int64_t>::min();
+  constexpr auto highest = std::numeric_limits<std::int64_t>::max();
+  for (const auto micros : {lowest, std::int64_t{-1}, year_2200 + 1, highest}) {
+    INFO("at = " << micros);
+    auto row = boost::json::parse(without_checksum(salvaged)).as_object();
+    row["at"] = micros;
+    CHECK_FALSE(runner::journal_entry_from_line(boost::json::serialize(row)).has_value());
+  }
 }
 
 TEST_CASE("a placement stamped at the epoch halts recovery, whoever checksummed it", "[journal][integrity][file]") {

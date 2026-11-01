@@ -754,13 +754,9 @@ inline JournalEntry unattributable_journal_entry(std::string_view line) {
 /**
  * @brief Parses one journal line.
  * @param line The line, without its newline.
- * @return The entry, or `std::nullopt` if the line is not a readable journal entry: not JSON, its
- *   action, outcome or time missing or unreadable, its time outside 1970-01-02 to 2200-01-01 (after
- *   2019 on a line without a checksum) unless it is operator-only, an unknown field, or a checksum
- *   that does not match. If a field describing the order (symbol, country, venue, side, type, quantity, or a
- *   present condition, session, price or trigger) is missing or unreadable, the entry is
- *   operator-only, names no instrument, and its id is suffixed `~damaged`; it keeps its outcome. An
- *   unreadable route leaves the route unknown on an otherwise complete entry.
+ * @return The entry, or `std::nullopt` if the line is not a readable journal entry: not JSON, its action, outcome or time missing or unreadable, its time outside 1970-01-02 to 2200-01-01 (after 2019 on a line without a checksum) unless it is an operator-only line at the epoch, an unknown field, or a checksum that does not match.
+ *   If a field describing the order (symbol, country, venue, side, type, quantity, or a present condition, session, price or trigger) is missing or unreadable, the entry is operator-only, names no instrument, and its id is suffixed `~damaged`; it keeps its outcome.
+ *   An unreadable route leaves the route unknown on an otherwise complete entry.
  */
 inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line) {
   boost::system::error_code error;
@@ -772,19 +768,19 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
 
   const auto action = journal_action_from(journal_detail::string_field(row, "action"));
   const auto outcome = journal_outcome_from(journal_detail::string_field(row, "outcome"));
-  // An operator-only line is exempt from the bound below, and deliberately: a
-  // salvaged fragment records the epoch precisely *because* it has no
-  // timestamp, and `requires_operator_` is what stops that epoch window
-  // resolving it. Repairing such a line writes it back, so rejecting the epoch
-  // here would make every repair unreadable on the next open. The bound is for
-  // a line that claims to be ordinary and carries an instant it cannot have.
   const auto operator_only = row.if_contains("requires_operator");
   const bool marked = operator_only != nullptr && operator_only->is_bool() &&
     operator_only->as_bool();
 
   const auto at = row.if_contains("at");
-  if (!action || !outcome || at == nullptr || !at->is_int64() ||
-      (!marked && !journal_detail::plausible_instant(at->as_int64(), journal_detail::has_field(row, "crc")))) {
+  // An operator-only line may carry the epoch, below the bound, and deliberately: a salvaged fragment records the epoch precisely *because* it has no timestamp, and `requires_operator_` is what stops that epoch window resolving it.
+  // Repairing such a line writes it back, so rejecting the epoch here would make every repair unreadable on the next open.
+  // Any other instant keeps the bound, which also keeps it inside what `system_clock` holds.
+  const bool epoch = marked && at != nullptr && at->is_int64() && at->as_int64() == 0;
+  if (
+    !action || !outcome || at == nullptr || !at->is_int64() ||
+    (!epoch && !journal_detail::plausible_instant(at->as_int64(), journal_detail::has_field(row, "crc")))
+  ) {
     // A well-formed JSON object that is not a journal line. Treated as damage rather than as an
     // empty entry, because an entry with a default instrument would be a claim about an order.
     return std::nullopt;
