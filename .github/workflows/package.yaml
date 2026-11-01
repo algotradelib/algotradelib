@@ -173,7 +173,7 @@ jobs:
           name: algotradelib-${{ matrix.platform }}
           path: algotradelib-${{ matrix.platform }}.tar.gz
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
 
   # The only job with packages: write. It runs no repository code: no checkout, only the built tarballs.
   publish:
