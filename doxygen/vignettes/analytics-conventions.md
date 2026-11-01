@@ -16,7 +16,7 @@ namespace analytics = algotradelib::analytics;
 // The one place a broker's exact decimals become scalars.
 const analytics::SeriesFrame frame = analytics::from_bars(bars);
 
-const auto close = frame.close();               // a view, not a copy
+const auto close = frame.close(); // a view, not a copy
 const auto average = analytics::sma(close, 20);
 const auto strength = analytics::rsi(close, 14);
 

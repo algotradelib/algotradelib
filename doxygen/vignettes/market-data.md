@@ -8,7 +8,7 @@ way whichever broker is bound.
 BarQuery query;
 query.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
 query.interval_ = BarInterval::ONE_DAY;
-query.count_ = 250;            // how many bars you want, not how many a page holds
+query.count_ = 250; // how many bars you want, not how many a page holds
 
 auto bars = session.bars(query);
 auto book = session.depth(query.instrument_);
@@ -64,7 +64,7 @@ own `source_` so a stale table is visible rather than assumed, and it is data a 
 can replace.
 
 ```cpp
-const auto& rule = instrument.price_rule_;            // depends on what it is
+const auto& rule = instrument.price_rule_; // depends on what it is
 if (auto limit = rule.round_to_tick(computed_price, OrderSide::BUY)) {
   order.price_ = *limit;
 }
@@ -127,7 +127,7 @@ cache for any date it already covers. Pass `refresh` to fetch again deliberately
 ## The calendar answers three states, not two
 
 ```cpp
-auto open = calendar.value().is_trading_day(date);   // std::optional<bool>
+auto open = calendar.value().is_trading_day(date); // std::optional<bool>
 ```
 
 Empty means the date is **not covered**, which is different from closed. Reporting

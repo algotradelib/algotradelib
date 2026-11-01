@@ -262,9 +262,9 @@ int main() {
   std::cout << "the order list was read " << source.reads() << " time(s) before the gate opened\n";
 
   std::cout << "\nhow a real operator would stop this:\n"
-            << "  runner::SignalStop::install(stop);   // SIGINT and SIGTERM quiesce; SIGHUP ignored\n"
+            << "  runner::SignalStop::install(stop); // SIGINT and SIGTERM quiesce; SIGHUP ignored\n"
             << "  loop.set_control_file(runner::FileStopChannel(\"/var/run/atl/stop\"));\n"
-            << "  echo withdraw > /var/run/atl/stop    // or quiesce, or flatten\n\n"
+            << "  echo withdraw > /var/run/atl/stop // or quiesce, or flatten\n\n"
             << "and the trap worth knowing: a supervisor's grace period must exceed one loop\n"
             << "iteration plus one request timeout, or its SIGKILL turns the cleanest stop into\n"
             << "the worst one -- a process killed mid-request, with an order whose fate is unknown.\n";

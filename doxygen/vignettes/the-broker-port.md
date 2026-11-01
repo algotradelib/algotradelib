@@ -11,9 +11,9 @@ using namespace algotradelib;
 
 template <typename Client>
 void report(BlockingSession<Client>& session, const OrderRequest& order) {
-  auto holdings = session.holdings();          // no account argument
-  auto working = session.working_orders();     // normalized WorkingOrders
-  auto placed = session.place(order);          // Result<typename BlockingSession<Client>::Placed>
+  auto holdings = session.holdings(); // no account argument
+  auto working = session.working_orders(); // normalized WorkingOrders
+  auto placed = session.place(order); // Result<typename BlockingSession<Client>::Placed>
   session.cancel(placed.value().ref_, cancel_all(working.value().orders_.front()));
 }
 

@@ -39,7 +39,7 @@ configured the transport behaves exactly as an unpaced one.
 
 ```cpp
 network::HttpClientOptions options;
-options.rate_limit_ = network::RateLimitBudget{8, 8, 2};  // burst, per second, reserve (KIS: below)
+options.rate_limit_ = network::RateLimitBudget{8, 8, 2}; // burst, per second, reserve (KIS: below)
 kis::KisBlockingClient client(tls, std::move(config), options);
 ```
 

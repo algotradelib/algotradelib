@@ -2958,7 +2958,7 @@ private:
   // a code absent from it reads as `UNKNOWN` with the raw code preserved. Neither
   // is approximated by a neighbouring value.
   static constexpr std::array<OrderShapeRow, 28> kOrderShapes{{
-    // code  type                       condition                         session
+    // Each row: code, type, condition, session, venues, requestable.
     {"00", OrderType::LIMIT,             TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
     {"01", OrderType::MARKET,            TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx |        kSor, true},
     {"02", OrderType::CONDITIONAL_LIMIT, TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx,               true},

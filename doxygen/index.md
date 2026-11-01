@@ -167,7 +167,7 @@ struct MyStrategy {
     strategy::TargetPosition target;
     target.instrument_ = bar.instrument_;
     target.target_quantity_ = Decimal64::parse("10");
-    ctx.submit(target);          // state a position, not an order
+    ctx.submit(target); // state a position, not an order
   }
 };
 ```
@@ -230,25 +230,25 @@ Without `--live` the runner is bound with `live::bind_observer`, which has nothi
 With it, `live_program::trade` does what a restartable run needs, in the order it needs it:
 
 ```cpp
-runner::FileJournal journal(settings.journal_path_, settings.journal_scope_);  // one per account
+runner::FileJournal journal(settings.journal_path_, settings.journal_scope_); // one per account
 if (!journal.open()) { /* a runner that cannot record what it sends does not send */ }
 
 auto bound = live::bind_journaled(
   session, journal, std::move(strategy), settings.limits_,
-  live::default_series_capacity, settings.default_route_  // where unrouted orders go; Kiwoom: KRX
+  live::default_series_capacity, settings.default_route_ // where unrouted orders go; Kiwoom: KRX
 );
-const auto recovery = runner::recover_runner(bound, journal);  // printed; a global halt stops here
+const auto recovery = runner::recover_runner(bound, journal); // printed; a global halt stops here
 // ... reference data for each instrument, then:
 live::SessionSource<Session, runner::FileJournal> source(session, settings.universe_);
-source.set_journal(journal);                    // lets the listings it reads resolve the journal
+source.set_journal(journal); // lets the listings it reads resolve the journal
 
 runner::PollingLoop<decltype(bound), decltype(source), Clock> loop(bound, source, settings.schedule_);
-loop.set_maximum_portfolio_age(settings.maximum_portfolio_age_);        // every age stated
+loop.set_maximum_portfolio_age(settings.maximum_portfolio_age_); // every age stated
 loop.set_maximum_price_limits_age(settings.maximum_price_limits_age_);
-loop.set_closing_wait(settings.closing_wait_);                          // a withdraw waits for its reads
-loop.set_owed_order_limit(settings.owed_order_limit_);                  // exit 8 below
+loop.set_closing_wait(settings.closing_wait_); // a withdraw waits for its reads
+loop.set_owed_order_limit(settings.owed_order_limit_); // exit 8 below
 loop.set_control_file(runner::FileStopChannel(settings.control_file_)); // echo withdraw > it
-const auto report = loop.run(stop);             // stop also comes from SIGINT / SIGTERM
+const auto report = loop.run(stop); // stop also comes from SIGINT / SIGTERM
 // ... the report, its notes, and closing_complete()
 ```
 

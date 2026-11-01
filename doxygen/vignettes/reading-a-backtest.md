@@ -13,7 +13,7 @@ See @ref writing-a-strategy for the strategy side and @ref binding-a-broker for 
 
 backtest::ReplayConfig config;
 config.cash_ = atl::Decimal64::parse("100000000");
-config.instruments_ = {reference};          // reference data, with its PriceRule
+config.instruments_ = {reference}; // reference data, with its PriceRule
 
 backtest::Backtester<vanilla::SmaCrossover> engine(
   vanilla::SmaCrossover{params},
@@ -134,13 +134,15 @@ interleave bars across instruments.
 Sketched — `bar` and `quote` stand for events you build from your own data:
 
 ```
-engine.feed(bar);      // yesterday's close  -> on_bar
-engine.feed(quote);    // today 10:30        -> on_quote; an order placed here cannot fill
-                       //                       against today's bar, whose open was 09:00
-engine.feed(bar);      // today's close      -> on_bar
-engine.feed(bar);      // tomorrow's close   -> a market order from the quote fills here, at
-                       //                       tomorrow's open; a limit may miss, and expires
-                       //                       with tomorrow's session
+// yesterday's close -> on_bar
+engine.feed(bar);
+// today 10:30 -> on_quote; an order placed here cannot fill against today's bar, whose open was 09:00
+engine.feed(quote);
+// today's close -> on_bar
+engine.feed(bar);
+// tomorrow's close -> a market order from the quote fills here, at tomorrow's open.
+// A limit may miss, and expires with tomorrow's session.
+engine.feed(bar);
 engine.finish();
 ```
 
@@ -308,7 +310,7 @@ you state, and `analytics` deliberately carries none of its own:
 
 ```cpp
 backtest::CommissionModel::of(rate, per_order_minimum);
-backtest::SlippageModel::of_ticks(1);          // one tick at the instrument's own grid
+backtest::SlippageModel::of_ticks(1); // one tick at the instrument's own grid
 backtest::SlippageModel::of_basis_points(bps); // a fraction of the price
 ```
 

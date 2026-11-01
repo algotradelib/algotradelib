@@ -28,7 +28,7 @@ Four steps, and two of them are easy to get subtly and silently wrong:
 runner::FileJournal journal("/var/lib/mybot/orders.jsonl", "kis:live:12345678-01");
 if (!journal.open()) {
   std::cerr << journal.rejection() << '\n';
-  return 1;   // a runner that cannot journal should not trade
+  return 1; // a runner that cannot journal should not trade
 }
 
 // 2. Bind through the journal. `bind_journaled`, never `bind`.

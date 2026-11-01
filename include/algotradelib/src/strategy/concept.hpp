@@ -28,7 +28,7 @@ namespace strategy {
  *   Params params_;
  *
  *   template <class Ctx> void on_start(Ctx& ctx);
- *   template <class Ctx> void on_bar(Ctx& ctx, const BarEvent& bar);     // or on_bars, not both
+ *   template <class Ctx> void on_bar(Ctx& ctx, const BarEvent& bar); // or on_bars, not both
  *   template <class Ctx> void on_quote(Ctx& ctx, const QuoteEvent& quote);
  *   template <class Ctx> void on_fill(Ctx& ctx, const Fill& fill);
  *   template <class Ctx> void on_order_update(Ctx& ctx, const OrderSnapshot& order);

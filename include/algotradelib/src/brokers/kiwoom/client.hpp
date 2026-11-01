@@ -535,7 +535,7 @@ struct KiwoomOrderShapeRow {
  * code.
  */
 inline constexpr std::array<KiwoomOrderShapeRow, 21> kOrderShapes{{
-  // code   name              alternate       type                       condition                         session
+  // Each row: code, name, alternate name, type, condition, session, requestable.
   {"0",  "보통",           "지정가",      OrderType::LIMIT,             TimeInForce::DAY,                 OrderSession::REGULAR,             true},
   {"3",  "시장가",         nullptr,       OrderType::MARKET,            TimeInForce::DAY,                 OrderSession::REGULAR,             true},
   {"5",  "조건부지정가",   nullptr,       OrderType::CONDITIONAL_LIMIT, TimeInForce::DAY,                 OrderSession::REGULAR,             true},

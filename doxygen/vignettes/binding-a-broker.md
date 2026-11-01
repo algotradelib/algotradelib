@@ -48,8 +48,8 @@ holding.params_.instrument_ = instrument;
 holding.params_.quantity_ = algotradelib::Decimal64::parse("10");
 
 runner::DryRunner<vanilla::BuyAndHold> dry(holding);
-dry.context().set_instrument(reference);      // reference data, with its PriceRule
-dry.context().set_phase(strategy::MarketPhase::OPEN);   // one pass, driven by hand: see below
+dry.context().set_instrument(reference); // reference data, with its PriceRule
+dry.context().set_phase(strategy::MarketPhase::OPEN); // one pass, driven by hand: see below
 dry.context().set_last_price(instrument, last_close);
 
 const auto report = dry.feed(bar_event);
@@ -131,7 +131,7 @@ limits.max_orders_per_window_ = 10;
 limits.rate_window_ = std::chrono::minutes(1);
 
 runner::DryRunner<MyStrategy> dry(MyStrategy{}, limits);
-dry.guard().halt();     // the kill switch, checked before anything else
+dry.guard().halt(); // the kill switch, checked before anything else
 ```
 
 `max_position_quantity_` is measured against the position that would exist if the order **and
@@ -302,10 +302,10 @@ behind yet.
 Calling a verb a broker cannot serve is a compile error naming the broker and what to do instead:
 
 ```
-session.commissions();        // on KIS: "this broker publishes no commission schedule; gate the
-                              //  call with BrokerCaps<Client>::has_commission_schedule"
-session.sellable_quantity(i); // on KIS: "read HoldingPosition::sellable_quantity_ from the
-                              //  holdings snapshot"
+// on KIS: "this broker publishes no commission schedule; gate the call with BrokerCaps<Client>::has_commission_schedule"
+session.commissions();
+// on KIS: "read HoldingPosition::sellable_quantity_ from the holdings snapshot"
+session.sellable_quantity(i);
 ```
 
 Buying power is per currency and the broker prices it that way, so ask for the one you trade in. Toss

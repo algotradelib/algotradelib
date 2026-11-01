@@ -118,7 +118,7 @@ void post_refusal(Handler&& handler) {
  *   static Result<QuoteSnapshot> quote(Client& client, InstrumentId instrument);
  *   static Result<BarSeries> bars(Client& client, BarQuery query);
  * };
- * ATL_ASSERT_BROKER(my::Client);  // in one source file
+ * ATL_ASSERT_BROKER(my::Client); // in one source file
  * @endcode
  *
  * An asynchronous client takes the completion token as the last argument. To serve more (a

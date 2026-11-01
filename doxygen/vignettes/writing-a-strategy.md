@@ -240,7 +240,7 @@ struct PairSpread {
     const BarEvent* y = slice.find(y_);
     const BarEvent* x = slice.find(x_);
     if (y == nullptr || x == nullptr) {
-      return;  // a leg has no bar this period
+      return; // a leg has no bar this period
     }
     // Both series end at this period here, so a hedge ratio can be fitted on them directly.
     const auto* ys = ctx.bars(y_, slice.interval_);
@@ -339,7 +339,7 @@ const auto limit = strategy::Price::rounded(
   bar.bar_.close_, reference->price_rule_, atl::OrderSide::BUY
 );
 if (!limit) {
-  return;   // the grid is unknown, so no price can be made valid
+  return; // the grid is unknown, so no price can be made valid
 }
 ```
 

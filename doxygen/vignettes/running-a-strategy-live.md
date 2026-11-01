@@ -14,7 +14,7 @@ same in a backtest and in production, and it is genuinely all you need for one d
 What you must not do is write the obvious wrapper:
 
 ```cpp
-while (true) { runner.feed(next_bar()); }   // don't
+while (true) { runner.feed(next_bar()); } // don't
 ```
 
 At that moment you own four things you probably did not mean to: a cadence, a rate-limit interaction, a
@@ -26,8 +26,8 @@ The whole production path — journal, recovery, loop, stops and the report — 
 credential headers the program includes (`examples/kis_credentials.hpp`, `examples/kiwoom_credentials.hpp`). The loop at its centre:
 
 ```cpp
-runner::FileJournal journal(path, scope);                     // one journal per account
-auto live_runner = live::bind_journaled(session, journal, MyStrategy{}, limits);  // Kiwoom: add a route
+runner::FileJournal journal(path, scope); // one journal per account
+auto live_runner = live::bind_journaled(session, journal, MyStrategy{}, limits); // Kiwoom: add a route
 const auto recovery = runner::recover_runner(live_runner, journal);
 live::SessionSource<Session, runner::FileJournal> source(session, {samsung()});
 source.set_journal(journal);
@@ -714,9 +714,10 @@ Two checks, each the broker's answer rather than a limit you chose. The sellable
 default; the buying-power check is off until you turn it on.
 
 ```cpp
-strategy::RiskLimits limits;                // enforce_sellable_quantity_ is true: refuse a sell of
-                                            // shares the broker has not said may be sold
-limits.enforce_buying_power_ = true;        // refuse a buy the broker cannot fund
+// enforce_sellable_quantity_ is true: refuse a sell of shares the broker has not said may be sold
+strategy::RiskLimits limits;
+// refuse a buy the broker cannot fund
+limits.enforce_buying_power_ = true;
 ```
 
 The sellable check is on because the alternative is worse than a refusal. A sale the account cannot

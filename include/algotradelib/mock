@@ -12,7 +12,7 @@
  * @code
  * mock::MarketSettings settings;
  * settings.cash_ = Money{Decimal64::parse("10000000"), Currency{"KRW"}};
- * settings.start_ = first_close;  // bars that ended by then are history
+ * settings.start_ = first_close; // bars that ended by then are history
  * mock::Market market({series}, settings);
  * auto client = std::make_shared<mock::MockClient>(market);
  * BlockingSession<mock::MockClient> session(client, mock::MockAccount{});
