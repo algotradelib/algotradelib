@@ -366,9 +366,15 @@ inline PriceRule price_rule_for(Country country, SecurityType type) {
  *
  * @code
  * switch (instrument.delisted_on_.state()) {
- *   case StatedDate::State::STATED:     use(instrument.delisted_on_.date()); break;
- *   case StatedDate::State::NOT_STATED: ...; break; // the broker said nothing
- *   case StatedDate::State::UNREADABLE: ...; break; // the broker sent something unreadable
+ *   case StatedDate::State::STATED:
+ *     use(instrument.delisted_on_.date());
+ *     break;
+ *   case StatedDate::State::NOT_STATED: // the broker said nothing
+ *     ...;
+ *     break;
+ *   case StatedDate::State::UNREADABLE: // the broker sent something unreadable
+ *     ...;
+ *     break;
  * }
  * @endcode
  *
