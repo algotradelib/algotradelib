@@ -230,8 +230,9 @@ public:
     answer.adjusted_ = listing->series_.adjusted_;
     answer.received_at_ = now_;
     const auto& all = listing->series_.bars_;
-    // The bars ended by now and stamped at or before `before_`: a prefix of the series, since its bars are strictly
-    // ascending, found by a binary search.
+    // The bars ended by now and stamped at or before `before_`: a prefix of the series, found by a binary search. A
+    // prefix because the bars are strictly ascending and a bar's period end is its stamp plus a fixed length; a period
+    // end taken from the session would need this search revisited.
     const auto readable = [this, listing, &query, &all](std::size_t k) {
       return !(now_ < period_end(*listing, k)) && (!query.before_ || !(*query.before_ < all[k].timestamp_));
     };
