@@ -2,13 +2,14 @@
 # Skips comment lines, block comments, raw-string bodies and preprocessor lines.
 # Allows the hang after `: ` (initializer lists, base clauses): 4 past a line whose first non-blank characters are `: `.
 # It cannot see alignment after a dedent, alignment within 2 columns, or a comment continued at a trailing comment's column.
+# A block comment opened on a preprocessor line is not tracked.
 function report(msg) {
   print FILENAME ":" FNR ": " msg
   found = 1
 }
 
 # Scans one line for string literals, comments and raw strings, updating the carried state.
-function scan(line,    i, n, c, rest, close_at, open_at, delim) {
+function scan(line,    i, n, c, rest, before, close_at, open_at, delim) {
   n = length(line)
   i = 1
   while (i <= n) {
@@ -26,7 +27,8 @@ function scan(line,    i, n, c, rest, close_at, open_at, delim) {
       i += close_at + 3
       continue
     }
-    if (c == "R" && substr(rest, 2, 1) == "\"" && (i == 1 || substr(line, i - 1, 1) !~ /[A-Za-z0-9_]/)) {
+    before = substr(line, 1, i - 1)
+    if (c == "R" && substr(rest, 2, 1) == "\"" && (before !~ /[A-Za-z0-9_]$/ || before ~ /(^|[^A-Za-z0-9_])(u8|u|U|L)$/)) {
       open_at = index(substr(rest, 3), "(")
       delim = substr(rest, 3, open_at - 1)
       close_at = index(substr(rest, 3 + open_at), ")" delim "\"")

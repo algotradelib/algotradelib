@@ -43,7 +43,7 @@ fi
 
 # A line whose first non-blank characters are `//` is skipped: commented-out code keeps its own indentation.
 padded=$(
-    { cpp_files; markdown_files; } | xargs grep -nE '[^ ] {2,}//' | grep -vE '^[^:]+:[0-9]+: *//' || true
+    { cpp_files; markdown_files; } | xargs grep -nE '[^ ] {2,}//' /dev/null | grep -vE '^[^:]+:[0-9]+: *//' || true
 )
 if [ -n "$padded" ]; then
     printf '%s\n' "$padded" | sed 's/^\([^:]*:[0-9]*\):.*/\1: a trailing comment after more than one space/'
