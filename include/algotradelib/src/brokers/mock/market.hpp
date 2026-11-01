@@ -230,10 +230,20 @@ public:
     answer.adjusted_ = listing->series_.adjusted_;
     answer.received_at_ = now_;
     const auto& all = listing->series_.bars_;
+    // The bars ended by now and stamped at or before `before_`: a prefix of the series, since its bars are strictly
+    // ascending, found by a binary search.
+    const auto readable = [this, listing, &query, &all](std::size_t k) {
+      return !(now_ < period_end(*listing, k)) && (!query.before_ || !(*query.before_ < all[k].timestamp_));
+    };
     std::size_t end = 0;
-    while (end < all.size() && !(now_ < period_end(*listing, end)) &&
-           (!query.before_ || !(*query.before_ < all[end].timestamp_))) {
-      ++end;
+    std::size_t high = all.size();
+    while (end < high) {
+      const std::size_t middle = end + (high - end) / 2;
+      if (readable(middle)) {
+        end = middle + 1;
+      } else {
+        high = middle;
+      }
     }
     const auto count = static_cast<std::size_t>(query.count_);
     const std::size_t begin = end > count ? end - count : 0;

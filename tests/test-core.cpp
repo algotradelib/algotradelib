@@ -5419,6 +5419,15 @@ TEST_CASE("a trading calendar tells closed apart from not covered") {
   REQUIRE_FALSE(calendar.is_trading_day(Date{2026, 3, 24}).has_value());
   REQUIRE_FALSE(calendar.is_trading_day(Date{2026, 3, 19}).has_value());
 
+  // Filled out of order (a broker's pages appended as they came): each covered date is still found.
+  TradingCalendar shuffled;
+  shuffled.days_ = {calendar.days_[3], calendar.days_[0], calendar.days_[2], calendar.days_[1]};
+  REQUIRE(shuffled.is_trading_day(Date{2026, 3, 20}) == true);
+  REQUIRE(shuffled.is_trading_day(Date{2026, 3, 21}) == false);
+  REQUIRE(shuffled.is_trading_day(Date{2026, 3, 22}) == false);
+  REQUIRE(shuffled.is_trading_day(Date{2026, 3, 23}) == true);
+  REQUIRE_FALSE(shuffled.is_trading_day(Date{2026, 3, 24}).has_value());
+
   REQUIRE(calendar.next_trading_day(Date{2026, 3, 20}) == Date{2026, 3, 23});
   REQUIRE(calendar.previous_trading_day(Date{2026, 3, 23}) == Date{2026, 3, 20});
   REQUIRE_FALSE(calendar.next_trading_day(Date{2026, 3, 23}).has_value());
