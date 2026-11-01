@@ -485,8 +485,7 @@ inline bool row_might_correspond(
 inline std::string unresolvable_reason(const JournalEntry& entry) {
   const bool by_order_id = journal_action_matches_by_order_id(entry.action_);
   if (by_order_id && entry.order_id_.empty()) {
-    return "a cancellation was journalled without the order id it names, so no row can be "
-           "identified as its target; an operator must say what became of it";
+    return "a cancellation was journalled without the order id it names, so no row can be identified as its target; an operator must say what became of it";
   }
   // **Placements only.** A cancellation is matched on the broker id alone --
   // `row.order_id_ == entry.order_id_` and nothing else -- so its copy of the
@@ -499,23 +498,19 @@ inline std::string unresolvable_reason(const JournalEntry& entry) {
   if (!by_order_id && entry.type_ != OrderType::UNKNOWN) {
     const bool priced = carries_caller_price(entry.type_);
     if (priced && !entry.price_) {
-      return "a price-bearing order was journalled without its price, so no row can be matched "
-             "on it; an operator must say what became of it";
+      return "a price-bearing order was journalled without its price, so no row can be matched on it; an operator must say what became of it";
     }
     if (!priced && entry.price_) {
-      return "an order whose price the market sets was journalled carrying one, so no row can "
-             "be matched on it; an operator must say what became of it";
+      return "an order whose price the market sets was journalled carrying one, so no row can be matched on it; an operator must say what became of it";
     }
     // The trigger's twin of the price rule, for the same reason: a line the writer emits before
     // the binding could refuse it, which no row can be matched against.
     const bool triggered = carries_trigger_price(entry.type_);
     if (triggered && !entry.trigger_price_) {
-      return "a stop-limit order was journalled without its trigger price, so no row can be "
-             "matched on it; an operator must say what became of it";
+      return "a stop-limit order was journalled without its trigger price, so no row can be matched on it; an operator must say what became of it";
     }
     if (!triggered && entry.trigger_price_) {
-      return "an order that takes no trigger price was journalled carrying one, so no row can be "
-             "matched on it; an operator must say what became of it";
+      return "an order that takes no trigger price was journalled carrying one, so no row can be matched on it; an operator must say what became of it";
     }
   }
   return {};

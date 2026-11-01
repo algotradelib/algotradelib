@@ -3443,11 +3443,12 @@ TEST_CASE("an order-update watch reports the rows that changed, in the listing's
   CHECK(watch.tracked_orders() == 3);
 
   // Nothing moved; then one fills in part and one leaves.
-  CHECK(watch.changed({
+  const auto unmoved = watch.changed({
     watch_row("c", "", OrderStatus::PENDING),
     watch_row("a", "1", OrderStatus::PENDING),
     watch_row("a", "2", OrderStatus::PENDING),
-  }).empty());
+  });
+  CHECK(unmoved.empty());
   const auto moved = watch.changed({
     watch_row("a", "2", OrderStatus::PARTIAL_FILLED, "4"),
     watch_row("c", "", OrderStatus::PENDING),

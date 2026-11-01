@@ -32,9 +32,7 @@ void print_error(std::string_view operation, const atl::BrokerError& error) {
   }
   std::cerr << '\n';
   if (error.category_ == atl::ErrorCategory::TRANSPORT) {
-    std::cerr
-      << "  the outcome is indeterminate; reconcile through the order inquiries "
-         "before resubmitting\n";
+    std::cerr << "  the outcome is indeterminate; reconcile through the order inquiries before resubmitting\n";
   }
 }
 

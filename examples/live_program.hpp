@@ -243,21 +243,19 @@ inline void print_loop(const runner::LoopReport& report, std::ostream& out) {
       << report.cancels_indeterminate_ << " of unknown outcome, " << report.cancels_refused_
       << " refused by a hold, " << report.cancels_unresolved_ << " for an order not in the picture\n"
       << "unconfirmed     : " << report.orders_unconfirmed_timed_out_
-      << " (sent, and not confirmed in time: its instrument waits for holdings or its history, or for you if "
-         "it was never named or the runner overlaps orders)\n";
+      << " (sent, and not confirmed in time: its instrument waits for holdings or its history, or for you if it was never named or the runner overlaps orders)\n";
   if (report.last_unbuildable_) {
     out << "last unbuildable: " << strategy::reject_reason_name(report.last_unbuildable_->reason_) << " for "
         << report.last_unbuildable_->instrument_.symbol_
         << (report.last_unbuildable_->tag_.empty() ? "" : " (" + report.last_unbuildable_->tag_ + ")") << '\n';
   }
   if (report.last_broker_refusal_) {
-    out << "last refusal    : " << report.last_broker_refusal_->code_ << ' '
-        << report.last_broker_refusal_->message_ << '\n';
+    const auto& refusal = *report.last_broker_refusal_;
+    out << "last refusal    : " << refusal.code_ << ' ' << refusal.message_ << '\n';
   }
   if (report.abandoned_) {
-    out << "ABANDONED       : after repeated failures polling "
-        << (report.abandoned_kind_ ? runner::poll_kind_name(*report.abandoned_kind_) : std::string_view("?"))
-        << '\n';
+    const auto kind = report.abandoned_kind_ ? runner::poll_kind_name(*report.abandoned_kind_) : std::string_view("?");
+    out << "ABANDONED       : after repeated failures polling " << kind << '\n';
   }
   for (const auto& note : report.notes_) {
     out << "note            : " << note << '\n';
@@ -333,8 +331,8 @@ Exit trade(
 ) {
   runner::FileJournal journal(settings.journal_path_, settings.journal_scope_);
   if (!journal.open()) {
-    out << "journal refused: " << journal.rejection() << '\n'
-        << "a runner that cannot record what it sends does not send\n";
+    out << "journal refused: " << journal.rejection() << '\n';
+    out << "a runner that cannot record what it sends does not send\n";
     return Exit::JOURNAL_REFUSED;
   }
 
@@ -377,8 +375,8 @@ Exit trade(
   }
   // Said before trading as well as in the report at the end, so it is read before it matters.
   if constexpr (decltype(bound)::on_fill_never_fires) {
-    out << "note: this strategy defines on_fill, which never fires on a live runner; anything it\n"
-        << "      does there (a protective stop, say) will not happen. See writing-a-strategy.md.\n";
+    out << "note: this strategy defines on_fill, which never fires on a live runner; anything it\n";
+    out << "      does there (a protective stop, say) will not happen. See writing-a-strategy.md.\n";
   }
 
   live::SessionSource<Session, runner::FileJournal, MarketData> source(
@@ -400,8 +398,8 @@ Exit trade(
   // the more urgent of the two -- what the runner was sending at that moment is unknown. A run can
   // end both ways, and the report above still says ABANDONED.
   if (const auto failure = bound.local_failure()) {
-    out << "LOCAL FAILURE   : " << *failure << '\n'
-        << "                  read the broker's order list before starting again\n";
+    out << "LOCAL FAILURE   : " << *failure << '\n';
+    out << "                  read the broker's order list before starting again\n";
     return Exit::LOCAL_FAILURE;
   }
   if (report.abandoned_) {
@@ -415,12 +413,12 @@ Exit trade(
         << "                  restart it: the order is restored from the journal and the run stops again.\n"
         << "this journal still owes:\n";
     for (const auto& owed : bound.obligations()) {
-      out << "  " << owed.instrument_.symbol_ << ' ' << (owed.side_ == atl::OrderSide::BUY ? "buy " : "sell ")
-          << owed.quantity_.str() << ", sent " << atl::format_iso8601_utc(owed.sent_at_) << ", "
-          << (owed.state_ == runner::ObligationState::OPERATOR ? "held for an operator" :
-              owed.state_ == runner::ObligationState::UNNAMED  ? "no order found" :
-                                                                 "order " + owed.order_id_ + ", not yet in holdings")
-          << '\n';
+      const auto state = owed.state_ == runner::ObligationState::OPERATOR ? "held for an operator" :
+        owed.state_ == runner::ObligationState::UNNAMED ? "no order found" :
+        "order " + owed.order_id_ + ", not yet in holdings";
+      const auto side = owed.side_ == atl::OrderSide::BUY ? "buy " : "sell ";
+      out << "  " << owed.instrument_.symbol_ << ' ' << side << owed.quantity_.str();
+      out << ", sent " << atl::format_iso8601_utc(owed.sent_at_) << ", " << state << '\n';
     }
     out << "this program has no command to release one order, and its only way on gives up the whole\n"
         << "journal. That is safe only once none of the orders above can execute any more:\n"
@@ -522,8 +520,8 @@ Exit observe(
   // `closing_complete()` is deliberately not printed: an observer's executor accepts every
   // instruction without sending it, so "every closing instruction was taken" would be true and would
   // say nothing about the broker.
-  out << "closing         : simulated -- the observer sent nothing, so nothing at the broker was\n"
-      << "                  placed or withdrawn by this run\n";
+  out << "closing         : simulated -- the observer sent nothing, so nothing at the broker was\n";
+  out << "                  placed or withdrawn by this run\n";
   return report.abandoned_ ? Exit::LOOP_ABANDONED : Exit::CLEAN;
 }
 

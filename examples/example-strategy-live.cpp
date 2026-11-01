@@ -261,8 +261,7 @@ int trade(Session& session, const InstrumentId& instrument, Mode mode) {
     open_orders = std::move(listed.value());
   } else {
     if (mode == Mode::TRADE) {
-      std::cerr << "this broker lists no open orders, so a live run could not see an earlier order "
-                   "still waiting to fill; use example-live-program\n";
+      std::cerr << "this broker lists no open orders, so a live run could not see an earlier order still waiting to fill; use example-live-program\n";
       return 1;
     }
   }

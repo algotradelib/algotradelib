@@ -3312,17 +3312,21 @@ private:
           // nothing to say: an outside trade, a disagreement or an order nobody here can account for.
           // Withheld for the operator.
           ++orders_unconfirmed_timed_out_;
-          ledger_.mark(
-            entry.instrument_,
-            entry.settled_ ?
+          if (entry.settled_) {
+            ledger_.mark(
+              entry.instrument_,
               "an order this runner sent (" + entry.ref_.primary_ +
-                ") filled by the order history, and holdings did not show it within the confirmation "
-                "timeout" :
-              std::string("an order this runner sent") +
-                (entry.ref_.primary_.empty() ? " (its reply lost, never named by a sweep)" :
-                                               " (" + entry.ref_.primary_ + ")") +
+                ") filled by the order history, and holdings did not show it within the confirmation timeout"
+            );
+          } else {
+            const auto named = entry.ref_.primary_.empty() ? std::string(" (its reply lost, never named by a sweep)") :
+              " (" + entry.ref_.primary_ + ")";
+            ledger_.mark(
+              entry.instrument_,
+              "an order this runner sent" + named +
                 " was not confirmed by holdings, the order list or the order history in time"
-          );
+            );
+          }
           expired[group[at]] = true;
           // What holdings did show of it stays credited to it, not to the next order.
           if (advanced) {

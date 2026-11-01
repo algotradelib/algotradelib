@@ -313,7 +313,8 @@ struct FillAlias {
 struct FinalNonConstFill final {
   template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
   template <class Ctx> void on_fill(Ctx&, strategy::Fill&) { ++fills_; }
-  template <class Ctx> void on_order_update(Ctx, const OrderSnapshot&) { ++updates_; }  // context by value
+  // The context by value.
+  template <class Ctx> void on_order_update(Ctx, const OrderSnapshot&) { ++updates_; }
   int fills_{0};
   int updates_{0};
 };

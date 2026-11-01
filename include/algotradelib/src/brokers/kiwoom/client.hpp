@@ -592,11 +592,10 @@ inline std::optional<BrokerError> order_division(
     return error;
   }
   if (!matched->requestable_ || matched->code_ == nullptr) {
-    error.message_ = std::string("Kiwoom reports ") + matched->name_ +
-      " on an inquiry but this library cannot place one" +
-      (matched->code_ == nullptr ?
-         ": it publishes no order code for that shape at all" :
-         ": the code is read on a response and not sent on a request");
+    const auto why = matched->code_ == nullptr ? ": it publishes no order code for that shape at all" :
+      ": the code is read on a response and not sent on a request";
+    error.message_ =
+      std::string("Kiwoom reports ") + matched->name_ + " on an inquiry but this library cannot place one" + why;
     return error;
   }
   division = matched->code_;

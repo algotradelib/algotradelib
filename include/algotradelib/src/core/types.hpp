@@ -698,10 +698,10 @@ inline std::optional<Decimal64> decimal_multiply(const Decimal64& lhs, const Dec
   if (left != 0 && right != 0) {
     // Checked before multiplying rather than after, because signed overflow is undefined and a
     // wrapped price is exactly the failure this type exists to prevent.
-    if (left > 0 ? (right > 0 ? left > std::numeric_limits<std::int64_t>::max() / right
-                              : right < std::numeric_limits<std::int64_t>::min() / left)
-                 : (right > 0 ? left < std::numeric_limits<std::int64_t>::min() / right
-                              : left < std::numeric_limits<std::int64_t>::max() / right)) {
+    constexpr auto largest = std::numeric_limits<std::int64_t>::max();
+    constexpr auto smallest = std::numeric_limits<std::int64_t>::min();
+    if (left > 0 ? (right > 0 ? left > largest / right : right < smallest / left)
+                 : (right > 0 ? left < smallest / right : left < largest / right)) {
       return std::nullopt;
     }
   }

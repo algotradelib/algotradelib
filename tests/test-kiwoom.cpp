@@ -2526,9 +2526,9 @@ TEST_CASE("an unreadable risk quantity fails the row rather than reading as zero
   // A *reported* zero is still zero and still fine. It is the unreadable one that has to fail,
   // because afterwards the two are indistinguishable.
   const auto holding = [](const char* quantity) {
-    return std::string(
-      R"({"tot_pur_amt":"0","tot_evlt_amt":"0","tot_evlt_pl":"0",
-          "acnt_evlt_remn_indv_tot":[{"stk_cd":"A005930","rmnd_qty":")") + quantity +
+    const std::string before = R"({"tot_pur_amt":"0","tot_evlt_amt":"0","tot_evlt_pl":"0",
+          "acnt_evlt_remn_indv_tot":[{"stk_cd":"A005930","rmnd_qty":")";
+    return before + quantity +
       R"(","trde_able_qty":"3","pur_pric":"124500","cur_prc":"59000","pur_amt":"373500",
           "evlt_amt":"177000","evltv_prft":"-196888"}]})";
   };
