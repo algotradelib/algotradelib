@@ -2,7 +2,6 @@
 
 #include "./types.hpp"
 
-#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <optional>
@@ -68,13 +67,22 @@ struct TradingCalendar {
    *   the calendar does not cover `date`.
    */
   std::optional<bool> is_trading_day(const Date& date) const {
-    // `days_` is kept ascending, so a binary search finds a covered date; a miss is confirmed by the scan below, so a
-    // calendar filled out of order still finds every date it covers.
-    const auto found = std::lower_bound(days_.begin(), days_.end(), date, [](const TradingDay& day, const Date& wanted) {
-      return day.date_ < wanted;
-    });
-    if (found != days_.end() && found->date_ == date) {
-      return found->open_;
+    // `days_` is kept ascending, so a bisection finds a covered date; a miss is confirmed by the scan below, so a
+    // calendar filled out of order still finds every date it covers. Written by hand rather than with
+    // `std::lower_bound`, whose precondition (a sorted range) an out-of-order calendar would break. A date listed twice
+    // with different answers in an out-of-order calendar may get either.
+    std::size_t low = 0;
+    std::size_t high = days_.size();
+    while (low < high) {
+      const std::size_t middle = low + (high - low) / 2;
+      if (days_[middle].date_ < date) {
+        low = middle + 1;
+      } else {
+        high = middle;
+      }
+    }
+    if (low < days_.size() && days_[low].date_ == date) {
+      return days_[low].open_;
     }
     for (const auto& day : days_) {
       if (day.date_ == date) {
