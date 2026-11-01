@@ -662,11 +662,15 @@ Plan<Broker> reconcile(
   }
 
   const OrderSide side = buying ? OrderSide::BUY : OrderSide::SELL;
-  const auto magnitude = buying ? *needed : decimal_subtract(zero, *needed).value_or(zero);
+  // A sale of INT64_MIN shares has no positive size: read as zero, it would return an empty plan, a met target.
+  const auto magnitude = buying ? std::optional<Decimal64>(*needed) : decimal_subtract(zero, *needed);
+  if (!magnitude) {
+    return reject(RejectReason::NOT_REPRESENTABLE);
+  }
   const auto already = rows.working_quantity(side);
 
   // Step 3: only the part not already in the market.
-  auto remaining = decimal_subtract(magnitude, already);
+  auto remaining = decimal_subtract(*magnitude, already);
   if (!remaining) {
     return reject(RejectReason::NOT_REPRESENTABLE);
   }
@@ -720,7 +724,7 @@ Plan<Broker> reconcile(
         }
       }
     }
-    remaining = decimal_subtract(magnitude, reserved);
+    remaining = decimal_subtract(*magnitude, reserved);
     if (!remaining) {
       return reject(RejectReason::NOT_REPRESENTABLE);
     }

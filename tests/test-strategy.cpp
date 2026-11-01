@@ -4,6 +4,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -743,6 +745,31 @@ TEST_CASE("a position whose rows will not add up is rejected, not read as flat")
   REQUIRE(plan.place_.empty());
   REQUIRE(plan.rejected_.size() == 1);
   REQUIRE(plan.rejected_[0].reason_ == strategy::RejectReason::NOT_REPRESENTABLE);
+}
+
+TEST_CASE("a sale too large to negate is rejected and not dropped as a met target") {
+  // A target of INT64_MIN shares from flat needs a sale whose size has no positive decimal. Read as zero, the
+  // failed negation returned an empty plan, which looks like a met target, and withdrew an opposing buy.
+  TargetPosition wanted = target("0");
+  wanted.target_quantity_ = Decimal64(std::numeric_limits<std::int64_t>::min(), 0);
+  const auto reference = samsung_reference();
+  ReconcileInputs inputs;
+  inputs.instrument_ = &reference;
+
+  ProbePortfolio flat;
+  const auto from_flat = strategy::reconcile(wanted, flat, inputs);
+  CHECK(from_flat.place_.empty());
+  CHECK(from_flat.cancel_.empty());
+  REQUIRE(from_flat.rejected_.size() == 1);
+  CHECK(from_flat.rejected_[0].reason_ == strategy::RejectReason::NOT_REPRESENTABLE);
+
+  ProbePortfolio buying;
+  buying.working_.push_back(working("10", "0", OrderStatus::PENDING, OrderSide::BUY));
+  const auto with_a_buy = strategy::reconcile(wanted, buying, inputs);
+  CHECK(with_a_buy.place_.empty());
+  CHECK(with_a_buy.cancel_.empty());
+  REQUIRE(with_a_buy.rejected_.size() == 1);
+  CHECK(with_a_buy.rejected_[0].reason_ == strategy::RejectReason::NOT_REPRESENTABLE);
 }
 
 TEST_CASE("over-ordering through reserved rows that may have filled re-sends only what they do not cover") {
