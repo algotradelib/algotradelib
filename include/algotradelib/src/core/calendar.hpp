@@ -67,7 +67,7 @@ struct TradingCalendar {
    *   the calendar does not cover `date`.
    */
   std::optional<bool> is_trading_day(const Date& date) const {
-    // `days_` is kept ascending, so a bisection finds a covered date; a miss is confirmed by the scan below, so a
+    // `days_` should be kept ascending, so a bisection finds a covered date; a miss is confirmed by the scan below, so a
     // calendar filled out of order still finds every date it covers. Written by hand rather than with
     // `std::lower_bound`, whose precondition (a sorted range) an out-of-order calendar would break. A date listed twice
     // with different answers in an out-of-order calendar may get either.
