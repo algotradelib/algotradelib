@@ -36,7 +36,8 @@ atl::OrderType parse_order_type(std::string_view type) {
 
 /** @brief Prints the positional dry-run interface. */
 void print_usage(const char* program) {
-  std::cerr << "usage: " << program << " [symbol] [quantity] [BUY|SELL] "
+  std::cerr
+    << "usage: " << program << " [symbol] [quantity] [BUY|SELL] "
     << "[LIMIT|MARKET] [limit-price]\n";
 }
 
@@ -65,8 +66,9 @@ int main(int argc, char* argv[]) {
     }
 
     std::cout << "dry-run: this example never sends an order\n";
-    std::cout << (order.side_ == atl::OrderSide::BUY ? "BUY " : "SELL ")
-      << order.quantity_.str() << ' ' << order.instrument_.symbol_;
+    std::cout
+      << (order.side_ == atl::OrderSide::BUY ? "BUY " : "SELL ") << order.quantity_.str() << ' '
+      << order.instrument_.symbol_;
     if (order.price_) {
       std::cout << " @ " << order.price_->str();
     } else {

@@ -1,5 +1,5 @@
-#include <algotradelib/strategy>
 #include <algotradelib/src/runner/dispatch.hpp>
+#include <algotradelib/strategy>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -101,11 +101,9 @@ Clock::time_point utc(int year, int month, int day, int hour, int minute) {
   // Days since the epoch by proleptic Gregorian arithmetic, valid for the dates used here.
   const long long a = (month <= 2) ? year - 1 : year;
   const long long m = (month <= 2) ? month + 12 : month;
-  const long long era_days =
-    365 * a + a / 4 - a / 100 + a / 400 + (153 * (m - 3) + 2) / 5 + day - 1;
+  const long long era_days = 365 * a + a / 4 - a / 100 + a / 400 + (153 * (m - 3) + 2) / 5 + day - 1;
   const long long epoch_days = era_days - 719468;
-  return Clock::time_point{} + std::chrono::hours(epoch_days * 24 + hour) +
-    std::chrono::minutes(minute);
+  return Clock::time_point{} + std::chrono::hours(epoch_days * 24 + hour) + std::chrono::minutes(minute);
 }
 
 } // namespace
@@ -155,21 +153,15 @@ TEST_CASE("a bar event states when its period ended, whichever edge it is stampe
   bar.volume_ = Decimal64::parse("1200000");
 
   // A close-stamped bar already carries the end of its period.
-  const auto closed = strategy::make_bar_event(
-    samsung(), BarInterval::ONE_MINUTE, BarStamp::CLOSE, bar
-  );
+  const auto closed = strategy::make_bar_event(samsung(), BarInterval::ONE_MINUTE, BarStamp::CLOSE, bar);
   REQUIRE(closed.period_end_ == bar.timestamp_);
 
   // An open-stamped bar ends one interval later. Getting this wrong is the off-by-one-bar
   // lookahead that BarStamp exists to prevent, which is why it is computed once here.
-  const auto opened = strategy::make_bar_event(
-    samsung(), BarInterval::ONE_MINUTE, BarStamp::OPEN, bar
-  );
+  const auto opened = strategy::make_bar_event(samsung(), BarInterval::ONE_MINUTE, BarStamp::OPEN, bar);
   REQUIRE(opened.period_end_ == bar.timestamp_ + std::chrono::minutes(1));
 
-  const auto daily = strategy::make_bar_event(
-    samsung(), BarInterval::ONE_DAY, BarStamp::OPEN, bar
-  );
+  const auto daily = strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::OPEN, bar);
   REQUIRE(daily.period_end_ == bar.timestamp_ + std::chrono::hours(24));
   REQUIRE(daily.interval_ == BarInterval::ONE_DAY);
   REQUIRE(daily.stamp_ == BarStamp::OPEN);
@@ -199,13 +191,20 @@ struct BarOnly {
 
 /** A strategy using every handler, to prove the detection covers all of them. */
 struct EveryHandler {
-  template <class Ctx> void on_start(Ctx&) {}
-  template <class Ctx> void on_stop(Ctx&) {}
-  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
-  template <class Ctx> void on_quote(Ctx&, const strategy::QuoteEvent&) {}
-  template <class Ctx> void on_fill(Ctx&, const strategy::Fill&) {}
-  template <class Ctx> void on_order_update(Ctx&, const OrderSnapshot&) {}
-  template <class Ctx> void on_phase(Ctx&, strategy::MarketPhase) {}
+  template <class Ctx>
+  void on_start(Ctx&) {}
+  template <class Ctx>
+  void on_stop(Ctx&) {}
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx>
+  void on_quote(Ctx&, const strategy::QuoteEvent&) {}
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill&) {}
+  template <class Ctx>
+  void on_order_update(Ctx&, const OrderSnapshot&) {}
+  template <class Ctx>
+  void on_phase(Ctx&, strategy::MarketPhase) {}
 };
 
 /** Not a strategy: no handler the runner can call. */
@@ -220,7 +219,8 @@ struct BoundToOneContext {
 
 /** A handler whose event parameter is the wrong type, so it is not detected. */
 struct WrongEventType {
-  template <class Ctx> void on_bar(Ctx&, const strategy::QuoteEvent&) {}
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::QuoteEvent&) {}
 };
 
 /** A strategy that reads a capability, to prove both branches type-check. */
@@ -286,18 +286,25 @@ struct InheritsBarOnly : BarOnly {};
 
 /** One callable `on_fill` beside one the runner cannot call: one callable overload is enough. */
 struct OverloadedFill {
-  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
-  template <class Ctx> void on_fill(Ctx&, const strategy::Fill&) { ++fills_; }
-  template <class Ctx> void on_fill(Ctx&, strategy::Fill&) {}
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill&) {
+    ++fills_;
+  }
+  template <class Ctx>
+  void on_fill(Ctx&, strategy::Fill&) {}
   int fills_{0};
 };
 
 /** Names `on_fill` as something other than a public handler. */
 struct PrivateFill {
-  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
 
 private:
-  template <class Ctx> void on_fill(Ctx&, const strategy::Fill&) {}
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill&) {}
 };
 struct FillDataMember {
   int on_fill{0};
@@ -311,37 +318,61 @@ struct FillAlias {
 
 /** The reproduction, marked `final`: the declared-name lookup cannot reach it. */
 struct FinalNonConstFill final {
-  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
-  template <class Ctx> void on_fill(Ctx&, strategy::Fill&) { ++fills_; }
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx>
+  void on_fill(Ctx&, strategy::Fill&) {
+    ++fills_;
+  }
   // The context by value.
-  template <class Ctx> void on_order_update(Ctx, const OrderSnapshot&) { ++updates_; }
+  template <class Ctx>
+  void on_order_update(Ctx, const OrderSnapshot&) {
+    ++updates_;
+  }
   int fills_{0};
   int updates_{0};
 };
 
 /** One malformed handler of each kind: each declared, and each a compile error when the runner calls it. */
 struct MalformedEach {
-  template <class Ctx> void on_start(Ctx&, int) {}
-  template <class Ctx> void on_stop() {}
-  template <class Ctx> void on_bar(Ctx&, strategy::BarEvent&) {}
-  template <class Ctx> void on_quote(Ctx&, const strategy::BarEvent&) {}
-  template <class Ctx> void on_fill(Ctx&, strategy::Fill&) {}
-  template <class Ctx> void on_order_update(Ctx&, const strategy::QuoteEvent&) {}
-  template <class Ctx> void on_phase(Ctx&) {}
+  template <class Ctx>
+  void on_start(Ctx&, int) {}
+  template <class Ctx>
+  void on_stop() {}
+  template <class Ctx>
+  void on_bar(Ctx&, strategy::BarEvent&) {}
+  template <class Ctx>
+  void on_quote(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx>
+  void on_fill(Ctx&, strategy::Fill&) {}
+  template <class Ctx>
+  void on_order_update(Ctx&, const strategy::QuoteEvent&) {}
+  template <class Ctx>
+  void on_phase(Ctx&) {}
 };
 
 /** Events by value: callable, since a copy of a `const` event is a valid argument. */
 struct EventsByValue {
-  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
-  template <class Ctx> void on_order_update(Ctx&, OrderSnapshot) { ++updates_; }
-  template <class Ctx> void on_phase(Ctx&, strategy::MarketPhase) { ++phases_; }
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx>
+  void on_order_update(Ctx&, OrderSnapshot) {
+    ++updates_;
+  }
+  template <class Ctx>
+  void on_phase(Ctx&, strategy::MarketPhase) {
+    ++phases_;
+  }
   int updates_{0};
   int phases_{0};
 };
 
 /** The phase as a `const` reference, which is the call the runner makes. */
 struct PhaseByConstRef {
-  template <class Ctx> void on_phase(Ctx&, const strategy::MarketPhase&) { ++phases_; }
+  template <class Ctx>
+  void on_phase(Ctx&, const strategy::MarketPhase&) {
+    ++phases_;
+  }
   int phases_{0};
 };
 
@@ -352,7 +383,10 @@ namespace {
 /** Decides on whole periods. */
 struct SliceOnly {
   std::size_t slices_{0};
-  template <class Ctx> void on_bars(Ctx&, const strategy::BarSlice&) { ++slices_; }
+  template <class Ctx>
+  void on_bars(Ctx&, const strategy::BarSlice&) {
+    ++slices_;
+  }
 };
 
 /** `on_bars` inherited publicly, which is declared and callable. */
@@ -446,8 +480,7 @@ TEST_CASE("a probe context records what a strategy asked for") {
   bar.low_ = Decimal64::parse("69400");
   bar.close_ = Decimal64::parse("70000");
   bar.volume_ = Decimal64::parse("1200000");
-  const auto event =
-    strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, bar);
+  const auto event = strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, bar);
 
   strategy_instance.on_bar(ctx, event);
   strategy_instance.on_bar(ctx, event);
@@ -468,10 +501,7 @@ using ProbePortfolio = strategy::Portfolio<strategy::ProbeBroker>;
 
 /** Builds a working order with an ordered and a filled quantity. */
 WorkingOrder<strategy::ProbeBroker> working(
-  const char* ordered,
-  const char* filled,
-  OrderStatus status,
-  OrderSide side = OrderSide::BUY
+  const char* ordered, const char* filled, OrderStatus status, OrderSide side = OrderSide::BUY
 ) {
   WorkingOrder<strategy::ProbeBroker> order;
   order.order_.instrument_ = samsung();
@@ -634,8 +664,8 @@ TEST_CASE("a fill in the same window is not evidence of anything") {
 TEST_CASE("the probe reports disagreement rather than resolving it") {
   Probe probe;
   probe.observe(observed("100", "100", "0"));
-  probe.observe(observed("100", "70", "30"));   // net
-  probe.observe(observed("100", "70", "50"));   // gross: twenty more rests, the figure holds
+  probe.observe(observed("100", "70", "30")); // net
+  probe.observe(observed("100", "70", "50")); // gross: twenty more rests, the figure holds
 
   REQUIRE(probe.verdict() == strategy::SellableConvention::INCONSISTENT);
   REQUIRE(probe.evidence(samsung()).net_ == 1);
@@ -851,17 +881,23 @@ TEST_CASE("a band with no tick on the cautious side of a clamped limit refuses i
   SECTION("an intent") {
     ProbePortfolio portfolio;
     const auto ten = SizeSpec::quantity(Decimal64::parse("10"));
-    CHECK(refused(strategy::reconcile(OrderIntent::limit(samsung(), OrderSide::BUY, ten, price("2010")), portfolio, inputs)));
-    CHECK(refused(strategy::reconcile(OrderIntent::limit(samsung(), OrderSide::SELL, ten, price("1995")), portfolio, inputs)));
+    CHECK(
+      refused(strategy::reconcile(OrderIntent::limit(samsung(), OrderSide::BUY, ten, price("2010")), portfolio, inputs))
+    );
+    CHECK(refused(
+      strategy::reconcile(OrderIntent::limit(samsung(), OrderSide::SELL, ten, price("1995")), portfolio, inputs)
+    ));
   }
 
   SECTION("a limit the strategy set beyond the band is still left alone") {
     ProbePortfolio portfolio;
     const auto ten = SizeSpec::quantity(Decimal64::parse("10"));
-    const auto buy = strategy::reconcile(OrderIntent::limit(samsung(), OrderSide::BUY, ten, price("1995")), portfolio, inputs);
+    const auto buy =
+      strategy::reconcile(OrderIntent::limit(samsung(), OrderSide::BUY, ten, price("1995")), portfolio, inputs);
     REQUIRE(buy.place_.size() == 1);
     CHECK(buy.place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("1995")));
-    const auto sell = strategy::reconcile(OrderIntent::limit(samsung(), OrderSide::SELL, ten, price("2010")), portfolio, inputs);
+    const auto sell =
+      strategy::reconcile(OrderIntent::limit(samsung(), OrderSide::SELL, ten, price("2010")), portfolio, inputs);
     REQUIRE(sell.place_.size() == 1);
     CHECK(sell.place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("2010")));
   }
@@ -872,10 +908,12 @@ TEST_CASE("a band with no tick on the cautious side of a clamped limit refuses i
     inputs.limits_ = limits;
     ProbePortfolio portfolio;
     const auto ten = SizeSpec::quantity(Decimal64::parse("10"));
-    const auto buy = strategy::reconcile(OrderIntent::limit(samsung(), OrderSide::BUY, ten, price("2010")), portfolio, inputs);
+    const auto buy =
+      strategy::reconcile(OrderIntent::limit(samsung(), OrderSide::BUY, ten, price("2010")), portfolio, inputs);
     REQUIRE(buy.place_.size() == 1);
     CHECK(buy.place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("2005")));
-    const auto sell = strategy::reconcile(OrderIntent::limit(samsung(), OrderSide::SELL, ten, price("1995")), portfolio, inputs);
+    const auto sell =
+      strategy::reconcile(OrderIntent::limit(samsung(), OrderSide::SELL, ten, price("1995")), portfolio, inputs);
     REQUIRE(sell.place_.size() == 1);
     CHECK(sell.place_[0].price_ == std::optional<Decimal64>(Decimal64::parse("2005")));
   }
@@ -888,9 +926,7 @@ TEST_CASE("a weighted intent needs the portfolio's value and says so when it lac
   inputs.instrument_ = &reference;
   inputs.reference_price_ = Decimal64::parse("70000");
 
-  const auto intent = OrderIntent::market(
-    samsung(), OrderSide::BUY, SizeSpec::target_weight(Decimal64::parse("0.25"))
-  );
+  const auto intent = OrderIntent::market(samsung(), OrderSide::BUY, SizeSpec::target_weight(Decimal64::parse("0.25")));
   const auto without = strategy::reconcile(intent, portfolio, inputs);
   REQUIRE(without.rejected_[0].reason_ == RejectReason::NO_PORTFOLIO_VALUE);
 
@@ -912,7 +948,9 @@ TEST_CASE("an intent sized against a price that is not positive is refused, not 
   inputs.portfolio_value_ = Decimal64::parse("10000000");
 
   const auto notional = strategy::reconcile(
-    OrderIntent::market(samsung(), OrderSide::BUY, SizeSpec::notional(Money{Decimal64::parse("1000000"), Currency{"KRW"}})),
+    OrderIntent::market(
+      samsung(), OrderSide::BUY, SizeSpec::notional(Money{Decimal64::parse("1000000"), Currency{"KRW"}})
+    ),
     portfolio, inputs
   );
   REQUIRE(notional.place_.empty());
@@ -943,7 +981,9 @@ TEST_CASE("an intent whose size is negative places nothing") {
   REQUIRE(quantity.rejected_[0].reason_ == RejectReason::NEGATIVE_SIZE);
 
   const auto notional = strategy::reconcile(
-    OrderIntent::market(samsung(), OrderSide::SELL, SizeSpec::notional(Money{Decimal64::parse("-1000000"), Currency{"KRW"}})),
+    OrderIntent::market(
+      samsung(), OrderSide::SELL, SizeSpec::notional(Money{Decimal64::parse("-1000000"), Currency{"KRW"}})
+    ),
     portfolio, inputs
   );
   REQUIRE(notional.place_.empty());
@@ -951,7 +991,8 @@ TEST_CASE("an intent whose size is negative places nothing") {
 
   // A weight states a holding, and a negative holding is what `weight_target` already refuses.
   const auto weight = strategy::reconcile(
-    OrderIntent::market(samsung(), OrderSide::BUY, SizeSpec::target_weight(Decimal64::parse("-0.25"))), portfolio, inputs
+    OrderIntent::market(samsung(), OrderSide::BUY, SizeSpec::target_weight(Decimal64::parse("-0.25"))), portfolio,
+    inputs
   );
   REQUIRE(weight.place_.empty());
   REQUIRE(weight.rejected_[0].reason_ == RejectReason::UNSUPPORTED_WEIGHT);
@@ -976,8 +1017,7 @@ TEST_CASE("a weight states a holding, and what a holding cannot state is refused
   };
   // A sell would become a buy if its side were discarded.
   CHECK(refused(OrderIntent::market(samsung(), OrderSide::SELL, quarter)));
-  CHECK(refused(OrderIntent::market(
-    samsung(), OrderSide::BUY, SizeSpec::target_weight(Decimal64::parse("-0.25")))));
+  CHECK(refused(OrderIntent::market(samsung(), OrderSide::BUY, SizeSpec::target_weight(Decimal64::parse("-0.25")))));
   CHECK(refused(OrderIntent::market(samsung(), OrderSide::BUY, quarter).with_client_order_id("k-1")));
   const auto trigger = strategy::Price::checked(Decimal64::parse("69000"), krx());
   const auto limit = strategy::Price::checked(Decimal64::parse("68900"), krx());
@@ -985,19 +1025,17 @@ TEST_CASE("a weight states a holding, and what a holding cannot state is refused
   REQUIRE(limit);
   CHECK(refused(OrderIntent::stop_limit(samsung(), OrderSide::BUY, quarter, *trigger, *limit)));
 
-  CHECK(refused(OrderIntent::limit(samsung(), OrderSide::BUY, quarter, *limit,
-                                   TimeInForce::IMMEDIATE_OR_CANCEL)));
+  CHECK(refused(OrderIntent::limit(samsung(), OrderSide::BUY, quarter, *limit, TimeInForce::IMMEDIATE_OR_CANCEL)));
 
   // A limit prices the size: a quarter of ten million at 68,900 is 36 shares.
-  const auto limited =
-    strategy::weight_target(OrderIntent::limit(samsung(), OrderSide::BUY, quarter, *limit), inputs);
+  const auto limited = strategy::weight_target(OrderIntent::limit(samsung(), OrderSide::BUY, quarter, *limit), inputs);
   REQUIRE(limited.target_.has_value());
   CHECK(limited.target_->target_quantity_ == Decimal64::parse("36"));
 
   // A weight of zero is a target of zero: it sells the holding, as a target of zero does.
   const auto none = strategy::weight_target(
-    OrderIntent::market(samsung(), OrderSide::BUY, SizeSpec::target_weight(Decimal64::parse("0"))),
-    inputs);
+    OrderIntent::market(samsung(), OrderSide::BUY, SizeSpec::target_weight(Decimal64::parse("0"))), inputs
+  );
   REQUIRE(none.target_.has_value());
   CHECK(none.target_->target_quantity_ == Decimal64::parse("0"));
 
@@ -1047,11 +1085,7 @@ using strategy::RiskGuard;
 using strategy::RiskLimits;
 
 /** A planned order of `quantity` shares at `price`, as reconciliation would have produced it. */
-PlannedOrder planned(
-  const char* quantity,
-  const char* price = nullptr,
-  OrderSide side = OrderSide::BUY
-) {
+PlannedOrder planned(const char* quantity, const char* price = nullptr, OrderSide side = OrderSide::BUY) {
   PlannedOrder order;
   order.instrument_ = samsung();
   order.side_ = side;
@@ -1083,9 +1117,7 @@ GuardInputs open_market() {
  */
 GuardInputs with_basis(GuardInputs inputs) {
   inputs.order_currency_ = Currency{"KRW"};
-  inputs.exposure_basis_.push_back(
-    strategy::InstrumentBasis{samsung(), Currency{"KRW"}, Decimal64::parse("70000")}
-  );
+  inputs.exposure_basis_.push_back(strategy::InstrumentBasis{samsung(), Currency{"KRW"}, Decimal64::parse("70000")});
   return inputs;
 }
 
@@ -1097,9 +1129,7 @@ TEST_CASE("buying power is per currency and never borrows another currency's ans
   const RiskGuard guard(limits);
 
   ProbePortfolio portfolio;
-  portfolio.buying_power_.push_back(
-    BuyingPower{Money{Decimal64::parse("100000000"), Currency::krw()}, {}}
-  );
+  portfolio.buying_power_.push_back(BuyingPower{Money{Decimal64::parse("100000000"), Currency::krw()}, {}});
 
   auto won = open_market();
   won.order_currency_ = Currency::krw();
@@ -1172,8 +1202,7 @@ TEST_CASE("a split holding cannot borrow one lot's declaration for another lot's
   // which concatenates every `output1` row across pages without checking for a repeated `pdno`.
   ProbePortfolio conflicting = split;
   conflicting.positions_[0].sellable_basis_ = second.sellable_basis_;
-  const auto contradiction =
-    guard.check(planned("100", "70000", OrderSide::SELL), conflicting, open_market());
+  const auto contradiction = guard.check(planned("100", "70000", OrderSide::SELL), conflicting, open_market());
   REQUIRE(contradiction);
   REQUIRE(contradiction->reason_ == GuardReason::SELLABLE_BASIS_UNESTABLISHED);
 
@@ -1268,9 +1297,7 @@ GuardInputs shut_market() {
 }
 
 /** Whether `guard` refused `order` because of the phase, specifically. */
-bool refused_for_phase(
-  const RiskGuard& guard, const PlannedOrder& order, const ProbePortfolio& portfolio
-) {
+bool refused_for_phase(const RiskGuard& guard, const PlannedOrder& order, const ProbePortfolio& portfolio) {
   const auto refused = guard.check(order, portfolio, shut_market());
   return refused && refused->reason_ == GuardReason::PHASE_NOT_PERMITTED;
 }
@@ -1333,9 +1360,7 @@ TEST_CASE("an order whose quantity is not positive is never treated as closing")
 
 TEST_CASE("an instrument outside the permitted universe is refused") {
   RiskLimits limits;
-  limits.permitted_universe_ = std::vector<InstrumentId>{
-    InstrumentId{Country::KR, Venue::COMBINED, "000660"}
-  };
+  limits.permitted_universe_ = std::vector<InstrumentId>{InstrumentId{Country::KR, Venue::COMBINED, "000660"}};
   const RiskGuard guard(limits);
   ProbePortfolio portfolio;
 
@@ -1379,8 +1404,7 @@ TEST_CASE("the position ceiling limits a short as firmly as a long") {
   ProbePortfolio portfolio;
   portfolio.positions_.push_back(holding("-95"));
 
-  const auto refused =
-    guard.check(planned("10", "70000", OrderSide::SELL), portfolio, open_market());
+  const auto refused = guard.check(planned("10", "70000", OrderSide::SELL), portfolio, open_market());
   REQUIRE(refused);
   REQUIRE(refused->reason_ == GuardReason::POSITION_LIMIT_EXCEEDED);
   REQUIRE(refused->attempted_ == std::optional<Decimal64>(Decimal64::parse("105")));
@@ -1399,9 +1423,7 @@ TEST_CASE("a mark that is not positive refuses rather than valuing anything") {
   for (const char* mark : {"-70000", "0"}) {
     auto inputs = open_market();
     inputs.order_currency_ = Currency{"KRW"};
-    inputs.exposure_basis_.push_back(
-      strategy::InstrumentBasis{samsung(), Currency{"KRW"}, Decimal64::parse(mark)}
-    );
+    inputs.exposure_basis_.push_back(strategy::InstrumentBasis{samsung(), Currency{"KRW"}, Decimal64::parse(mark)});
     inputs.reference_price_ = Decimal64::parse(mark);
     const auto refused = guard.check(planned("100"), portfolio, inputs);
     REQUIRE(refused);
@@ -1497,12 +1519,8 @@ TEST_CASE("an ordinary portfolio is valued and permitted, not refused by the tig
   portfolio.working_.push_back(resting);
 
   auto inputs = with_basis(open_market());
-  inputs.exposure_basis_.push_back(
-    strategy::InstrumentBasis{hynix, Currency{"KRW"}, Decimal64::parse("180000")}
-  );
-  inputs.exposure_basis_.push_back(
-    strategy::InstrumentBasis{naver, Currency{"KRW"}, Decimal64::parse("220000")}
-  );
+  inputs.exposure_basis_.push_back(strategy::InstrumentBasis{hynix, Currency{"KRW"}, Decimal64::parse("180000")});
+  inputs.exposure_basis_.push_back(strategy::InstrumentBasis{naver, Currency{"KRW"}, Decimal64::parse("220000")});
   // Nothing describes the closed lot, and nothing needs to.
 
   // 100 at 70,000, plus 250 held and 30 still working at the 181,000 limit, plus 40 at the resting
@@ -1544,9 +1562,7 @@ TEST_CASE("an exposure basis that does not describe the portfolio refuses") {
   SECTION("two entries for one instrument") {
     ProbePortfolio portfolio;
     auto inputs = with_basis(open_market());
-    inputs.exposure_basis_.push_back(
-      strategy::InstrumentBasis{samsung(), Currency{"KRW"}, Decimal64::parse("80000")}
-    );
+    inputs.exposure_basis_.push_back(strategy::InstrumentBasis{samsung(), Currency{"KRW"}, Decimal64::parse("80000")});
     const auto refused = guard.check(planned("1", "70000"), portfolio, inputs);
     REQUIRE(refused);
     REQUIRE(refused->reason_ == GuardReason::VALUE_NOT_KNOWN);
@@ -1577,9 +1593,7 @@ TEST_CASE("the exposure ceiling is per currency and neither currency leaks into 
   portfolio.positions_.push_back(foreign);
 
   auto inputs = with_basis(open_market());
-  inputs.exposure_basis_.push_back(
-    strategy::InstrumentBasis{apple, Currency{"USD"}, Decimal64::parse("200")}
-  );
+  inputs.exposure_basis_.push_back(strategy::InstrumentBasis{apple, Currency{"USD"}, Decimal64::parse("200")});
 
   // The KRW answer is 9,450,000 and the dollar position contributes nothing to it, so a buy of seven
   // Samsung passes exactly as it does with no foreign holding at all.
@@ -1676,22 +1690,11 @@ TEST_CASE("the recent-order count equals a scan in or out of time order") {
 
 TEST_CASE("every guard reason has a stable name") {
   REQUIRE(strategy::guard_reason_name(GuardReason::TRADING_HALTED) == "trading_halted");
-  REQUIRE(
-    strategy::guard_reason_name(GuardReason::INSTRUMENT_NOT_PERMITTED) ==
-    "instrument_not_permitted"
-  );
+  REQUIRE(strategy::guard_reason_name(GuardReason::INSTRUMENT_NOT_PERMITTED) == "instrument_not_permitted");
   REQUIRE(strategy::guard_reason_name(GuardReason::PHASE_NOT_PERMITTED) == "phase_not_permitted");
-  REQUIRE(
-    strategy::guard_reason_name(GuardReason::ORDER_NOTIONAL_TOO_LARGE) ==
-    "order_notional_too_large"
-  );
-  REQUIRE(
-    strategy::guard_reason_name(GuardReason::POSITION_LIMIT_EXCEEDED) == "position_limit_exceeded"
-  );
-  REQUIRE(
-    strategy::guard_reason_name(GuardReason::GROSS_EXPOSURE_EXCEEDED) ==
-    "gross_exposure_exceeded"
-  );
+  REQUIRE(strategy::guard_reason_name(GuardReason::ORDER_NOTIONAL_TOO_LARGE) == "order_notional_too_large");
+  REQUIRE(strategy::guard_reason_name(GuardReason::POSITION_LIMIT_EXCEEDED) == "position_limit_exceeded");
+  REQUIRE(strategy::guard_reason_name(GuardReason::GROSS_EXPOSURE_EXCEEDED) == "gross_exposure_exceeded");
   REQUIRE(strategy::guard_reason_name(GuardReason::ORDER_RATE_EXCEEDED) == "order_rate_exceeded");
   REQUIRE(strategy::guard_reason_name(GuardReason::VALUE_NOT_KNOWN) == "value_not_known");
   // **The last three were once missing.** A test called "every guard
@@ -1700,17 +1703,9 @@ TEST_CASE("every guard reason has a stable name") {
   // `return "unknown"` means an unhandled reason compiles and reports nothing useful rather than
   // failing to build. The library's test and example builds now make a missing case an error
   // (`-Werror=switch`); this list still checks the names themselves.
-  REQUIRE(
-    strategy::guard_reason_name(GuardReason::QUANTITY_NOT_SELLABLE) == "quantity_not_sellable"
-  );
-  REQUIRE(
-    strategy::guard_reason_name(GuardReason::SELLABLE_BASIS_UNESTABLISHED) ==
-    "sellable_basis_unestablished"
-  );
-  REQUIRE(
-    strategy::guard_reason_name(GuardReason::INSUFFICIENT_BUYING_POWER) ==
-    "insufficient_buying_power"
-  );
+  REQUIRE(strategy::guard_reason_name(GuardReason::QUANTITY_NOT_SELLABLE) == "quantity_not_sellable");
+  REQUIRE(strategy::guard_reason_name(GuardReason::SELLABLE_BASIS_UNESTABLISHED) == "sellable_basis_unestablished");
+  REQUIRE(strategy::guard_reason_name(GuardReason::INSUFFICIENT_BUYING_POWER) == "insufficient_buying_power");
 }
 
 TEST_CASE("the tolerance measures the drift, not the quantity that would be sent") {
@@ -1782,18 +1777,15 @@ TEST_CASE("a stop-limit intent carries both prices and nothing else carries a tr
   const auto limit = Price::checked(Decimal64::parse("69000"), krx());
   REQUIRE(trigger);
   REQUIRE(limit);
-  const auto stop = OrderIntent::stop_limit(
-    samsung(), OrderSide::SELL, SizeSpec::quantity(Decimal64::parse("10")), *trigger, *limit
-  );
+  const auto stop =
+    OrderIntent::stop_limit(samsung(), OrderSide::SELL, SizeSpec::quantity(Decimal64::parse("10")), *trigger, *limit);
   CHECK(stop.type() == OrderType::STOP_LIMIT);
   CHECK(stop.trigger() == trigger);
   CHECK(stop.limit() == limit);
-  CHECK_FALSE(OrderIntent::limit(
-    samsung(), OrderSide::SELL, SizeSpec::quantity(Decimal64::parse("10")), *limit
-  ).trigger());
-  CHECK_FALSE(OrderIntent::market(
-    samsung(), OrderSide::SELL, SizeSpec::quantity(Decimal64::parse("10"))
-  ).trigger());
+  CHECK_FALSE(
+    OrderIntent::limit(samsung(), OrderSide::SELL, SizeSpec::quantity(Decimal64::parse("10")), *limit).trigger()
+  );
+  CHECK_FALSE(OrderIntent::market(samsung(), OrderSide::SELL, SizeSpec::quantity(Decimal64::parse("10"))).trigger());
 }
 
 TEST_CASE("a stop intent reconciles into a stop-limit order with its trigger untouched", "[trigger]") {
@@ -1804,11 +1796,8 @@ TEST_CASE("a stop intent reconciles into a stop-limit order with its trigger unt
 
   SECTION("the limit sizes a notional and the trigger is carried exactly") {
     const auto intent = OrderIntent::stop_limit(
-      samsung(),
-      OrderSide::SELL,
-      SizeSpec::notional(Money{Decimal64::parse("1380000"), Currency{"KRW"}}),
-      *Price::checked(Decimal64::parse("69500"), krx()),
-      *Price::checked(Decimal64::parse("69000"), krx())
+      samsung(), OrderSide::SELL, SizeSpec::notional(Money{Decimal64::parse("1380000"), Currency{"KRW"}}),
+      *Price::checked(Decimal64::parse("69500"), krx()), *Price::checked(Decimal64::parse("69000"), krx())
     );
     const auto plan = strategy::reconcile(intent, portfolio, inputs);
     REQUIRE(plan.rejected_.empty());
@@ -1827,10 +1816,7 @@ TEST_CASE("a stop intent reconciles into a stop-limit order with its trigger unt
     const auto off = Price::checked(Decimal64::parse("69550"), PriceRule::unconstrained());
     REQUIRE(off);
     const auto intent = OrderIntent::stop_limit(
-      samsung(),
-      OrderSide::SELL,
-      SizeSpec::quantity(Decimal64::parse("10")),
-      *off,
+      samsung(), OrderSide::SELL, SizeSpec::quantity(Decimal64::parse("10")), *off,
       *Price::checked(Decimal64::parse("69000"), krx())
     );
     const auto plan = strategy::reconcile(intent, portfolio, inputs);
@@ -1842,9 +1828,7 @@ TEST_CASE("a stop intent reconciles into a stop-limit order with its trigger unt
 
   SECTION("a limit or market intent plans no trigger") {
     const auto plan = strategy::reconcile(
-      OrderIntent::market(samsung(), OrderSide::BUY, SizeSpec::quantity(Decimal64::parse("1"))),
-      portfolio,
-      inputs
+      OrderIntent::market(samsung(), OrderSide::BUY, SizeSpec::quantity(Decimal64::parse("1"))), portfolio, inputs
     );
     REQUIRE(plan.place_.size() == 1);
     CHECK_FALSE(plan.place_[0].trigger_price_);
@@ -1955,22 +1939,28 @@ namespace {
 // Whether two plans are the same: the same cancellations, placements and refusals, in the same order.
 template <typename Broker>
 bool same_plan(const strategy::Plan<Broker>& lhs, const strategy::Plan<Broker>& rhs) {
-  if (!(lhs.cancel_ == rhs.cancel_) || lhs.place_.size() != rhs.place_.size() ||
-      lhs.rejected_.size() != rhs.rejected_.size()) {
+  if (
+    !(lhs.cancel_ == rhs.cancel_) || lhs.place_.size() != rhs.place_.size() ||
+    lhs.rejected_.size() != rhs.rejected_.size()
+  ) {
     return false;
   }
   for (std::size_t at = 0; at < lhs.place_.size(); ++at) {
     const auto& a = lhs.place_[at];
     const auto& b = rhs.place_[at];
-    if (!(a.instrument_ == b.instrument_) || a.side_ != b.side_ || a.type_ != b.type_ ||
-        a.time_in_force_ != b.time_in_force_ || !(a.quantity_ == b.quantity_) || !(a.price_ == b.price_) ||
-        a.tag_ != b.tag_ || a.quantity_rounded_ != b.quantity_rounded_) {
+    if (
+      !(a.instrument_ == b.instrument_) || a.side_ != b.side_ || a.type_ != b.type_ ||
+      a.time_in_force_ != b.time_in_force_ || !(a.quantity_ == b.quantity_) || !(a.price_ == b.price_) ||
+      a.tag_ != b.tag_ || a.quantity_rounded_ != b.quantity_rounded_
+    ) {
       return false;
     }
   }
   for (std::size_t at = 0; at < lhs.rejected_.size(); ++at) {
-    if (lhs.rejected_[at].reason_ != rhs.rejected_[at].reason_ ||
-        !(lhs.rejected_[at].instrument_ == rhs.rejected_[at].instrument_)) {
+    if (
+      lhs.rejected_[at].reason_ != rhs.rejected_[at].reason_ ||
+      !(lhs.rejected_[at].instrument_ == rhs.rejected_[at].instrument_)
+    ) {
       return false;
     }
   }
@@ -1988,7 +1978,9 @@ TEST_CASE("a target's plan is the same with a pass's index of the portfolio's ro
     state = state * 1664525u + 1013904223u;
     return (state >> 8) % below;
   };
-  const auto id_of = [](std::uint32_t k) { return InstrumentId{Country::KR, Venue::COMBINED, "S" + std::to_string(k)}; };
+  const auto id_of = [](std::uint32_t k) {
+    return InstrumentId{Country::KR, Venue::COMBINED, "S" + std::to_string(k)};
+  };
   for (int round = 0; round < 400; ++round) {
     ProbePortfolio portfolio;
     for (std::uint32_t row = 0, rows = next(7); row < rows; ++row) {
@@ -2006,8 +1998,9 @@ TEST_CASE("a target's plan is the same with a pass's index of the portfolio's ro
       if (kind == 0) {
         working.order_.trigger_price_ = Decimal64::parse("70000");
       }
-      const OrderStatus statuses[] = {OrderStatus::PENDING, OrderStatus::PARTIAL_FILLED, OrderStatus::FILLED,
-        OrderStatus::PENDING_CANCEL};
+      const OrderStatus statuses[] = {
+        OrderStatus::PENDING, OrderStatus::PARTIAL_FILLED, OrderStatus::FILLED, OrderStatus::PENDING_CANCEL
+      };
       working.order_.status_ = statuses[next(4)];
       working.order_.quantity_ = Decimal64(static_cast<std::int64_t>(next(30)) + 1, 0);
       working.order_.execution_.filled_quantity_ = Decimal64(static_cast<std::int64_t>(next(5)), 0);
@@ -2029,7 +2022,9 @@ TEST_CASE("a target's plan is the same with a pass's index of the portfolio's ro
       wanted.target_quantity_ = Decimal64(static_cast<std::int64_t>(next(81)) - 40, 0);
       wanted.tag_ = "test";
       INFO("round " << round << " instrument " << k);
-      REQUIRE(same_plan(strategy::reconcile(wanted, portfolio, scanned), strategy::reconcile(wanted, portfolio, indexed)));
+      REQUIRE(
+        same_plan(strategy::reconcile(wanted, portfolio, scanned), strategy::reconcile(wanted, portfolio, indexed))
+      );
     }
   }
   // A sum that does not fit is refused the same way.
@@ -2052,7 +2047,9 @@ TEST_CASE("a delivered slice finds every bar as a scan does") {
   // A slice the period bucket delivers carries the bucket's table of where each bar is; `find` must answer
   // exactly as a scan would on it. A copy or a move carries no table, so whatever its holder then does to the
   // bars -- reorder, replace, clear and refill in the same storage, or reuse freed storage -- it is scanned.
-  const auto id_of = [](int k) { return InstrumentId{Country::KR, Venue::COMBINED, "S" + std::to_string(k)}; };
+  const auto id_of = [](int k) {
+    return InstrumentId{Country::KR, Venue::COMBINED, "S" + std::to_string(k)};
+  };
   const auto bar_of = [&id_of](int k, BarInterval interval) {
     Bar bar;
     bar.timestamp_ = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 20000);

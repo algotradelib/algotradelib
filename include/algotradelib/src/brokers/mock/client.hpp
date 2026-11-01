@@ -62,13 +62,17 @@ public:
    * @brief Returns the environment this client trades in.
    * @return Always `"paper"`.
    */
-  static constexpr std::string_view environment() noexcept { return mock::environment; }
+  static constexpr std::string_view environment() noexcept {
+    return mock::environment;
+  }
 
   /**
    * @brief Returns the market.
    * @return The market this client answers from.
    */
-  Market& market() const noexcept { return *market_; }
+  Market& market() const noexcept {
+    return *market_;
+  }
 
   /**
    * @brief Answers the next calls of a kind with an error instead of asking the market.
@@ -123,8 +127,10 @@ public:
    * @throws std::invalid_argument for another call, or `times` below one.
    */
   void repeat_last(Call call, int times = 1) {
-    if (call != Call::HOLDINGS && call != Call::BUYING_POWER && call != Call::WORKING_ORDERS &&
-        call != Call::ORDER_HISTORY) {
+    if (
+      call != Call::HOLDINGS && call != Call::BUYING_POWER && call != Call::WORKING_ORDERS &&
+      call != Call::ORDER_HISTORY
+    ) {
       throw std::invalid_argument("only a read of the account's state can be repeated");
     }
     if (times < 1) {
@@ -188,7 +194,9 @@ public:
    * @return As `Market::holdings`.
    */
   Result<HoldingsSnapshot> holdings() {
-    return read(Call::HOLDINGS, last_holdings_, [this] { return market_->holdings(); });
+    return read(Call::HOLDINGS, last_holdings_, [this] {
+      return market_->holdings();
+    });
   }
 
   /**
@@ -200,7 +208,9 @@ public:
     if (last_buying_power_ && !(last_buying_power_->cash_.currency_ == currency)) {
       last_buying_power_.reset();
     }
-    return read(Call::BUYING_POWER, last_buying_power_, [&] { return market_->buying_power(currency); });
+    return read(Call::BUYING_POWER, last_buying_power_, [&] {
+      return market_->buying_power(currency);
+    });
   }
 
   /**
@@ -253,7 +263,9 @@ public:
    * @return As `Market::order_history`.
    */
   Result<OrderPage> order_history(const OrderHistoryQuery& query) {
-    return read(Call::ORDER_HISTORY, last_history_, [&] { return Result<OrderPage>(market_->order_history(query)); });
+    return read(Call::ORDER_HISTORY, last_history_, [&] {
+      return Result<OrderPage>(market_->order_history(query));
+    });
   }
 
 private:

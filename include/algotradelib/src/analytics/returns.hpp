@@ -35,8 +35,7 @@ inline math::Vector returns(math::SeriesView prices) {
   // make it an infinity and a negative one reverses its sign, so those rows are replaced explicitly.
   const auto current = prices.tail(rows - 1).array();
   const auto previous = prices.head(rows - 1).array();
-  result.tail(rows - 1) =
-    (previous <= Scalar{0}).select(missing(), current / previous - Scalar{1});
+  result.tail(rows - 1) = (previous <= Scalar{0}).select(missing(), current / previous - Scalar{1});
   return result;
 }
 

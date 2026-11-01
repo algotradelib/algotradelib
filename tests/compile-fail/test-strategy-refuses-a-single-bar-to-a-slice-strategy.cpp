@@ -9,7 +9,8 @@
 using namespace algotradelib;
 
 struct SliceOnly {
-  template <class Ctx> void on_bars(Ctx&, const strategy::BarSlice&) {}
+  template <class Ctx>
+  void on_bars(Ctx&, const strategy::BarSlice&) {}
 };
 
 void feeds_one_bar(const strategy::BarEvent& bar) {

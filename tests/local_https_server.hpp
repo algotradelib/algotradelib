@@ -88,9 +88,7 @@ OV9IxaWtgjumdgBw478W4w==
 -----END PRIVATE KEY-----
 )";
 
-inline void trustLocalhostCertificate(
-  ssl::context& context
-) {
+inline void trustLocalhostCertificate(ssl::context& context) {
   context.set_verify_mode(ssl::verify_peer);
   context.add_certificate_authority(net::buffer(LOCALHOST_CERTIFICATE));
 }
@@ -118,12 +116,13 @@ inline std::string closed_loopback_port() {
 class LocalHttpsServer {
 public:
   LocalHttpsServer()
-  : context_(ssl::context::tls_server),
-    acceptor_(ioc_, tcp::endpoint(net::ip::address_v4::loopback(), 0)) {
+  : context_(ssl::context::tls_server), acceptor_(ioc_, tcp::endpoint(net::ip::address_v4::loopback(), 0)) {
     context_.use_certificate_chain(net::buffer(LOCALHOST_CERTIFICATE));
     context_.use_private_key(net::buffer(LOCALHOST_PRIVATE_KEY), ssl::context::pem);
     acceptor_.non_blocking(true);
-    thread_ = std::thread([this] { run(); });
+    thread_ = std::thread([this] {
+      run();
+    });
   }
 
   ~LocalHttpsServer() {
@@ -138,19 +137,23 @@ public:
   LocalHttpsServer(const LocalHttpsServer&) = delete;
   LocalHttpsServer& operator=(const LocalHttpsServer&) = delete;
 
-  std::string port() const { return std::to_string(acceptor_.local_endpoint().port()); }
+  std::string port() const {
+    return std::to_string(acceptor_.local_endpoint().port());
+  }
 
-  std::size_t connectionCount() const noexcept { return connection_count_; }
+  std::size_t connectionCount() const noexcept {
+    return connection_count_;
+  }
 
   /**
    * Closes a kept-alive connection that waits longer than `timeout` for its next request, as the
    * KIS hosts do after five seconds (`Keep-Alive: timeout=5`). Zero, the default, waits forever.
    */
-  void set_idle_timeout(std::chrono::milliseconds timeout) noexcept { idle_timeout_ms_ = timeout.count(); }
+  void set_idle_timeout(std::chrono::milliseconds timeout) noexcept {
+    idle_timeout_ms_ = timeout.count();
+  }
 
-  std::size_t requestCount(
-    std::string_view target
-  ) const {
+  std::size_t requestCount(std::string_view target) const {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto found = request_counts_.find(std::string(target));
     return found == request_counts_.end() ? 0 : found->second;
@@ -258,9 +261,7 @@ private:
     }
   }
 
-  void serve(
-    tcp::socket socket
-  ) {
+  void serve(tcp::socket socket) {
     beast::ssl_stream<beast::tcp_stream> stream(std::move(socket), context_);
     beast::error_code ec;
     stream.handshake(ssl::stream_base::server, ec);
@@ -324,9 +325,7 @@ private:
       if (target == "/rate-limited") {
         // A broker refusal carrying both hints Toss documents on its 429: the
         // allowance being enforced, and how long to wait.
-        http::response<http::string_body> limited(
-          http::status::too_many_requests, request.version()
-        );
+        http::response<http::string_body> limited(http::status::too_many_requests, request.version());
         limited.set(http::field::server, "algotradelib-test");
         limited.set(http::field::content_type, "application/json");
         limited.set("Retry-After", "1");
@@ -376,16 +375,12 @@ private:
     return found->second[std::min(served, found->second.size() - 1)];
   }
 
-  std::size_t recordRequest(
-    const std::string& target
-  ) {
+  std::size_t recordRequest(const std::string& target) {
     std::lock_guard<std::mutex> lock(mutex_);
     return ++request_counts_[target];
   }
 
-  static void close(
-    beast::ssl_stream<beast::tcp_stream>& stream
-  ) noexcept {
+  static void close(beast::ssl_stream<beast::tcp_stream>& stream) noexcept {
     beast::error_code ignored;
     beast::get_lowest_layer(stream).socket().shutdown(tcp::socket::shutdown_both, ignored);
     beast::get_lowest_layer(stream).socket().close(ignored);

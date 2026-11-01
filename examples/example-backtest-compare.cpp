@@ -50,7 +50,9 @@ using algotradelib::PriceRule;
 using algotradelib::SecurityType;
 using algotradelib::Venue;
 
-InstrumentId traded() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
+InstrumentId traded() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+}
 
 // ---------------------------------------------------------------------------------------------
 // Your strategy.
@@ -103,9 +105,7 @@ struct MyStrategy {
     for (std::size_t at = history_.size() - lookback_; sum && at < history_.size(); ++at) {
       sum = algotradelib::decimal_add(*sum, history_[at]);
     }
-    const auto scaled = algotradelib::decimal_multiply(
-      history_.back(), Decimal64::parse(std::to_string(lookback_))
-    );
+    const auto scaled = algotradelib::decimal_multiply(history_.back(), Decimal64::parse(std::to_string(lookback_)));
     if (!sum || !scaled) {
       return;
     }
@@ -143,10 +143,46 @@ Instrument reference() {
 /** @brief A path that rises, stalls, falls and recovers, so a trend strategy has both sides to trade. */
 const std::vector<int>& closes() {
   static const std::vector<int> path = {
-    60000, 60500, 61200, 61000, 62000, 63000, 64500, 65000, 66200, 67000,
-    68500, 69000, 70200, 71000, 72500, 73000, 72800, 72000, 71000, 69500,
-    68000, 66500, 65000, 63500, 62000, 61000, 60000, 59000, 58500, 58000,
-    58500, 59500, 61000, 62500, 64000, 65500, 67000, 68500, 70000, 71500,
+    60000,
+    60500,
+    61200,
+    61000,
+    62000,
+    63000,
+    64500,
+    65000,
+    66200,
+    67000,
+    68500,
+    69000,
+    70200,
+    71000,
+    72500,
+    73000,
+    72800,
+    72000,
+    71000,
+    69500,
+    68000,
+    66500,
+    65000,
+    63500,
+    62000,
+    61000,
+    60000,
+    59000,
+    58500,
+    58000,
+    58500,
+    59500,
+    61000,
+    62500,
+    64000,
+    65500,
+    67000,
+    68500,
+    70000,
+    71500,
   };
   return path;
 }
@@ -222,9 +258,10 @@ template <typename Strategy>
 void compare(const std::string& name, Strategy instance, math::Scalar periods) {
   const auto engine = replay(std::move(instance));
   const auto report = backtest::summarize(engine.result(), engine.fills(), periods);
-  std::cout << "  " << std::left << std::setw(21) << name << std::right
-            << percent(report.total_return_) << "  " << plain(report.sharpe_) << "  "
-            << percent(report.max_drawdown_) << "  " << std::setw(5) << report.executions_ << "\n";
+  std::cout
+    << "  " << std::left << std::setw(21) << name << std::right << percent(report.total_return_) << "  "
+    << plain(report.sharpe_) << "  " << percent(report.max_drawdown_) << "  " << std::setw(5) << report.executions_
+    << "\n";
 }
 
 #endif
@@ -237,19 +274,17 @@ ATL_ASSERT_STRATEGY(MyStrategy, algotradelib::strategy::MinimalContext);
 ATL_ASSERT_STRATEGY(MyStrategy, algotradelib::strategy::FullContext);
 
 int main() {
-  std::cout << "005930, " << closes().size()
-            << " bars built in code -- no credentials, no network\n\n";
+  std::cout << "005930, " << closes().size() << " bars built in code -- no credentials, no network\n\n";
 
 #if defined(ATL_HAS_EIGEN)
   // Annualizing takes its period count from the caller rather than assuming a bar is a day. Get this
   // wrong and the annualized figure is wrong by the square root of the ratio.
-  const auto periods =
-    backtest::periods_per_year(BarInterval::ONE_DAY, strategy::SessionWindow::krx(), 245.0);
+  const auto periods = backtest::periods_per_year(BarInterval::ONE_DAY, strategy::SessionWindow::krx(), 245.0);
 
-  std::cout << "  " << std::left << std::setw(21) << "strategy" << std::right
-            << std::setw(9) << "return" << "  " << std::setw(9) << "Sharpe" << "  "
-            << std::setw(9) << "max dd" << "  " << std::setw(5) << "fills" << "\n"
-            << "  " << std::string(59, '-') << "\n";
+  std::cout
+    << "  " << std::left << std::setw(21) << "strategy" << std::right << std::setw(9) << "return" << "  "
+    << std::setw(9) << "Sharpe" << "  " << std::setw(9) << "max dd" << "  " << std::setw(5) << "fills" << "\n"
+    << "  " << std::string(59, '-') << "\n";
 
   compare("MyStrategy(5)", MyStrategy{}, *periods);
 
@@ -283,10 +318,11 @@ int main() {
   // so `<algotradelib/vanilla>` does not ship them here. The replay engine itself needs no backend at all, which is worth showing
   // rather than asserting -- so the strategy is still run, and what it did is still counted.
   const auto engine = replay(MyStrategy{});
-  std::cout << "MyStrategy replayed " << engine.result().bars_ << " bars and filled "
-            << engine.result().executions_.size() << " orders.\n\n"
-            << "Scoring those fills needs a linear algebra backend and this build has none.\n"
-            << "Configure with -DATL_USE_EIGEN=ON for the metrics and the vanilla comparison.\n";
+  std::cout
+    << "MyStrategy replayed " << engine.result().bars_ << " bars and filled " << engine.result().executions_.size()
+    << " orders.\n\n"
+    << "Scoring those fills needs a linear algebra backend and this build has none.\n"
+    << "Configure with -DATL_USE_EIGEN=ON for the metrics and the vanilla comparison.\n";
 #endif
 
   return 0;

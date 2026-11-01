@@ -66,8 +66,8 @@ std::string_view status_name(atl::OrderStatus status) {
 
 /** @brief Prints one normalized order and its aggregate fill state. */
 void print_order(const atl::OrderSnapshot& order) {
-  std::cout << order.instrument_.symbol_ << ' '
-    << (order.side_ == atl::OrderSide::BUY ? "BUY" : "SELL") << ' '
+  std::cout
+    << order.instrument_.symbol_ << ' ' << (order.side_ == atl::OrderSide::BUY ? "BUY" : "SELL") << ' '
     << status_name(order.status_) << " qty=" << order.quantity_.str();
   if (order.price_) {
     std::cout << " price=" << order.price_->str();
@@ -147,8 +147,7 @@ int main(int argc, char* argv[]) {
       return 1;
     }
     std::cout << "closed orders on first page: " << closed_result.value().orders_.size() << '\n';
-    std::cout << "more closed orders: "
-      << (closed_result.value().next_cursor_ ? "yes" : "no") << '\n';
+    std::cout << "more closed orders: " << (closed_result.value().next_cursor_ ? "yes" : "no") << '\n';
     return 0;
   } catch (const std::exception& exception) {
     std::cerr << "example failed: " << exception.what() << '\n';

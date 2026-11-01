@@ -43,7 +43,9 @@ public:
    * @throws std::runtime_error (from the broker's implementation) if a variable is missing or
    *   invalid (such as a demo setting that is neither `0` nor `1`).
    */
-  void from_env() { static_cast<BrokerType*>(this)->from_env_impl(); }
+  void from_env() {
+    static_cast<BrokerType*>(this)->from_env_impl();
+  }
 
   /**
    * @brief Loads the credentials from a JSON file, in the broker's format.
@@ -59,13 +61,17 @@ public:
    * @brief Returns the app key (client id).
    * @return The key.
    */
-  const std::string& key() const noexcept { return key_; }
+  const std::string& key() const noexcept {
+    return key_;
+  }
 
   /**
    * @brief Returns the app secret.
    * @return The secret; do not log it.
    */
-  const std::string& secret() const noexcept { return secret_; }
+  const std::string& secret() const noexcept {
+    return secret_;
+  }
 
   /**
    * @brief Builds a JSON token-request body (grant type, key and secret under the broker's field
@@ -85,8 +91,7 @@ public:
    * @return The body, values percent-encoded.
    */
   std::string to_form_urlencoded_body() const {
-    return "grant_type=client_credentials&client_id=" + form_encode(key_) +
-      "&client_secret=" + form_encode(secret_);
+    return "grant_type=client_credentials&client_id=" + form_encode(key_) + "&client_secret=" + form_encode(secret_);
   }
 
 protected:
@@ -105,8 +110,8 @@ private:
     std::string result;
     result.reserve(value.size());
     for (const unsigned char ch : value) {
-      const bool unreserved = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
-        (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' || ch == '_' || ch == '~';
+      const bool unreserved = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
+        ch == '-' || ch == '.' || ch == '_' || ch == '~';
       if (unreserved) {
         result.push_back(static_cast<char>(ch));
       } else {

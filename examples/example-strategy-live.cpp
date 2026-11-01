@@ -35,8 +35,8 @@
 
 #include <algotradelib/kis>
 #include <algotradelib/live>
-#include <algotradelib/vanilla>
 #include <algotradelib/tossinvest>
+#include <algotradelib/vanilla>
 
 #include <boost/asio/ssl/context.hpp>
 
@@ -123,8 +123,8 @@ struct MarketState {
  */
 template <typename Tag, typename R>
 int drive(
-  const InstrumentId& instrument, const MarketState& state,
-  const algotradelib::WorkingOrders<Tag>& open_orders, R live_runner
+  const InstrumentId& instrument, const MarketState& state, const algotradelib::WorkingOrders<Tag>& open_orders,
+  R live_runner
 ) {
   live_runner.context().set_instrument(state.reference_);
   // A single pass driven by hand, so the phase is this program's to state: only
@@ -153,14 +153,13 @@ int drive(
 
   const auto& last = state.bars_.bars_.back();
   live_runner.context().set_last_price(instrument, last.close_);
-  const auto report = live_runner.feed(
-    strategy::make_bar_event(instrument, state.bars_.interval_, state.bars_.stamp_, last)
-  );
+  const auto report =
+    live_runner.feed(strategy::make_bar_event(instrument, state.bars_.interval_, state.bars_.stamp_, last));
 
   for (const auto& order : report.would_place_) {
-    std::cout << "order: " << (order.side_ == OrderSide::BUY ? "BUY " : "SELL") << ' '
-              << order.quantity_.str() << " at "
-              << (order.price_ ? order.price_->str() : std::string("market")) << '\n';
+    std::cout
+      << "order: " << (order.side_ == OrderSide::BUY ? "BUY " : "SELL") << ' ' << order.quantity_.str() << " at "
+      << (order.price_ ? order.price_->str() : std::string("market")) << '\n';
   }
   for (const auto& refusal : report.refused_) {
     std::cout << "refused by a guard: " << strategy::guard_reason_name(refusal.reason_) << '\n';
@@ -174,8 +173,9 @@ int drive(
     std::cout << "withheld pending reconciliation: " << held.detail_ << '\n';
   }
   for (const auto& order : report.indeterminate_) {
-    std::cout << "UNKNOWN OUTCOME for " << order.instrument_.symbol_
-              << ": read the broker's order list before trading it again\n";
+    std::cout
+      << "UNKNOWN OUTCOME for " << order.instrument_.symbol_
+      << ": read the broker's order list before trading it again\n";
   }
   if (report.quiet()) {
     std::cout << "the strategy asked for nothing: the target is already met\n";
@@ -214,8 +214,9 @@ int trade(Session& session, const InstrumentId& instrument, Mode mode) {
   using Caps = typename Session::Caps;
   using Tag = typename Session::BrokerTag;
 
-  std::cout << "broker: " << Tag::name << "   instrument: " << instrument.symbol_
-            << "   mode: " << (mode == Mode::TRADE ? "TRADE" : "observe") << "\n\n";
+  std::cout
+    << "broker: " << Tag::name << "   instrument: " << instrument.symbol_
+    << "   mode: " << (mode == Mode::TRADE ? "TRADE" : "observe") << "\n\n";
 
   if constexpr (Caps::has_client_order_id) {
     std::cout << "this broker accepts an idempotency key, so a retry could be made safe\n";
@@ -261,7 +262,8 @@ int trade(Session& session, const InstrumentId& instrument, Mode mode) {
     open_orders = std::move(listed.value());
   } else {
     if (mode == Mode::TRADE) {
-      std::cerr << "this broker lists no open orders, so a live run could not see an earlier order still waiting to fill; use example-live-program\n";
+      std::cerr
+        << "this broker lists no open orders, so a live run could not see an earlier order still waiting to fill; use example-live-program\n";
       return 1;
     }
   }
@@ -276,9 +278,8 @@ int trade(Session& session, const InstrumentId& instrument, Mode mode) {
   // One line per mode. The factories read the capabilities and the tag off the session, so the two
   // runners differ in exactly one thing -- where the send goes -- and cannot differ in any other.
   if (mode == Mode::TRADE) {
-    const auto status = drive<Tag>(
-      instrument, state, open_orders, live::bind(session, strategy_for(instrument), example_limits())
-    );
+    const auto status =
+      drive<Tag>(instrument, state, open_orders, live::bind(session, strategy_for(instrument), example_limits()));
     note_interruption_hazard();
     return status;
   }
@@ -294,18 +295,12 @@ int trade_kis(ssl::context& tls, const std::string& symbol, Mode mode) {
   kis::KisAccount account;
   kis_credentials::load(kis_credentials::environment_directory(), config, &account, std::cout);
 
-  auto client =
-    std::make_shared<kis::KisBlockingClient>(tls, std::move(config), kis_credentials::paced_options());
+  auto client = std::make_shared<kis::KisBlockingClient>(tls, std::move(config), kis_credentials::paced_options());
   BlockingSession<kis::KisBlockingClient> session(std::move(client), std::move(account));
   return trade(session, InstrumentId{Country::KR, Venue::COMBINED, symbol}, mode);
 }
 
-int trade_tossinvest(
-  ssl::context& tls,
-  const std::string& symbol,
-  const char* sequence,
-  Mode mode
-) {
+int trade_tossinvest(ssl::context& tls, const std::string& symbol, const char* sequence, Mode mode) {
   namespace toss = algotradelib::tossinvest;
 
   toss::TossConfig config;
@@ -358,14 +353,12 @@ int trade_dry(const std::string& symbol) {
   bar.close_ = Decimal64::parse("70000");
   bar.volume_ = Decimal64::parse("1200000");
 
-  const auto report = dry.feed(
-    strategy::make_bar_event(
-      instrument, BarInterval::ONE_DAY, algotradelib::BarStamp::CLOSE, bar
-    )
-  );
+  const auto report =
+    dry.feed(strategy::make_bar_event(instrument, BarInterval::ONE_DAY, algotradelib::BarStamp::CLOSE, bar));
   for (const auto& order : report.would_place_) {
-    std::cout << "would send: " << (order.side_ == OrderSide::BUY ? "BUY " : "SELL") << ' '
-              << order.quantity_.str() << " at market\n";
+    std::cout
+      << "would send: " << (order.side_ == OrderSide::BUY ? "BUY " : "SELL") << ' ' << order.quantity_.str()
+      << " at market\n";
   }
   return 0;
 }
@@ -385,8 +378,9 @@ int main(int argc, char** argv) {
     } else if (argument.rfind("--", 0) == 0) {
       // An option this program does not know is refused, never read as a positional argument: a
       // mistyped or unsupported flag beside `--live` must not leave the run trading as if it were absent.
-      std::cerr << "example-strategy-live: unknown option " << argument
-                << " (credentials come from the environment or ATL_CREDENTIALS_DIR)\n";
+      std::cerr
+        << "example-strategy-live: unknown option " << argument
+        << " (credentials come from the environment or ATL_CREDENTIALS_DIR)\n";
       return 2;
     } else {
       positional.push_back(argument);
@@ -416,9 +410,7 @@ int main(int argc, char** argv) {
     if (broker == "kis") {
       return trade_kis(tls, symbol, mode);
     }
-    return trade_tossinvest(
-      tls, symbol, positional.size() > 2 ? positional[2].c_str() : nullptr, mode
-    );
+    return trade_tossinvest(tls, symbol, positional.size() > 2 ? positional[2].c_str() : nullptr, mode);
   } catch (const std::exception& exception) {
     std::cerr << "example failed: " << exception.what() << '\n';
     return 1;

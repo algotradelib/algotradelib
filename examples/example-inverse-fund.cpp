@@ -61,10 +61,14 @@ using algotradelib::SecurityType;
 using algotradelib::Venue;
 
 /** @brief The instrument the signal is read from: a fund tracking the index. Never traded here. */
-InstrumentId index_fund() { return InstrumentId{Country::KR, Venue::COMBINED, "069500"}; }
+InstrumentId index_fund() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "069500"};
+}
 
 /** @brief The instrument that is traded: a fund targeting the opposite of the index's daily return. */
-InstrumentId inverse_fund() { return InstrumentId{Country::KR, Venue::COMBINED, "114800"}; }
+InstrumentId inverse_fund() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "114800"};
+}
 
 /**
  * @brief Holds a fixed number of inverse-fund shares while the index fund closes below its own recent
@@ -101,8 +105,7 @@ struct InverseFundOnDowntrend {
     for (std::size_t at = closes_.size() - lookback_; sum && at < closes_.size(); ++at) {
       sum = algotradelib::decimal_add(*sum, closes_[at]);
     }
-    const auto scaled =
-      algotradelib::decimal_multiply(closes_.back(), Decimal64::parse(std::to_string(lookback_)));
+    const auto scaled = algotradelib::decimal_multiply(closes_.back(), Decimal64::parse(std::to_string(lookback_)));
     if (!sum || !scaled) {
       return;
     }
@@ -141,16 +144,46 @@ struct Day {
 /** @brief Forty consecutive trading days (2026-08-11 to 2026-10-12) of the two funds. A sample. */
 const std::vector<Day>& sample() {
   static const std::vector<Day> days = {
-    {99265, 1147, 1126},  {103250, 1113, 1080}, {107270, 1043, 1039}, {110060, 1008, 1011},
-    {108550, 984, 1026},  {101760, 1079, 1089}, {108190, 1054, 1021}, {109980, 1035, 1003},
-    {105995, 1009, 1040}, {106795, 1070, 1032}, {107710, 1036, 1024}, {109135, 991, 1009},
-    {107180, 1021, 1028}, {107615, 1057, 1025}, {107885, 1034, 1021}, {103500, 1054, 1063},
-    {103610, 1047, 1061}, {105720, 1047, 1040}, {110820, 1004, 989},  {110335, 982, 994},
-    {112100, 992, 978},   {111865, 982, 980},   {109500, 1018, 1002}, {105410, 1038, 1038},
-    {104275, 1047, 1050}, {106365, 1050, 1029}, {106280, 1019, 1030}, {109285, 1003, 1000},
-    {111700, 994, 978},   {111880, 957, 978},   {113145, 958, 966},   {109500, 971, 998},
-    {109990, 1000, 993},  {109545, 986, 998},   {111520, 1006, 981},  {112060, 985, 975},
-    {110745, 971, 987},   {108550, 999, 1008},  {105650, 1009, 1035}, {102695, 1046, 1065},
+    {99265, 1147, 1126},
+    {103250, 1113, 1080},
+    {107270, 1043, 1039},
+    {110060, 1008, 1011},
+    {108550, 984, 1026},
+    {101760, 1079, 1089},
+    {108190, 1054, 1021},
+    {109980, 1035, 1003},
+    {105995, 1009, 1040},
+    {106795, 1070, 1032},
+    {107710, 1036, 1024},
+    {109135, 991, 1009},
+    {107180, 1021, 1028},
+    {107615, 1057, 1025},
+    {107885, 1034, 1021},
+    {103500, 1054, 1063},
+    {103610, 1047, 1061},
+    {105720, 1047, 1040},
+    {110820, 1004, 989},
+    {110335, 982, 994},
+    {112100, 992, 978},
+    {111865, 982, 980},
+    {109500, 1018, 1002},
+    {105410, 1038, 1038},
+    {104275, 1047, 1050},
+    {106365, 1050, 1029},
+    {106280, 1019, 1030},
+    {109285, 1003, 1000},
+    {111700, 994, 978},
+    {111880, 957, 978},
+    {113145, 958, 966},
+    {109500, 971, 998},
+    {109990, 1000, 993},
+    {109545, 986, 998},
+    {111520, 1006, 981},
+    {112060, 985, 975},
+    {110745, 971, 987},
+    {108550, 999, 1008},
+    {105650, 1009, 1035},
+    {102695, 1046, 1065},
   };
   return days;
 }
@@ -198,24 +231,33 @@ int main() {
     const auto& day = sample()[at];
     // The fund's bar first: an order decided on yesterday's signal fills at this open. Then the
     // signal's bar, on whose close the next decision is made.
-    engine.feed(strategy::make_bar_event(
-      inverse_fund(), BarInterval::ONE_DAY, BarStamp::CLOSE, daily(when, day.fund_open_, day.fund_close_)));
-    engine.feed(strategy::make_bar_event(
-      index_fund(), BarInterval::ONE_DAY, BarStamp::CLOSE, daily(when, day.index_close_, day.index_close_)));
+    engine.feed(
+      strategy::make_bar_event(
+        inverse_fund(), BarInterval::ONE_DAY, BarStamp::CLOSE, daily(when, day.fund_open_, day.fund_close_)
+      )
+    );
+    engine.feed(
+      strategy::make_bar_event(
+        index_fund(), BarInterval::ONE_DAY, BarStamp::CLOSE, daily(when, day.index_close_, day.index_close_)
+      )
+    );
   }
   engine.finish();
 
   const auto& result = engine.result();
-  std::cout << "inverse fund 114800 traded on a signal from index fund 069500, " << sample().size()
-            << " sample days -- no credentials, no network\n\n";
+  std::cout
+    << "inverse fund 114800 traded on a signal from index fund 069500, " << sample().size()
+    << " sample days -- no credentials, no network\n\n";
   for (const auto& execution : result.executions_) {
     const auto& fill = execution.fill_;
     const auto day = std::chrono::duration_cast<std::chrono::hours>(fill.at_ - start).count() / 24;
-    std::cout << "  day " << day << "  " << (fill.side_ == OrderSide::BUY ? "BUY " : "SELL") << "  "
-              << fill.quantity_.str() << " fund shares at " << fill.price_.str() << "\n";
+    std::cout
+      << "  day " << day << "  " << (fill.side_ == OrderSide::BUY ? "BUY " : "SELL") << "  " << fill.quantity_.str()
+      << " fund shares at " << fill.price_.str() << "\n";
   }
-  std::cout << "\n  orders filled: " << result.executions_.size() << ", refused by the guard: "
-            << result.refused_.size() << ", not buildable: " << result.rejected_.size() << "\n";
+  std::cout
+    << "\n  orders filled: " << result.executions_.size() << ", refused by the guard: " << result.refused_.size()
+    << ", not buildable: " << result.rejected_.size() << "\n";
   if (!result.equity_.empty()) {
     std::cout << "  equity: " << config.cash_.str() << " -> " << result.equity_.back().equity_.str() << "\n";
   }

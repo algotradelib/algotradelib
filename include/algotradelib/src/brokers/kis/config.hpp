@@ -1,15 +1,15 @@
 #pragma once
 
-#include "../../network/oauth.hpp"
-#include <string>
-#include <chrono>
-#include <ctime>
 #include <boost/json.hpp>
+#include <chrono>
 #include <cstdlib>
+#include <ctime>
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
+#include <string>
 #include <string_view>
+#include "../../network/oauth.hpp"
 
 namespace algotradelib {
 namespace kis {
@@ -58,16 +58,7 @@ struct KisWebsocket;
 static inline std::chrono::system_clock::time_point parse_expiry(const char* s) {
   std::tm tm{};
   if (
-    std::sscanf(
-      s,
-      "%d-%d-%d %d:%d:%d",
-      &tm.tm_year,
-      &tm.tm_mon,
-      &tm.tm_mday,
-      &tm.tm_hour,
-      &tm.tm_min,
-      &tm.tm_sec
-    ) != 6
+    std::sscanf(s, "%d-%d-%d %d:%d:%d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday, &tm.tm_hour, &tm.tm_min, &tm.tm_sec) != 6
   ) {
     return {};
   }
@@ -137,22 +128,16 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
    * @throws std::runtime_error if the file cannot be read or parsed, a key is missing or not a
    *   string, or `"demo"` is not a boolean.
    */
-  void from_json_impl(
-    const std::string& filename
-  ) {
+  void from_json_impl(const std::string& filename) {
     std::ifstream ifs(filename);
     if (!ifs.is_open()) {
       throw std::runtime_error("Cannot open KIS credential file: " + filename);
     }
-    const std::string content(
-      std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>{}
-    );
+    const std::string content(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>{});
     boost::system::error_code ec;
     const auto jv = json::parse(content, ec);
     if (ec) {
-      throw std::runtime_error(
-        "Failed to parse KIS credentials file: " + filename + " — " + ec.message()
-      );
+      throw std::runtime_error("Failed to parse KIS credentials file: " + filename + " — " + ec.message());
     }
     if (!jv.is_object()) {
       throw std::runtime_error("Failed to parse KIS credentials file: " + filename + " — not a JSON object");
@@ -185,7 +170,8 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
       return false;
     }
     throw std::runtime_error(
-      std::string("KIS_DEMO is \"") + demo + "\"; set it to 1 for the demo endpoints or 0 to trade "
+      std::string("KIS_DEMO is \"") + demo +
+      "\"; set it to 1 for the demo endpoints or 0 to trade "
       "live, or leave it unset for demo."
     );
   }
@@ -204,7 +190,8 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
     }
     if (!demo->is_bool()) {
       throw std::runtime_error(
-        "KIS credential file " + filename + " has a \"demo\" that is not true or false; write "
+        "KIS credential file " + filename +
+        " has a \"demo\" that is not true or false; write "
         "true for the demo endpoints or false to trade live, or leave it out for demo."
       );
     }
@@ -215,13 +202,17 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
    * @brief Returns the token request's field for the app key.
    * @return `"appkey"`.
    */
-  static constexpr std::string_view key_field() noexcept { return "appkey"; }
+  static constexpr std::string_view key_field() noexcept {
+    return "appkey";
+  }
 
   /**
    * @brief Returns the token request's field for the app secret.
    * @return `"appsecret"`.
    */
-  static constexpr std::string_view secret_field() noexcept { return "appsecret"; }
+  static constexpr std::string_view secret_field() noexcept {
+    return "appsecret";
+  }
 
   /**
    * @brief Returns the REST host for the environment.
@@ -235,27 +226,32 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
    * @brief Returns the REST port for the environment.
    * @return `"29443"` (demo) or `"9443"`.
    */
-  const char* rest_port() const noexcept { return is_demo_ ? "29443" : "9443"; }
+  const char* rest_port() const noexcept {
+    return is_demo_ ? "29443" : "9443";
+  }
 
   /**
    * @brief Returns the WebSocket host (the same for both environments).
    * @return The host name.
    */
-  const char* ws_host() const noexcept { return "ops.koreainvestment.com"; }
+  const char* ws_host() const noexcept {
+    return "ops.koreainvestment.com";
+  }
 
   /**
    * @brief Returns the WebSocket port for the environment.
    * @return `"31000"` (demo) or `"21000"`.
    */
-  const char* ws_port() const noexcept { return is_demo_ ? "31000" : "21000"; }
+  const char* ws_port() const noexcept {
+    return is_demo_ ? "31000" : "21000";
+  }
 
   /**
    * @brief Builds the WebSocket approval-key request body (the secret under `secretkey`).
    * @return The JSON body.
    */
   std::string ws_to_jsonbody() const {
-    return R"({"grant_type":"client_credentials","appkey":")" + key_ + R"(","secretkey":")" +
-      secret_ + R"("})";
+    return R"({"grant_type":"client_credentials","appkey":")" + key_ + R"(","secretkey":")" + secret_ + R"("})";
   }
 };
 
@@ -274,15 +270,15 @@ struct KisRest : public network::AuthBody<KisRest> {
    * @brief Returns the token response's field for the token.
    * @return `"access_token"`.
    */
-  static constexpr std::string_view token_field() noexcept { return "access_token"; }
+  static constexpr std::string_view token_field() noexcept {
+    return "access_token";
+  }
 
   /**
    * @brief Reads KIS's stated expiry from a token response; called by `from_json`.
    * @param doc The response.
    */
-  void from_json_impl(
-    const json::object& doc
-  ) {
+  void from_json_impl(const json::object& doc) {
     // if (!doc.contains("access_token")) {
     // 	throw std::runtime_error("Token authentication failed");
     // }
@@ -302,7 +298,9 @@ struct KisRest : public network::AuthBody<KisRest> {
    * @brief Tests whether the token is set and stays valid for at least five more minutes.
    * @return `true` if so.
    */
-  bool valid() const noexcept { return network::AuthBody<KisRest>::valid(); }
+  bool valid() const noexcept {
+    return network::AuthBody<KisRest>::valid();
+  }
 };
 
 /** @brief A KIS WebSocket approval key and when it was issued. */
@@ -320,9 +318,7 @@ struct KisWebsocket {
    * @param doc The response.
    * @throws std::runtime_error if it has no `approval_key`.
    */
-  void from_json(
-    const json::object& doc
-  ) {
+  void from_json(const json::object& doc) {
     if (!doc.contains("approval_key")) {
       throw std::runtime_error("WS approval key authentication failed");
     }
@@ -338,8 +334,7 @@ struct KisWebsocket {
     // https://github.com/koreainvestment/open-trading-api/blob/33e0e1e65cd1c8c8b639531483ec0b327087bab1/examples_user/kis_auth.py#L507
     const auto now = std::chrono::system_clock::now();
     const bool never_authed = last_auth_time_ == std::chrono::system_clock::time_point{};
-    const auto elapsed =
-      std::chrono::duration_cast<std::chrono::seconds>(now - last_auth_time_).count();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_auth_time_).count();
     return !approval_key_.empty() && !never_authed && elapsed < 86400;
   }
 };

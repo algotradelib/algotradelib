@@ -160,8 +160,7 @@ public:
   using WorkingSet = WorkingOrders<BrokerTag>;
 
   static_assert(
-    !Traits::blocking,
-    "BrokerSession requires an asynchronous client; use BlockingSession for a blocking facade"
+    !Traits::blocking, "BrokerSession requires an asynchronous client; use BlockingSession for a blocking facade"
   );
 
   /**
@@ -181,13 +180,17 @@ public:
    * @brief Returns the broker's name.
    * @return `Traits::name`.
    */
-  static constexpr std::string_view broker_name() noexcept { return Traits::name; }
+  static constexpr std::string_view broker_name() noexcept {
+    return Traits::name;
+  }
 
   /**
    * @brief Returns the bound account.
    * @return The account selector.
    */
-  const Account& account() const noexcept { return account_; }
+  const Account& account() const noexcept {
+    return account_;
+  }
 
   /**
    * @brief Returns the broker client, for broker-specific operations the session does not offer.
@@ -197,19 +200,25 @@ public:
    *
    * @return The client.
    */
-  Client& client() noexcept { return *client_; }
+  Client& client() noexcept {
+    return *client_;
+  }
 
   /**
    * @brief Returns the broker client.
    * @return The client.
    */
-  const Client& client() const noexcept { return *client_; }
+  const Client& client() const noexcept {
+    return *client_;
+  }
 
   /**
    * @brief Returns the shared client pointer, for binding a second session.
    * @return The client pointer.
    */
-  const std::shared_ptr<Client>& shared_client() const noexcept { return client_; }
+  const std::shared_ptr<Client>& shared_client() const noexcept {
+    return client_;
+  }
 
   /**
    * @brief Returns the client's request-pacing counters.
@@ -229,7 +238,9 @@ public:
   }
 
   /** @brief Cancels the client's transport work and queued operations. */
-  void close() { client_->close(); }
+  void close() {
+    client_->close();
+  }
 
   /**
    * @brief Requests the current quote for an instrument.
@@ -247,7 +258,9 @@ public:
       [client = client_, instrument = std::move(instrument)](auto&& sink) mutable {
         Traits::quote(*client, std::move(instrument), std::forward<decltype(sink)>(sink));
       },
-      [](Result<QuoteSnapshot> raw) { return raw; }
+      [](Result<QuoteSnapshot> raw) {
+        return raw;
+      }
     );
   }
 
@@ -266,7 +279,9 @@ public:
       [client = client_, account = account_](auto&& sink) mutable {
         Traits::holdings(*client, account, std::forward<decltype(sink)>(sink));
       },
-      [](Result<HoldingsSnapshot> raw) { return raw; }
+      [](Result<HoldingsSnapshot> raw) {
+        return raw;
+      }
     );
   }
 
@@ -291,7 +306,9 @@ public:
         [client = client_, account = account_, currency](auto&& sink) mutable {
           Traits::buying_power(*client, account, currency, std::forward<decltype(sink)>(sink));
         },
-        [](Result<BuyingPower> raw) { return raw; }
+        [](Result<BuyingPower> raw) {
+          return raw;
+        }
       );
     } else {
       static_assert(
@@ -319,14 +336,12 @@ public:
     if constexpr (Caps::sellable_source == SellableSource::INQUIRY) {
       return translate<Decimal64>(
         std::forward<CompletionToken>(token),
-        [client = client_, account = account_, instrument = std::move(instrument)](
-          auto&& sink
-        ) mutable {
-          Traits::sellable_quantity(
-            *client, account, std::move(instrument), std::forward<decltype(sink)>(sink)
-          );
+        [client = client_, account = account_, instrument = std::move(instrument)](auto&& sink) mutable {
+          Traits::sellable_quantity(*client, account, std::move(instrument), std::forward<decltype(sink)>(sink));
         },
-        [](Result<Decimal64> raw) { return raw; }
+        [](Result<Decimal64> raw) {
+          return raw;
+        }
       );
     } else {
       static_assert(
@@ -357,7 +372,9 @@ public:
         [client = client_, account = account_](auto&& sink) mutable {
           Traits::commissions(*client, account, std::forward<decltype(sink)>(sink));
         },
-        [](Result<CommissionSchedule> raw) { return raw; }
+        [](Result<CommissionSchedule> raw) {
+          return raw;
+        }
       );
     } else {
       static_assert(
@@ -388,18 +405,16 @@ public:
   template <typename CompletionToken>
   auto async_place(OrderRequest order, CompletionToken&& token) {
     if (auto refused = port_detail::prepare_place<Client>(order)) {
-      return complete_error<Placed>(
-        std::forward<CompletionToken>(token), std::move(*refused)
-      );
+      return complete_error<Placed>(std::forward<CompletionToken>(token), std::move(*refused));
     }
     return translate<Placed>(
       std::forward<CompletionToken>(token),
       [client = client_, account = account_, order = std::move(order)](auto&& sink) mutable {
-        Traits::place_order(
-          *client, account, std::move(order), std::forward<decltype(sink)>(sink)
-        );
+        Traits::place_order(*client, account, std::move(order), std::forward<decltype(sink)>(sink));
       },
-      [](Result<typename Traits::PlaceAck> raw) { return Traits::normalize_place(std::move(raw)); }
+      [](Result<typename Traits::PlaceAck> raw) {
+        return Traits::normalize_place(std::move(raw));
+      }
     );
   }
 
@@ -423,22 +438,16 @@ public:
   auto async_replace(Ref ref, AmendInstruction instruction, CompletionToken&& token) {
     auto amendment = port_detail::prepare_replace<Client>(ref, instruction);
     if (!amendment) {
-      return complete_error<Placed>(
-        std::forward<CompletionToken>(token), std::move(amendment.error())
-      );
+      return complete_error<Placed>(std::forward<CompletionToken>(token), std::move(amendment.error()));
     }
     return translate<Placed>(
       std::forward<CompletionToken>(token),
-      [
-        client = client_,
-        account = account_,
-        value = std::move(amendment.value())
-      ](auto&& sink) mutable {
-        Traits::replace_order(
-          *client, account, std::move(value), std::forward<decltype(sink)>(sink)
-        );
+      [client = client_, account = account_, value = std::move(amendment.value())](auto&& sink) mutable {
+        Traits::replace_order(*client, account, std::move(value), std::forward<decltype(sink)>(sink));
       },
-      [](Result<typename Traits::PlaceAck> raw) { return Traits::normalize_place(std::move(raw)); }
+      [](Result<typename Traits::PlaceAck> raw) {
+        return Traits::normalize_place(std::move(raw));
+      }
     );
   }
 
@@ -466,22 +475,16 @@ public:
   auto async_cancel(Ref ref, AmendInstruction instruction, CompletionToken&& token) {
     auto amendment = Traits::to_cancellation(ref, instruction);
     if (!amendment) {
-      return complete_error<Placed>(
-        std::forward<CompletionToken>(token), std::move(amendment.error())
-      );
+      return complete_error<Placed>(std::forward<CompletionToken>(token), std::move(amendment.error()));
     }
     return translate<Placed>(
       std::forward<CompletionToken>(token),
-      [
-        client = client_,
-        account = account_,
-        value = std::move(amendment.value())
-      ](auto&& sink) mutable {
-        Traits::cancel_order(
-          *client, account, std::move(value), std::forward<decltype(sink)>(sink)
-        );
+      [client = client_, account = account_, value = std::move(amendment.value())](auto&& sink) mutable {
+        Traits::cancel_order(*client, account, std::move(value), std::forward<decltype(sink)>(sink));
       },
-      [](Result<typename Traits::PlaceAck> raw) { return Traits::normalize_place(std::move(raw)); }
+      [](Result<typename Traits::PlaceAck> raw) {
+        return Traits::normalize_place(std::move(raw));
+      }
     );
   }
 
@@ -531,22 +534,16 @@ public:
   auto async_order_history(OrderHistoryQuery query, CompletionToken&& token) {
     auto converted = Traits::to_history_query(account_, query);
     if (!converted) {
-      return complete_error<OrderPage>(
-        std::forward<CompletionToken>(token), std::move(converted.error())
-      );
+      return complete_error<OrderPage>(std::forward<CompletionToken>(token), std::move(converted.error()));
     }
     return translate<OrderPage>(
       std::forward<CompletionToken>(token),
-      [
-        client = client_,
-        account = account_,
-        value = std::move(converted.value())
-      ](auto&& sink) mutable {
-        Traits::order_history(
-          *client, account, std::move(value), std::forward<decltype(sink)>(sink)
-        );
+      [client = client_, account = account_, value = std::move(converted.value())](auto&& sink) mutable {
+        Traits::order_history(*client, account, std::move(value), std::forward<decltype(sink)>(sink));
       },
-      [](Result<OrderPage> raw) { return raw; }
+      [](Result<OrderPage> raw) {
+        return raw;
+      }
     );
   }
 
@@ -565,16 +562,16 @@ public:
   template <typename CompletionToken>
   auto async_bars(BarQuery query, CompletionToken&& token) {
     if (auto invalid = Traits::validate_bars(query)) {
-      return complete_error<BarSeries>(
-        std::forward<CompletionToken>(token), std::move(*invalid)
-      );
+      return complete_error<BarSeries>(std::forward<CompletionToken>(token), std::move(*invalid));
     }
     return translate<BarSeries>(
       std::forward<CompletionToken>(token),
       [client = client_, query = std::move(query)](auto&& sink) mutable {
         Traits::bars(*client, std::move(query), std::forward<decltype(sink)>(sink));
       },
-      [](Result<BarSeries> raw) { return raw; }
+      [](Result<BarSeries> raw) {
+        return raw;
+      }
     );
   }
 
@@ -598,7 +595,9 @@ public:
         [client = client_, instrument = std::move(instrument)](auto&& sink) mutable {
           Traits::instrument(*client, std::move(instrument), std::forward<decltype(sink)>(sink));
         },
-        [](Result<Instrument> raw) { return raw; }
+        [](Result<Instrument> raw) {
+          return raw;
+        }
       );
     } else {
       static_assert(
@@ -626,16 +625,16 @@ public:
   auto async_calendar(Country country, std::optional<Date> from, CompletionToken&& token) {
     if constexpr (Caps::has_calendar) {
       if (auto invalid = Traits::validate_calendar(country, from)) {
-        return complete_error<TradingCalendar>(
-          std::forward<CompletionToken>(token), std::move(*invalid)
-        );
+        return complete_error<TradingCalendar>(std::forward<CompletionToken>(token), std::move(*invalid));
       }
       return translate<TradingCalendar>(
         std::forward<CompletionToken>(token),
         [client = client_, country, from](auto&& sink) mutable {
           Traits::calendar(*client, country, from, std::forward<decltype(sink)>(sink));
         },
-        [](Result<TradingCalendar> raw) { return raw; }
+        [](Result<TradingCalendar> raw) {
+          return raw;
+        }
       );
     } else {
       static_assert(
@@ -663,11 +662,11 @@ public:
       return translate<PriceLimits>(
         std::forward<CompletionToken>(token),
         [client = client_, instrument = std::move(instrument)](auto&& sink) mutable {
-          Traits::price_limits(
-            *client, std::move(instrument), std::forward<decltype(sink)>(sink)
-          );
+          Traits::price_limits(*client, std::move(instrument), std::forward<decltype(sink)>(sink));
         },
-        [](Result<PriceLimits> raw) { return raw; }
+        [](Result<PriceLimits> raw) {
+          return raw;
+        }
       );
     } else {
       static_assert(
@@ -696,11 +695,11 @@ public:
       return translate<std::vector<TradePrint>>(
         std::forward<CompletionToken>(token),
         [client = client_, instrument = std::move(instrument), count](auto&& sink) mutable {
-          Traits::trades(
-            *client, std::move(instrument), count, std::forward<decltype(sink)>(sink)
-          );
+          Traits::trades(*client, std::move(instrument), count, std::forward<decltype(sink)>(sink));
         },
-        [](Result<std::vector<TradePrint>> raw) { return raw; }
+        [](Result<std::vector<TradePrint>> raw) {
+          return raw;
+        }
       );
     } else {
       static_assert(
@@ -730,7 +729,9 @@ public:
         [client = client_, instruments = std::move(instruments)](auto&& sink) mutable {
           Traits::prices(*client, std::move(instruments), std::forward<decltype(sink)>(sink));
         },
-        [](Result<std::vector<QuoteSnapshot>> raw) { return raw; }
+        [](Result<std::vector<QuoteSnapshot>> raw) {
+          return raw;
+        }
       );
     } else {
       static_assert(
@@ -760,7 +761,9 @@ public:
         [client = client_, instrument = std::move(instrument)](auto&& sink) mutable {
           Traits::depth(*client, std::move(instrument), std::forward<decltype(sink)>(sink));
         },
-        [](Result<DepthSnapshot> raw) { return raw; }
+        [](Result<DepthSnapshot> raw) {
+          return raw;
+        }
       );
     } else {
       static_assert(
@@ -790,7 +793,9 @@ public:
         [client = client_, account = account_, id = ref.primary_](auto&& sink) mutable {
           Traits::order_by_id(*client, account, std::move(id), std::forward<decltype(sink)>(sink));
         },
-        [](Result<OrderSnapshot> raw) { return raw; }
+        [](Result<OrderSnapshot> raw) {
+          return raw;
+        }
       );
     } else {
       static_assert(
@@ -812,10 +817,7 @@ private:
         call(
           net::bind_executor(
             executor,
-            [
-              handler = std::forward<decltype(handler)>(handler),
-              normalize = std::move(normalize)
-            ](auto raw) mutable {
+            [handler = std::forward<decltype(handler)>(handler), normalize = std::move(normalize)](auto raw) mutable {
               std::move(handler)(normalize(std::move(raw)));
             }
           )
@@ -832,15 +834,9 @@ private:
     return net::async_initiate<Token, void(Result<Out>)>(
       [error = std::move(error)](auto&& handler) mutable {
         auto executor = net::get_associated_executor(handler, net::system_executor());
-        net::post(
-          executor,
-          [
-            handler = std::forward<decltype(handler)>(handler),
-            error = std::move(error)
-          ]() mutable {
-            std::move(handler)(Result<Out>(std::move(error)));
-          }
-        );
+        net::post(executor, [handler = std::forward<decltype(handler)>(handler), error = std::move(error)]() mutable {
+          std::move(handler)(Result<Out>(std::move(error)));
+        });
       },
       token
     );
@@ -911,25 +907,33 @@ public:
    * @brief Returns the broker's name.
    * @return `Traits::name`.
    */
-  static constexpr std::string_view broker_name() noexcept { return Traits::name; }
+  static constexpr std::string_view broker_name() noexcept {
+    return Traits::name;
+  }
 
   /**
    * @brief Returns the bound account.
    * @return The account selector.
    */
-  const Account& account() const noexcept { return account_; }
+  const Account& account() const noexcept {
+    return account_;
+  }
 
   /**
    * @brief Returns the broker client, for broker-specific operations the session does not offer.
    * @return The client.
    */
-  Client& client() noexcept { return *client_; }
+  Client& client() noexcept {
+    return *client_;
+  }
 
   /**
    * @brief Returns the broker client.
    * @return The client.
    */
-  const Client& client() const noexcept { return *client_; }
+  const Client& client() const noexcept {
+    return *client_;
+  }
 
   /**
    * @brief Returns the client's request-pacing counters.
@@ -957,7 +961,9 @@ public:
    * @brief Returns the account's holdings.
    * @return The holdings, or an error.
    */
-  Result<HoldingsSnapshot> holdings() { return Traits::holdings(*client_, account_); }
+  Result<HoldingsSnapshot> holdings() {
+    return Traits::holdings(*client_, account_);
+  }
 
   /**
    * @brief Returns what the account may spend in a currency; requires `Caps::has_buying_power`.
@@ -1164,9 +1170,7 @@ public:
     if (!amendment) {
       return Result<Placed>(std::move(amendment.error()));
     }
-    return Traits::normalize_place(
-      Traits::replace_order(*client_, account_, std::move(amendment.value()))
-    );
+    return Traits::normalize_place(Traits::replace_order(*client_, account_, std::move(amendment.value())));
   }
 
   /**
@@ -1187,9 +1191,7 @@ public:
     if (!amendment) {
       return Result<Placed>(std::move(amendment.error()));
     }
-    return Traits::normalize_place(
-      Traits::cancel_order(*client_, account_, std::move(amendment.value()))
-    );
+    return Traits::normalize_place(Traits::cancel_order(*client_, account_, std::move(amendment.value())));
   }
 
   /**
@@ -1279,13 +1281,9 @@ auto async_accounts(Client& client, CompletionToken&& token) {
       [&client](auto&& handler) mutable {
         auto executor = net::get_associated_executor(handler);
         Traits::accounts(
-          client,
-          net::bind_executor(
-            executor,
-            [handler = std::forward<decltype(handler)>(handler)](auto raw) mutable {
-              std::move(handler)(port_detail::to_account_info<Client>(std::move(raw)));
-            }
-          )
+          client, net::bind_executor(executor, [handler = std::forward<decltype(handler)>(handler)](auto raw) mutable {
+            std::move(handler)(port_detail::to_account_info<Client>(std::move(raw)));
+          })
         );
       },
       token

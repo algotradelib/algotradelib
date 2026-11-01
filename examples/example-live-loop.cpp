@@ -33,7 +33,9 @@ namespace {
 
 using Clock = std::chrono::system_clock;
 
-InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
+InstrumentId samsung() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+}
 
 /** @brief Reference data, without which nothing can be priced onto a tick grid. */
 Instrument samsung_reference() {
@@ -116,9 +118,7 @@ public:
     ++fed_;
 
     live_runner.context().set_last_price(samsung(), bar.close_);
-    live_runner.feed(
-      strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, bar)
-    );
+    live_runner.feed(strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, bar));
     return runner::PollOutcome::UPDATED;
   }
 
@@ -129,7 +129,9 @@ public:
     return reads_ < 2 ? runner::PollOutcome::FAILED : runner::PollOutcome::UPDATED;
   }
 
-  int reads() const noexcept { return reads_; }
+  int reads() const noexcept {
+    return reads_;
+  }
 
 private:
   int remaining_;
@@ -139,40 +141,37 @@ private:
 
 /** @brief Prints a loop report the way an operator would want to read it. */
 void describe(const runner::LoopReport& report) {
-  std::cout << "iterations      : " << report.iterations_ << '\n'
-            << "bar polls       : " << report.attempted(runner::PollKind::BARS)
-            << " (" << report.failed(runner::PollKind::BARS) << " failed)\n"
-            << "blocked         : " << report.blocked_ << " iteration(s)\n"
-            << "order list read : " << (report.order_list_read_ ? "yes" : "no") << '\n'
-            << "stopped by      : "
-            << (report.stopped_by_ ?
-                  runner::stop_intent_name(*report.stopped_by_) :
-                  std::string_view("nothing"))
-            << '\n'
-            << "final gate      : "
-            << (report.final_gate_ ?
-                 strategy::halt_reason_name(*report.final_gate_) :
-                 std::string_view("none"))
-            << '\n'
-            // The phase the loop derived for itself, and how many changes it announced. Reported
-            // because it decides most of what could be sent: `unknown` beside a default
-            // `permitted_phases_` means every placement that would open a position was refused, and
-            // an empty placement count on its own does not say that.
-            << "market phase    : " << strategy::market_phase_name(report.final_phase_)
-            << " (" << report.phase_transitions_ << " transition(s))\n"
-            // And how many orders went out under a phase the limits do not permit. An order closing
-            // a held position is permitted in any phase -- which is what lets a flatten after the
-            // close reach the broker instead of being refused by the operator's own limit -- so this
-            // is the line that says it happened. Non-zero is not a fault; a nightly flatten is one.
-            << "sent off-phase  : " << report.sends_outside_permitted_phase_ << '\n'
-            // And what the price-band policy decided. A band is a per-trading-day value, so a run
-            // that outlives the day it read one has to decide what to do with it: this library does
-            // not apply a band whose age nobody has bounded, and says so here rather than repricing
-            // an order against yesterday's ceiling in silence. Both stay zero in this example
-            // because `CountBars` places nothing -- the first counts plans, the second counts sent
-            // orders a broker refused after a band was withheld.
-            << "bands withheld  : " << report.price_bands_withheld_ << '\n'
-            << "refused unclamped: " << report.unclamped_orders_rejected_ << '\n';
+  std::cout
+    << "iterations      : " << report.iterations_ << '\n'
+    << "bar polls       : " << report.attempted(runner::PollKind::BARS) << " (" << report.failed(runner::PollKind::BARS)
+    << " failed)\n"
+    << "blocked         : " << report.blocked_ << " iteration(s)\n"
+    << "order list read : " << (report.order_list_read_ ? "yes" : "no") << '\n'
+    << "stopped by      : "
+    << (report.stopped_by_ ? runner::stop_intent_name(*report.stopped_by_) : std::string_view("nothing")) << '\n'
+    << "final gate      : "
+    << (report.final_gate_ ? strategy::halt_reason_name(*report.final_gate_) : std::string_view("none"))
+    << '\n'
+    // The phase the loop derived for itself, and how many changes it announced. Reported
+    // because it decides most of what could be sent: `unknown` beside a default
+    // `permitted_phases_` means every placement that would open a position was refused, and
+    // an empty placement count on its own does not say that.
+    << "market phase    : " << strategy::market_phase_name(report.final_phase_) << " (" << report.phase_transitions_
+    << " transition(s))\n"
+    // And how many orders went out under a phase the limits do not permit. An order closing
+    // a held position is permitted in any phase -- which is what lets a flatten after the
+    // close reach the broker instead of being refused by the operator's own limit -- so this
+    // is the line that says it happened. Non-zero is not a fault; a nightly flatten is one.
+    << "sent off-phase  : " << report.sends_outside_permitted_phase_
+    << '\n'
+    // And what the price-band policy decided. A band is a per-trading-day value, so a run
+    // that outlives the day it read one has to decide what to do with it: this library does
+    // not apply a band whose age nobody has bounded, and says so here rather than repricing
+    // an order against yesterday's ceiling in silence. Both stay zero in this example
+    // because `CountBars` places nothing -- the first counts plans, the second counts sent
+    // orders a broker refused after a band was withheld.
+    << "bands withheld  : " << report.price_bands_withheld_ << '\n'
+    << "refused unclamped: " << report.unclamped_orders_rejected_ << '\n';
   for (const auto& note : report.notes_) {
     std::cout << "note            : " << note << '\n';
   }
@@ -211,8 +210,7 @@ int main() {
   algotradelib::TradingCalendar calendar;
   calendar.country_ = algotradelib::Country::KR;
   calendar.received_at_ = start_time();
-  calendar.days_.push_back(algotradelib::TradingDay{
-    strategy::SessionWindow::krx().local_date(start_time()), true});
+  calendar.days_.push_back(algotradelib::TradingDay{strategy::SessionWindow::krx().local_date(start_time()), true});
   live_runner.context().set_calendar(calendar);
 
   ScriptedSource source(4);
@@ -229,7 +227,8 @@ int main() {
   schedule.price_limits_ = std::chrono::minutes(10);
 
   runner::PollingLoop<LoopRunner, ScriptedSource, runner::ManualClock> loop(
-    live_runner, source, schedule, runner::ManualClock{start_time()});
+    live_runner, source, schedule, runner::ManualClock{start_time()}
+  );
   // **Two statements every placement-enabled run owes, and this source cannot satisfy either.**
   //
   // A run states how old a holdings snapshot may be before it stops sizing against it, and a run
@@ -261,13 +260,14 @@ int main() {
   // owed -- it means nothing is remembered.
   std::cout << "the order list was read " << source.reads() << " time(s) before the gate opened\n";
 
-  std::cout << "\nhow a real operator would stop this:\n"
-            << "  runner::SignalStop::install(stop); // SIGINT and SIGTERM quiesce; SIGHUP ignored\n"
-            << "  loop.set_control_file(runner::FileStopChannel(\"/var/run/atl/stop\"));\n"
-            << "  echo withdraw > /var/run/atl/stop // or quiesce, or flatten\n\n"
-            << "and the trap worth knowing: a supervisor's grace period must exceed one loop\n"
-            << "iteration plus one request timeout, or its SIGKILL turns the cleanest stop into\n"
-            << "the worst one -- a process killed mid-request, with an order whose fate is unknown.\n";
+  std::cout
+    << "\nhow a real operator would stop this:\n"
+    << "  runner::SignalStop::install(stop); // SIGINT and SIGTERM quiesce; SIGHUP ignored\n"
+    << "  loop.set_control_file(runner::FileStopChannel(\"/var/run/atl/stop\"));\n"
+    << "  echo withdraw > /var/run/atl/stop // or quiesce, or flatten\n\n"
+    << "and the trap worth knowing: a supervisor's grace period must exceed one loop\n"
+    << "iteration plus one request timeout, or its SIGKILL turns the cleanest stop into\n"
+    << "the worst one -- a process killed mid-request, with an order whose fate is unknown.\n";
 
   return 0;
 }

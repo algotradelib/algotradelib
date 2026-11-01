@@ -16,17 +16,27 @@ struct End {};
 /** A cursor that compares only as an rvalue, which a range-for -- holding it by name -- cannot use. */
 struct Cursor {
   const Row* at_;
-  const Row& operator*() const { return *at_; }
+  const Row& operator*() const {
+    return *at_;
+  }
   Cursor& operator++() {
     ++at_;
     return *this;
   }
-  friend bool operator!=(Cursor&& cursor, End&&) { return cursor.at_ != nullptr; }
+  friend bool operator!=(Cursor&& cursor, End&&) {
+    return cursor.at_ != nullptr;
+  }
 };
 struct Rows {
-  Cursor begin() const { return Cursor{nullptr}; }
-  End end() const { return {}; }
-  std::size_t size() const { return 0; }
+  Cursor begin() const {
+    return Cursor{nullptr};
+  }
+  End end() const {
+    return {};
+  }
+  std::size_t size() const {
+    return 0;
+  }
 };
 
 /** A blocking Kiwoom client in every respect but its account listing. */
@@ -38,10 +48,18 @@ namespace algotradelib {
 
 template <>
 struct BrokerTraits<probe::Client> : BrokerTraits<kiwoom::KiwoomBlockingClient> {
-  static Result<probe::Rows> accounts(Client&) { return Result<probe::Rows>(probe::Rows{}); }
-  static std::string display_of(const probe::Row& row) { return row.number_; }
-  static std::string type_of(const probe::Row&) { return "cash"; }
-  static Account selector_of(const probe::Row&) { return Account{}; }
+  static Result<probe::Rows> accounts(Client&) {
+    return Result<probe::Rows>(probe::Rows{});
+  }
+  static std::string display_of(const probe::Row& row) {
+    return row.number_;
+  }
+  static std::string type_of(const probe::Row&) {
+    return "cash";
+  }
+  static Account selector_of(const probe::Row&) {
+    return Account{};
+  }
 };
 
 } // namespace algotradelib

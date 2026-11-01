@@ -13,7 +13,9 @@ using namespace algotradelib;
 namespace {
 
 /** Returns the instrument used throughout these tests. */
-InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
+InstrumentId samsung() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+}
 
 /** Returns a depth snapshot with one level on each side. */
 DepthSnapshot book(const char* bid, const char* ask) {
@@ -117,13 +119,20 @@ TEST_CASE("the KRX grid selects the right tick at every band boundary") {
   // The boundary is inclusive at the bottom of each band, so 2000 pays the higher
   // tick and 1999 the lower one.
   const Case cases[] = {
-    {"1", "1"},         {"1999", "1"},
-    {"2000", "5"},      {"4999", "5"},
-    {"5000", "10"},     {"19999", "10"},
-    {"20000", "50"},    {"49999", "50"},
-    {"50000", "100"},   {"199999", "100"},
-    {"200000", "500"},  {"499999", "500"},
-    {"500000", "1000"}, {"1000000", "1000"},
+    {"1", "1"},
+    {"1999", "1"},
+    {"2000", "5"},
+    {"4999", "5"},
+    {"5000", "10"},
+    {"19999", "10"},
+    {"20000", "50"},
+    {"49999", "50"},
+    {"50000", "100"},
+    {"199999", "100"},
+    {"200000", "500"},
+    {"499999", "500"},
+    {"500000", "1000"},
+    {"1000000", "1000"},
   };
   for (const auto& entry : cases) {
     const auto tick = rule.tick_at(Decimal64::parse(entry.price));
@@ -160,21 +169,14 @@ TEST_CASE("the grid an instrument gets depends on what it is, not only where") {
   // price onto a ladder the exchange does not use.
   REQUIRE(price_rule_for(Country::KR, SecurityType::STOCK).kind_ == PriceRule::Kind::STATED);
   REQUIRE(price_rule_for(Country::KR, SecurityType::REIT).kind_ == PriceRule::Kind::STATED);
-  REQUIRE(
-    price_rule_for(Country::KR, SecurityType::DEPOSITARY_RECEIPT).kind_ ==
-    PriceRule::Kind::STATED
-  );
+  REQUIRE(price_rule_for(Country::KR, SecurityType::DEPOSITARY_RECEIPT).kind_ == PriceRule::Kind::STATED);
 
   REQUIRE(price_rule_for(Country::KR, SecurityType::ETF).kind_ == PriceRule::Kind::UNKNOWN);
   REQUIRE(price_rule_for(Country::KR, SecurityType::ETN).kind_ == PriceRule::Kind::UNKNOWN);
-  REQUIRE(
-    price_rule_for(Country::KR, SecurityType::UNKNOWN).kind_ == PriceRule::Kind::UNKNOWN
-  );
+  REQUIRE(price_rule_for(Country::KR, SecurityType::UNKNOWN).kind_ == PriceRule::Kind::UNKNOWN);
 
   // A market quoted in free decimals is unconstrained, which is a different answer.
-  REQUIRE(
-    price_rule_for(Country::US, SecurityType::STOCK).kind_ == PriceRule::Kind::UNCONSTRAINED
-  );
+  REQUIRE(price_rule_for(Country::US, SecurityType::STOCK).kind_ == PriceRule::Kind::UNCONSTRAINED);
 }
 
 TEST_CASE("a market segment normalizes what it knows and preserves what it does not") {

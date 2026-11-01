@@ -36,19 +36,21 @@ void print_holdings(const algotradelib::HoldingsSnapshot& snapshot) {
       std::cout << " (sellable " << position.sellable_quantity_->str() << ')';
     }
     std::cout << '\n';
-    std::cout << "  last price: " << position.last_price_.str() << ' '
-      << position.market_value_.currency_.str() << '\n';
-    std::cout << "  market value: " << position.market_value_.amount_.str() << ' '
-      << position.market_value_.currency_.str() << '\n';
-    std::cout << "  unrealized P/L: " << position.unrealized_profit_loss_.amount_.str() << ' '
+    std::cout
+      << "  last price: " << position.last_price_.str() << ' ' << position.market_value_.currency_.str() << '\n';
+    std::cout
+      << "  market value: " << position.market_value_.amount_.str() << ' ' << position.market_value_.currency_.str()
+      << '\n';
+    std::cout
+      << "  unrealized P/L: " << position.unrealized_profit_loss_.amount_.str() << ' '
       << position.unrealized_profit_loss_.currency_.str() << '\n';
   }
 
   std::cout << "totals: " << snapshot.totals_.size() << '\n';
   for (const auto& total : snapshot.totals_) {
-    std::cout << total.currency_.str() << "  purchase=" << total.purchase_value_.str()
-      << "  market=" << total.market_value_.str()
-      << "  unrealized=" << total.unrealized_profit_loss_.str() << '\n';
+    std::cout
+      << total.currency_.str() << "  purchase=" << total.purchase_value_.str()
+      << "  market=" << total.market_value_.str() << "  unrealized=" << total.unrealized_profit_loss_.str() << '\n';
   }
 }
 

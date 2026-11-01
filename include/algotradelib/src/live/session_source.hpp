@@ -78,8 +78,9 @@ inline BrokerError history_not_continued() {
 inline BrokerError history_page_limit(int pages) {
   return incomplete_history(
     "history_page_limit",
-    "the order history ran past " + std::to_string(pages) + " pages and the last still said there is more: "
-    "the history is incomplete"
+    "the order history ran past " + std::to_string(pages) +
+      " pages and the last still said there is more: "
+      "the history is incomplete"
   );
 }
 
@@ -106,9 +107,8 @@ struct feeds_warmup_of<
 // for a strategy declaring `on_bars`, a bar otherwise. Required by `poll_bars`: a runner without it would
 // send what was decided on a cold start's history.
 template <typename Runner>
-struct feeds_warmup : feeds_warmup_of<
-  Runner, std::conditional_t<takes_slices<Runner>::value, strategy::BarSlice, strategy::BarEvent>
-> {};
+struct feeds_warmup
+: feeds_warmup_of<Runner, std::conditional_t<takes_slices<Runner>::value, strategy::BarSlice, strategy::BarEvent>> {};
 
 } // namespace session_source_detail
 
@@ -152,11 +152,7 @@ struct feeds_warmup : feeds_warmup_of<
  * @tparam Journal The journal type, if one is set.
  * @tparam MarketData The session market data is read from (`Session` by default).
  */
-template <
-  typename Session,
-  typename Journal = runner::MemoryJournal,
-  typename MarketData = Session
->
+template <typename Session, typename Journal = runner::MemoryJournal, typename MarketData = Session>
 class SessionSource {
 public:
   /** @brief One charge figure of one order, and the filled quantity it was recorded at. */
@@ -226,20 +222,26 @@ public:
    *
    * @param journal The journal; borrowed, and must outlive the source.
    */
-  void set_journal(Journal& journal) { journal_ = &journal; }
+  void set_journal(Journal& journal) {
+    journal_ = &journal;
+  }
 
   /**
    * @brief Sets the tolerance used to match listed orders to journal entries without a broker
    *   reference.
    * @param window The window.
    */
-  void set_match_window(runner::MatchWindow window) { window_ = window; }
+  void set_match_window(runner::MatchWindow window) {
+    window_ = window;
+  }
 
   /**
    * @brief Returns what the last check against the journal resolved and left unresolved.
    * @return The report.
    */
-  const runner::ReconcileReport& last_reconcile() const noexcept { return reconcile_; }
+  const runner::ReconcileReport& last_reconcile() const noexcept {
+    return reconcile_;
+  }
 
   /**
    * @brief Sets the currencies a buying-power poll asks about (one request per currency).
@@ -257,7 +259,9 @@ public:
    *   holds placements until each has a usable reading.
    * @return The currencies.
    */
-  const std::vector<Currency>& buying_power_currencies() const noexcept { return currencies_; }
+  const std::vector<Currency>& buying_power_currencies() const noexcept {
+    return currencies_;
+  }
 
   /**
    * @brief Returns how many bars were left for a later poll because their period had not ended.
@@ -266,14 +270,18 @@ public:
    *
    * @return The count over the source's life (each bar counted once).
    */
-  std::size_t bars_not_yet_closed() const noexcept { return bars_not_yet_closed_; }
+  std::size_t bars_not_yet_closed() const noexcept {
+    return bars_not_yet_closed_;
+  }
 
   /**
    * @brief Returns how many bars were fed as history (`Runner::feed_warmup`), so their decisions
    *   were discarded.
    * @return The count over the source's life.
    */
-  std::size_t bars_fed_as_warmup() const noexcept { return bars_fed_as_warmup_; }
+  std::size_t bars_fed_as_warmup() const noexcept {
+    return bars_fed_as_warmup_;
+  }
 
   /**
    * @brief Returns how many bars a strategy declaring `on_bars` was not shown.
@@ -286,7 +294,9 @@ public:
    *
    * @return The count over the source's life (each bar counted once).
    */
-  std::size_t bars_not_delivered() const noexcept { return bars_not_delivered_; }
+  std::size_t bars_not_delivered() const noexcept {
+    return bars_not_delivered_;
+  }
 
   /**
    * @brief Sets the bars each poll requests.
@@ -306,13 +316,17 @@ public:
    *
    * @param country The market.
    */
-  void set_calendar_country(Country country) { calendar_country_ = country; }
+  void set_calendar_country(Country country) {
+    calendar_country_ = country;
+  }
 
   /**
    * @brief Returns the market the calendar poll asks about.
    * @return The market.
    */
-  Country calendar_country() const noexcept { return calendar_country_; }
+  Country calendar_country() const noexcept {
+    return calendar_country_;
+  }
 
   /**
    * @brief Returns the error recorded by the most recent failing read.
@@ -323,7 +337,9 @@ public:
    *
    * @return The error, or empty if cleared by a later successful read.
    */
-  const std::optional<BrokerError>& last_error() const noexcept { return last_error_; }
+  const std::optional<BrokerError>& last_error() const noexcept {
+    return last_error_;
+  }
 
   /**
    * @brief Polls one kind of data and feeds or installs what arrived in the runner.
@@ -440,7 +456,9 @@ public:
    *
    * @return The costs.
    */
-  const runner::ChargedCosts& charged_costs() const noexcept { return charged_; }
+  const runner::ChargedCosts& charged_costs() const noexcept {
+    return charged_;
+  }
 
 private:
   // Fetches bars for each instrument and feeds only those not seen before, in period-end order
@@ -451,7 +469,8 @@ private:
     if constexpr (session_source_detail::takes_slices<Runner>::value) {
       if (interrupted_) {
         throw std::logic_error(
-          "a bar poll for on_bars was interrupted by an exception (" + *interrupted_ + "); its period may be "
+          "a bar poll for on_bars was interrupted by an exception (" + *interrupted_ +
+          "); its period may be "
           "partly recorded and partly delivered, so this source does not continue: restart the program with a "
           "fresh runner and source; older periods warm up the strategy, and the newest eligible period may trade"
         );
@@ -531,8 +550,9 @@ private:
           }
           break;
         }
-        collected.push_back(Collected{
-          at, strategy::make_bar_event(instrument, series.interval_, series.stamp_, bar), false});
+        collected.push_back(
+          Collected{at, strategy::make_bar_event(instrument, series.interval_, series.stamp_, bar), false}
+        );
       }
       // **Only the newest bar of an instrument's read may send.** The ones before it -- a cold
       // start's history, a backlog after an outage -- are history: the strategy is shown them, so its
@@ -600,8 +620,7 @@ private:
             ++bars_not_delivered_;
             continue;
           }
-          const bool history =
-            !item.newest_ || (latest_history && !(*latest_history < event.period_end_));
+          const bool history = !item.newest_ || (latest_history && !(*latest_history < event.period_end_));
           runner_instance.record(event);
           bucket.add(event);
           bucket_is_history = history;
@@ -930,13 +949,8 @@ private:
         ++charged_.orders_stating_cost_;
       }
 
-      take_figure(
-        charged_.commission_, held->second.commission_,
-        execution.commission_, execution.filled_quantity_
-      );
-      take_figure(
-        charged_.tax_, held->second.tax_, execution.tax_, execution.filled_quantity_
-      );
+      take_figure(charged_.commission_, held->second.commission_, execution.commission_, execution.filled_quantity_);
+      take_figure(charged_.tax_, held->second.tax_, execution.tax_, execution.filled_quantity_);
     }
 
     for (const auto& previous : charged_listing_) {
@@ -962,9 +976,7 @@ private:
   // when that exceeds the quantity this figure was last accepted at; at or below it, two present
   // amounts that differ are a conflict and the held one stands.
   void take_figure(
-    std::vector<runner::ChargedCosts::StatedTotal>& totals,
-    ObservedFigure& held,
-    const std::optional<Money>& now,
+    std::vector<runner::ChargedCosts::StatedTotal>& totals, ObservedFigure& held, const std::optional<Money>& now,
     const Decimal64& quantity
   ) {
     if (!now) {
@@ -1073,9 +1085,11 @@ private:
       const auto deferred_since = runner_instance.deferred_awaiting_evidence();
       const auto unconfirmed_since = runner_instance.unconfirmed_awaiting_evidence();
       if (deferred_since || unconfirmed_since) {
-        const auto since = !deferred_since ? *unconfirmed_since :
-          !unconfirmed_since               ? *deferred_since :
-                                             std::min(*deferred_since, *unconfirmed_since);
+        const auto since = !deferred_since ?
+          *unconfirmed_since :
+          !unconfirmed_since ?
+          *deferred_since :
+          std::min(*deferred_since, *unconfirmed_since);
         std::vector<OrderSnapshot> evidence;
         // Read through the later of the decision instant and the loop's clock, and never before
         // `since`: a sent order's `since` is the loop's clock, and on daily bars the decision instant
@@ -1150,8 +1164,10 @@ private:
   // further may be concluded from this read (the history did not arrive, or a resolution could not be
   // written).
   template <typename Runner>
-  bool sweep(Runner& runner_instance, const runner::JournalReplay& replay,
-    const std::vector<runner::OpenInstruction>& open, const std::vector<OrderSnapshot>& rows) {
+  bool sweep(
+    Runner& runner_instance, const runner::JournalReplay& replay, const std::vector<runner::OpenInstruction>& open,
+    const std::vector<OrderSnapshot>& rows
+  ) {
     auto candidates = rows;
     if (runner::any_placement(open)) {
       // **An open-orders listing cannot answer the placement question.** Each broker's working-order
@@ -1182,13 +1198,7 @@ private:
     }
 
     reconcile_ = runner::reconcile_against(
-      open,
-      candidates,
-      replay,
-      sweep_instant(runner_instance),
-      runner_instance.ledger(),
-      *journal_,
-      window_,
+      open, candidates, replay, sweep_instant(runner_instance), runner_instance.ledger(), *journal_, window_,
       // The line says what was found; this says what was read, and what the runner then does about it.
       runner_instance.serialized() ?
         std::string_view(
@@ -1205,9 +1215,7 @@ private:
       // The sweep decided, and the decision could not be written down. Trading on a resolution that
       // exists only in memory is how a restart re-opens a question that was already answered -- and
       // a journal that cannot be written will not manage the next order either.
-      runner_instance.halt_locally(
-        "the order journal could not record a reconciliation, so the hold stands"
-      );
+      runner_instance.halt_locally("the order journal could not record a reconciliation, so the hold stands");
       return false;
     }
     // **A placement whose reply was lost, now answered**: the runner has counted it since the
@@ -1223,8 +1231,7 @@ private:
         }
         runner_instance.resolve_indeterminate_placement(
           instruction.entry_.instrument_, instruction.entry_.side_,
-          match.verdict_ == runner::MatchVerdict::MATCHED ? std::optional<std::string>(match.order_id_) :
-                                                            std::nullopt,
+          match.verdict_ == runner::MatchVerdict::MATCHED ? std::optional<std::string>(match.order_id_) : std::nullopt,
           instruction.entry_.id_
         );
         break;
@@ -1243,8 +1250,10 @@ private:
   // whatever number the journal has for it) is nobody's here. Anything but one row left changes nothing
   // and writes nothing: no order is forgotten here.
   template <typename Runner>
-  void search_again(Runner& runner_instance, const runner::JournalReplay& replay,
-    const std::vector<runner::OpenInstruction>& open, const std::vector<OrderSnapshot>& rows) {
+  void search_again(
+    Runner& runner_instance, const runner::JournalReplay& replay, const std::vector<runner::OpenInstruction>& open,
+    const std::vector<OrderSnapshot>& rows
+  ) {
     if (!runner_instance.serialized()) {
       return;
     }
@@ -1269,7 +1278,13 @@ private:
     // would otherwise stand in for the dated history row of the same order, and then be set aside.
     const auto dated = [](std::vector<OrderSnapshot> all) {
       all.erase(
-        std::remove_if(all.begin(), all.end(), [](const OrderSnapshot& row) { return !row.ordered_at_; }), all.end()
+        std::remove_if(
+          all.begin(), all.end(),
+          [](const OrderSnapshot& row) {
+            return !row.ordered_at_;
+          }
+        ),
+        all.end()
       );
       return all;
     };
@@ -1278,7 +1293,10 @@ private:
     // A listing row whose day the history did not establish is undated here too.
     candidates.erase(
       std::remove_if(
-        candidates.begin(), candidates.end(), [](const OrderSnapshot& row) { return row.ordered_date_assumed_; }
+        candidates.begin(), candidates.end(),
+        [](const OrderSnapshot& row) {
+          return row.ordered_date_assumed_;
+        }
       ),
       candidates.end()
     );
@@ -1302,8 +1320,10 @@ private:
       // named order does not carry. Lifted unless this sweep left something undecided on the instrument,
       // or the runner still owes there an order no sweep named or one held for an operator.
       const auto& withheld = reconcile_.withheld_;
-      if (std::find(withheld.begin(), withheld.end(), match.instrument_) == withheld.end() &&
-          runner_instance.obligation_state(match.instrument_) == runner::ObligationState::NAMED) {
+      if (
+        std::find(withheld.begin(), withheld.end(), match.instrument_) == withheld.end() &&
+        runner_instance.obligation_state(match.instrument_) == runner::ObligationState::NAMED
+      ) {
         runner_instance.ledger().resolve_after_reading_orders(match.instrument_);
       }
     }
@@ -1318,8 +1338,7 @@ private:
   // where the broker requires one, and cursor paging where the broker offers one. The page cap is a
   // guard against a cursor that never terminates, and exhausting it is reported as a failure for the
   // same reason -- a truncated listing is a listing with holes in it.
-  bool read_history(const std::vector<runner::OpenInstruction>& all,
-    std::vector<OrderSnapshot>& into) {
+  bool read_history(const std::vector<runner::OpenInstruction>& all, std::vector<OrderSnapshot>& into) {
     // **An operator-only instruction sets no bound.** A sweep cannot resolve it, and one salvaged from a
     // torn line carries no time, which reads as the epoch: counted, it would ask for every day since 1970.
     std::vector<runner::OpenInstruction> open;
@@ -1356,8 +1375,7 @@ private:
   // Reads the history one stated date at a time, for every UTC day from the day before `from` to the
   // day after `to`: a broker's order date is its own market's, and that span contains it.
   bool read_history_days(
-    std::chrono::system_clock::time_point from,
-    std::chrono::system_clock::time_point to,
+    std::chrono::system_clock::time_point from, std::chrono::system_clock::time_point to,
     std::vector<OrderSnapshot>& into
   ) {
     std::vector<Date> days;
@@ -1410,14 +1428,12 @@ private:
   // poll while an entry waits. A broker taking neither shape is asked each day as well, which states a
   // date it may ignore rather than omitting one it may need.
   bool read_evidence(
-    std::chrono::system_clock::time_point since,
-    std::chrono::system_clock::time_point now,
+    std::chrono::system_clock::time_point since, std::chrono::system_clock::time_point now,
     std::vector<OrderSnapshot>& into
   ) {
     if constexpr (Caps::history_requires_range) {
       return read_history_in(
-        {runner::date_of(since - std::chrono::hours(24)), runner::date_of(now + std::chrono::hours(24))},
-        into
+        {runner::date_of(since - std::chrono::hours(24)), runner::date_of(now + std::chrono::hours(24))}, into
       );
     } else {
       // **Through the day after `now` in UTC**, the same upper bound as the ranged query. `date_of` is a
@@ -1430,9 +1446,7 @@ private:
   // Fills `into` with the order history over `range` where the broker takes one, or wherever `dated`
   // asks for the dates to be stated regardless; see `read_history`.
   bool read_history_in(
-    const std::pair<Date, Date>& range,
-    std::vector<OrderSnapshot>& into,
-    bool dated = Caps::history_requires_range
+    const std::pair<Date, Date>& range, std::vector<OrderSnapshot>& into, bool dated = Caps::history_requires_range
   ) {
     OrderHistoryQuery query;
     if constexpr (Caps::has_history_limit) {

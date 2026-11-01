@@ -19,8 +19,8 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
-#include <variant>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace algotradelib {
@@ -39,10 +39,7 @@ struct fills_sellable : std::false_type {};
 
 template <typename Executor>
 struct fills_sellable<
-  Executor,
-  std::void_t<
-    decltype(std::declval<Executor&>().sellable_quantity(std::declval<const InstrumentId&>()))
-  >
+  Executor, std::void_t<decltype(std::declval<Executor&>().sellable_quantity(std::declval<const InstrumentId&>()))>
 > : std::true_type {};
 
 // Whether `Executor` states what its sellable *inquiry* answer is evidence of.
@@ -56,10 +53,7 @@ template <typename Executor, typename = void>
 struct states_sellable_basis : std::false_type {};
 
 template <typename Executor>
-struct states_sellable_basis<
-  Executor,
-  std::void_t<decltype(Executor::sellable_inquiry_basis())>
-> : std::true_type {};
+struct states_sellable_basis<Executor, std::void_t<decltype(Executor::sellable_inquiry_basis())>> : std::true_type {};
 
 // Returns what `Executor`'s inquiry answer is evidence of, or an unestablished basis.
 template <typename Executor>
@@ -81,9 +75,8 @@ template <typename Executor, typename = void>
 struct reports_last_ref : std::false_type {};
 
 template <typename Executor>
-struct reports_last_ref<
-  Executor, std::void_t<decltype(std::declval<const Executor&>().last_ref())>
-> : std::true_type {};
+struct reports_last_ref<Executor, std::void_t<decltype(std::declval<const Executor&>().last_ref())>> : std::true_type {
+};
 
 // Whether `Executor` decides which venue an order that names none is sent to.
 //
@@ -118,10 +111,7 @@ template <typename Executor>
 struct states_last_error<
   Executor,
   std::enable_if_t<
-    std::is_same_v<
-      std::decay_t<decltype(std::declval<const Executor&>().last_error())>,
-      std::optional<BrokerError>
-    >
+    std::is_same_v<std::decay_t<decltype(std::declval<const Executor&>().last_error())>, std::optional<BrokerError>>
   >
 > : std::true_type {};
 
@@ -131,8 +121,8 @@ template <typename Executor, typename = void>
 struct journals : std::false_type {};
 
 template <typename Executor>
-struct journals<Executor, std::void_t<decltype(std::declval<const Executor&>().journal_failures())>>
-  : std::true_type {};
+struct journals<Executor, std::void_t<decltype(std::declval<const Executor&>().journal_failures())>> : std::true_type {
+};
 
 // Whether `Executor` writes what serialization needs: the holding an order was decided against, the
 // line it wrote for the order, and a line the runner builds (a discharge or a hold).
@@ -259,10 +249,10 @@ struct DryRunReport {
    */
   bool quiet() const noexcept {
     // Every outcome bucket belongs here; one left out would report as silence.
-    return would_place_.empty() && would_cancel_.empty() && rejected_.empty() &&
-      refused_.empty() && withheld_.empty() && withheld_plans_.empty() && indeterminate_.empty() &&
-      unresolved_cancel_.empty() && unavailable_.empty() && unavailable_cancel_.empty() &&
-      refused_cancel_.empty() && indeterminate_cancel_.empty() && rejected_cancel_.empty();
+    return would_place_.empty() && would_cancel_.empty() && rejected_.empty() && refused_.empty() &&
+      withheld_.empty() && withheld_plans_.empty() && indeterminate_.empty() && unresolved_cancel_.empty() &&
+      unavailable_.empty() && unavailable_cancel_.empty() && refused_cancel_.empty() && indeterminate_cancel_.empty() &&
+      rejected_cancel_.empty();
   }
 };
 
@@ -289,9 +279,7 @@ struct DryTag {
  * @tparam Executor Where instructions are sent.
  */
 template <
-  typename Strategy,
-  typename CapsType = strategy::NoCaps,
-  typename BrokerTag = DryTag,
+  typename Strategy, typename CapsType = strategy::NoCaps, typename BrokerTag = DryTag,
   typename Executor = RecordingExecutor<DryTag>
 >
 class Runner {
@@ -313,8 +301,7 @@ public:
    * itself does reach `on_fill`.
    */
   static constexpr bool on_fill_never_fires =
-    runner_detail::sends_to_a_broker<Executor>::value &&
-    strategy::strategy_detail::declares_on_fill<Strategy>;
+    runner_detail::sends_to_a_broker<Executor>::value && strategy::strategy_detail::declares_on_fill<Strategy>;
 
   /**
    * @brief `true` when the strategy declares `on_bars`: bars are then fed with `record` and delivered with
@@ -357,10 +344,7 @@ public:
    * @param executor Where instructions are sent.
    */
   explicit Runner(
-    Strategy strategy = {},
-    strategy::RiskLimits limits = {},
-    std::size_t series_capacity = 512,
-    Executor executor = {}
+    Strategy strategy = {}, strategy::RiskLimits limits = {}, std::size_t series_capacity = 512, Executor executor = {}
   )
   : strategy_(std::move(strategy)),
     guard_(std::move(limits)),
@@ -377,12 +361,16 @@ public:
    * @brief Returns the executor.
    * @return The executor.
    */
-  const Executor& executor() const noexcept { return executor_; }
+  const Executor& executor() const noexcept {
+    return executor_;
+  }
   /**
    * @brief Returns the executor.
    * @return The executor.
    */
-  Executor& executor() noexcept { return executor_; }
+  Executor& executor() noexcept {
+    return executor_;
+  }
 
   /**
    * @brief Returns the ledger of instruments withheld pending reconciliation or an operator: an order of
@@ -391,12 +379,16 @@ public:
    *   clear the ledger entry yourself once the broker's state is read).
    * @return The ledger.
    */
-  const IndeterminacyLedger& ledger() const noexcept { return ledger_; }
+  const IndeterminacyLedger& ledger() const noexcept {
+    return ledger_;
+  }
   /**
    * @brief Returns the ledger, so an operator who has read the broker's order list can clear an entry.
    * @return The ledger.
    */
-  IndeterminacyLedger& ledger() noexcept { return ledger_; }
+  IndeterminacyLedger& ledger() noexcept {
+    return ledger_;
+  }
 
   /**
    * @brief Returns why local machinery stopped sending, if it did.
@@ -447,13 +439,17 @@ public:
    *
    * @param at The instant.
    */
-  void set_observed_at(std::chrono::system_clock::time_point at) { observed_at_ = at; }
+  void set_observed_at(std::chrono::system_clock::time_point at) {
+    observed_at_ = at;
+  }
 
   /**
    * @brief Returns the instant last set by `set_observed_at`.
    * @return The instant, or the epoch if never set.
    */
-  std::chrono::system_clock::time_point observed_at() const noexcept { return observed_at_; }
+  std::chrono::system_clock::time_point observed_at() const noexcept {
+    return observed_at_;
+  }
 
   /**
    * @brief Lets this runner place orders before holdings have ever been read.
@@ -461,7 +457,9 @@ public:
    * `PollingLoop::allow_absent_portfolio` calls it. A plan that would cancel something is still held
    * back until holdings are read.
    */
-  void allow_absent_portfolio() { allow_absent_portfolio_ = true; }
+  void allow_absent_portfolio() {
+    allow_absent_portfolio_ = true;
+  }
 
   /**
    * @brief Sets whether placing requires holdings to have been read and fresh.
@@ -473,7 +471,9 @@ public:
    *
    * @param required Whether placing requires read holdings.
    */
-  void require_known_portfolio(bool required) { require_known_portfolio_ = required; }
+  void require_known_portfolio(bool required) {
+    require_known_portfolio_ = required;
+  }
 
   /**
    * @brief Stops this runner sending, with the `LOCAL_FAILURE` hold, until
@@ -483,13 +483,17 @@ public:
    *
    * @param detail Why, for the operator.
    */
-  void halt_locally(std::string detail) { note_local_failure(std::move(detail)); }
+  void halt_locally(std::string detail) {
+    note_local_failure(std::move(detail));
+  }
 
   /**
    * @brief Returns how many placements may have left an order at the broker (accepted or of unknown outcome).
    * @return The count over the runner's life; compare it before and after to tell whether a listing is out of date.
    */
-  std::size_t placements_at_broker() const noexcept { return placements_at_broker_; }
+  std::size_t placements_at_broker() const noexcept {
+    return placements_at_broker_;
+  }
 
   /**
    * @brief Returns how many orders were sent in a market phase `RiskLimits::permitted_phases_` does
@@ -514,7 +518,9 @@ public:
    *
    * @param enabled Whether to probe.
    */
-  void probe_sellable_convention(bool enabled = true) { probing_sellable_ = enabled; }
+  void probe_sellable_convention(bool enabled = true) {
+    probing_sellable_ = enabled;
+  }
 
   /**
    * @brief Shows the current portfolio to the sellable-convention probe, if it is on.
@@ -543,34 +549,46 @@ public:
    * @brief Returns the strategy, to read the state it kept.
    * @return The strategy.
    */
-  const Strategy& strategy() const noexcept { return strategy_; }
+  const Strategy& strategy() const noexcept {
+    return strategy_;
+  }
   /**
    * @brief Returns the strategy.
    * @return The strategy.
    */
-  Strategy& strategy() noexcept { return strategy_; }
+  Strategy& strategy() noexcept {
+    return strategy_;
+  }
 
   /**
    * @brief Returns the context.
    * @return The context.
    */
-  const Context& context() const noexcept { return context_; }
+  const Context& context() const noexcept {
+    return context_;
+  }
   /**
    * @brief Returns the context, to arrange its state (instruments, portfolio) before feeding events.
    * @return The context.
    */
-  Context& context() noexcept { return context_; }
+  Context& context() noexcept {
+    return context_;
+  }
 
   /**
    * @brief Returns the risk guard.
    * @return The guard.
    */
-  const strategy::RiskGuard& guard() const noexcept { return guard_; }
+  const strategy::RiskGuard& guard() const noexcept {
+    return guard_;
+  }
   /**
    * @brief Returns the risk guard, to halt or resume trading.
    * @return The guard.
    */
-  strategy::RiskGuard& guard() noexcept { return guard_; }
+  strategy::RiskGuard& guard() noexcept {
+    return guard_;
+  }
 
   /**
    * @brief Records an instrument's price band for today, used to clamp order prices.
@@ -624,7 +642,9 @@ public:
    * @brief Returns how many plans were built while a band was known for the instrument but not applied (counted per plan, not per order).
    * @return The count over the runner's life.
    */
-  std::size_t price_bands_withheld() const noexcept { return price_bands_withheld_; }
+  std::size_t price_bands_withheld() const noexcept {
+    return price_bands_withheld_;
+  }
 
   /**
    * @brief Tests whether a price-band age policy has been stated (a maximum, or any age).
@@ -643,14 +663,18 @@ public:
    *
    * @return The count over the runner's life.
    */
-  std::size_t unclamped_orders_rejected() const noexcept { return unclamped_orders_rejected_; }
+  std::size_t unclamped_orders_rejected() const noexcept {
+    return unclamped_orders_rejected_;
+  }
 
   /**
    * @brief Returns how many orders carrying a price a withheld band would have clamped were refused
    *   before sending (by the risk guard or the binding; not counting `UNAVAILABLE`).
    * @return The count over the runner's life.
    */
-  std::size_t unclamped_orders_refused() const noexcept { return unclamped_orders_refused_; }
+  std::size_t unclamped_orders_refused() const noexcept {
+    return unclamped_orders_refused_;
+  }
 
   /**
    * @brief Returns how many orders reconciliation could not build (any `strategy::RejectReason`
@@ -665,36 +689,48 @@ public:
    *
    * @return The count.
    */
-  std::size_t orders_unbuildable() const noexcept { return orders_unbuildable_; }
+  std::size_t orders_unbuildable() const noexcept {
+    return orders_unbuildable_;
+  }
   /**
    * @brief Returns how many orders were held back because the instrument was in the ledger (an order of
    *   unknown outcome, timed out unconfirmed, or held for an operator); see `orders_unbuildable`.
    * @return The count.
    */
-  std::size_t orders_reconcile_withheld() const noexcept { return orders_reconcile_withheld_; }
+  std::size_t orders_reconcile_withheld() const noexcept {
+    return orders_reconcile_withheld_;
+  }
   /**
    * @brief Returns how many orders the risk guard refused, for a limit or a hold; see `orders_unbuildable`.
    * @return The count.
    */
-  std::size_t orders_guard_refused() const noexcept { return orders_guard_refused_; }
+  std::size_t orders_guard_refused() const noexcept {
+    return orders_guard_refused_;
+  }
   /**
    * @brief Returns how many orders the binding refused to send (no request made); see `orders_unbuildable`.
    * @return The count.
    */
-  std::size_t orders_binding_refused() const noexcept { return orders_binding_refused_; }
+  std::size_t orders_binding_refused() const noexcept {
+    return orders_binding_refused_;
+  }
   /**
    * @brief Returns how many orders the broker refused (`SendOutcome::REJECTED`; a request was spent);
    *   see `last_broker_refusal`. At KIS, Toss and Kiwoom most refusals count as unknown outcomes
    *   instead.
    * @return The count.
    */
-  std::size_t orders_broker_refused() const noexcept { return orders_broker_refused_; }
+  std::size_t orders_broker_refused() const noexcept {
+    return orders_broker_refused_;
+  }
   /**
    * @brief Returns how many orders had an unknown outcome (`SendOutcome::INDETERMINATE`, which at
    *   KIS, Toss and Kiwoom includes most of the broker's own refusals).
    * @return The count.
    */
-  std::size_t orders_indeterminate() const noexcept { return orders_indeterminate_; }
+  std::size_t orders_indeterminate() const noexcept {
+    return orders_indeterminate_;
+  }
 
   /**
    * @brief Returns how many whole reconciliation plans were held back (any `WithheldPlanReason`:
@@ -702,7 +738,9 @@ public:
    *   `Report::withheld_plans_`.
    * @return The count over the runner's life.
    */
-  std::size_t plans_withheld() const noexcept { return plans_withheld_; }
+  std::size_t plans_withheld() const noexcept {
+    return plans_withheld_;
+  }
 
   /**
    * @brief Returns the targets waiting for a stop on their instrument to be cancelled (at most one per
@@ -735,13 +773,17 @@ public:
    * @brief Returns how many targets have waited for a stop's cancellation; see `deferred_targets`.
    * @return The count over the runner's life.
    */
-  std::size_t targets_deferred() const noexcept { return targets_deferred_; }
+  std::size_t targets_deferred() const noexcept {
+    return targets_deferred_;
+  }
 
   /**
    * @brief Returns how many waiting targets were dropped because a stop they waited on had filled.
    * @return The count over the runner's life.
    */
-  std::size_t deferred_dropped_after_fill() const noexcept { return deferred_dropped_after_fill_; }
+  std::size_t deferred_dropped_after_fill() const noexcept {
+    return deferred_dropped_after_fill_;
+  }
 
   /**
    * @brief Returns from when the broker's order history must be read to decide waiting targets.
@@ -795,14 +837,18 @@ public:
    *
    * @return The number of such orders.
    */
-  std::size_t unconfirmed_orders() const noexcept { return unconfirmed_.size(); }
+  std::size_t unconfirmed_orders() const noexcept {
+    return unconfirmed_.size();
+  }
 
   /**
    * @brief Rebuilds the reserved working rows against the portfolio as it is now.
    *
    * Every pass does this first; call it before reading `working_` outside a pass.
    */
-  void refresh_unconfirmed() { confirm_reservations(); }
+  void refresh_unconfirmed() {
+    confirm_reservations();
+  }
 
   /**
    * @brief Tells the runner what a reconciliation sweep found for an order of unknown outcome.
@@ -896,7 +942,9 @@ public:
    *
    * @return Whether serialized.
    */
-  bool serialized() const noexcept { return journals_to_a_broker && !overlapping_; }
+  bool serialized() const noexcept {
+    return journals_to_a_broker && !overlapping_;
+  }
 
   /**
    * @brief Lets several orders on one instrument be outstanding at once, as an unjournaled runner does,
@@ -947,7 +995,12 @@ public:
   std::vector<Obligation> obligations(const InstrumentId& instrument) const {
     auto owed = obligations();
     owed.erase(
-      std::remove_if(owed.begin(), owed.end(), [&](const Obligation& one) { return !(one.instrument_ == instrument); }),
+      std::remove_if(
+        owed.begin(), owed.end(),
+        [&](const Obligation& one) {
+          return !(one.instrument_ == instrument);
+        }
+      ),
       owed.end()
     );
     return owed;
@@ -991,7 +1044,9 @@ public:
    * @param reason Why, for the journal.
    * @return `false` if any line could not be written.
    */
-  bool release_obligations([[maybe_unused]] const InstrumentId& instrument, [[maybe_unused]] const std::string& reason) {
+  bool release_obligations(
+    [[maybe_unused]] const InstrumentId& instrument, [[maybe_unused]] const std::string& reason
+  ) {
     bool written = true;
     if constexpr (can_serialize) {
       for (auto at = unconfirmed_.begin(); at != unconfirmed_.end();) {
@@ -1044,7 +1099,9 @@ public:
    *   Whole plans withheld for it are in `plans_withheld`.
    * @return The count over the runner's life.
    */
-  std::size_t orders_awaiting_confirmation() const noexcept { return orders_awaiting_confirmation_; }
+  std::size_t orders_awaiting_confirmation() const noexcept {
+    return orders_awaiting_confirmation_;
+  }
 
   /**
    * @brief Returns how many orders a serialized runner owes that nothing yet explains: no listing shows
@@ -1058,9 +1115,11 @@ public:
     if (!serialized()) {
       return 0;
     }
-    return static_cast<std::size_t>(std::count_if(unconfirmed_.begin(), unconfirmed_.end(), [](const Unconfirmed& entry) {
-      return entry.operator_only_ || entry.residual_.coefficient() != 0;
-    }));
+    return static_cast<std::size_t>(
+      std::count_if(unconfirmed_.begin(), unconfirmed_.end(), [](const Unconfirmed& entry) {
+        return entry.operator_only_ || entry.residual_.coefficient() != 0;
+      })
+    );
   }
 
   /**
@@ -1078,13 +1137,17 @@ public:
    *
    * @param timeout The timeout.
    */
-  void set_confirmation_timeout(std::chrono::nanoseconds timeout) { confirmation_timeout_ = timeout; }
+  void set_confirmation_timeout(std::chrono::nanoseconds timeout) {
+    confirmation_timeout_ = timeout;
+  }
 
   /**
    * @brief Returns how many sent orders timed out unconfirmed; see `set_confirmation_timeout`.
    * @return The count over the runner's life.
    */
-  std::size_t orders_unconfirmed_timed_out() const noexcept { return orders_unconfirmed_timed_out_; }
+  std::size_t orders_unconfirmed_timed_out() const noexcept {
+    return orders_unconfirmed_timed_out_;
+  }
 
   /**
    * @brief Returns from when the broker's order history must be read to settle sent orders.
@@ -1146,8 +1209,8 @@ public:
         continue;
       }
       const auto* row = history_row_for(
-        evidence, entry.ref_.primary_, entry.instrument_, entry.side_,
-        entry.sent_at_ - order_time_tolerance_, entry.sent_at_ + order_time_tolerance_
+        evidence, entry.ref_.primary_, entry.instrument_, entry.side_, entry.sent_at_ - order_time_tolerance_,
+        entry.sent_at_ + order_time_tolerance_
       );
       if (row != nullptr && (entry.session_ended_ || !strategy::order_is_open(row->status_))) {
         if (decimal_less(row->execution_.filled_quantity_, entry.expected_)) {
@@ -1212,12 +1275,13 @@ public:
     // Once per iteration, so the context shows what this iteration's holdings confirmed even when no
     // pass runs (`unconfirmed_orders`).
     confirm_reservations();
-    if (guard_.halted(strategy::HaltReason::OPERATOR) ||
-        guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
+    if (guard_.halted(strategy::HaltReason::OPERATOR) || guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
       retained_targets_.erase(
         std::remove_if(
           retained_targets_.begin(), retained_targets_.end(),
-          [](const RetainedTarget& kept) { return kept.for_phase_; }
+          [](const RetainedTarget& kept) {
+            return kept.for_phase_;
+          }
         ),
         retained_targets_.end()
       );
@@ -1230,9 +1294,11 @@ public:
     for (const auto& queued : context_.queued()) {
       forget_retained(instruction_instrument(queued));
     }
-    if ((retained_targets_.empty() && kept_intents_.empty()) ||
-        context_.portfolio().as_of_ == std::chrono::system_clock::time_point{} ||
-        context_.portfolio().listing_newer_than_holdings() || guard_.blocking_reason()) {
+    if (
+      (retained_targets_.empty() && kept_intents_.empty()) ||
+      context_.portfolio().as_of_ == std::chrono::system_clock::time_point{} ||
+      context_.portfolio().listing_newer_than_holdings() || guard_.blocking_reason()
+    ) {
       return Report{};
     }
     const bool phase_permits = guard_.permits_phase(context_.phase());
@@ -1240,10 +1306,14 @@ public:
     bool released = false;
     const auto as_of = context_.portfolio().as_of_;
     // Kept because the broker could not be reached: not offered again until it has answered since.
-    const auto awaiting_broker = [&](const auto& entry) { return entry.after_ && !(*entry.after_ < as_of); };
+    const auto awaiting_broker = [&](const auto& entry) {
+      return entry.after_ && !(*entry.after_ < as_of);
+    };
     for (auto& entry : retained_targets_) {
-      if ((entry.for_phase_ && !phase_permits) || awaiting_broker(entry) ||
-          (entry.until_accounted_ && owes(entry.target_.instrument_))) {
+      if (
+        (entry.for_phase_ && !phase_permits) || awaiting_broker(entry) ||
+        (entry.until_accounted_ && owes(entry.target_.instrument_))
+      ) {
         kept.push_back(std::move(entry));
         continue;
       }
@@ -1287,20 +1357,26 @@ public:
    *   rate limit; see `retry_retained_targets`.
    * @return The number kept now.
    */
-  std::size_t intents_kept_for_phase() const noexcept { return kept_intents_.size(); }
+  std::size_t intents_kept_for_phase() const noexcept {
+    return kept_intents_.size();
+  }
 
   /**
    * @brief Returns how many kept intents were dropped at release, because the holding they were
    *   decided against had changed or a stop now rests.
    * @return The count over the runner's life.
    */
-  std::size_t kept_intents_dropped() const noexcept { return kept_intents_dropped_; }
+  std::size_t kept_intents_dropped() const noexcept {
+    return kept_intents_dropped_;
+  }
 
   /**
    * @brief Returns how many targets are retained, for any reason; see `retry_retained_targets`.
    * @return The number retained now.
    */
-  std::size_t targets_retained() const noexcept { return retained_targets_.size(); }
+  std::size_t targets_retained() const noexcept {
+    return retained_targets_.size();
+  }
 
   /**
    * @brief Returns how many retained targets wait for the market phase, an unreachable broker or a
@@ -1308,10 +1384,11 @@ public:
    * @return The number retained now.
    */
   std::size_t targets_retained_for_phase() const noexcept {
-    return static_cast<std::size_t>(std::count_if(
-      retained_targets_.begin(), retained_targets_.end(),
-      [](const RetainedTarget& kept) { return kept.for_phase_; }
-    ));
+    return static_cast<std::size_t>(
+      std::count_if(retained_targets_.begin(), retained_targets_.end(), [](const RetainedTarget& kept) {
+        return kept.for_phase_;
+      })
+    );
   }
 
   /** @brief Discards every retained target and kept intent (`PollingLoop` does this when stopping). */
@@ -1325,7 +1402,9 @@ public:
    *   owes are not touched. `PollingLoop` does this when stopping: nothing a strategy stated before a stop
    *   is to be released after it.
    */
-  void clear_deferred_targets() noexcept { deferred_targets_.clear(); }
+  void clear_deferred_targets() noexcept {
+    deferred_targets_.clear();
+  }
 
   /**
    * @brief Returns how many orders a serialized runner owes that a later read could account for without
@@ -1341,9 +1420,11 @@ public:
     if (!serialized()) {
       return 0;
     }
-    return static_cast<std::size_t>(std::count_if(unconfirmed_.begin(), unconfirmed_.end(), [](const Unconfirmed& entry) {
-      return !entry.operator_only_ && (!entry.listed_now_ || entry.withdrawn_);
-    }));
+    return static_cast<std::size_t>(
+      std::count_if(unconfirmed_.begin(), unconfirmed_.end(), [](const Unconfirmed& entry) {
+        return !entry.operator_only_ && (!entry.listed_now_ || entry.withdrawn_);
+      })
+    );
   }
 
   /**
@@ -1360,8 +1441,10 @@ public:
   bool withdrawal_accepted_for(const WorkingOrder<Tag>& working) const {
     if constexpr (keeps_sent_orders_until_listed) {
       for (const auto& entry : unconfirmed_) {
-        if (entry.withdrawn_ && !entry.ref_.primary_.empty() && working.ref_.primary_ == entry.ref_.primary_ &&
-            working.order_.order_id_ == entry.ref_.primary_ && own_row(working.order_, entry)) {
+        if (
+          entry.withdrawn_ && !entry.ref_.primary_.empty() && working.ref_.primary_ == entry.ref_.primary_ &&
+          working.order_.order_id_ == entry.ref_.primary_ && own_row(working.order_, entry)
+        ) {
           return true;
         }
       }
@@ -1378,34 +1461,46 @@ public:
    *
    * @return The report of the settlement.
    */
-  Report retry_deferred_on_one_snapshot() { return release_deferred(nullptr); }
+  Report retry_deferred_on_one_snapshot() {
+    return release_deferred(nullptr);
+  }
 
   /**
    * @brief Returns how many instructions (placements and cancellations) were not sent because local machinery was unavailable; each leaves the `LOCAL_FAILURE` hold.
    * @return The count over the runner's life.
    */
-  std::size_t instructions_unavailable() const noexcept { return instructions_unavailable_; }
+  std::size_t instructions_unavailable() const noexcept {
+    return instructions_unavailable_;
+  }
 
   /**
    * @brief Returns how many cancellations were refused, by the broker or the binding (`RejectedCancel::by_broker_` tells which).
    * @return The count over the runner's life.
    */
-  std::size_t cancels_rejected() const noexcept { return cancels_rejected_; }
+  std::size_t cancels_rejected() const noexcept {
+    return cancels_rejected_;
+  }
   /**
    * @brief Returns how many cancellations a hold refused before sending.
    * @return The count over the runner's life.
    */
-  std::size_t cancels_refused() const noexcept { return cancels_refused_; }
+  std::size_t cancels_refused() const noexcept {
+    return cancels_refused_;
+  }
   /**
    * @brief Returns how many cancellations named an order the portfolio does not list.
    * @return The count over the runner's life.
    */
-  std::size_t cancels_unresolved() const noexcept { return cancels_unresolved_; }
+  std::size_t cancels_unresolved() const noexcept {
+    return cancels_unresolved_;
+  }
   /**
    * @brief Returns how many cancellations had an unknown outcome (the order may or may not have been cancelled).
    * @return The count over the runner's life.
    */
-  std::size_t cancels_indeterminate() const noexcept { return cancels_indeterminate_; }
+  std::size_t cancels_indeterminate() const noexcept {
+    return cancels_indeterminate_;
+  }
 
   /**
    * @brief Returns the broker's code and message for the most recent order it refused
@@ -1521,7 +1616,9 @@ public:
    *
    * @return The pass's report.
    */
-  Report settle_closing() { return settle(); }
+  Report settle_closing() {
+    return settle();
+  }
 
   /**
    * @brief Feeds one bar: caches it, sets the last price and the clock to the bar's period end, calls
@@ -1636,7 +1733,9 @@ public:
    * @brief Returns how many instructions `feed_warmup` discarded.
    * @return The count over the runner's life.
    */
-  std::size_t warmup_instructions_discarded() const noexcept { return warmup_instructions_discarded_; }
+  std::size_t warmup_instructions_discarded() const noexcept {
+    return warmup_instructions_discarded_;
+  }
 
   /**
    * @brief Feeds one quote: sets the last price and the clock, calls `on_quote`, and settles.
@@ -1744,7 +1843,9 @@ private:
     }
     struct ForgetRows {
       const strategy::PortfolioRows*& rows_;
-      ~ForgetRows() { rows_ = nullptr; }
+      ~ForgetRows() {
+        rows_ = nullptr;
+      }
     } forget_rows{pass_rows_};
     pass_rows_ = rows ? &*rows : nullptr;
     auto instructions = context_.drain();
@@ -1845,30 +1946,34 @@ private:
         const bool data_is_missing = *reason != WithheldPlanReason::PLACEMENT_HELD;
         if (data_is_missing || would_cancel) {
           // The whole plan, before any of its parts were counted separately. **Four reasons reach
-        // here** and this counts them together: an account never read, one older than the stated
-        // maximum, one read before the listing it would be reconciled with, and a hold refusing
-        // placements for a plan that also wanted to withdraw something -- the last two on a perfectly
-        // fresh portfolio. Counted at all because the loop's own gate
-        // does not always describe it: with `allow_absent_portfolio` the gate can be open while this
-        // fires.
-        ++plans_withheld_;
-        std::string detail = withhold_detail(*reason);
-        if (data_is_missing) {
-          if (retain_withheld(instruction)) {
-            detail = "retained for the next holdings read";
-          } else if (*reason == WithheldPlanReason::PORTFOLIO_SUPERSEDED &&
-                     std::holds_alternative<strategy::OrderIntent>(instruction)) {
-            detail = "dropped: an order intent states a size against the mis-ordered picture";
+          // here** and this counts them together: an account never read, one older than the stated
+          // maximum, one read before the listing it would be reconciled with, and a hold refusing
+          // placements for a plan that also wanted to withdraw something -- the last two on a perfectly
+          // fresh portfolio. Counted at all because the loop's own gate
+          // does not always describe it: with `allow_absent_portfolio` the gate can be open while this
+          // fires.
+          ++plans_withheld_;
+          std::string detail = withhold_detail(*reason);
+          if (data_is_missing) {
+            if (retain_withheld(instruction)) {
+              detail = "retained for the next holdings read";
+            } else if (
+              *reason == WithheldPlanReason::PORTFOLIO_SUPERSEDED &&
+              std::holds_alternative<strategy::OrderIntent>(instruction)
+            ) {
+              detail = "dropped: an order intent states a size against the mis-ordered picture";
+            }
           }
-        }
-        report.withheld_plans_.push_back(WithheldPlan<Tag>{
-            *reason,
-            instruction_instrument(instruction),
-            instruction_tag(instruction),
-            planned.cancel_,
-            planned.place_.size(),
-            std::move(detail),
-          });
+          report.withheld_plans_.push_back(
+            WithheldPlan<Tag>{
+              *reason,
+              instruction_instrument(instruction),
+              instruction_tag(instruction),
+              planned.cancel_,
+              planned.place_.size(),
+              std::move(detail),
+            }
+          );
           continue;
         }
       }
@@ -1898,14 +2003,16 @@ private:
           if (retain_withheld(instruction, /*for_phase=*/false, context_.portfolio().as_of_)) {
             *hold += "; retained for a later holdings read";
           }
-          report.withheld_plans_.push_back(WithheldPlan<Tag>{
-            WithheldPlanReason::AWAITING_CONFIRMATION,
-            instruction_instrument(instruction),
-            instruction_tag(instruction),
-            planned.cancel_,
-            planned.place_.size(),
-            std::move(*hold),
-          });
+          report.withheld_plans_.push_back(
+            WithheldPlan<Tag>{
+              WithheldPlanReason::AWAITING_CONFIRMATION,
+              instruction_instrument(instruction),
+              instruction_tag(instruction),
+              planned.cancel_,
+              planned.place_.size(),
+              std::move(*hold),
+            }
+          );
           continue;
         }
         for (const auto& order : planned.place_) {
@@ -1974,16 +2081,16 @@ private:
     const auto view = [&]() -> const strategy::Portfolio<Tag>& {
       return reserved_view ? *reserved_view : context_.portfolio();
     };
-    const auto reserve_for_later = [&](std::size_t at, const strategy::PlannedOrder& order,
-                                       const std::optional<OrderRef<Tag>>& ref) {
-      if (!reserved_view || at + 1 == pending.size()) {
-        return;
-      }
-      reserve(
-        *reserved_view, order, inputs.reference_price_, inputs.order_currency_, ref,
-        guard_.limits().enforce_buying_power_
-      );
-    };
+    const auto reserve_for_later =
+      [&](std::size_t at, const strategy::PlannedOrder& order, const std::optional<OrderRef<Tag>>& ref) {
+        if (!reserved_view || at + 1 == pending.size()) {
+          return;
+        }
+        reserve(
+          *reserved_view, order, inputs.reference_price_, inputs.order_currency_, ref,
+          guard_.limits().enforce_buying_power_
+        );
+      };
     // Resolved once for the pass. The currencies and marks do not move as orders are accepted --
     // only quantities do, and the guard reads those from the view -- and resolving per order would
     // repeat a map lookup per instrument for every instrument. Built only when the ceiling is on, so
@@ -2024,8 +2131,10 @@ private:
         // read: withheld again while the instrument is marked, sent once a listing has settled it. Not when
         // a later instruction of this pass spoke about the instrument: every instruction is planned before
         // any order is sent, so keeping this one here would undo the later one.
-        if (serialized() && !restated_later(source_instruction) &&
-            retain_withheld(source_instruction, /*for_phase=*/false, context_.portfolio().as_of_)) {
+        if (
+          serialized() && !restated_later(source_instruction) &&
+          retain_withheld(source_instruction, /*for_phase=*/false, context_.portfolio().as_of_)
+        ) {
           detail += "; retained for a later holdings read";
         }
         report.withheld_.push_back(WithheldOrder{WithheldReason::RECONCILE_REQUIRED, order, std::move(detail)});
@@ -2055,8 +2164,7 @@ private:
       // limit is per currency, and an unresolved instrument leaves it absent rather than defaulting
       // to one: guessing here would spend one currency's budget on another's order.
       const auto* reference = context_.find_instrument(order.instrument_);
-      inputs.order_currency_ =
-        reference ? std::optional<Currency>(reference->currency_) : std::nullopt;
+      inputs.order_currency_ = reference ? std::optional<Currency>(reference->currency_) : std::nullopt;
       // `evaluate` rather than `check`, for one fact `check` drops: whether the phase limit admitted
       // this order only because it closes a position. Nothing downstream can recover that -- the
       // order, the portfolio and the report all look the same either way -- and it is the one thing
@@ -2155,9 +2263,7 @@ private:
           }
           note_broker_refusal(order);
           report.rejected_.push_back(
-            strategy::Rejection{
-              strategy::RejectReason::BROKER_REFUSED, order.instrument_, order.tag_
-            }
+            strategy::Rejection{strategy::RejectReason::BROKER_REFUSED, order.instrument_, order.tag_}
           );
           break;
         case SendOutcome::INDETERMINATE:
@@ -2211,9 +2317,7 @@ private:
             retain_for_phase(source_instruction, /*broker_answered=*/false, context_.portfolio().as_of_);
           }
           report.rejected_.push_back(
-            strategy::Rejection{
-              strategy::RejectReason::BINDING_REFUSED, order.instrument_, order.tag_
-            }
+            strategy::Rejection{strategy::RejectReason::BINDING_REFUSED, order.instrument_, order.tag_}
           );
           break;
         case SendOutcome::UNAVAILABLE:
@@ -2261,9 +2365,7 @@ private:
   // replaces the positions wholesale and the figure goes with them, which is the right lifetime: it
   // is exactly as fresh as the position it describes.
   void fill_sellable_if_needed(
-    std::optional<strategy::Portfolio<Tag>>& reserved_view,
-    std::size_t orders_left,
-    const strategy::PlannedOrder& order
+    std::optional<strategy::Portfolio<Tag>>& reserved_view, std::size_t orders_left, const strategy::PlannedOrder& order
   ) {
     if constexpr (runner_detail::fills_sellable<Executor>::value) {
       if (!guard_.limits().enforce_sellable_quantity_ || order.side_ != OrderSide::SELL) {
@@ -2295,7 +2397,9 @@ private:
   }
 
   // Sends one order, stating the baseline to the journal in serialized mode.
-  SendOutcome place_order(const strategy::PlannedOrder& order, [[maybe_unused]] const std::optional<Decimal64>& baseline) {
+  SendOutcome place_order(
+    const strategy::PlannedOrder& order, [[maybe_unused]] const std::optional<Decimal64>& baseline
+  ) {
     if constexpr (can_serialize) {
       if (serialized()) {
         return executor_.place(order, baseline);
@@ -2435,7 +2539,9 @@ private:
   void confirm_serialized(strategy::Portfolio<Tag>& portfolio, std::chrono::system_clock::time_point now) {
     const auto zero = Decimal64::parse("0");
     const auto epoch = std::chrono::system_clock::time_point{};
-    const auto equal = [](const Decimal64& a, const Decimal64& b) { return !decimal_less(a, b) && !decimal_less(b, a); };
+    const auto equal = [](const Decimal64& a, const Decimal64& b) {
+      return !decimal_less(a, b) && !decimal_less(b, a);
+    };
     for (auto at = unconfirmed_.begin(); at != unconfirmed_.end();) {
       auto& entry = *at;
       persist_hold(entry);
@@ -2448,19 +2554,23 @@ private:
       if (const auto* working = broker_row_for(portfolio, entry)) {
         entry.listed_ = true;
         entry.listed_now_ = true;
-        listed = decimal_subtract(working->order_.quantity_, working->order_.execution_.filled_quantity_).value_or(zero);
+        listed =
+          decimal_subtract(working->order_.quantity_, working->order_.execution_.filled_quantity_).value_or(zero);
         listed_filled = working->order_.execution_.filled_quantity_;
       }
       // A listing of its own reporting more filled than it was for, or than its history said it ended with,
       // contradicts what is known: held for an operator before the listing can move on and the contradiction
       // be forgotten. (Holding is the safe direction, so an undated row may prove it.)
-      if (listed_filled && !entry.operator_only_ &&
-          (decimal_less(entry.row_.order_.quantity_, *listed_filled) ||
-           (entry.settled_ && decimal_less(entry.expected_, *listed_filled)))) {
+      if (
+        listed_filled && !entry.operator_only_ &&
+        (decimal_less(entry.row_.order_.quantity_, *listed_filled) ||
+          (entry.settled_ && decimal_less(entry.expected_, *listed_filled)))
+      ) {
         hold_for_operator(
-          entry, "an order this runner sent" + named(entry) + " is listed with " + listed_filled->str() +
-                   " filled, more than " + (entry.settled_ ? "its history said it ended with (" + entry.expected_.str() + ")" :
-                                                             "it was for")
+          entry,
+          "an order this runner sent" + named(entry) + " is listed with " + listed_filled->str() +
+            " filled, more than " +
+            (entry.settled_ ? "its history said it ended with (" + entry.expected_.str() + ")" : "it was for")
         );
       }
       // The holding, and its movement in the order's direction since the baseline, from an actual read.
@@ -2469,8 +2579,9 @@ private:
       if (read) {
         held = portfolio.net_quantity_of(entry.instrument_);
         if (held) {
-          moved = entry.side_ == OrderSide::BUY ? decimal_subtract(*held, entry.baseline_) :
-                                                  decimal_subtract(entry.baseline_, *held);
+          moved = entry.side_ == OrderSide::BUY ?
+            decimal_subtract(*held, entry.baseline_) :
+            decimal_subtract(entry.baseline_, *held);
         }
       }
       const bool is_named = !entry.ref_.primary_.empty();
@@ -2481,16 +2592,22 @@ private:
             continue;
           }
         } else if (moved && equal(*moved, entry.expected_)) {
-          if (discharge(entry, held, "holdings show " + held->str() + ": its baseline " + entry.baseline_.str() +
-                                       " and the " + entry.expected_.str() + " it filled")) {
+          if (
+            discharge(
+              entry, held,
+              "holdings show " + held->str() + ": its baseline " + entry.baseline_.str() + " and the " +
+                entry.expected_.str() + " it filled"
+            )
+          ) {
             set_boundary(entry.instrument_, portfolio.as_of_, /*strict=*/false);
             at = unconfirmed_.erase(at);
             continue;
           }
         } else if (moved && decimal_less(entry.expected_, *moved)) {
           hold_for_operator(
-            entry, "holdings moved " + moved->str() + " from the baseline " + entry.baseline_.str() + ", more than the " +
-                     entry.expected_.str() + " an order this runner sent" + named(entry) + " can explain"
+            entry,
+            "holdings moved " + moved->str() + " from the baseline " + entry.baseline_.str() + ", more than the " +
+              entry.expected_.str() + " an order this runner sent" + named(entry) + " can explain"
           );
         }
       }
@@ -2512,8 +2629,10 @@ private:
       if (!entry.unexplained_since_ && now != epoch) {
         entry.unexplained_since_ = now;
       }
-      if (!entry.noticed_ && !entry.operator_only_ && (entry.settled_ || entry.history_missed_ || !is_named) &&
-          timed_out(entry, now) && portfolio.as_of_ - *entry.unexplained_since_ > confirmation_timeout_) {
+      if (
+        !entry.noticed_ && !entry.operator_only_ && (entry.settled_ || entry.history_missed_ || !is_named) &&
+        timed_out(entry, now) && portfolio.as_of_ - *entry.unexplained_since_ > confirmation_timeout_
+      ) {
         // A notice, not a release: the order still holds its instrument, and later evidence can still
         // account for it. A named one marks no ledger: the gate already withholds the instrument while it
         // is owed, and a mark would outlive the holdings that account for it. An unnamed one is accounted
@@ -2571,8 +2690,10 @@ private:
       return std::string("the holding's rows do not add up, so the order would have no baseline");
     }
     for (const auto& boundary : boundaries_) {
-      if (boundary.instrument_ == instrument &&
-          (boundary.strict_ ? !(boundary.at_ < portfolio.as_of_) : portfolio.as_of_ < boundary.at_)) {
+      if (
+        boundary.instrument_ == instrument &&
+        (boundary.strict_ ? !(boundary.at_ < portfolio.as_of_) : portfolio.as_of_ < boundary.at_)
+      ) {
         return std::string(
           "the holdings were read before the last order on this instrument was accounted for; waiting for a "
           "newer read"
@@ -2584,7 +2705,9 @@ private:
 
   // Why a serialized runner may not place on `instrument` now, or nothing; `claimed` lists the
   // instruments an earlier plan in this pass places on.
-  std::optional<std::string> serial_hold(const InstrumentId& instrument, const std::vector<InstrumentId>& claimed) const {
+  std::optional<std::string> serial_hold(
+    const InstrumentId& instrument, const std::vector<InstrumentId>& claimed
+  ) const {
     if (!can_serialize) {
       return std::string(
         "this runner journals to a broker but cannot serialize its orders (it needs a broker that lists working "
@@ -2664,10 +2787,13 @@ private:
       if (row.ordered_at_ && !own_row(row, entry)) {
         continue;
       }
-      if (!row.ordered_at_ || !ends_the_order(row.status_) ||
-          decimal_less(entry.row_.order_.quantity_, row.execution_.filled_quantity_) ||
-          (found != nullptr && (decimal_less(found->execution_.filled_quantity_, row.execution_.filled_quantity_) ||
-                                decimal_less(row.execution_.filled_quantity_, found->execution_.filled_quantity_)))) {
+      if (
+        !row.ordered_at_ || !ends_the_order(row.status_) ||
+        decimal_less(entry.row_.order_.quantity_, row.execution_.filled_quantity_) ||
+        (found != nullptr &&
+          (decimal_less(found->execution_.filled_quantity_, row.execution_.filled_quantity_) ||
+            decimal_less(row.execution_.filled_quantity_, found->execution_.filled_quantity_)))
+      ) {
         return nullptr;
       }
       found = &row;
@@ -2677,9 +2803,11 @@ private:
 
   // What a serialized order owes: held for an operator, unknown, or named and waiting.
   static ObligationState state_of(const Unconfirmed& entry) noexcept {
-    return entry.operator_only_          ? ObligationState::OPERATOR :
-           entry.ref_.primary_.empty() ? ObligationState::UNNAMED :
-                                         ObligationState::NAMED;
+    return entry.operator_only_ ?
+      ObligationState::OPERATOR :
+      entry.ref_.primary_.empty() ?
+      ObligationState::UNNAMED :
+      ObligationState::NAMED;
   }
 
   // Takes in everything history rows say about each named order, before anything can account for it,
@@ -2691,7 +2819,9 @@ private:
   //   shows it open.
   void examine_evidence(const std::vector<OrderSnapshot>& evidence) {
     const auto now = freshness_instant();
-    const auto differ = [](const Decimal64& a, const Decimal64& b) { return decimal_less(a, b) || decimal_less(b, a); };
+    const auto differ = [](const Decimal64& a, const Decimal64& b) {
+      return decimal_less(a, b) || decimal_less(b, a);
+    };
     for (auto& entry : unconfirmed_) {
       if (entry.operator_only_ || entry.ref_.primary_.empty()) {
         continue;
@@ -2706,8 +2836,10 @@ private:
         if (decimal_less(entry.row_.order_.quantity_, filled)) {
           contradiction = "its history row reports " + filled.str() + " filled, more than the " +
             entry.row_.order_.quantity_.str() + " it was for";
-        } else if (entry.settled_ && (decimal_less(entry.expected_, filled) ||
-                                      (ends_the_order(row.status_) && differ(entry.expected_, filled)))) {
+        } else if (
+          entry.settled_ &&
+          (decimal_less(entry.expected_, filled) || (ends_the_order(row.status_) && differ(entry.expected_, filled)))
+        ) {
           contradiction = "its history rows report " + filled.str() + " filled after reporting it ended with " +
             entry.expected_.str();
         }
@@ -2782,8 +2914,10 @@ private:
   }
 
   // Writes the line accounting for `entry`; on failure the runner stops sending and `entry` stays.
-  bool discharge([[maybe_unused]] const Unconfirmed& entry, [[maybe_unused]] std::optional<Decimal64> holding,
-                 [[maybe_unused]] std::string detail) {
+  bool discharge(
+    [[maybe_unused]] const Unconfirmed& entry, [[maybe_unused]] std::optional<Decimal64> holding,
+    [[maybe_unused]] std::string detail
+  ) {
     if constexpr (can_serialize) {
       auto line = closing_line(entry, JournalOutcome::CONFIRMED, std::move(holding), std::move(detail));
       if (executor_.record(line)) {
@@ -2960,8 +3094,8 @@ private:
       if (restored[at].operator_only_) {
         ledger_.mark(
           restored[at].instrument_,
-          "a previous process left an order" + named(restored[at]) + " only an operator may account for (" +
-            why[at] + "); see release_obligations"
+          "a previous process left an order" + named(restored[at]) + " only an operator may account for (" + why[at] +
+            "); see release_obligations"
         );
       }
       unconfirmed_.push_back(std::move(restored[at]));
@@ -2975,7 +3109,8 @@ private:
   // names it (`resolve_indeterminate_placement`).
   void track_unconfirmed(
     [[maybe_unused]] const strategy::PlannedOrder& order, [[maybe_unused]] const std::optional<OrderRef<Tag>>& ref,
-    [[maybe_unused]] bool indeterminate = false, [[maybe_unused]] const std::optional<Decimal64>& baseline = std::nullopt
+    [[maybe_unused]] bool indeterminate = false,
+    [[maybe_unused]] const std::optional<Decimal64>& baseline = std::nullopt
   ) {
     if constexpr (keeps_sent_orders_until_listed) {
       if constexpr (can_serialize) {
@@ -2995,10 +3130,14 @@ private:
   // keep the old behaviour, where the next listing retires the row. An order of unknown outcome shows no
   // row while the indeterminacy ledger withholds its instrument (nothing can be placed there anyway, and a
   // resting order's own listed row would be counted twice) and does not time out; only holdings can cover it.
-  void track_overlapping(const strategy::PlannedOrder& order, const std::optional<OrderRef<Tag>>& ref, bool indeterminate) {
+  void track_overlapping(
+    const strategy::PlannedOrder& order, const std::optional<OrderRef<Tag>>& ref, bool indeterminate
+  ) {
     const auto& portfolio = context_.portfolio();
-    if ((!indeterminate && (!ref || ref->primary_.empty())) ||
-        portfolio.as_of_ == std::chrono::system_clock::time_point{} || portfolio.working_.empty()) {
+    if (
+      (!indeterminate && (!ref || ref->primary_.empty())) ||
+      portfolio.as_of_ == std::chrono::system_clock::time_point{} || portfolio.working_.empty()
+    ) {
       return;
     }
     const auto held = portfolio.net_quantity_of(order.instrument_);
@@ -3060,9 +3199,11 @@ private:
       }
       if (found == nullptr) {
         found = &row;
-      } else if (decimal_less(found->execution_.filled_quantity_, row.execution_.filled_quantity_) ||
-                 decimal_less(row.execution_.filled_quantity_, found->execution_.filled_quantity_) ||
-                 strategy::order_is_open(found->status_) != strategy::order_is_open(row.status_)) {
+      } else if (
+        decimal_less(found->execution_.filled_quantity_, row.execution_.filled_quantity_) ||
+        decimal_less(row.execution_.filled_quantity_, found->execution_.filled_quantity_) ||
+        strategy::order_is_open(found->status_) != strategy::order_is_open(row.status_)
+      ) {
         return nullptr;
       }
     }
@@ -3082,8 +3223,10 @@ private:
     // hold -- an operator clearing an `ambiguous` sweep by hand -- it is an ordinary entry again: its
     // history read finds no row, and a holdings read a timeout on withholds the instrument, counted,
     // rather than leaving an order that may never have existed reserved for the rest of the run.
-    if (entry.residual_.coefficient() == 0 || entry.settled_ || entry.history_missed_ || entry.operator_only_ ||
-        (entry.ref_.primary_.empty() && ledger_.requires_reconcile(entry.instrument_))) {
+    if (
+      entry.residual_.coefficient() == 0 || entry.settled_ || entry.history_missed_ || entry.operator_only_ ||
+      (entry.ref_.primary_.empty() && ledger_.requires_reconcile(entry.instrument_))
+    ) {
       return false;
     }
     if (timed_out(entry, now)) {
@@ -3104,9 +3247,11 @@ private:
       return nullptr;
     }
     for (const auto& working : portfolio.working_) {
-      if (!working.reserved_ && working.ref_.primary_ == entry.ref_.primary_ &&
-          working.order_.instrument_ == entry.instrument_ && working.order_.side_ == entry.side_ &&
-          strategy::order_is_open(working.order_.status_)) {
+      if (
+        !working.reserved_ && working.ref_.primary_ == entry.ref_.primary_ &&
+        working.order_.instrument_ == entry.instrument_ && working.order_.side_ == entry.side_ &&
+        strategy::order_is_open(working.order_.status_)
+      ) {
         return &working;
       }
     }
@@ -3114,7 +3259,9 @@ private:
   }
 
   // Puts `entry`'s reserved row back into `portfolio` for the quantity nothing explains yet.
-  static void rebuild_residual_row(strategy::Portfolio<Tag>& portfolio, const Unconfirmed& entry, const Decimal64& residual) {
+  static void rebuild_residual_row(
+    strategy::Portfolio<Tag>& portfolio, const Unconfirmed& entry, const Decimal64& residual
+  ) {
     auto row = entry.row_;
     row.order_.quantity_ = residual;
     row.amendable_quantity_ = residual;
@@ -3144,7 +3291,9 @@ private:
     portfolio.working_.erase(
       std::remove_if(
         portfolio.working_.begin(), portfolio.working_.end(),
-        [&](const WorkingOrder<Tag>& working) { return is_reserved_row_of(working, entry); }
+        [&](const WorkingOrder<Tag>& working) {
+          return is_reserved_row_of(working, entry);
+        }
       ),
       portfolio.working_.end()
     );
@@ -3234,8 +3383,8 @@ private:
         if (const auto* working = broker_row_for(portfolio, entry)) {
           entry.listed_ = true;
           entry.listed_now_ = true;
-          listed[at] = decimal_subtract(working->order_.quantity_, working->order_.execution_.filled_quantity_)
-                         .value_or(zero);
+          listed[at] =
+            decimal_subtract(working->order_.quantity_, working->order_.execution_.filled_quantity_).value_or(zero);
         }
         const auto left = decimal_subtract(entry.expected_, listed[at]).value_or(zero);
         fillable[at] = decimal_less(zero, left) ? left : zero;
@@ -3245,8 +3394,9 @@ private:
       // below advances -- in the group's direction.
       std::optional<Decimal64> moved;
       if (const auto held = portfolio.net_quantity_of(instrument)) {
-        moved = direction == OrderSide::BUY ? decimal_subtract(*held, unconfirmed_[first].baseline_) :
-                                              decimal_subtract(unconfirmed_[first].baseline_, *held);
+        moved = direction == OrderSide::BUY ?
+          decimal_subtract(*held, unconfirmed_[first].baseline_) :
+          decimal_subtract(unconfirmed_[first].baseline_, *held);
       }
       std::vector<Decimal64> covered(group.size(), zero);
       if (moved && !mixed) {
@@ -3272,8 +3422,10 @@ private:
         for (std::size_t at = 0; at < group.size(); ++at) {
           all_settled = all_settled && (unconfirmed_[group[at]].settled_ || fillable[at].coefficient() == 0);
         }
-        if (total && (total->coefficient() != 0 || all_settled) && !decimal_less(*total, *moved) &&
-            !decimal_less(*moved, *total)) {
+        if (
+          total && (total->coefficient() != 0 || all_settled) && !decimal_less(*total, *moved) &&
+          !decimal_less(*moved, *total)
+        ) {
           covered = fillable;
         }
       }
@@ -3305,8 +3457,10 @@ private:
         // Judged by the holdings read, not the clock: the listing (and so the history) is polled
         // before holdings in each iteration, and on a loop polling slower than the timeout the
         // clock alone marked a fill one holdings read before it would have shown.
-        if ((entry.settled_ || entry.history_missed_) && timed_out(entry, now) &&
-            portfolio.as_of_ - *entry.unexplained_since_ > confirmation_timeout_) {
+        if (
+          (entry.settled_ || entry.history_missed_) && timed_out(entry, now) &&
+          portfolio.as_of_ - *entry.unexplained_since_ > confirmation_timeout_
+        ) {
           // A holdings answer read a whole timeout after the quantity became unexplained (or after the
           // history settled it) does not show it, and the history either said what it filled or had
           // nothing to say: an outside trade, a disagreement or an order nobody here can account for.
@@ -3319,7 +3473,8 @@ private:
                 ") filled by the order history, and holdings did not show it within the confirmation timeout"
             );
           } else {
-            const auto named = entry.ref_.primary_.empty() ? std::string(" (its reply lost, never named by a sweep)") :
+            const auto named = entry.ref_.primary_.empty() ?
+              std::string(" (its reply lost, never named by a sweep)") :
               " (" + entry.ref_.primary_ + ")";
             ledger_.mark(
               entry.instrument_,
@@ -3330,8 +3485,9 @@ private:
           expired[group[at]] = true;
           // What holdings did show of it stays credited to it, not to the next order.
           if (advanced) {
-            advanced = direction == OrderSide::BUY ? decimal_add(*advanced, signed_in(entry, covered[at])) :
-                                                     decimal_subtract(*advanced, signed_in(entry, covered[at]));
+            advanced = direction == OrderSide::BUY ?
+              decimal_add(*advanced, signed_in(entry, covered[at])) :
+              decimal_subtract(*advanced, signed_in(entry, covered[at]));
           }
           continue;
         }
@@ -3398,10 +3554,8 @@ private:
   // show it either. For a runner that keeps sent orders until listed, the row is now rebuilt
   // before every pass from what nothing explains yet (`track_unconfirmed`, `unconfirmed_orders`).
   void persist_reservation(
-    const strategy::PlannedOrder& order,
-    const std::optional<Decimal64>& reference_price,
-    const std::optional<Currency>& currency,
-    const std::optional<OrderRef<Tag>>& ref
+    const strategy::PlannedOrder& order, const std::optional<Decimal64>& reference_price,
+    const std::optional<Currency>& currency, const std::optional<OrderRef<Tag>>& ref
   ) {
     const bool sells = guard_.limits().enforce_sellable_quantity_ && order.side_ == OrderSide::SELL;
     const bool buys = guard_.limits().enforce_buying_power_ && order.side_ == OrderSide::BUY;
@@ -3462,8 +3616,7 @@ private:
   // registered refuses every order while the ceiling is on. Visible and diagnosable, rather than a
   // ceiling quietly measuring part of the portfolio.
   std::vector<strategy::InstrumentBasis> exposure_basis_for(
-    const strategy::Portfolio<Tag>& view,
-    const std::vector<strategy::PlannedOrder>& pending
+    const strategy::Portfolio<Tag>& view, const std::vector<strategy::PlannedOrder>& pending
   ) const {
     std::vector<InstrumentId> instruments;
     const auto note = [&instruments](const InstrumentId& id) {
@@ -3538,9 +3691,7 @@ private:
 
   // Writes a sellable quantity onto the position for `instrument`, when there is one.
   static void write_sellable(
-    strategy::Portfolio<Tag>& portfolio,
-    const InstrumentId& instrument,
-    const Decimal64& quantity
+    strategy::Portfolio<Tag>& portfolio, const InstrumentId& instrument, const Decimal64& quantity
   ) {
     for (auto& position : portfolio.positions_) {
       if (position.instrument_ == instrument) {
@@ -3583,12 +3734,9 @@ private:
   // `portfolio().buying_power_in()` fall after a buy, which is a public figure a strategy is free
   // to size its next order from -- a behaviour change well past enforcing a ceiling.
   static void reserve(
-    strategy::Portfolio<Tag>& view,
-    const strategy::PlannedOrder& order,
-    const std::optional<Decimal64>& reference_price,
-    const std::optional<Currency>& currency,
-    const std::optional<OrderRef<Tag>>& ref,
-    bool spends
+    strategy::Portfolio<Tag>& view, const strategy::PlannedOrder& order,
+    const std::optional<Decimal64>& reference_price, const std::optional<Currency>& currency,
+    const std::optional<OrderRef<Tag>>& ref, bool spends
   ) {
     WorkingOrder<Tag> working;
     working.order_.instrument_ = order.instrument_;
@@ -3690,8 +3838,7 @@ private:
     bool released = false;
     for (auto at = deferred_targets_.begin(); at != deferred_targets_.end();) {
       // Serialized, a stop this runner placed is not done until it is accounted for (`serialized`).
-      if (stop_listed(at->target_.instrument_) ||
-          obligation_state(at->target_.instrument_) != ObligationState::NONE) {
+      if (stop_listed(at->target_.instrument_) || obligation_state(at->target_.instrument_) != ObligationState::NONE) {
         ++at;
         continue;
       }
@@ -3708,9 +3855,8 @@ private:
             earliest = *stop.ordered_at_ - order_time_tolerance_;
             latest = *stop.ordered_at_ + order_time_tolerance_;
           }
-          const auto* row = history_row_for(
-            *evidence, stop.ref_.primary_, at->target_.instrument_, std::nullopt, earliest, latest
-          );
+          const auto* row =
+            history_row_for(*evidence, stop.ref_.primary_, at->target_.instrument_, std::nullopt, earliest, latest);
           if (row == nullptr) {
             decided = false;
             continue;
@@ -3744,8 +3890,12 @@ private:
     // settle that throws cannot leave the exemption on for every plan after it.
     struct Exempt {
       bool& flag_;
-      explicit Exempt(bool& flag) : flag_(flag) { flag_ = true; }
-      ~Exempt() { flag_ = false; }
+      explicit Exempt(bool& flag) : flag_(flag) {
+        flag_ = true;
+      }
+      ~Exempt() {
+        flag_ = false;
+      }
       Exempt(const Exempt&) = delete;
       Exempt& operator=(const Exempt&) = delete;
     } exempt(releasing_deferred_);
@@ -3760,7 +3910,9 @@ private:
     retained_targets_.erase(
       std::remove_if(
         retained_targets_.begin(), retained_targets_.end(),
-        [&](const RetainedTarget& kept) { return kept.target_.instrument_ == instrument; }
+        [&](const RetainedTarget& kept) {
+          return kept.target_.instrument_ == instrument;
+        }
       ),
       retained_targets_.end()
     );
@@ -3768,7 +3920,9 @@ private:
     kept_intents_.erase(
       std::remove_if(
         kept_intents_.begin(), kept_intents_.end(),
-        [&](const KeptIntent& kept) { return kept.intent_.instrument() == instrument; }
+        [&](const KeptIntent& kept) {
+          return kept.intent_.instrument() == instrument;
+        }
       ),
       kept_intents_.end()
     );
@@ -3797,8 +3951,10 @@ private:
     if (target == nullptr) {
       return false;
     }
-    if (guard_.halted(strategy::HaltReason::STOPPING) || guard_.halted(strategy::HaltReason::OPERATOR) ||
-        guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
+    if (
+      guard_.halted(strategy::HaltReason::STOPPING) || guard_.halted(strategy::HaltReason::OPERATOR) ||
+      guard_.halted(strategy::HaltReason::LOCAL_FAILURE)
+    ) {
       return false;
     }
     // The latest statement wins, and so does its reason: a target retained for the account and then
@@ -3830,8 +3986,10 @@ private:
       return false;
     }
     for (const auto& working : context_.portfolio().working_) {
-      if (!(working.order_.instrument_ == target->instrument_) ||
-          std::find(cancel.begin(), cancel.end(), working.ref_) == cancel.end()) {
+      if (
+        !(working.order_.instrument_ == target->instrument_) ||
+        std::find(cancel.begin(), cancel.end(), working.ref_) == cancel.end()
+      ) {
         continue;
       }
       for (const auto& entry : unconfirmed_) {
@@ -3909,8 +4067,10 @@ private:
     if (intent == nullptr) {
       return;
     }
-    if (guard_.halted(strategy::HaltReason::STOPPING) || guard_.halted(strategy::HaltReason::OPERATOR) ||
-        guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
+    if (
+      guard_.halted(strategy::HaltReason::STOPPING) || guard_.halted(strategy::HaltReason::OPERATOR) ||
+      guard_.halted(strategy::HaltReason::LOCAL_FAILURE)
+    ) {
       return;
     }
     if (broker_answered && intent->client_order_id()) {
@@ -3932,9 +4092,10 @@ private:
   // Returns whether the portfolio lists an open stop order on `instrument`.
   bool stop_listed(const InstrumentId& instrument) const {
     for (const auto& working : context_.portfolio().working_) {
-      if (working.order_.instrument_ == instrument &&
-          strategy::order_is_open(working.order_.status_) &&
-          strategy::is_stop_order(working.order_)) {
+      if (
+        working.order_.instrument_ == instrument && strategy::order_is_open(working.order_.status_) &&
+        strategy::is_stop_order(working.order_)
+      ) {
         return true;
       }
     }
@@ -3942,10 +4103,7 @@ private:
   }
 
   // Keeps a target whose plan is waiting on a stop's withdrawal; see `deferred_targets`.
-  void defer_if_waiting_on_stop(
-    const Instruction<Tag>& instruction,
-    const strategy::Plan<Tag>& planned
-  ) {
+  void defer_if_waiting_on_stop(const Instruction<Tag>& instruction, const strategy::Plan<Tag>& planned) {
     const auto* target = std::get_if<strategy::TargetPosition>(&instruction);
     if (target == nullptr) {
       return;
@@ -3960,9 +4118,10 @@ private:
       deferred.target_ = *target;
       deferred.deferred_at_ = context_.now();
       for (const auto& working : context_.portfolio().working_) {
-        if (working.order_.instrument_ == target->instrument_ &&
-            strategy::order_is_open(working.order_.status_) &&
-            strategy::is_stop_order(working.order_)) {
+        if (
+          working.order_.instrument_ == target->instrument_ && strategy::order_is_open(working.order_.status_) &&
+          strategy::is_stop_order(working.order_)
+        ) {
           deferred.stops_.push_back({working.ref_, working.order_.ordered_at_});
         }
       }
@@ -3993,8 +4152,8 @@ private:
     // A default-constructed `Portfolio` carries the epoch, and no broker reports a snapshot taken in
     // 1970. The same sentinel the loop uses; both writers of `as_of_` in this library stamp it.
     const bool never_read = portfolio.as_of_ == std::chrono::system_clock::time_point{};
-    const bool too_old = !never_read && maximum_portfolio_age_ &&
-      freshness_instant() - portfolio.as_of_ > *maximum_portfolio_age_;
+    const bool too_old =
+      !never_read && maximum_portfolio_age_ && freshness_instant() - portfolio.as_of_ > *maximum_portfolio_age_;
 
     if (never_read || too_old) {
       // **A plan that would withdraw something is stopped whatever was opted out of.** The opt-outs
@@ -4093,8 +4252,7 @@ private:
     // `InstructionClass::WITHDRAWAL`, and `strategy::halt_blocks` holds the division and its
     // reasoning. The row is still resolved below, and a reference the snapshot cannot place is
     // reported rather than sent blind.
-    if (const auto holding =
-          guard_.blocking_reason_for(strategy::InstructionClass::WITHDRAWAL)) {
+    if (const auto holding = guard_.blocking_reason_for(strategy::InstructionClass::WITHDRAWAL)) {
       ++cancels_refused_;
       report.refused_cancel_.push_back(RefusedCancel<Tag>{ref, *holding});
       return;
@@ -4192,16 +4350,15 @@ private:
   // intent is not one, and an intent has never touched a stop. So a weight on an instrument with a
   // stop resting is refused `STOP_ORDER_RESTING` and the stop stays -- unless the holding already
   // meets it, when nothing is traded or withdrawn at all.
-  strategy::Plan<Tag> plan_weight(
-    const strategy::OrderIntent& intent,
-    const strategy::ReconcileInputs& inputs
-  ) const {
+  strategy::Plan<Tag> plan_weight(const strategy::OrderIntent& intent, const strategy::ReconcileInputs& inputs) const {
     strategy::Plan<Tag> plan;
     const auto converted = strategy::weight_target(intent, inputs);
     if (!converted.target_) {
-      plan.rejected_.push_back(strategy::Rejection{
-        converted.refused_.value_or(strategy::RejectReason::NOT_REPRESENTABLE), intent.instrument(),
-        intent.tag()});
+      plan.rejected_.push_back(
+        strategy::Rejection{
+          converted.refused_.value_or(strategy::RejectReason::NOT_REPRESENTABLE), intent.instrument(), intent.tag()
+        }
+      );
       return plan;
     }
     if (stop_listed(intent.instrument())) {
@@ -4213,8 +4370,9 @@ private:
       if (gap && gap->coefficient() == 0) {
         return plan;
       }
-      plan.rejected_.push_back(strategy::Rejection{
-        strategy::RejectReason::STOP_ORDER_RESTING, intent.instrument(), intent.tag()});
+      plan.rejected_.push_back(
+        strategy::Rejection{strategy::RejectReason::STOP_ORDER_RESTING, intent.instrument(), intent.tag()}
+      );
       return plan;
     }
     return strategy::reconcile(*converted.target_, context_.portfolio(), inputs);
@@ -4241,9 +4399,11 @@ private:
     inputs.reserved_rows_are_unconfirmed_ = keeps_sent_orders_until_listed;
     // The pass's index of the rows, while it still describes the portfolio; once anything replaced or edited
     // the portfolio, the rest of the pass scans.
-    if (pass_rows_ != nullptr &&
-        (context_detail::PortfolioAccess::replacements(context_) != rows_replacements_ ||
-         context_detail::PortfolioAccess::runner_edits(context_) != rows_edits_)) {
+    if (
+      pass_rows_ != nullptr &&
+      (context_detail::PortfolioAccess::replacements(context_) != rows_replacements_ ||
+        context_detail::PortfolioAccess::runner_edits(context_) != rows_edits_)
+    ) {
       pass_rows_ = nullptr;
     }
     inputs.rows_ = pass_rows_;
@@ -4374,8 +4534,7 @@ private:
       decision.withheld_ = found->second.limits_;
       return decision;
     }
-    if (maximum_price_limits_age_ &&
-        freshness_instant() - found->second.as_of() > *maximum_price_limits_age_) {
+    if (maximum_price_limits_age_ && freshness_instant() - found->second.as_of() > *maximum_price_limits_age_) {
       decision.withheld_ = found->second.limits_;
       return decision;
     }
@@ -4443,9 +4602,7 @@ private:
     const auto failures = executor_journal_failures();
     if (failures > acknowledged_journal_failures_) {
       auto detail = executor_journal_error();
-      note_local_failure(
-        detail.empty() ? std::string("the order journal could not be written") : std::move(detail)
-      );
+      note_local_failure(detail.empty() ? std::string("the order journal could not be written") : std::move(detail));
       return;
     }
     if (refused && failures == 0) {
@@ -4457,18 +4614,23 @@ private:
   }
 
   // Returns how many journal writes the executor has had fail, or zero when it cannot say.
-  std::size_t executor_journal_failures() const { return executor_journal_failures_impl(0); }
+  std::size_t executor_journal_failures() const {
+    return executor_journal_failures_impl(0);
+  }
 
   template <typename E = Executor>
-  auto executor_journal_failures_impl(int) const
-    -> decltype(std::declval<const E&>().journal_failures()) {
+  auto executor_journal_failures_impl(int) const -> decltype(std::declval<const E&>().journal_failures()) {
     return executor_.journal_failures();
   }
 
-  std::size_t executor_journal_failures_impl(...) const { return 0; }
+  std::size_t executor_journal_failures_impl(...) const {
+    return 0;
+  }
 
   // Returns what the executor says went wrong, or empty when it reports nothing or cannot.
-  std::string executor_journal_error() const { return executor_journal_error_impl(0); }
+  std::string executor_journal_error() const {
+    return executor_journal_error_impl(0);
+  }
 
   template <typename E = Executor>
   auto executor_journal_error_impl(int) const
@@ -4476,7 +4638,9 @@ private:
     return executor_.last_journal_error();
   }
 
-  std::string executor_journal_error_impl(...) const { return {}; }
+  std::string executor_journal_error_impl(...) const {
+    return {};
+  }
 
   Executor executor_;
   IndeterminacyLedger ledger_;
@@ -4535,8 +4699,7 @@ private:
 
   std::vector<Unconfirmed> unconfirmed_;
   // Serialized mode; see `serialized`.
-  static constexpr bool can_serialize =
-    keeps_sent_orders_until_listed && runner_detail::serializes<Executor>::value;
+  static constexpr bool can_serialize = keeps_sent_orders_until_listed && runner_detail::serializes<Executor>::value;
   bool overlapping_{false};
   bool recovered_{false};
   std::vector<Boundary> boundaries_;

@@ -33,6 +33,7 @@ namespace ssl = boost::asio::ssl;
 
 namespace {
 
+using algotradelib::bar_interval_name;
 using algotradelib::BarInterval;
 using algotradelib::BarQuery;
 using algotradelib::BarSeries;
@@ -48,7 +49,6 @@ using algotradelib::PriceLimits;
 using algotradelib::StatedDate;
 using algotradelib::TradingCalendar;
 using algotradelib::Venue;
-using algotradelib::bar_interval_name;
 
 /** @brief Prints a structured broker or transport failure. */
 void print_error(std::string_view operation, const BrokerError& error) {
@@ -64,18 +64,18 @@ void print_error(std::string_view operation, const BrokerError& error) {
 
 /** @brief Prints the oldest and newest bar, and the convention their stamps follow. */
 void print_bars(const BarSeries& series) {
-  std::cout << "bars: " << series.bars_.size() << ' '
-    << bar_interval_name(series.interval_) << (series.adjusted_ ? " adjusted" : " raw")
-    << ' ' << series.currency_.str() << ", stamped at each period's "
+  std::cout
+    << "bars: " << series.bars_.size() << ' ' << bar_interval_name(series.interval_)
+    << (series.adjusted_ ? " adjusted" : " raw") << ' ' << series.currency_.str() << ", stamped at each period's "
     << (series.stamp_ == algotradelib::BarStamp::OPEN ? "open" : "close") << '\n';
   if (series.bars_.empty()) {
     return;
   }
   std::cout << "  ascending: " << (series.ascending() ? "yes" : "no") << '\n';
   for (const auto* bar : {&series.bars_.front(), &series.bars_.back()}) {
-    std::cout << "  " << (bar == &series.bars_.front() ? "oldest" : "newest")
-      << " close=" << bar->close_.str() << " volume=" << bar->volume_.str()
-      << " open=" << (bar->open_ ? bar->open_->str() : std::string("not reported")) << '\n';
+    std::cout
+      << "  " << (bar == &series.bars_.front() ? "oldest" : "newest") << " close=" << bar->close_.str() << " volume="
+      << bar->volume_.str() << " open=" << (bar->open_ ? bar->open_->str() : std::string("not reported")) << '\n';
   }
   if (series.next_cursor_) {
     std::cout << "  may continue from " << *series.next_cursor_ << '\n';
@@ -87,20 +87,21 @@ void print_depth(const DepthSnapshot& book) {
   std::cout << "book: " << book.bids_.size() << " bids, " << book.asks_.size() << " asks\n";
   const auto bid = book.best_bid();
   const auto ask = book.best_ask();
-  std::cout << "  best bid: " << (bid ? bid->price_.str() : std::string("none"))
+  std::cout
+    << "  best bid: " << (bid ? bid->price_.str() : std::string("none"))
     << "  best ask: " << (ask ? ask->price_.str() : std::string("none")) << '\n';
   const auto spread = book.spread();
   const auto mid = book.mid();
-  std::cout << "  spread: " << (spread ? spread->str() : std::string("not both sides"))
+  std::cout
+    << "  spread: " << (spread ? spread->str() : std::string("not both sides"))
     << "  mid: " << (mid ? mid->str() : std::string("not both sides")) << '\n';
 }
 
 /** @brief Prints the price bounds, distinguishing absent from zero. */
 void print_price_limits(const PriceLimits& limits) {
-  std::cout << "price bounds: "
-    << (limits.lower_ ? limits.lower_->str() : std::string("no lower limit")) << " .. "
-    << (limits.upper_ ? limits.upper_->str() : std::string("no upper limit")) << ' '
-    << limits.currency_.str() << '\n';
+  std::cout
+    << "price bounds: " << (limits.lower_ ? limits.lower_->str() : std::string("no lower limit")) << " .. "
+    << (limits.upper_ ? limits.upper_->str() : std::string("no upper limit")) << ' ' << limits.currency_.str() << '\n';
 }
 
 /** @brief Prints reference data, and what the library's own price grid says about it. */
@@ -134,7 +135,8 @@ void print_instrument(const Instrument& instrument) {
 void print_calendar(const TradingCalendar& calendar) {
   std::cout << "calendar: " << calendar.days_.size() << " date(s) covered\n";
   for (const auto& day : calendar.days_) {
-    std::cout << "  " << day.date_.year_ << '-' << day.date_.month_ << '-' << day.date_.day_
+    std::cout
+      << "  " << day.date_.year_ << '-' << day.date_.month_ << '-' << day.date_.day_
       << (day.open_ ? "  market opens" : "  market closed") << '\n';
   }
 }
@@ -196,7 +198,8 @@ int report(BlockingSession<Client>& session, const InstrumentId& subject) {
         // carry, and those refuse to round rather than rounding onto the wrong one.
         const auto rule = reference_rule;
         const auto buy = rule.round_to_tick(*mid, OrderSide::BUY);
-        std::cout << "  a buy at the midpoint would rest at "
+        std::cout
+          << "  a buy at the midpoint would rest at "
           << (buy ? buy->str() : std::string("no grid known for this instrument")) << '\n';
       }
     } else {
@@ -247,7 +250,8 @@ int report(BlockingSession<Client>& session, const InstrumentId& subject) {
   }
 
   if constexpr (Caps::has_calendar_sessions) {
-    std::cout << "sessions: this broker publishes intraday session windows; the library "
+    std::cout
+      << "sessions: this broker publishes intraday session windows; the library "
       << "does not expose them yet\n";
   }
 
@@ -262,8 +266,7 @@ int report_kis(ssl::context& tls, const std::string& symbol) {
   kis::KisAccount account;
   kis_credentials::load(kis_credentials::environment_directory(), config, &account, std::cout);
 
-  auto client =
-    std::make_shared<kis::KisBlockingClient>(tls, std::move(config), kis_credentials::paced_options());
+  auto client = std::make_shared<kis::KisBlockingClient>(tls, std::move(config), kis_credentials::paced_options());
   BlockingSession<kis::KisBlockingClient> session(std::move(client), std::move(account));
   return report(session, InstrumentId{Country::KR, Venue::COMBINED, symbol});
 }
@@ -301,8 +304,7 @@ int report_tossinvest(ssl::context& tls, const std::string& symbol, const char* 
 int main(int argc, char** argv) {
   const std::string broker = argc > 1 ? argv[1] : "";
   if (broker != "kis" && broker != "tossinvest") {
-    std::cerr
-      << "usage: example-portable-market-data <kis|tossinvest> [symbol] [account-sequence]\n";
+    std::cerr << "usage: example-portable-market-data <kis|tossinvest> [symbol] [account-sequence]\n";
     return 2;
   }
   const std::string symbol = argc > 2 ? argv[2] : "005930";

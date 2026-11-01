@@ -26,24 +26,27 @@ using runner::OpenInstruction;
 Clock::time_point utc(int year, int month, int day, int hour, int minute, int second = 0) {
   const long long a = (month <= 2) ? year - 1 : year;
   const long long m = (month <= 2) ? month + 12 : month;
-  const long long era_days =
-    365 * a + a / 4 - a / 100 + a / 400 + (153 * (m - 3) + 2) / 5 + day - 1;
-  return Clock::time_point{} + std::chrono::hours((era_days - 719468) * 24 + hour) +
-    std::chrono::minutes(minute) + std::chrono::seconds(second);
+  const long long era_days = 365 * a + a / 4 - a / 100 + a / 400 + (153 * (m - 3) + 2) / 5 + day - 1;
+  return Clock::time_point{} + std::chrono::hours((era_days - 719468) * 24 + hour) + std::chrono::minutes(minute) +
+    std::chrono::seconds(second);
 }
 
-InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
+InstrumentId samsung() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+}
 
-InstrumentId hynix() { return InstrumentId{Country::KR, Venue::COMBINED, "000660"}; }
+InstrumentId hynix() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "000660"};
+}
 
 /** The instant every instruction in these tests was recorded at. */
-Clock::time_point sent_at() { return utc(2026, 3, 30, 1, 0, 0); }
+Clock::time_point sent_at() {
+  return utc(2026, 3, 30, 1, 0, 0);
+}
 
 /** An unanswered placement, which is what a process killed mid-send leaves behind. */
 OpenInstruction placement(
-  const InstrumentId& id = samsung(),
-  const char* quantity = "10",
-  const char* price = "70000"
+  const InstrumentId& id = samsung(), const char* quantity = "10", const char* price = "70000"
 ) {
   JournalEntry entry;
   entry.id_ = "run-1";
@@ -72,10 +75,7 @@ OpenInstruction cancellation(const char* order_id, const InstrumentId& id = sams
 
 /** A row as a broker's listing reports it. */
 OrderSnapshot row(
-  const char* order_id,
-  const InstrumentId& id = samsung(),
-  const char* quantity = "10",
-  const char* price = "70000",
+  const char* order_id, const InstrumentId& id = samsung(), const char* quantity = "10", const char* price = "70000",
   std::optional<Clock::time_point> ordered_at = sent_at()
 ) {
   OrderSnapshot snapshot;
@@ -98,10 +98,14 @@ OrderSnapshot row(
 }
 
 /** An instant past which absence is evidence, given the default window. */
-Clock::time_point after_the_window() { return sent_at() + std::chrono::minutes(10); }
+Clock::time_point after_the_window() {
+  return sent_at() + std::chrono::minutes(10);
+}
 
 /** An instant at which absence still means nothing. */
-Clock::time_point inside_the_window() { return sent_at() + std::chrono::seconds(5); }
+Clock::time_point inside_the_window() {
+  return sent_at() + std::chrono::seconds(5);
+}
 
 /**
  * Somewhere for a sweep to record its resolutions when the test is about the verdict; one per test.
@@ -132,8 +136,7 @@ TEST_CASE("an instruction whose own line cannot decide anything needs an operato
     REQUIRE(match.order_id_.empty());
     // With the id it names, it resolves -- so this is about the missing id.
     REQUIRE(
-      runner::match_against(cancellation("KRX-1"), {row("KRX-1")}, after_the_window()).verdict_ ==
-        MatchVerdict::MATCHED
+      runner::match_against(cancellation("KRX-1"), {row("KRX-1")}, after_the_window()).verdict_ == MatchVerdict::MATCHED
     );
   }
 
@@ -142,8 +145,7 @@ TEST_CASE("an instruction whose own line cannot decide anything needs an operato
     instruction.entry_.type_ = OrderType::LIMIT;
     instruction.entry_.price_.reset();
     REQUIRE(
-      runner::match_against(instruction, {row("KRX-1")}, after_the_window()).verdict_ ==
-        MatchVerdict::NEEDS_OPERATOR
+      runner::match_against(instruction, {row("KRX-1")}, after_the_window()).verdict_ == MatchVerdict::NEEDS_OPERATOR
     );
   }
 
@@ -152,8 +154,7 @@ TEST_CASE("an instruction whose own line cannot decide anything needs an operato
     instruction.entry_.type_ = OrderType::MARKET;
     instruction.entry_.price_ = Decimal64::parse("70000");
     REQUIRE(
-      runner::match_against(instruction, {row("KRX-1")}, after_the_window()).verdict_ ==
-        MatchVerdict::NEEDS_OPERATOR
+      runner::match_against(instruction, {row("KRX-1")}, after_the_window()).verdict_ == MatchVerdict::NEEDS_OPERATOR
     );
   }
 
@@ -175,24 +176,17 @@ TEST_CASE("an instruction whose own line cannot decide anything needs an operato
     auto priced_market = cancellation("KRX-1");
     priced_market.entry_.type_ = OrderType::MARKET;
     priced_market.entry_.price_ = Decimal64::parse("70000");
-    REQUIRE(
-      runner::match_against(priced_market, {row("KRX-1")}, after_the_window()).order_id_ ==
-        "KRX-1"
-    );
+    REQUIRE(runner::match_against(priced_market, {row("KRX-1")}, after_the_window()).order_id_ == "KRX-1");
 
     // And absence still concludes, rather than withholding for ever.
-    REQUIRE(
-      runner::match_against(unpriced, {}, after_the_window()).verdict_ ==
-        MatchVerdict::NOT_PLACED
-    );
+    REQUIRE(runner::match_against(unpriced, {}, after_the_window()).verdict_ == MatchVerdict::NOT_PLACED);
 
     // The empty-target guard still applies to a cancellation, because that one
     // is about the field the matcher actually uses.
     auto nameless = cancellation("KRX-1");
     nameless.entry_.order_id_.clear();
     REQUIRE(
-      runner::match_against(nameless, {row("KRX-1")}, after_the_window()).verdict_ ==
-        MatchVerdict::NEEDS_OPERATOR
+      runner::match_against(nameless, {row("KRX-1")}, after_the_window()).verdict_ == MatchVerdict::NEEDS_OPERATOR
     );
   }
 
@@ -204,10 +198,7 @@ TEST_CASE("an instruction whose own line cannot decide anything needs an operato
     auto market_row = row("KRX-1");
     market_row.type_ = OrderType::MARKET;
     market_row.price_.reset();
-    REQUIRE(
-      runner::match_against(instruction, {market_row}, after_the_window()).verdict_ ==
-        MatchVerdict::MATCHED
-    );
+    REQUIRE(runner::match_against(instruction, {market_row}, after_the_window()).verdict_ == MatchVerdict::MATCHED);
   }
 }
 
@@ -257,10 +248,7 @@ TEST_CASE("recovery tells two orders apart by the venue each was routed to") {
     // listing carrying nothing that resembles it says the order is not there
     // whatever venue it was headed for. Withholding on that would strand a
     // legacy line forever.
-    REQUIRE(
-      runner::match_against(legacy, {}, after_the_window()).verdict_ ==
-        MatchVerdict::NOT_PLACED
-    );
+    REQUIRE(runner::match_against(legacy, {}, after_the_window()).verdict_ == MatchVerdict::NOT_PLACED);
 
     // And a row that differs on an attribute the unknown route does not hide is
     // not a plausible row either, so it does not withhold. The quantity is
@@ -268,25 +256,16 @@ TEST_CASE("recovery tells two orders apart by the venue each was routed to") {
     // these differ only in the *price* and the *basis*, which are readable here
     // and are exactly what a row with an unreadable shape would have lost.
     auto repriced = row("KRX-9", samsung(), "10", "71000");
-    REQUIRE(
-      runner::match_against(legacy, {repriced}, after_the_window()).verdict_ ==
-        MatchVerdict::NOT_PLACED
-    );
+    REQUIRE(runner::match_against(legacy, {repriced}, after_the_window()).verdict_ == MatchVerdict::NOT_PLACED);
 
     auto other_basis = row("KRX-8");
     other_basis.type_ = OrderType::MARKET;
     other_basis.price_.reset();
-    REQUIRE(
-      runner::match_against(legacy, {other_basis}, after_the_window()).verdict_ ==
-        MatchVerdict::NOT_PLACED
-    );
+    REQUIRE(runner::match_against(legacy, {other_basis}, after_the_window()).verdict_ == MatchVerdict::NOT_PLACED);
 
     // A row differing in neither still withholds, so the two above are about the
     // attributes they name rather than about the legacy line.
-    REQUIRE(
-      runner::match_against(legacy, {row("KRX-7")}, after_the_window()).verdict_ ==
-        MatchVerdict::AMBIGUOUS
-    );
+    REQUIRE(runner::match_against(legacy, {row("KRX-7")}, after_the_window()).verdict_ == MatchVerdict::AMBIGUOUS);
   }
 
   SECTION("an instruction that asked for no venue is not silence") {
@@ -296,8 +275,7 @@ TEST_CASE("recovery tells two orders apart by the venue each was routed to") {
     auto routeless = placement();
     REQUIRE(routeless.entry_.venue_ == std::optional<Venue>(Venue::UNSPECIFIED));
     auto row_without_venue = row("TOSS-1");
-    const auto match =
-      runner::match_against(routeless, {row_without_venue}, after_the_window());
+    const auto match = runner::match_against(routeless, {row_without_venue}, after_the_window());
     REQUIRE(match.verdict_ == MatchVerdict::MATCHED);
     REQUIRE(match.order_id_ == "TOSS-1");
   }
@@ -322,10 +300,7 @@ TEST_CASE("recovery tells two orders apart by the venue each was routed to") {
     REQUIRE(runner::match_against(to_krx, {krx}, after_the_window()).order_id_ == "KRX-1");
     // And each refuses the other's row outright rather than reporting ambiguity,
     // because a stated route that differs is evidence, not silence.
-    REQUIRE(
-      runner::match_against(to_krx, {nxt}, after_the_window()).verdict_ ==
-        MatchVerdict::NOT_PLACED
-    );
+    REQUIRE(runner::match_against(to_krx, {nxt}, after_the_window()).verdict_ == MatchVerdict::NOT_PLACED);
   }
 }
 
@@ -355,19 +330,13 @@ TEST_CASE("an order code this release cannot read is not read as an absent order
   // With no such row at all, the same instruction and window does conclude the
   // order is absent -- so the assertion above is about the row rather than
   // about the window.
-  REQUIRE(
-    runner::match_against(instruction, {}, after_the_window()).verdict_ ==
-      MatchVerdict::NOT_PLACED
-  );
+  REQUIRE(runner::match_against(instruction, {}, after_the_window()).verdict_ == MatchVerdict::NOT_PLACED);
 
   // And a readable row that genuinely differs still concludes absence, so the
   // tolerance is for unreadable rows and not for every row.
   auto different = row("KRX-2");
   different.side_ = OrderSide::SELL;
-  REQUIRE(
-    runner::match_against(instruction, {different}, after_the_window()).verdict_ ==
-      MatchVerdict::NOT_PLACED
-  );
+  REQUIRE(runner::match_against(instruction, {different}, after_the_window()).verdict_ == MatchVerdict::NOT_PLACED);
 }
 
 TEST_CASE("an unreadable row that is plainly a different order is still an absence") {
@@ -379,15 +348,11 @@ TEST_CASE("an unreadable row that is plainly a different order is still an absen
   unreadable.price_.reset();
   // Quantity still discriminates, and it survives an unreadable shape, so the
   // weaker predicate is not "admit anything".
-  REQUIRE(
-    runner::match_against(instruction, {unreadable}, after_the_window()).verdict_ ==
-      MatchVerdict::NOT_PLACED
-  );
+  REQUIRE(runner::match_against(instruction, {unreadable}, after_the_window()).verdict_ == MatchVerdict::NOT_PLACED);
 }
 
 TEST_CASE("a row for another instrument is not a match", "[reconcile]") {
-  const auto match =
-    runner::match_against(placement(), {row("KRX-1", hynix())}, after_the_window());
+  const auto match = runner::match_against(placement(), {row("KRX-1", hynix())}, after_the_window());
   REQUIRE(match.verdict_ == MatchVerdict::NOT_PLACED);
   REQUIRE(match.candidates_ == 0);
 }
@@ -401,7 +366,9 @@ TEST_CASE("a cancellation can never be ambiguous", "[reconcile]") {
   // carries the broker's own order id from the moment it is written, and an order id is unique in a
   // listing. Asserted rather than assumed.
   const std::vector<OrderSnapshot> rows = {
-    row("KRX-1"), row("KRX-2"), row("KRX-3", samsung(), "10", "70000"),
+    row("KRX-1"),
+    row("KRX-2"),
+    row("KRX-3", samsung(), "10", "70000"),
   };
   const auto match = runner::match_against(cancellation("KRX-2"), rows, after_the_window());
   REQUIRE(match.verdict_ == MatchVerdict::MATCHED);
@@ -418,9 +385,8 @@ TEST_CASE("an ambiguous instruction leaves its instrument withheld", "[reconcile
   IndeterminacyLedger ledger;
   ledger.mark(samsung(), "an order request failed in transit");
 
-  const auto report = runner::reconcile_against(
-    {placement()}, {row("KRX-1"), row("KRX-2")}, after_the_window(), ledger, sink
-  );
+  const auto report =
+    runner::reconcile_against({placement()}, {row("KRX-1"), row("KRX-2")}, after_the_window(), ledger, sink);
   REQUIRE(report.ambiguous_);
   REQUIRE_FALSE(report.settled());
   REQUIRE(report.withheld_.front() == samsung());
@@ -438,9 +404,7 @@ TEST_CASE("an instrument clears only when every instruction for it is decided", 
 
   // The first instruction is answered by the listing; the second is not, and the window is still
   // open. Clearing on the first would lift the hold with a question still outstanding.
-  const auto report = runner::reconcile_against(
-    {matched, pending}, {row("KRX-1")}, inside_the_window(), ledger, sink
-  );
+  const auto report = runner::reconcile_against({matched, pending}, {row("KRX-1")}, inside_the_window(), ledger, sink);
   REQUIRE(report.matches_.size() == 2);
   REQUIRE(report.matches_[0].verdict_ == MatchVerdict::MATCHED);
   REQUIRE(report.matches_[1].verdict_ == MatchVerdict::UNDECIDED);
@@ -491,8 +455,12 @@ TEST_CASE("a row that could be another placement's order as well is nobody's", "
     auto next_day = row("KRX-1");
     next_day.ordered_at_ = sent_at() + std::chrono::hours(24);
     std::vector<OrderSnapshot> rows{
-      row("KRX-1"), row("KRX-2"), row("KRX-3", samsung(), "10", "70000", std::nullopt),
-      row("KRX-1", hynix()), row("KRX-4", samsung(), "20"), next_day,
+      row("KRX-1"),
+      row("KRX-2"),
+      row("KRX-3", samsung(), "10", "70000", std::nullopt),
+      row("KRX-1", hynix()),
+      row("KRX-4", samsung(), "20"),
+      next_day,
     };
     runner::drop_rows_fitting_another_placement(rows, replay, {placement()});
     REQUIRE(rows.size() == 3);
@@ -548,7 +516,9 @@ TEST_CASE("a row that could be another placement's order as well is nobody's", "
     CHECK(rows.front().ordered_at_ == todays.ordered_at_);
   }
 
-  SECTION("a refused placement has no order, a cancellation is not a placement, and the one being matched is no rival") {
+  SECTION(
+    "a refused placement has no order, a cancellation is not a placement, and the one being matched is no rival"
+  ) {
     auto refused = first_accepted;
     refused.outcome_ = JournalOutcome::REJECTED;
     refused.order_id_.clear();
@@ -715,11 +685,14 @@ namespace strategy = algotradelib::strategy;
 template <typename Tag>
 class FailingExecutor {
 public:
-
   /** A double reaches no broker, so it is exempt from having to have read the account. */
   static constexpr bool reaches_a_broker = false;
-  SendOutcome place(const strategy::PlannedOrder&) { return outcome_; }
-  SendOutcome cancel(const WorkingOrder<Tag>&) { return outcome_; }
+  SendOutcome place(const strategy::PlannedOrder&) {
+    return outcome_;
+  }
+  SendOutcome cancel(const WorkingOrder<Tag>&) {
+    return outcome_;
+  }
   SendOutcome outcome_{SendOutcome::INDETERMINATE};
 };
 
@@ -735,10 +708,7 @@ strategy::PlannedOrder buy_ten(const InstrumentId& id = samsung()) {
 
 /** A journal line as it stands in a file. */
 JournalEntry entry_at(
-  const char* id,
-  JournalOutcome outcome,
-  const InstrumentId& instrument = samsung(),
-  Clock::time_point at = sent_at()
+  const char* id, JournalOutcome outcome, const InstrumentId& instrument = samsung(), Clock::time_point at = sent_at()
 ) {
   JournalEntry entry;
   entry.id_ = id;
@@ -776,14 +746,12 @@ TEST_CASE("a crash and a restart, end to end", "[reconcile][recover]") {
   REQUIRE(ledger.requires_reconcile(samsung()));
 
   // The first sweep finds nothing and settles nothing, because absence this soon means nothing.
-  const auto early =
-    runner::reconcile_against(recovery.open_, {}, inside_the_window(), ledger, sink);
+  const auto early = runner::reconcile_against(recovery.open_, {}, inside_the_window(), ledger, sink);
   REQUIRE_FALSE(early.settled());
   REQUIRE(ledger.requires_reconcile(samsung()));
 
   // A later sweep finds the order. It existed after all, and the instrument may trade again.
-  const auto later =
-    runner::reconcile_against(recovery.open_, {row("KRX-1")}, after_the_window(), ledger, sink);
+  const auto later = runner::reconcile_against(recovery.open_, {row("KRX-1")}, after_the_window(), ledger, sink);
   REQUIRE(later.settled());
   REQUIRE(later.matches_.front().order_id_ == "KRX-1");
   REQUIRE_FALSE(ledger.requires_reconcile(samsung()));
@@ -822,15 +790,13 @@ TEST_CASE("recovery tells two stops apart by their triggers", "[reconcile][trigg
   };
 
   SECTION("the same trigger matches") {
-    const auto match =
-      runner::match_against(instruction, {stop_row("KRX-1", "69500")}, after_the_window());
+    const auto match = runner::match_against(instruction, {stop_row("KRX-1", "69500")}, after_the_window());
     REQUIRE(match.verdict_ == MatchVerdict::MATCHED);
     REQUIRE(match.order_id_ == "KRX-1");
   }
 
   SECTION("a different trigger is a different order") {
-    const auto match =
-      runner::match_against(instruction, {stop_row("KRX-1", "69800")}, after_the_window());
+    const auto match = runner::match_against(instruction, {stop_row("KRX-1", "69800")}, after_the_window());
     REQUIRE(match.verdict_ == MatchVerdict::NOT_PLACED);
     REQUIRE(match.candidates_ == 0);
   }
@@ -838,8 +804,7 @@ TEST_CASE("recovery tells two stops apart by their triggers", "[reconcile][trigg
   SECTION("a stop whose trigger the broker did not report is a candidate, not a match or an absence") {
     // Excluding it would report NOT_PLACED for a stop that is resting, and the runner would send
     // it again; matching it would let any lookalike clear the hold.
-    const auto match =
-      runner::match_against(instruction, {stop_row("KRX-1", std::nullopt)}, after_the_window());
+    const auto match = runner::match_against(instruction, {stop_row("KRX-1", std::nullopt)}, after_the_window());
     REQUIRE(match.verdict_ == MatchVerdict::AMBIGUOUS);
     REQUIRE(match.candidates_ == 1);
     REQUIRE(match.order_id_.empty());
@@ -859,8 +824,7 @@ TEST_CASE("recovery tells two stops apart by their triggers", "[reconcile][trigg
 
   SECTION("a stop row is still not a plain order's match") {
     auto plain = placement();
-    const auto match =
-      runner::match_against(plain, {stop_row("KRX-1", "69500")}, after_the_window());
+    const auto match = runner::match_against(plain, {stop_row("KRX-1", "69500")}, after_the_window());
     REQUIRE(match.verdict_ == MatchVerdict::NOT_PLACED);
   }
 }

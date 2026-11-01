@@ -22,4 +22,6 @@
 #error "<algotradelib/mock> is a broker: it must mark itself as one, so the strategy isolation tests see it."
 #endif
 
-int main() { return 0; }
+int main() {
+  return 0;
+}

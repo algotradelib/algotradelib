@@ -235,9 +235,7 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
     if (!ifs.is_open()) {
       throw std::runtime_error("Cannot open Kiwoom credential file: " + filename);
     }
-    const std::string content(
-      std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>{}
-    );
+    const std::string content(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>{});
     boost::system::error_code ec;
     const auto jv = json::parse(content, ec);
     if (ec || !jv.is_object()) {
@@ -274,7 +272,8 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
       return false;
     }
     throw std::runtime_error(
-      std::string("KIWOOM_DEMO is \"") + demo + "\"; set it to 1 for the demo endpoints or 0 to trade "
+      std::string("KIWOOM_DEMO is \"") + demo +
+      "\"; set it to 1 for the demo endpoints or 0 to trade "
       "live, or leave it unset for demo."
     );
   }
@@ -293,7 +292,8 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
     }
     if (!demo->is_bool()) {
       throw std::runtime_error(
-        "Kiwoom credential file " + filename + " has a \"demo\" that is not true or false; write "
+        "Kiwoom credential file " + filename +
+        " has a \"demo\" that is not true or false; write "
         "true for the demo endpoints or false to trade live, or leave it out for demo."
       );
     }
@@ -304,13 +304,17 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
    * @brief The JSON field Kiwoom expects the application key under.
    * @return `"appkey"`.
    */
-  static constexpr std::string_view key_field() noexcept { return "appkey"; }
+  static constexpr std::string_view key_field() noexcept {
+    return "appkey";
+  }
 
   /**
    * @brief The JSON field Kiwoom expects the application secret under.
    * @return `"secretkey"`.
    */
-  static constexpr std::string_view secret_field() noexcept { return "secretkey"; }
+  static constexpr std::string_view secret_field() noexcept {
+    return "secretkey";
+  }
 
   /**
    * @brief The REST host for the selected environment.
@@ -324,7 +328,9 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
    * @brief The REST port, which is the same for both environments.
    * @return `"443"`.
    */
-  const char* rest_port() const noexcept { return "443"; }
+  const char* rest_port() const noexcept {
+    return "443";
+  }
 
   /**
    * @brief The WebSocket host for the selected environment.
@@ -338,7 +344,9 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
    * @brief The WebSocket port, which is the same for both environments.
    * @return `"10000"`.
    */
-  const char* ws_port() const noexcept { return "10000"; }
+  const char* ws_port() const noexcept {
+    return "10000";
+  }
 
   /**
    * @brief Returns a symbol with this configuration's tape suffix, for a market-data request.
@@ -359,7 +367,9 @@ struct KiwoomRest : public network::AuthBody<KiwoomRest> {
    * @brief The field Kiwoom returns the bearer token under.
    * @return `"token"`.
    */
-  static constexpr std::string_view token_field() noexcept { return "token"; }
+  static constexpr std::string_view token_field() noexcept {
+    return "token";
+  }
 
   /**
    * @brief Reads the expiry (`expires_dt`, the only one Kiwoom states) and `token_type`; called by

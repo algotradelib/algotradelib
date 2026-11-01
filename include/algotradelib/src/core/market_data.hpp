@@ -103,7 +103,12 @@ inline constexpr std::optional<std::chrono::seconds> bar_interval_length(BarInte
 }
 
 static_assert(
-  lists_every_value(all_bar_intervals, [](BarInterval interval) { return !bar_interval_name(interval).empty(); }),
+  lists_every_value(
+    all_bar_intervals,
+    [](BarInterval interval) {
+      return !bar_interval_name(interval).empty();
+    }
+  ),
   "all_bar_intervals must list every BarInterval"
 );
 

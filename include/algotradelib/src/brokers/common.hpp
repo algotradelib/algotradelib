@@ -25,10 +25,7 @@ namespace algotradelib::broker_detail {
 // Reads a whole-number header, or nothing when it is absent or malformed. Which headers carry meaning
 // is a broker's own contract, so each adapter reads the ones its documentation promises; only the
 // parsing lives here.
-inline std::optional<std::int64_t> integer_header(
-  const network::HttpResponse& response,
-  std::string_view name
-) {
+inline std::optional<std::int64_t> integer_header(const network::HttpResponse& response, std::string_view name) {
   const auto value = response.base().find(name);
   if (value == response.base().end()) {
     return std::nullopt;
@@ -65,9 +62,8 @@ inline std::string reply_excerpt(std::string_view body, std::size_t limit = repl
 inline BrokerError http_error(const network::HttpResponse& response) {
   BrokerError error;
   error.http_status_ = response.result_int();
-  error.category_ = response.result() == http::status::too_many_requests ?
-    ErrorCategory::RATE_LIMIT :
-    ErrorCategory::HTTP;
+  error.category_ =
+    response.result() == http::status::too_many_requests ? ErrorCategory::RATE_LIMIT : ErrorCategory::HTTP;
   error.message_ = reply_excerpt(response.body());
   return error;
 }
@@ -104,8 +100,7 @@ inline std::int64_t json_int64(const json::object& object, std::string_view key)
     return value->as_int64();
   }
   if (
-    value->is_uint64() &&
-    value->as_uint64() <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())
+    value->is_uint64() && value->as_uint64() <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())
   ) {
     return static_cast<std::int64_t>(value->as_uint64());
   }
@@ -117,8 +112,8 @@ inline bool valid_symbol(std::string_view symbol) {
     return false;
   }
   for (const char ch : symbol) {
-    const bool valid = (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') ||
-      (ch >= 'a' && ch <= 'z') || ch == '.' || ch == '-';
+    const bool valid =
+      (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '.' || ch == '-';
     if (!valid) {
       return false;
     }
@@ -131,8 +126,8 @@ inline std::string query_encode(std::string_view value) {
   std::string result;
   result.reserve(value.size());
   for (const unsigned char ch : value) {
-    const bool unreserved = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
-      (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' || ch == '_' || ch == '~';
+    const bool unreserved = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') ||
+      ch == '-' || ch == '.' || ch == '_' || ch == '~';
     if (unreserved) {
       result.push_back(static_cast<char>(ch));
     } else {
@@ -171,9 +166,7 @@ inline std::optional<Date> compact_date(std::string_view text) {
     }
     return value;
   };
-  Date date{
-    number(0, 4), static_cast<unsigned>(number(4, 2)), static_cast<unsigned>(number(6, 2))
-  };
+  Date date{number(0, 4), static_cast<unsigned>(number(4, 2)), static_cast<unsigned>(number(6, 2))};
   return is_valid_date(date) ? std::optional<Date>(date) : std::nullopt;
 }
 

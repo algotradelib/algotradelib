@@ -92,8 +92,7 @@ template <typename BrokerTag>
 class QueueingExecutor {
   struct Slot;
   // Each instrument's outstanding orders by serial, oldest first.
-  using ByInstrument =
-    std::unordered_map<InstrumentId, std::vector<std::uint64_t>, id_detail::InstrumentIdHash>;
+  using ByInstrument = std::unordered_map<InstrumentId, std::vector<std::uint64_t>, id_detail::InstrumentIdHash>;
 
 public:
   /** @brief An executor with nothing queued. */
@@ -163,7 +162,6 @@ public:
     return *this;
   }
 
-
   /** @brief `false`: a replay reaches no broker. */
   static constexpr bool reaches_a_broker = false;
   /**
@@ -221,8 +219,7 @@ public:
     switch (order.type_) {
       case OrderType::STOP_LIMIT:
         // A stop the model can release: both prices, and a day order (the only stop KIS and Kiwoom offer).
-        return order.trigger_price_.has_value() && order.price_.has_value() &&
-          order.time_in_force_ == TimeInForce::DAY;
+        return order.trigger_price_.has_value() && order.price_.has_value() && order.time_in_force_ == TimeInForce::DAY;
       case OrderType::LIMIT:
       case OrderType::MARKET:
         // A trigger on a limit or market order would be ignored; refuse it.
@@ -273,7 +270,9 @@ public:
    * @brief Returns the reference issued to the most recently accepted order.
    * @return The reference, or `std::nullopt` before any.
    */
-  std::optional<OrderRef<BrokerTag>> last_ref() const { return last_ref_; }
+  std::optional<OrderRef<BrokerTag>> last_ref() const {
+    return last_ref_;
+  }
 
   /**
    * @brief Every outstanding order, oldest first: a view over the queue, valid until the queue changes.
@@ -302,12 +301,16 @@ public:
        * @brief Returns the order here.
        * @return The order.
        */
-      reference operator*() const noexcept { return at_->entry_; }
+      reference operator*() const noexcept {
+        return at_->entry_;
+      }
       /**
        * @brief Points at the order here.
        * @return A pointer to it.
        */
-      pointer operator->() const noexcept { return &at_->entry_; }
+      pointer operator->() const noexcept {
+        return &at_->entry_;
+      }
       /**
        * @brief Moves to the next outstanding order.
        * @return This iterator.
@@ -332,18 +335,24 @@ public:
        * @param rhs The second.
        * @return `true` if they are the same.
        */
-      friend bool operator==(const const_iterator& lhs, const const_iterator& rhs) noexcept { return lhs.at_ == rhs.at_; }
+      friend bool operator==(const const_iterator& lhs, const const_iterator& rhs) noexcept {
+        return lhs.at_ == rhs.at_;
+      }
       /**
        * @brief Compares two positions in one queue.
        * @param lhs The first.
        * @param rhs The second.
        * @return `true` if they differ.
        */
-      friend bool operator!=(const const_iterator& lhs, const const_iterator& rhs) noexcept { return lhs.at_ != rhs.at_; }
+      friend bool operator!=(const const_iterator& lhs, const const_iterator& rhs) noexcept {
+        return lhs.at_ != rhs.at_;
+      }
 
     private:
       friend class Queue;
-      const_iterator(const Slot* at, const Slot* end) noexcept : at_(at), end_(end) { skip(); }
+      const_iterator(const Slot* at, const Slot* end) noexcept : at_(at), end_(end) {
+        skip();
+      }
       void skip() noexcept {
         while (at_ != end_ && !at_->live_) {
           ++at_;
@@ -357,27 +366,37 @@ public:
      * @brief Returns the oldest outstanding order's position.
      * @return The iterator.
      */
-    const_iterator begin() const noexcept { return const_iterator(first_, last_); }
+    const_iterator begin() const noexcept {
+      return const_iterator(first_, last_);
+    }
     /**
      * @brief Returns the position past the newest.
      * @return The iterator.
      */
-    const_iterator end() const noexcept { return const_iterator(last_, last_); }
+    const_iterator end() const noexcept {
+      return const_iterator(last_, last_);
+    }
     /**
      * @brief Returns how many orders are outstanding.
      * @return The count.
      */
-    std::size_t size() const noexcept { return size_; }
+    std::size_t size() const noexcept {
+      return size_;
+    }
     /**
      * @brief Returns whether no order is outstanding.
      * @return `true` if none is.
      */
-    bool empty() const noexcept { return size_ == 0; }
+    bool empty() const noexcept {
+      return size_ == 0;
+    }
     /**
      * @brief Returns the oldest outstanding order; the queue must not be empty.
      * @return The order.
      */
-    const QueuedOrder<BrokerTag>& front() const noexcept { return *begin(); }
+    const QueuedOrder<BrokerTag>& front() const noexcept {
+      return *begin();
+    }
 
   private:
     friend class QueueingExecutor;
@@ -391,7 +410,9 @@ public:
    * @brief Returns every outstanding order, oldest first.
    * @return A view of the orders; valid until the queue changes.
    */
-  Queue queued() const noexcept { return Queue(slots_.data(), slots_.data() + slots_.size(), live_); }
+  Queue queued() const noexcept {
+    return Queue(slots_.data(), slots_.data() + slots_.size(), live_);
+  }
 
   /**
    * @brief Calls `each` with every outstanding order in one instrument, oldest first.
@@ -476,13 +497,17 @@ public:
   /**
    * @brief Starts the next bar; orders accepted from now on cannot fill against it.
    */
-  void open_bar() noexcept { ++bar_; }
+  void open_bar() noexcept {
+    ++bar_;
+  }
 
   /**
    * @brief Returns the bar being replayed.
    * @return The bar number, counting from one.
    */
-  std::uint64_t bar() const noexcept { return bar_; }
+  std::uint64_t bar() const noexcept {
+    return bar_;
+  }
 
   /**
    * @brief Returns how many times the queue gained or lost an order (`place`, `cancel`, `withdraw`).
@@ -491,7 +516,9 @@ public:
    *
    * @return The count since construction.
    */
-  std::uint64_t changes() const noexcept { return changes_; }
+  std::uint64_t changes() const noexcept {
+    return changes_;
+  }
 
   /**
    * @brief Sets the decision instant stamped on orders accepted from now on.
@@ -514,10 +541,10 @@ private:
 
   // Where the order with `serial` is in `slots_`. Serials rise in placement order, which compaction keeps.
   std::optional<std::size_t> slot_of(std::uint64_t serial) const noexcept {
-    const auto found = std::lower_bound(
-      slots_.begin(), slots_.end(), serial,
-      [](const Slot& slot, std::uint64_t wanted) { return slot.serial_ < wanted; }
-    );
+    const auto found =
+      std::lower_bound(slots_.begin(), slots_.end(), serial, [](const Slot& slot, std::uint64_t wanted) {
+        return slot.serial_ < wanted;
+      });
     if (found == slots_.end() || found->serial_ != serial) {
       return std::nullopt;
     }
@@ -553,7 +580,12 @@ private:
   // Drops the removed orders, keeping the rest in placement order. Moves orders; allocates nothing.
   void compact() noexcept {
     slots_.erase(
-      std::remove_if(slots_.begin(), slots_.end(), [](const Slot& slot) { return !slot.live_; }),
+      std::remove_if(
+        slots_.begin(), slots_.end(),
+        [](const Slot& slot) {
+          return !slot.live_;
+        }
+      ),
       slots_.end()
     );
   }
@@ -769,11 +801,7 @@ public:
    * @param config The settings.
    * @param fills The fill model (commission, slippage, limit pricing, sale tax).
    */
-  Backtester(
-    Strategy strategy = {},
-    ReplayConfig config = {},
-    NextBarFillModel fills = NextBarFillModel{}
-  )
+  Backtester(Strategy strategy = {}, ReplayConfig config = {}, NextBarFillModel fills = NextBarFillModel{})
   : config_(std::move(config)),
     fills_(std::move(fills)),
     ledger_(config_.cash_, config_.currency_, ExecutionHistory::NONE),
@@ -791,7 +819,9 @@ public:
    * @brief Returns the strategy, to read the state it kept.
    * @return The strategy.
    */
-  const Strategy& strategy() const noexcept { return runner_.strategy(); }
+  const Strategy& strategy() const noexcept {
+    return runner_.strategy();
+  }
 
   /**
    * @brief Returns the ledger: positions, cash and realized profit.
@@ -800,19 +830,25 @@ public:
    *
    * @return The ledger.
    */
-  const ReplayLedger& ledger() const noexcept { return ledger_; }
+  const ReplayLedger& ledger() const noexcept {
+    return ledger_;
+  }
 
   /**
    * @brief Returns the fill model, for `summarize`.
    * @return The fill model.
    */
-  const NextBarFillModel& fills() const noexcept { return fills_; }
+  const NextBarFillModel& fills() const noexcept {
+    return fills_;
+  }
 
   /**
    * @brief Returns what the replay has produced so far.
    * @return The result.
    */
-  const ReplayResult& result() const noexcept { return result_; }
+  const ReplayResult& result() const noexcept {
+    return result_;
+  }
 
   /**
    * @brief Replays one bar.
@@ -914,7 +950,8 @@ public:
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.reached_broker_ = false;
       error.broker_code_ = "mark_not_representable";
-      error.message_ = "a position in " + event.instrument_.symbol_ + " could not be valued at the "
+      error.message_ = "a position in " + event.instrument_.symbol_ +
+        " could not be valued at the "
         "bar's close without leaving an exact decimal, so the replay stopped rather than let a "
         "strategy decide on a position one bar behind its price";
       result_.halted_ = std::move(error);
@@ -1269,9 +1306,7 @@ private:
   // What an empty answer means to the caller is in `may_fill`: not "no constraint", and not a bound
   // to be inferred from somewhere else either, but "this check cannot run -- allow the fill and
   // record that it was not checked".
-  std::optional<std::chrono::system_clock::time_point> period_start_of(
-    const strategy::BarEvent& event
-  ) const {
+  std::optional<std::chrono::system_clock::time_point> period_start_of(const strategy::BarEvent& event) const {
     if (event.stamp_ == BarStamp::OPEN) {
       return event.bar_.timestamp_;
     }
@@ -1324,10 +1359,7 @@ private:
   // defers a week after every holiday-shortened one, and the 31-day and 366-day bounds defer nearly
   // every monthly and yearly order. So the honest third answer is to check nothing, claim nothing,
   // and report the gap.
-  bool may_fill(
-    const QueuedOrder<Tag>& entry,
-    const strategy::BarEvent& event
-  ) {
+  bool may_fill(const QueuedOrder<Tag>& entry, const strategy::BarEvent& event) {
     if (!entry.decided_at_) {
       return true;
     }
@@ -1414,13 +1446,11 @@ private:
       // An `OPEN`-stamped bar states its start, so a fill at its open has a known day; the period
       // end's day is nominal there -- a day late for a daily bar, days into the next month for a
       // monthly one. See `NextBarFillModel::decide`'s `open_date`.
-      const auto open_date = event.stamp_ == BarStamp::OPEN
-        ? std::optional<Date>(clock_.session().local_date(event.bar_.timestamp_))
-        : std::nullopt;
-      auto decision = fills_.decide(
-        order, event, rule, clock_.session().local_date(event.period_end_), open_date,
-        entry->released_
-      );
+      const auto open_date = event.stamp_ == BarStamp::OPEN ?
+        std::optional<Date>(clock_.session().local_date(event.bar_.timestamp_)) :
+        std::nullopt;
+      auto decision =
+        fills_.decide(order, event, rule, clock_.session().local_date(event.period_end_), open_date, entry->released_);
       if (decision.released_) {
         // Recorded before anything below can withdraw the order, and whether or not it filled: a stop
         // that released and still rests is a limit from the next bar on.
@@ -1464,7 +1494,8 @@ private:
         error.category_ = ErrorCategory::INVALID_ARGUMENT;
         error.reached_broker_ = false;
         error.broker_code_ = "execution_not_representable";
-        error.message_ = "an execution's cash arithmetic does not fit an exact decimal, so the "
+        error.message_ =
+          "an execution's cash arithmetic does not fit an exact decimal, so the "
           "ledger could not record a fill the model produced";
         result_.halted_ = std::move(error);
         abort_queue();
@@ -1531,8 +1562,8 @@ private:
   void expire_day_orders(const strategy::BarEvent& event, const Date& bar_date, bool after_fills) {
     // No fixed duration is what a day or longer has (`interval_duration`); an intraday interval has one.
     const bool daily_or_longer = !interval_duration(event.interval_);
-    const auto closes = clock_.session().opens_at(event.bar_.timestamp_) - clock_.session().open_ +
-      clock_.session().close_;
+    const auto closes =
+      clock_.session().opens_at(event.bar_.timestamp_) - clock_.session().open_ + clock_.session().close_;
     const bool ends_session = after_fills && (daily_or_longer || !(event.period_end_ < closes));
     std::vector<OrderRef<Tag>> expired;
     runner_.executor().for_each_queued_in(event.instrument_, [&](const QueuedOrder<Tag>& entry) {
@@ -1551,8 +1582,7 @@ private:
 
   // Counts this bar's overdrawn and unvalued state, and records its point or keeps its period's for later.
   void count_bar(const strategy::BarEvent& event) {
-    if (const auto cash = ledger_.cash_in(config_.currency_);
-        cash && cash->coefficient() < 0) {
+    if (const auto cash = ledger_.cash_in(config_.currency_); cash && cash->coefficient() < 0) {
       ++result_.overdrawn_bars_;
       if (!result_.first_overdrawn_) {
         result_.first_overdrawn_ = event.period_end_;
@@ -1799,7 +1829,8 @@ private:
     if (slot.price_ != nullptr) {
       *slot.price_ = event.bar_.close_;
     } else {
-      slot.price_ = &runner::context_detail::PortfolioAccess::set_price(runner_.context(), event.instrument_, event.bar_.close_);
+      slot.price_ =
+        &runner::context_detail::PortfolioAccess::set_price(runner_.context(), event.instrument_, event.bar_.close_);
     }
   }
 
@@ -1836,8 +1867,7 @@ private:
       // A runner's reservation follows an order the queue accepted, so today the queue's count moves with it;
       // the runner's own count is checked too, so a reservation written without a new order is not kept.
       const bool rows_stale = runner_.executor().changes() != queue_seen_ ||
-        Access::runner_edits(context) != edits_seen_ ||
-        Access::reference_changes(context) != references_seen_;
+        Access::runner_edits(context) != edits_seen_ || Access::reference_changes(context) != references_seen_;
       auto& portfolio = Access::for_replay_sync(context);
       ledger_.update(portfolio, clock_.now());
       if (rows_stale && Access::reference_changes(context) != references_seen_) {
@@ -1895,7 +1925,7 @@ private:
         ++next;
       }
       if (next == built) {
-        break;  // this order has no row, so neither has any later one
+        break; // this order has no row, so neither has any later one
       }
       if (kept != next) {
         rows[kept] = std::move(rows[next]);
@@ -1970,9 +2000,8 @@ private:
     if (!config_.limits_.enforce_buying_power_ || entry.order_.side_ != OrderSide::BUY) {
       return;
     }
-    const auto price = entry.order_.price_ ?
-      entry.order_.price_ :
-      runner_.context().last_price(entry.order_.instrument_);
+    const auto price =
+      entry.order_.price_ ? entry.order_.price_ : runner_.context().last_price(entry.order_.instrument_);
     if (!price) {
       return;
     }

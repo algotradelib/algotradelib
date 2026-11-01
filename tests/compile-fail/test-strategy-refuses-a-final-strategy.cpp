@@ -9,8 +9,13 @@ using namespace algotradelib;
 
 struct Probe final {
   int fills = 0;
-  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
-  template <class Ctx> void on_fill(Ctx ctx, const strategy::Fill&) { ++fills; static_cast<void>(ctx); }
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx>
+  void on_fill(Ctx ctx, const strategy::Fill&) {
+    ++fills;
+    static_cast<void>(ctx);
+  }
 };
 
 ATL_ASSERT_STRATEGY(Probe, strategy::MinimalContext);

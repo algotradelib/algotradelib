@@ -114,8 +114,7 @@ void serve_calendar(R& runner_instance, bool trades = true) {
 }
 
 algotradelib::InstrumentId samsung() {
-  return algotradelib::InstrumentId{
-    algotradelib::Country::KR, algotradelib::Venue::COMBINED, "005930"};
+  return algotradelib::InstrumentId{algotradelib::Country::KR, algotradelib::Venue::COMBINED, "005930"};
 }
 
 /** Reference data the runner needs before it can size or price anything. */
@@ -201,8 +200,7 @@ strategy::BarEvent bar_at(std::size_t index) {
   bar.low_ = bar.high_;
   bar.close_ = bar.high_;
   bar.volume_ = algotradelib::Decimal64::parse("1000000");
-  return strategy::make_bar_event(
-    samsung(), algotradelib::BarInterval::ONE_DAY, algotradelib::BarStamp::CLOSE, bar);
+  return strategy::make_bar_event(samsung(), algotradelib::BarInterval::ONE_DAY, algotradelib::BarStamp::CLOSE, bar);
 }
 
 /**
@@ -219,8 +217,7 @@ strategy::BarEvent bar_seconds_apart(std::size_t index) {
   bar.low_ = bar.high_;
   bar.close_ = bar.high_;
   bar.volume_ = algotradelib::Decimal64::parse("1000000");
-  return strategy::make_bar_event(
-    samsung(), algotradelib::BarInterval::ONE_DAY, algotradelib::BarStamp::CLOSE, bar);
+  return strategy::make_bar_event(samsung(), algotradelib::BarInterval::ONE_DAY, algotradelib::BarStamp::CLOSE, bar);
 }
 
 /**
@@ -249,9 +246,7 @@ struct LimitTen {
     if (!reference) {
       return;
     }
-    const auto limit = strategy::Price::checked(
-      algotradelib::Decimal64::parse("80000"), reference->price_rule_
-    );
+    const auto limit = strategy::Price::checked(algotradelib::Decimal64::parse("80000"), reference->price_rule_);
     if (!limit) {
       return;
     }
@@ -279,10 +274,14 @@ public:
   static constexpr bool provides_working_orders = true;
 
   /** Sets what the order-list read returns. */
-  void set_order_list(runner::PollOutcome outcome) { order_list_ = outcome; }
+  void set_order_list(runner::PollOutcome outcome) {
+    order_list_ = outcome;
+  }
 
   /** Returns how many times the order list was read. */
-  std::size_t order_list_reads() const noexcept { return order_list_reads_; }
+  std::size_t order_list_reads() const noexcept {
+    return order_list_reads_;
+  }
 
   /**
    * Serves the calendar a test scripted, so a calendar poll can *change* the answer mid-iteration.
@@ -290,7 +289,9 @@ public:
    * A source can both replace the calendar and settle an order in one iteration, and the calendar is polled first, so a revision arriving now must reach the phase
    * the bar poll after it is checked against.
    */
-  void set_calendar(algotradelib::TradingCalendar calendar) { calendar_ = std::move(calendar); }
+  void set_calendar(algotradelib::TradingCalendar calendar) {
+    calendar_ = std::move(calendar);
+  }
 
   /**
    * Scripts a calendar installed from inside the **bars** poll, before the bar is fed.
@@ -310,7 +311,9 @@ public:
    * iteration governs the order that iteration's bar produces is asserting about the poll order
    * rather than about a value some fixture set beforehand.
    */
-  void set_price_limits(algotradelib::PriceLimits limits) { price_limits_ = std::move(limits); }
+  void set_price_limits(algotradelib::PriceLimits limits) {
+    price_limits_ = std::move(limits);
+  }
 
   /**
    * Feeds bars a second apart instead of a day apart, so the loop's clock is what moves.
@@ -323,7 +326,9 @@ public:
    * that is not later than the last -- so the instant has to move, and what matters is that it moves
    * by far less than the policy under test.
    */
-  void creep_bar_time() { creep_bar_time_ = true; }
+  void creep_bar_time() {
+    creep_bar_time_ = true;
+  }
 
   /** Returns the price of the last order the runner would have sent from inside a poll. */
   const std::optional<algotradelib::Decimal64>& last_planned_price() const noexcept {
@@ -364,9 +369,7 @@ public:
       runner_instance.context().set_calendar(*calendar_before_feeding_);
     }
     ++bars_;
-    const auto report = runner_instance.feed(
-      creep_bar_time_ ? bar_seconds_apart(bars_) : bar_at(bars_)
-    );
+    const auto report = runner_instance.feed(creep_bar_time_ ? bar_seconds_apart(bars_) : bar_at(bars_));
     placed_ += report.would_place_.size();
     if (!report.would_place_.empty()) {
       last_planned_price_ = report.would_place_.back().price_;
@@ -385,13 +388,19 @@ public:
   }
 
   /** Returns how many cancellations actually reached the executor from inside a poll. */
-  std::size_t canceled() const noexcept { return canceled_; }
+  std::size_t canceled() const noexcept {
+    return canceled_;
+  }
 
   /** Returns how many whole plans were held back before any part of them was sent. */
-  std::size_t withheld_plans() const noexcept { return withheld_plans_; }
+  std::size_t withheld_plans() const noexcept {
+    return withheld_plans_;
+  }
 
   /** Returns why the first such plan was held back. */
-  std::optional<runner::WithheldPlanReason> last_withheld() const noexcept { return last_withheld_; }
+  std::optional<runner::WithheldPlanReason> last_withheld() const noexcept {
+    return last_withheld_;
+  }
 
   /**
    * Returns the configured order-list outcome, installing a calendar first when asked to.
@@ -426,13 +435,19 @@ public:
   }
 
   /** Returns how many orders the runner would have sent from inside a poll. */
-  std::size_t placed() const noexcept { return placed_; }
+  std::size_t placed() const noexcept {
+    return placed_;
+  }
 
   /** Returns how many the guard refused there. */
-  std::size_t refused() const noexcept { return refused_; }
+  std::size_t refused() const noexcept {
+    return refused_;
+  }
 
   /** Returns which hold refused the last one. */
-  std::optional<strategy::HaltReason> last_refusal() const noexcept { return last_refusal_; }
+  std::optional<strategy::HaltReason> last_refusal() const noexcept {
+    return last_refusal_;
+  }
 
   /**
    * Returns which limit refused the last one.
@@ -529,7 +544,6 @@ using SellingLoop = runner::PollingLoop<SellingRunner, SellingSource, runner::Ma
 template <runner::SendOutcome Outcome>
 class CancelFailingExecutor {
 public:
-
   /** A double reaches no broker, so it is exempt from having to have read the account. */
   static constexpr bool reaches_a_broker = false;
   runner::SendOutcome place(const strategy::PlannedOrder&) {
@@ -542,7 +556,9 @@ public:
   }
 
   /** Returns how many cancellations reached it. */
-  std::size_t cancels() const noexcept { return cancels_; }
+  std::size_t cancels() const noexcept {
+    return cancels_;
+  }
 
 private:
   std::size_t cancels_{0};
@@ -809,9 +825,7 @@ TEST_CASE("an unread buying power blocks sending, and only when asked for", "[lo
     strategy::Portfolio<InertRunner::Tag> portfolio;
     portfolio.buying_power_.push_back(
       algotradelib::BuyingPower{
-        algotradelib::Money{
-          algotradelib::Decimal64::parse("5000000"), algotradelib::Currency::krw()
-        },
+        algotradelib::Money{algotradelib::Decimal64::parse("5000000"), algotradelib::Currency::krw()},
         base_time(),
       }
     );
@@ -834,9 +848,7 @@ TEST_CASE("an unread buying power blocks sending, and only when asked for", "[lo
     // The figure is aged against its own stamp, not against when a poll last succeeded.
     portfolio.buying_power_.push_back(
       algotradelib::BuyingPower{
-        algotradelib::Money{
-          algotradelib::Decimal64::parse("5000000"), algotradelib::Currency::krw()
-        },
+        algotradelib::Money{algotradelib::Decimal64::parse("5000000"), algotradelib::Currency::krw()},
         base_time() - std::chrono::minutes(10),
       }
     );
@@ -853,9 +865,7 @@ TEST_CASE("an unread buying power blocks sending, and only when asked for", "[lo
     // had never arrived, and the run would look fine from the outside.
     InertRunner runner_instance(Inert{}, limits);
     InertSource source;
-    source.set_buying_power_currencies(
-      {algotradelib::Currency::krw(), algotradelib::Currency::usd()}
-    );
+    source.set_buying_power_currencies({algotradelib::Currency::krw(), algotradelib::Currency::usd()});
     InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
     not_about_the_portfolio(loop);
     StopSource stop;
@@ -863,9 +873,7 @@ TEST_CASE("an unread buying power blocks sending, and only when asked for", "[lo
     strategy::Portfolio<InertRunner::Tag> portfolio;
     portfolio.buying_power_.push_back(
       algotradelib::BuyingPower{
-        algotradelib::Money{
-          algotradelib::Decimal64::parse("5000000"), algotradelib::Currency::krw()
-        },
+        algotradelib::Money{algotradelib::Decimal64::parse("5000000"), algotradelib::Currency::krw()},
         base_time(),
       }
     );
@@ -879,9 +887,7 @@ TEST_CASE("an unread buying power blocks sending, and only when asked for", "[lo
   SECTION("every configured currency answering opens it") {
     InertRunner runner_instance(Inert{}, limits);
     InertSource source;
-    source.set_buying_power_currencies(
-      {algotradelib::Currency::krw(), algotradelib::Currency::usd()}
-    );
+    source.set_buying_power_currencies({algotradelib::Currency::krw(), algotradelib::Currency::usd()});
     InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
     not_about_the_portfolio(loop);
     StopSource stop;
@@ -889,17 +895,13 @@ TEST_CASE("an unread buying power blocks sending, and only when asked for", "[lo
     strategy::Portfolio<InertRunner::Tag> portfolio;
     portfolio.buying_power_.push_back(
       algotradelib::BuyingPower{
-        algotradelib::Money{
-          algotradelib::Decimal64::parse("5000000"), algotradelib::Currency::krw()
-        },
+        algotradelib::Money{algotradelib::Decimal64::parse("5000000"), algotradelib::Currency::krw()},
         base_time(),
       }
     );
     portfolio.buying_power_.push_back(
       algotradelib::BuyingPower{
-        algotradelib::Money{
-          algotradelib::Decimal64::parse("4000"), algotradelib::Currency::usd()
-        },
+        algotradelib::Money{algotradelib::Decimal64::parse("4000"), algotradelib::Currency::usd()},
         base_time(),
       }
     );
@@ -916,9 +918,7 @@ TEST_CASE("an unread buying power blocks sending, and only when asked for", "[lo
     // happen is the gate staying open on the strength of the currency that did answer.
     InertRunner runner_instance(Inert{}, limits);
     InertSource source;
-    source.set_buying_power_currencies(
-      {algotradelib::Currency::krw(), algotradelib::Currency::usd()}
-    );
+    source.set_buying_power_currencies({algotradelib::Currency::krw(), algotradelib::Currency::usd()});
     InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
     not_about_the_portfolio(loop);
     loop.set_maximum_buying_power_age(std::chrono::minutes(5));
@@ -927,17 +927,13 @@ TEST_CASE("an unread buying power blocks sending, and only when asked for", "[lo
     strategy::Portfolio<InertRunner::Tag> portfolio;
     portfolio.buying_power_.push_back(
       algotradelib::BuyingPower{
-        algotradelib::Money{
-          algotradelib::Decimal64::parse("5000000"), algotradelib::Currency::krw()
-        },
+        algotradelib::Money{algotradelib::Decimal64::parse("5000000"), algotradelib::Currency::krw()},
         base_time(),
       }
     );
     portfolio.buying_power_.push_back(
       algotradelib::BuyingPower{
-        algotradelib::Money{
-          algotradelib::Decimal64::parse("4000"), algotradelib::Currency::usd()
-        },
+        algotradelib::Money{algotradelib::Decimal64::parse("4000"), algotradelib::Currency::usd()},
         base_time() - std::chrono::minutes(10),
       }
     );
@@ -949,7 +945,7 @@ TEST_CASE("an unread buying power blocks sending, and only when asked for", "[lo
   }
 
   SECTION("a loop that never asked for the check is not held") {
-    InertRunner runner_instance;  // default limits: no buying-power check
+    InertRunner runner_instance; // default limits: no buying-power check
     InertSource source;
     InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
     not_about_the_portfolio(loop);
@@ -1110,8 +1106,7 @@ TEST_CASE("a zero-quantity position is not flattened", "[loop][stop]") {
   CHECK(runner_instance.executor().placed().empty());
 }
 
-TEST_CASE("a stop that cannot size a close says so instead of reporting completion",
-          "[loop][stop]") {
+TEST_CASE("a stop that cannot size a close says so instead of reporting completion", "[loop][stop]") {
   // A net can be representable while the *magnitude* that would close
   // it is not: two rows summing to the most negative `Decimal64` have no positive counterpart, so
   // the size of the buy that would flatten them cannot be stated. That path used to `continue` in
@@ -1156,17 +1151,17 @@ TEST_CASE("a stop that cannot size a close says so instead of reporting completi
   // And the note points at the holdings rather than at the order list.
   bool explained = false;
   for (const auto& note : report.notes_) {
-    if (note.find("could be sized") != std::string::npos &&
-        note.find("still held") != std::string::npos &&
-        note.find("contended") == std::string::npos) {
+    if (
+      note.find("could be sized") != std::string::npos && note.find("still held") != std::string::npos &&
+      note.find("contended") == std::string::npos
+    ) {
       explained = true;
     }
   }
   CHECK(explained);
 }
 
-TEST_CASE("a stop counts a working close once for the instrument, not once per lot",
-          "[loop][stop]") {
+TEST_CASE("a stop counts a working close once for the instrument, not once per lot", "[loop][stop]") {
   // The other half of the same defect, and it is an under-close rather than a refusal. The
   // deduction subtracts what is already working on the closing side -- a figure for the whole
   // instrument -- and subtracting it once per row charged it twice. Rows of +60 and +40 with a
@@ -1209,12 +1204,10 @@ TEST_CASE("a stop counts a working close once for the instrument, not once per l
   REQUIRE(runner_instance.executor().placed().size() == 1);
   // 100 held, 20 already working on the closing side, so 80 is what is left to send. Sizing per row
   // subtracted the 20 twice and sent 40 + 20 = 60.
-  CHECK(runner_instance.executor().placed().front().quantity_ ==
-        algotradelib::Decimal64::parse("80"));
+  CHECK(runner_instance.executor().placed().front().quantity_ == algotradelib::Decimal64::parse("80"));
 }
 
-TEST_CASE("a runner halted before the loop starts sends nothing on the first iteration",
-  "[loop][gate]") {
+TEST_CASE("a runner halted before the loop starts sends nothing on the first iteration", "[loop][gate]") {
   // The loop polls and feeds *before* it calls `gate_for`, so a failure installed by recovery
   // before the first iteration can reach a scheduled event while the guard is still unhalted. The
   // enforcement therefore has to live in `Runner::settle()` as well, not only in the gate.
@@ -1550,7 +1543,7 @@ TEST_CASE("a stop with a read list but no holdings snapshot is not complete eith
   InertLoop loop(runner_instance, source, bars_each_iteration(), test_clock());
   StopSource stop;
 
-  loop.run(stop, 1);  // the startup read succeeds
+  loop.run(stop, 1); // the startup read succeeds
   stop.request(StopIntent::FLATTEN);
   const auto report = loop.run(stop, 1);
 
@@ -1633,7 +1626,7 @@ TEST_CASE("a flatten does not sell a position twice to get out of it", "[loop][s
   portfolio.positions_.push_back(position);
   algotradelib::WorkingOrder<InertRunner::Tag> working;
   working.order_.instrument_ = samsung();
-  working.order_.side_ = algotradelib::OrderSide::SELL;  // same side as the close
+  working.order_.side_ = algotradelib::OrderSide::SELL; // same side as the close
   working.order_.status_ = algotradelib::OrderStatus::PENDING;
   working.order_.quantity_ = algotradelib::Decimal64::parse("10");
   working.order_.execution_.filled_quantity_ = algotradelib::Decimal64::parse("0");
@@ -1677,7 +1670,7 @@ TEST_CASE("a flatten of a short position is sized the same way", "[loop][stop]")
   portfolio.positions_.push_back(position);
   algotradelib::WorkingOrder<InertRunner::Tag> working;
   working.order_.instrument_ = samsung();
-  working.order_.side_ = algotradelib::OrderSide::BUY;  // same side as closing a short
+  working.order_.side_ = algotradelib::OrderSide::BUY; // same side as closing a short
   working.order_.status_ = algotradelib::OrderStatus::PENDING;
   working.order_.quantity_ = algotradelib::Decimal64::parse("4");
   working.order_.execution_.filled_quantity_ = algotradelib::Decimal64::parse("0");
@@ -1718,16 +1711,18 @@ public:
     return runner::PollOutcome::UNCHANGED;
   }
 
-  runner::PollOutcome read_order_list(InertRunner&) { return runner::PollOutcome::UPDATED; }
+  runner::PollOutcome read_order_list(InertRunner&) {
+    return runner::PollOutcome::UPDATED;
+  }
 };
 
-using HistoryOnlyLoop =
-  runner::PollingLoop<InertRunner, HistoryOnlySource, runner::ManualClock>;
+using HistoryOnlyLoop = runner::PollingLoop<InertRunner, HistoryOnlySource, runner::ManualClock>;
 
 } // namespace
 
-TEST_CASE("a stop that cannot wait reads the account at once, however recently it was read",
-          "[loop][stop][closing-wait]") {
+TEST_CASE(
+  "a stop that cannot wait reads the account at once, however recently it was read", "[loop][stop][closing-wait]"
+) {
   // The reads' five-second floor belongs to the wait. A source with no working-order listing never
   // waits, so a holdings read held back for it would be missing from the pass that sizes the close.
   struct CountingHistoryOnly : HistoryOnlySource {
@@ -1756,8 +1751,7 @@ TEST_CASE("a stop that cannot wait reads the account at once, however recently i
   CHECK(source.holdings_polls_ == 2);
 }
 
-TEST_CASE("a flatten sends no close when a sell it cannot see may already be working",
-          "[loop][stop]") {
+TEST_CASE("a flatten sends no close when a sell it cannot see may already be working", "[loop][stop]") {
   // A double sell, reached through a listing that is *known* to be out of date.
   // Ten held, an empty working-order list read at startup, a bar that sells all ten, and a stop
   // before the next working-order poll. The snapshot still shows nothing working, so the
@@ -1800,8 +1794,7 @@ TEST_CASE("a flatten sends no close when a sell it cannot see may already be wor
   CHECK(report.closing_source_unverified_);
   CHECK_FALSE(report.closing_complete());
   REQUIRE_FALSE(report.notes_.empty());
-  CHECK(report.notes_.front().find("an order this loop cannot see could close them too") !=
-        std::string::npos);
+  CHECK(report.notes_.front().find("an order this loop cannot see could close them too") != std::string::npos);
 }
 
 TEST_CASE("a flatten on a source that cannot list orders sends no close", "[loop][stop]") {
@@ -1915,12 +1908,10 @@ TEST_CASE("a calendar missing today because its row was unreadable names the cau
   CHECK(report.final_phase_ == strategy::MarketPhase::UNKNOWN);
   REQUIRE(report.notes_.size() == 1);
   CHECK(report.notes_[0].find("the calendar does not cover") != std::string::npos);
-  CHECK(report.notes_[0].find("; the broker sent 1 calendar row whose date could not be read") !=
-        std::string::npos);
+  CHECK(report.notes_[0].find("; the broker sent 1 calendar row whose date could not be read") != std::string::npos);
 }
 
-TEST_CASE("a source that writes the calendar mid-poll is reported, since it cannot be stopped",
-          "[loop][phase]") {
+TEST_CASE("a source that writes the calendar mid-poll is reported, since it cannot be stopped", "[loop][phase]") {
   // **The limit of the mechanism, made visible.** A source can replace the
   // calendar and then feed the runner inside one `poll`, and no loop code runs in between, so that
   // order is settled against the phase as it stood when the poll began. Re-deriving the phase before
@@ -1951,11 +1942,9 @@ TEST_CASE("a source that writes the calendar mid-poll is reported, since it cann
   // And the report says which poll did it, exactly once.
   CHECK(report.sends_under_a_revised_phase_ == 1);
   REQUIRE_FALSE(report.notes_.empty());
-  CHECK(report.notes_[0].find("bars poll changed the market phase and sent a request") !=
-        std::string::npos);
+  CHECK(report.notes_[0].find("bars poll changed the market phase and sent a request") != std::string::npos);
   // And it names the check rather than the verdict: the loop observed co-occurrence, not causation.
-  CHECK(report.notes_[0].find("check whether that request used the earlier phase") !=
-        std::string::npos);
+  CHECK(report.notes_[0].find("check whether that request used the earlier phase") != std::string::npos);
 }
 
 TEST_CASE("a run delta that cannot be represented is counted, not dropped", "[loop]") {
@@ -1966,17 +1955,19 @@ TEST_CASE("a run delta that cannot be represented is counted, not dropped", "[lo
   // Five quintillion won, corrected away, then restated at a tenth of a won: both additions
   // succeed and the two scales cannot be aligned to subtract.
   algotradelib::runner::ChargedCosts before;
-  before.add(before.commission_, algotradelib::Money{
-    algotradelib::Decimal64::parse("5000000000000000000"), algotradelib::Currency::krw()
-  });
+  before.add(
+    before.commission_,
+    algotradelib::Money{algotradelib::Decimal64::parse("5000000000000000000"), algotradelib::Currency::krw()}
+  );
 
   auto after = before;
-  after.add(after.commission_, algotradelib::Money{
-    algotradelib::Decimal64::parse("-5000000000000000000"), algotradelib::Currency::krw()
-  });
-  after.add(after.commission_, algotradelib::Money{
-    algotradelib::Decimal64::parse("0.1"), algotradelib::Currency::krw()
-  });
+  after.add(
+    after.commission_,
+    algotradelib::Money{algotradelib::Decimal64::parse("-5000000000000000000"), algotradelib::Currency::krw()}
+  );
+  after.add(
+    after.commission_, algotradelib::Money{algotradelib::Decimal64::parse("0.1"), algotradelib::Currency::krw()}
+  );
 
   const auto delta = after.since(before);
   // The amount cannot be stated, and the run says so rather than reading as a quiet nil.
@@ -1984,8 +1975,9 @@ TEST_CASE("a run delta that cannot be represented is counted, not dropped", "[lo
   CHECK(delta.unrepresentable_sums_ == 1);
 }
 
-TEST_CASE("a run that has never read its holdings does not size an entry against an empty account",
-          "[loop][gate][portfolio]") {
+TEST_CASE(
+  "a run that has never read its holdings does not size an entry against an empty account", "[loop][gate][portfolio]"
+) {
   // The measurement behind the portfolio-absence gate. A live loop with the
   // default configuration -- no `maximum_portfolio_age_`, and no holdings cadence -- reaches a bar,
   // runs `on_bar`, reconciles a target against a `Portfolio` that was never populated, and sends.
@@ -2013,7 +2005,6 @@ TEST_CASE("a run that has never read its holdings does not size an entry against
   CHECK(source.last_withheld() == runner::WithheldPlanReason::PORTFOLIO_ABSENT);
   CHECK(report.final_gate_ == strategy::HaltReason::PORTFOLIO_ABSENT);
 }
-
 
 namespace {
 
@@ -2067,7 +2058,8 @@ public:
   std::chrono::nanoseconds shortest_gap(std::size_t from = 1) const {
     auto shortest = std::chrono::nanoseconds::max();
     for (std::size_t i = from; i < working_endpoint_asked_.size(); ++i) {
-      shortest = std::min<std::chrono::nanoseconds>(shortest, working_endpoint_asked_[i] - working_endpoint_asked_[i - 1]);
+      shortest =
+        std::min<std::chrono::nanoseconds>(shortest, working_endpoint_asked_[i] - working_endpoint_asked_[i - 1]);
     }
     return shortest;
   }
@@ -2269,8 +2261,9 @@ TEST_CASE("a flatten whose picture is already verified does not wait", "[loop][s
   CHECK(report.flattened_ == 1);
 }
 
-TEST_CASE("a flatten pending at start reads the order list again when the first read fails",
-          "[loop][stop][closing-wait]") {
+TEST_CASE(
+  "a flatten pending at start reads the order list again when the first read fails", "[loop][stop][closing-wait]"
+) {
   // A process started with `flatten` in its control file made one attempt at the order list and, when that
   // failed, ended with the position held. The wait gives it the iterations to try again.
   SellingRunner runner_instance;
@@ -2300,8 +2293,10 @@ TEST_CASE("a flatten pending at start reads the order list again when the first 
   CHECK(runner_instance.executor().placed().front().side_ == algotradelib::OrderSide::SELL);
 }
 
-TEST_CASE("a flatten pending at start whose order list never arrives asks on the floor and ends incomplete",
-          "[loop][stop][closing-wait]") {
+TEST_CASE(
+  "a flatten pending at start whose order list never arrives asks on the floor and ends incomplete",
+  "[loop][stop][closing-wait]"
+) {
   SellingRunner runner_instance;
   hold_ten(runner_instance);
   AccountingSource source;
@@ -2323,8 +2318,9 @@ TEST_CASE("a flatten pending at start whose order list never arrives asks on the
   CHECK_FALSE(report.closing_complete());
 }
 
-TEST_CASE("with no wait set, a flatten reads the order list at once whenever it was last asked",
-          "[loop][stop][closing-wait]") {
+TEST_CASE(
+  "with no wait set, a flatten reads the order list at once whenever it was last asked", "[loop][stop][closing-wait]"
+) {
   // The five-second floor belongs to the wait. Without one the pass is built in this iteration, so a
   // read held back would simply be missing from it.
   SellingRunner runner_instance;
@@ -2346,8 +2342,9 @@ TEST_CASE("with no wait set, a flatten reads the order list at once whenever it 
   CHECK(report.order_list_read_);
 }
 
-TEST_CASE("a stop whose account is read and coherent acts in the iteration that takes it up",
-          "[loop][stop][closing-wait]") {
+TEST_CASE(
+  "a stop whose account is read and coherent acts in the iteration that takes it up", "[loop][stop][closing-wait]"
+) {
   // Whatever the cadences, a zero interval included, and whether the stop was pending when the
   // iteration began or arrived after its reads: nothing is missing, so nothing is waited for.
   for (const auto interval : {std::chrono::seconds(0), std::chrono::seconds(1), std::chrono::seconds(60)}) {
@@ -2381,38 +2378,39 @@ TEST_CASE("a stop whose account is read and coherent acts in the iteration that 
   }
 }
 
-TEST_CASE("a slow holdings call does not keep a stop whose account is coherent waiting",
-          "[loop][stop][closing-wait]") {
+TEST_CASE("a slow holdings call does not keep a stop whose account is coherent waiting", "[loop][stop][closing-wait]") {
   // A holdings call that takes two seconds, on cadences of a second or none: the reads of the stop's
   // iteration are enough, and it does not wait for others.
   for (const auto interval : {std::chrono::seconds(1), std::chrono::seconds(0)}) {
-  SellingRunner runner_instance;
-  hold_ten(runner_instance);
-  AccountingSource source;
-  auto schedule = bars_each_iteration();
-  schedule.holdings_ = interval;
-  schedule.working_orders_ = interval;
-  AccountingLoop loop(runner_instance, source, schedule, test_clock());
-  source.clock_ = &loop.clock();
-  source.held_ = "0";
-  source.held_after_stop_ = "0";
-  source.holdings_take_ = std::chrono::seconds(2);
-  source.slow_clock_ = &loop.clock();
-  not_about_the_portfolio(loop);
-  StopSource stop;
-  REQUIRE(loop.run(stop, 1).iterations_ == 1);
+    SellingRunner runner_instance;
+    hold_ten(runner_instance);
+    AccountingSource source;
+    auto schedule = bars_each_iteration();
+    schedule.holdings_ = interval;
+    schedule.working_orders_ = interval;
+    AccountingLoop loop(runner_instance, source, schedule, test_clock());
+    source.clock_ = &loop.clock();
+    source.held_ = "0";
+    source.held_after_stop_ = "0";
+    source.holdings_take_ = std::chrono::seconds(2);
+    source.slow_clock_ = &loop.clock();
+    not_about_the_portfolio(loop);
+    StopSource stop;
+    REQUIRE(loop.run(stop, 1).iterations_ == 1);
 
-  stop.request(StopIntent::FLATTEN);
-  const auto report = loop.run(stop, 0);
-  CAPTURE(interval.count(), source.holdings_polls_, source.working_polls_);
-  CHECK_FALSE(report.closing_wait_expired_);
-  CHECK(report.closing_waited_ < std::chrono::seconds(15));
-  CHECK(report.closing_complete());
+    stop.request(StopIntent::FLATTEN);
+    const auto report = loop.run(stop, 0);
+    CAPTURE(interval.count(), source.holdings_polls_, source.working_polls_);
+    CHECK_FALSE(report.closing_wait_expired_);
+    CHECK(report.closing_waited_ < std::chrono::seconds(15));
+    CHECK(report.closing_complete());
   }
 }
 
-TEST_CASE("a waiting stop keeps its own time: the tick, the wall clock and a second word do not move it",
-          "[loop][stop][closing-wait]") {
+TEST_CASE(
+  "a waiting stop keeps its own time: the tick, the wall clock and a second word do not move it",
+  "[loop][stop][closing-wait]"
+) {
   SellingRunner runner_instance;
   hold_ten(runner_instance);
   AccountingSource source;
@@ -2529,8 +2527,10 @@ TEST_CASE("a target left queued while a stop waits is not sent with the closing 
   CHECK(report.stop_handler_refused_ == 1);
 }
 
-TEST_CASE("a run abandoned while a stop waits leaves the stop's hold and reports the stop unfinished",
-          "[loop][stop][closing-wait]") {
+TEST_CASE(
+  "a run abandoned while a stop waits leaves the stop's hold and reports the stop unfinished",
+  "[loop][stop][closing-wait]"
+) {
   SellingRunner runner_instance;
   hold_ten(runner_instance);
   AccountingSource source;

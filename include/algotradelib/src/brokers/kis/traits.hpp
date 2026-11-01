@@ -182,9 +182,7 @@ struct Normalizers {
    * @param raw The client's result.
    * @return The working orders, or the error.
    */
-  static Result<WorkingOrders<kis::Broker>> normalize_working_orders(
-    Result<KisOpenOrderPage> raw
-  ) {
+  static Result<WorkingOrders<kis::Broker>> normalize_working_orders(Result<KisOpenOrderPage> raw) {
     if (!raw) {
       return Result<WorkingOrders<kis::Broker>>(std::move(raw.error()));
     }
@@ -214,10 +212,7 @@ struct Normalizers {
    * @param instruction The instruction.
    * @return KIS's amendment, or an `INVALID_ARGUMENT` error.
    */
-  static Result<KisAmendment> to_amendment(
-    const Ref& ref,
-    const AmendInstruction& instruction
-  ) {
+  static Result<KisAmendment> to_amendment(const Ref& ref, const AmendInstruction& instruction) {
     if (!instruction.quantity_) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
@@ -236,12 +231,12 @@ struct Normalizers {
     // amendment with a condition or session it does not know -- an unset field
     // with no resting shape to resolve it from is refused rather than defaulted,
     // because defaulting it here is how `00` got sent for an IOC order.
-    const auto condition = instruction.shape_.time_in_force_
-      ? instruction.shape_.time_in_force_
-      : (instruction.resting_ ? instruction.resting_->time_in_force_ : std::nullopt);
-    const auto session = instruction.shape_.session_
-      ? instruction.shape_.session_
-      : (instruction.resting_ ? instruction.resting_->session_ : std::nullopt);
+    const auto condition = instruction.shape_.time_in_force_ ?
+      instruction.shape_.time_in_force_ :
+      (instruction.resting_ ? instruction.resting_->time_in_force_ : std::nullopt);
+    const auto session = instruction.shape_.session_ ?
+      instruction.shape_.session_ :
+      (instruction.resting_ ? instruction.resting_->session_ : std::nullopt);
     if (!condition || !session) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
@@ -270,10 +265,7 @@ struct Normalizers {
    * @param instruction The amendment or cancellation.
    * @return The result, or an error.
    */
-  static Result<KisAmendment> to_replacement(
-    const Ref& ref,
-    const AmendInstruction& instruction
-  ) {
+  static Result<KisAmendment> to_replacement(const Ref& ref, const AmendInstruction& instruction) {
     return to_amendment(ref, instruction);
   }
 
@@ -283,10 +275,7 @@ struct Normalizers {
    * @param instruction The amendment or cancellation.
    * @return The result, or an error.
    */
-  static Result<KisAmendment> to_cancellation(
-    const Ref& ref,
-    const AmendInstruction& instruction
-  ) {
+  static Result<KisAmendment> to_cancellation(const Ref& ref, const AmendInstruction& instruction) {
     return to_amendment(ref, instruction);
   }
 
@@ -299,10 +288,7 @@ struct Normalizers {
    * @param query The query.
    * @return The range, or an `INVALID_ARGUMENT` error.
    */
-  static Result<KisHistoryRange> to_history_query(
-    const KisAccount&,
-    const OrderHistoryQuery& query
-  ) {
+  static Result<KisHistoryRange> to_history_query(const KisAccount&, const OrderHistoryQuery& query) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
     error.reached_broker_ = false;
@@ -397,8 +383,7 @@ inline constexpr Venue kis_effective_route(Venue asked) noexcept {
 
 /** @brief The `BrokerSession` adapter for `kis::KisClient`. */
 template <>
-struct BrokerTraits<kis::KisClient>
-: kis::traits_detail::Normalizers, kis::traits_detail::Capabilities {
+struct BrokerTraits<kis::KisClient> : kis::traits_detail::Normalizers, kis::traits_detail::Capabilities {
   /**
    * @brief Where an order carrying `asked` actually goes; see `kis_effective_route`.
    * @param asked The order's venue.
@@ -471,9 +456,7 @@ struct BrokerTraits<kis::KisClient>
    */
   template <typename Token>
   static auto calendar(Client& client, Country, std::optional<Date> from, Token&& token) {
-    return client.async_calendar(
-      from ? *from : kis::today_in_seoul(), false, std::forward<Token>(token)
-    );
+    return client.async_calendar(from ? *from : kis::today_in_seoul(), false, std::forward<Token>(token));
   }
 
   /**
@@ -593,12 +576,7 @@ struct BrokerTraits<kis::KisClient>
    * @return Whatever the completion token returns.
    */
   template <typename Token>
-  static auto replace_order(
-    Client& client,
-    const Account& account,
-    Amendment amendment,
-    Token&& token
-  ) {
+  static auto replace_order(Client& client, const Account& account, Amendment amendment, Token&& token) {
     return client.async_replace_order(account, std::move(amendment), std::forward<Token>(token));
   }
 
@@ -612,12 +590,7 @@ struct BrokerTraits<kis::KisClient>
    * @return Whatever the completion token returns.
    */
   template <typename Token>
-  static auto cancel_order(
-    Client& client,
-    const Account& account,
-    Amendment amendment,
-    Token&& token
-  ) {
+  static auto cancel_order(Client& client, const Account& account, Amendment amendment, Token&& token) {
     return client.async_cancel_order(account, std::move(amendment), std::forward<Token>(token));
   }
 
@@ -644,20 +617,14 @@ struct BrokerTraits<kis::KisClient>
    * @return Whatever the completion token returns.
    */
   template <typename Token>
-  static auto order_history(
-    Client& client,
-    const Account& account,
-    HistoryQuery query,
-    Token&& token
-  ) {
+  static auto order_history(Client& client, const Account& account, HistoryQuery query, Token&& token) {
     return client.async_order_history(account, query, std::forward<Token>(token));
   }
 };
 
 /** @brief The `BlockingSession` adapter for `kis::KisBlockingClient`. */
 template <>
-struct BrokerTraits<kis::KisBlockingClient>
-: kis::traits_detail::Normalizers, kis::traits_detail::Capabilities {
+struct BrokerTraits<kis::KisBlockingClient> : kis::traits_detail::Normalizers, kis::traits_detail::Capabilities {
   /**
    * @brief Where an order carrying `asked` actually goes; see `kis_effective_route`.
    * @param asked The order's venue.
@@ -743,11 +710,7 @@ struct BrokerTraits<kis::KisBlockingClient>
    * @param count The most trades to return.
    * @return The result, or an error.
    */
-  static Result<std::vector<TradePrint>> trades(
-    Client& client,
-    InstrumentId instrument,
-    int count
-  ) {
+  static Result<std::vector<TradePrint>> trades(Client& client, InstrumentId instrument, int count) {
     return client.trades(std::move(instrument), count);
   }
 
@@ -798,11 +761,7 @@ struct BrokerTraits<kis::KisBlockingClient>
    * @param currency The currency.
    * @return The result, or an error.
    */
-  static Result<BuyingPower> buying_power(
-    Client& client,
-    const Account& account,
-    Currency currency
-  ) {
+  static Result<BuyingPower> buying_power(Client& client, const Account& account, Currency currency) {
     return client.buying_power(currency, account);
   }
 
@@ -824,11 +783,7 @@ struct BrokerTraits<kis::KisBlockingClient>
    * @param amendment The amendment.
    * @return The result, or an error.
    */
-  static Result<PlaceAck> replace_order(
-    Client& client,
-    const Account& account,
-    Amendment amendment
-  ) {
+  static Result<PlaceAck> replace_order(Client& client, const Account& account, Amendment amendment) {
     return client.replace_order(account, std::move(amendment));
   }
 
@@ -839,11 +794,7 @@ struct BrokerTraits<kis::KisBlockingClient>
    * @param amendment The amendment.
    * @return The result, or an error.
    */
-  static Result<PlaceAck> cancel_order(
-    Client& client,
-    const Account& account,
-    Amendment amendment
-  ) {
+  static Result<PlaceAck> cancel_order(Client& client, const Account& account, Amendment amendment) {
     return client.cancel_order(account, std::move(amendment));
   }
 
@@ -864,11 +815,7 @@ struct BrokerTraits<kis::KisBlockingClient>
    * @param query The query.
    * @return The result, or an error.
    */
-  static Result<OrderPage> order_history(
-    Client& client,
-    const Account& account,
-    HistoryQuery query
-  ) {
+  static Result<OrderPage> order_history(Client& client, const Account& account, HistoryQuery query) {
     return client.order_history(account, query);
   }
 };

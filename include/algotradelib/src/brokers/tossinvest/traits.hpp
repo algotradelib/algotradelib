@@ -146,7 +146,9 @@ struct Normalizers {
    *   minutes. The order argument is not used.
    * @return `std::nullopt`.
    */
-  static std::optional<BrokerError> validate_place(const OrderRequest&) { return std::nullopt; }
+  static std::optional<BrokerError> validate_place(const OrderRequest&) {
+    return std::nullopt;
+  }
 
   /**
    * @brief Normalizes a Toss acknowledgement into an acknowledgement and a reference.
@@ -169,9 +171,7 @@ struct Normalizers {
    * @param raw The client's result.
    * @return The working orders, or the error.
    */
-  static Result<WorkingOrders<tossinvest::Broker>> normalize_working_orders(
-    Result<OrderPage> raw
-  ) {
+  static Result<WorkingOrders<tossinvest::Broker>> normalize_working_orders(Result<OrderPage> raw) {
     if (!raw) {
       return Result<WorkingOrders<tossinvest::Broker>>(std::move(raw.error()));
     }
@@ -200,10 +200,7 @@ struct Normalizers {
    * @param instruction The amendment.
    * @return Toss's amendment, or an `INVALID_ARGUMENT` error.
    */
-  static Result<tossinvest::TossAmendment> to_replacement(
-    const Ref& ref,
-    const AmendInstruction& instruction
-  ) {
+  static Result<tossinvest::TossAmendment> to_replacement(const Ref& ref, const AmendInstruction& instruction) {
     // Toss's `OrderModifyRequest` carries `orderType`, `quantity`, `price` and
     // the high-value flag, and **no validity field at all**: a modification
     // cannot change the condition or the session, and Toss cannot refuse a
@@ -228,8 +225,9 @@ struct Normalizers {
       return Result<tossinvest::TossAmendment>(std::move(error));
     }
     // An unset field on the shape asks for no change, which is always safe here.
-    if (instruction.shape_.time_in_force_ &&
-        *instruction.shape_.time_in_force_ != instruction.resting_->time_in_force_) {
+    if (
+      instruction.shape_.time_in_force_ && *instruction.shape_.time_in_force_ != instruction.resting_->time_in_force_
+    ) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.reached_broker_ = false;
@@ -239,8 +237,7 @@ struct Normalizers {
         "place a new one instead";
       return Result<tossinvest::TossAmendment>(std::move(error));
     }
-    if (instruction.shape_.session_ &&
-        *instruction.shape_.session_ != instruction.resting_->session_) {
+    if (instruction.shape_.session_ && *instruction.shape_.session_ != instruction.resting_->session_) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.reached_broker_ = false;
@@ -269,10 +266,7 @@ struct Normalizers {
    * @param instruction The cancellation.
    * @return Toss's instruction, or an `INVALID_ARGUMENT` error.
    */
-  static Result<tossinvest::TossAmendment> to_cancellation(
-    const Ref& ref,
-    const AmendInstruction& instruction
-  ) {
+  static Result<tossinvest::TossAmendment> to_cancellation(const Ref& ref, const AmendInstruction& instruction) {
     if (!instruction.all_remaining_) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
@@ -296,8 +290,7 @@ struct Normalizers {
    * @return The listing query (never an error).
    */
   static Result<tossinvest::TossOrderQuery> to_history_query(
-    std::int64_t account_sequence,
-    const OrderHistoryQuery& query
+    std::int64_t account_sequence, const OrderHistoryQuery& query
   ) {
     tossinvest::TossOrderQuery converted;
     converted.account_sequence_ = account_sequence;
@@ -416,7 +409,9 @@ struct BrokerTraits<tossinvest::TossClient>
    *
    * @return `Venue::UNSPECIFIED`.
    */
-  static constexpr Venue effective_route(Venue) noexcept { return Venue::UNSPECIFIED; }
+  static constexpr Venue effective_route(Venue) noexcept {
+    return Venue::UNSPECIFIED;
+  }
 
   /** @brief The client type. */
   using Client = tossinvest::TossClient;
@@ -602,12 +597,7 @@ struct BrokerTraits<tossinvest::TossClient>
    * @return Whatever the completion token returns.
    */
   template <typename Token>
-  static auto sellable_quantity(
-    Client& client,
-    const Account& account,
-    InstrumentId instrument,
-    Token&& token
-  ) {
+  static auto sellable_quantity(Client& client, const Account& account, InstrumentId instrument, Token&& token) {
     return client.async_sellable_quantity(std::move(instrument), account, std::forward<Token>(token));
   }
 
@@ -661,12 +651,7 @@ struct BrokerTraits<tossinvest::TossClient>
    * @return Whatever the completion token returns.
    */
   template <typename Token>
-  static auto replace_order(
-    Client& client,
-    const Account& account,
-    Amendment amendment,
-    Token&& token
-  ) {
+  static auto replace_order(Client& client, const Account& account, Amendment amendment, Token&& token) {
     return client.async_replace_order(account, std::move(amendment), std::forward<Token>(token));
   }
 
@@ -680,15 +665,8 @@ struct BrokerTraits<tossinvest::TossClient>
    * @return Whatever the completion token returns.
    */
   template <typename Token>
-  static auto cancel_order(
-    Client& client,
-    const Account& account,
-    Amendment amendment,
-    Token&& token
-  ) {
-    return client.async_cancel_order(
-      account, std::move(amendment.order_id_), std::forward<Token>(token)
-    );
+  static auto cancel_order(Client& client, const Account& account, Amendment amendment, Token&& token) {
+    return client.async_cancel_order(account, std::move(amendment.order_id_), std::forward<Token>(token));
   }
 
   /**
@@ -714,12 +692,7 @@ struct BrokerTraits<tossinvest::TossClient>
    * @return Whatever the completion token returns.
    */
   template <typename Token>
-  static auto order_history(
-    Client& client,
-    const Account& account,
-    HistoryQuery query,
-    Token&& token
-  ) {
+  static auto order_history(Client& client, const Account& account, HistoryQuery query, Token&& token) {
     static_cast<void>(account);
     return client.async_orders(std::move(query), std::forward<Token>(token));
   }
@@ -734,12 +707,7 @@ struct BrokerTraits<tossinvest::TossClient>
    * @return Whatever the completion token returns.
    */
   template <typename Token>
-  static auto order_by_id(
-    Client& client,
-    const Account& account,
-    std::string order_id,
-    Token&& token
-  ) {
+  static auto order_by_id(Client& client, const Account& account, std::string order_id, Token&& token) {
     return client.async_order(account, std::move(order_id), std::forward<Token>(token));
   }
 };
@@ -756,7 +724,9 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
    *
    * @return `Venue::UNSPECIFIED`.
    */
-  static constexpr Venue effective_route(Venue) noexcept { return Venue::UNSPECIFIED; }
+  static constexpr Venue effective_route(Venue) noexcept {
+    return Venue::UNSPECIFIED;
+  }
 
   /** @brief The client type. */
   using Client = tossinvest::TossBlockingClient;
@@ -838,11 +808,7 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
    * @param count The most trades to return, clamped to 1-50.
    * @return The result, or an error.
    */
-  static Result<std::vector<TradePrint>> trades(
-    Client& client,
-    InstrumentId instrument,
-    int count
-  ) {
+  static Result<std::vector<TradePrint>> trades(Client& client, InstrumentId instrument, int count) {
     return client.trades(std::move(instrument), count);
   }
 
@@ -852,10 +818,7 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
    * @param instruments The instruments.
    * @return The result, or an error.
    */
-  static Result<std::vector<QuoteSnapshot>> prices(
-    Client& client,
-    std::vector<InstrumentId> instruments
-  ) {
+  static Result<std::vector<QuoteSnapshot>> prices(Client& client, std::vector<InstrumentId> instruments) {
     return client.prices(std::move(instruments));
   }
 
@@ -915,11 +878,7 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
    * @param currency The currency.
    * @return The result, or an error.
    */
-  static Result<BuyingPower> buying_power(
-    Client& client,
-    const Account& account,
-    Currency currency
-  ) {
+  static Result<BuyingPower> buying_power(Client& client, const Account& account, Currency currency) {
     return client.buying_power(currency, account);
   }
 
@@ -930,11 +889,7 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
    * @param instrument The instrument.
    * @return The result, or an error.
    */
-  static Result<Decimal64> sellable_quantity(
-    Client& client,
-    const Account& account,
-    InstrumentId instrument
-  ) {
+  static Result<Decimal64> sellable_quantity(Client& client, const Account& account, InstrumentId instrument) {
     return client.sellable_quantity(std::move(instrument), account);
   }
 
@@ -966,11 +921,7 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
    * @param amendment The amendment.
    * @return The result, or an error.
    */
-  static Result<PlaceAck> replace_order(
-    Client& client,
-    const Account& account,
-    Amendment amendment
-  ) {
+  static Result<PlaceAck> replace_order(Client& client, const Account& account, Amendment amendment) {
     return client.replace_order(account, std::move(amendment));
   }
 
@@ -981,11 +932,7 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
    * @param amendment The amendment.
    * @return The result, or an error.
    */
-  static Result<PlaceAck> cancel_order(
-    Client& client,
-    const Account& account,
-    Amendment amendment
-  ) {
+  static Result<PlaceAck> cancel_order(Client& client, const Account& account, Amendment amendment) {
     return client.cancel_order(account, std::move(amendment.order_id_));
   }
 
@@ -1006,11 +953,7 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
    * @param query The query.
    * @return The result, or an error.
    */
-  static Result<OrderPage> order_history(
-    Client& client,
-    const Account& account,
-    HistoryQuery query
-  ) {
+  static Result<OrderPage> order_history(Client& client, const Account& account, HistoryQuery query) {
     static_cast<void>(account);
     return client.orders(std::move(query));
   }
@@ -1023,11 +966,7 @@ struct BrokerTraits<tossinvest::TossBlockingClient>
    * @param order_id Toss's order id.
    * @return The result, or an error.
    */
-  static Result<OrderSnapshot> order_by_id(
-    Client& client,
-    const Account& account,
-    std::string order_id
-  ) {
+  static Result<OrderSnapshot> order_by_id(Client& client, const Account& account, std::string order_id) {
     return client.order(account, std::move(order_id));
   }
 };

@@ -27,9 +27,7 @@ int main(int argc, char* argv[]) {
     tls.set_default_verify_paths();
     tls.set_verify_mode(ssl::verify_peer);
 
-    auto client = std::make_shared<algotradelib::tossinvest::TossClient>(
-      ioc.get_executor(), tls, std::move(config)
-    );
+    auto client = std::make_shared<algotradelib::tossinvest::TossClient>(ioc.get_executor(), tls, std::move(config));
     int exit_code = 1;
     client->async_quote(
       {algotradelib::Country::KR, algotradelib::Venue::COMBINED, symbol},
@@ -54,8 +52,8 @@ int main(int argc, char* argv[]) {
         }
 
         const auto& quote = result.value();
-        std::cout << quote.instrument_.symbol_ << ' ' << quote.last_price_.str() << ' '
-          << quote.currency_.str() << '\n';
+        std::cout
+          << quote.instrument_.symbol_ << ' ' << quote.last_price_.str() << ' ' << quote.currency_.str() << '\n';
         exit_code = 0;
       }
     );

@@ -39,8 +39,7 @@ public:
    * @param fields The number of values per observation; the default holds every `BarField`.
    * @throws std::invalid_argument if `capacity` or `fields` is zero.
    */
-  SeriesBuffer(std::size_t capacity, std::size_t fields = bar_field_count)
-  : capacity_(capacity), fields_(fields) {
+  SeriesBuffer(std::size_t capacity, std::size_t fields = bar_field_count) : capacity_(capacity), fields_(fields) {
     if (capacity == 0 || fields == 0) {
       throw std::invalid_argument("a series buffer needs a capacity and at least one field");
     }
@@ -53,37 +52,49 @@ public:
    * @brief Returns the most observations the buffer holds.
    * @return The capacity given at construction.
    */
-  std::size_t capacity() const noexcept { return capacity_; }
+  std::size_t capacity() const noexcept {
+    return capacity_;
+  }
 
   /**
    * @brief Returns the number of values per observation.
    * @return The field count given at construction.
    */
-  std::size_t fields() const noexcept { return fields_; }
+  std::size_t fields() const noexcept {
+    return fields_;
+  }
 
   /**
    * @brief Returns the number of observations held.
    * @return A number from `0` to `capacity()`.
    */
-  std::size_t size() const noexcept { return count_; }
+  std::size_t size() const noexcept {
+    return count_;
+  }
 
   /**
    * @brief Tests whether the buffer is empty.
    * @return `true` if it holds no observations.
    */
-  bool empty() const noexcept { return count_ == 0; }
+  bool empty() const noexcept {
+    return count_ == 0;
+  }
 
   /**
    * @brief Tests whether the buffer holds `capacity()` observations.
    * @return `true` once it is full.
    */
-  bool full() const noexcept { return count_ == capacity_; }
+  bool full() const noexcept {
+    return count_ == capacity_;
+  }
 
   /**
    * @brief Returns how many times the buffer moved its contents to the front of its storage.
    * @return The compaction count; at most one per `capacity()` pushes.
    */
-  std::size_t compactions() const noexcept { return compactions_; }
+  std::size_t compactions() const noexcept {
+    return compactions_;
+  }
 
   /**
    * @brief Appends one observation, dropping the oldest if the buffer is full.
@@ -111,8 +122,7 @@ public:
 
     const auto row_index = static_cast<math::Index>(begin_ + count_);
     for (std::size_t field = 0; field < fields_; ++field) {
-      values_(row_index, static_cast<math::Index>(field)) =
-        row(static_cast<math::Index>(field));
+      values_(row_index, static_cast<math::Index>(field)) = row(static_cast<math::Index>(field));
     }
     stamps_[begin_ + count_] = when;
     ++count_;
@@ -159,8 +169,7 @@ public:
     row(static_cast<math::Index>(bar_field_index(BarField::CLOSE))) = to_scalar(bar.close_);
     row(static_cast<math::Index>(bar_field_index(BarField::VOLUME))) = to_scalar(bar.volume_);
     if (bar.traded_value_) {
-      row(static_cast<math::Index>(bar_field_index(BarField::TRADED_VALUE))) =
-        to_scalar(*bar.traded_value_);
+      row(static_cast<math::Index>(bar_field_index(BarField::TRADED_VALUE))) = to_scalar(*bar.traded_value_);
     }
     push(bar.timestamp_, row);
   }
@@ -188,7 +197,9 @@ public:
    * @return A view of `size()` values, valid until the next `push` or `clear`.
    * @throws std::out_of_range if the buffer has fewer columns than `field` needs.
    */
-  math::SeriesView column(BarField field) const { return column(bar_field_index(field)); }
+  math::SeriesView column(BarField field) const {
+    return column(bar_field_index(field));
+  }
 
   /**
    * @brief Reads one value.
@@ -202,9 +213,7 @@ public:
     if (position >= count_ || field >= fields_) {
       throw std::out_of_range("series buffer position is past the end");
     }
-    return values_(
-      static_cast<math::Index>(begin_ + position), static_cast<math::Index>(field)
-    );
+    return values_(static_cast<math::Index>(begin_ + position), static_cast<math::Index>(field));
   }
 
   /**

@@ -20,7 +20,9 @@ using namespace algotradelib;
 namespace {
 
 /** Returns the instrument used throughout these tests. */
-InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
+InstrumentId samsung() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+}
 
 /** Returns a KIS acknowledgement as the adapter would hand one back. */
 kis::KisOrderAck kis_ack() {
@@ -73,15 +75,10 @@ struct can_cancel : std::false_type {};
 
 template <typename Session, typename Ref>
 struct can_cancel<
-  Session,
-  Ref,
-  std::void_t<
-    decltype(
-      std::declval<Session&>().async_cancel(
-        std::declval<Ref>(), std::declval<AmendInstruction>(), AnySink{}
-      )
-    )
-  >
+  Session, Ref,
+  std::void_t<decltype(std::declval<Session&>().async_cancel(
+    std::declval<Ref>(), std::declval<AmendInstruction>(), AnySink{}
+  ))>
 > : std::true_type {};
 
 } // namespace
@@ -110,12 +107,10 @@ TEST_CASE("capabilities record each broker's real differences") {
 
   // A blocking facade answers the same capability questions as its async client.
   static_assert(
-    BrokerCaps<kis::KisClient>::has_partial_cancel ==
-    BrokerCaps<kis::KisBlockingClient>::has_partial_cancel
+    BrokerCaps<kis::KisClient>::has_partial_cancel == BrokerCaps<kis::KisBlockingClient>::has_partial_cancel
   );
   static_assert(
-    BrokerCaps<tossinvest::TossClient>::has_order_by_id ==
-    BrokerCaps<tossinvest::TossBlockingClient>::has_order_by_id
+    BrokerCaps<tossinvest::TossClient>::has_order_by_id == BrokerCaps<tossinvest::TossBlockingClient>::has_order_by_id
   );
   // Both answer what may be spent; neither client returns an affordable quantity.
   static_assert(BrokerCaps<kis::KisClient>::has_buying_power);
@@ -133,10 +128,7 @@ TEST_CASE("capabilities record each broker's real differences") {
   static_assert(BrokerCaps<kis::KisClient>::sellable_source == SellableSource::HOLDINGS);
   static_assert(BrokerCaps<tossinvest::TossClient>::sellable_source == SellableSource::INQUIRY);
 
-  static_assert(
-    BrokerCaps<kis::KisClient>::sellable_source ==
-    BrokerCaps<kis::KisBlockingClient>::sellable_source
-  );
+  static_assert(BrokerCaps<kis::KisClient>::sellable_source == BrokerCaps<kis::KisBlockingClient>::sellable_source);
   static_assert(
     BrokerCaps<tossinvest::TossClient>::has_commission_schedule ==
     BrokerCaps<tossinvest::TossBlockingClient>::has_commission_schedule
@@ -147,32 +139,17 @@ TEST_CASE("capabilities record each broker's real differences") {
 TEST_CASE("a broker's two clients share one order-reference type") {
   // A reference read through the blocking facade must be usable with the
   // asynchronous client of the same broker, and with no other broker.
+  static_assert(std::is_same_v<BrokerSession<kis::KisClient>::Ref, BlockingSession<kis::KisBlockingClient>::Ref>);
   static_assert(
-    std::is_same_v<
-      BrokerSession<kis::KisClient>::Ref,
-      BlockingSession<kis::KisBlockingClient>::Ref
-    >
+    std::is_same_v<BrokerSession<tossinvest::TossClient>::Ref, BlockingSession<tossinvest::TossBlockingClient>::Ref>
   );
-  static_assert(
-    std::is_same_v<
-      BrokerSession<tossinvest::TossClient>::Ref,
-      BlockingSession<tossinvest::TossBlockingClient>::Ref
-    >
-  );
-  static_assert(
-    !std::is_same_v<
-      BrokerSession<kis::KisClient>::Ref,
-      BrokerSession<tossinvest::TossClient>::Ref
-    >
-  );
+  static_assert(!std::is_same_v<BrokerSession<kis::KisClient>::Ref, BrokerSession<tossinvest::TossClient>::Ref>);
   SUCCEED("reference identity is a compile-time property");
 }
 
 TEST_CASE("a reference from another broker cannot be compiled into a cancellation") {
   static_assert(can_cancel<BrokerSession<kis::KisClient>, OrderRef<kis::Broker>>::value);
-  static_assert(
-    can_cancel<BrokerSession<tossinvest::TossClient>, OrderRef<tossinvest::Broker>>::value
-  );
+  static_assert(can_cancel<BrokerSession<tossinvest::TossClient>, OrderRef<tossinvest::Broker>>::value);
 
   // The broker lives in the reference's type, so mixing brokers is ill-formed
   // rather than a run-time rejection, and costs nothing to enforce.
@@ -260,8 +237,7 @@ TEST_CASE("an amendment changes what it states and leaves the rest alone") {
     // Copying the condition and session from the resting order instead silently
     // discarded a caller's deliberate change. An unset optional is neither.
     const auto instruction =
-      replace_with(resting_closing_auction(), OrderShape{OrderType::LIMIT,
-                                                         Decimal64::parse("186.0")});
+      replace_with(resting_closing_auction(), OrderShape{OrderType::LIMIT, Decimal64::parse("186.0")});
     REQUIRE_FALSE(instruction.shape_.time_in_force_.has_value());
     REQUIRE_FALSE(instruction.shape_.session_.has_value());
     REQUIRE(instruction.resting_);
@@ -277,9 +253,7 @@ TEST_CASE("an amendment changes what it states and leaves the rest alone") {
   }
 
   SECTION("a stated session that differs is a change, and Toss refuses it") {
-    auto instruction =
-      replace_with(resting_closing_auction(), OrderShape{OrderType::LIMIT,
-                                                         Decimal64::parse("186.0")});
+    auto instruction = replace_with(resting_closing_auction(), OrderShape{OrderType::LIMIT, Decimal64::parse("186.0")});
     // Stated, not defaulted. Toss's modify request has no validity field, so
     // sending this would report a move that did not happen.
     instruction.shape_.session_ = OrderSession::REGULAR;
@@ -381,9 +355,7 @@ TEST_CASE("KIS normalizes an acknowledgement into a reference that can amend it"
       // The shape the order already has. Stating it is what lets an adapter tell
       // a change from a value it merely supports, and KIS cannot compose an
       // order code without the condition and session, so it is stated in full.
-      OrderShape{
-        OrderType::LIMIT, Decimal64::parse("70000"), TimeInForce::DAY, OrderSession::REGULAR
-      },
+      OrderShape{OrderType::LIMIT, Decimal64::parse("70000"), TimeInForce::DAY, OrderSession::REGULAR},
     }
   );
   REQUIRE(amendment.has_value());
@@ -481,9 +453,8 @@ TEST_CASE("KIS refuses an amendment with no quantity instead of inventing one") 
   REQUIRE(accepted.value().all_remaining_);
   REQUIRE(accepted.value().quantity_ == Decimal64::parse("7"));
 
-  auto partial = Traits::to_cancellation(
-    reference, cancel_quantity(working_order<kis::Broker>(), Decimal64::parse("3"))
-  );
+  auto partial =
+    Traits::to_cancellation(reference, cancel_quantity(working_order<kis::Broker>(), Decimal64::parse("3")));
   REQUIRE(partial.has_value());
   REQUIRE_FALSE(partial.value().all_remaining_);
   REQUIRE(partial.value().quantity_ == Decimal64::parse("3"));
@@ -525,10 +496,7 @@ TEST_CASE("KIS refuses a history filter it cannot express") {
 
   auto with_symbol = ranged;
   with_symbol.symbol_ = std::string("005930");
-  REQUIRE(
-    Traits::to_history_query(account, with_symbol).error().broker_code_ ==
-    "symbol_filter_unsupported"
-  );
+  REQUIRE(Traits::to_history_query(account, with_symbol).error().broker_code_ == "symbol_filter_unsupported");
 
   auto with_cursor = ranged;
   with_cursor.cursor_ = std::string("cursor");
@@ -577,18 +545,12 @@ TEST_CASE("a pre-flight rejection never reaches the client and never runs inline
   order.client_order_id_ = std::string("key-1");
 
   bool completed = false;
-  session.async_place(
-    order,
-    net::bind_executor(
-      strand,
-      [&](Result<PlacedOrder<vendor::Broker>> result) {
-        completed = true;
-        REQUIRE_FALSE(result.has_value());
-        REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
-        REQUIRE(result.error().broker_code_ == "idempotency_key_unsupported");
-      }
-    )
-  );
+  session.async_place(order, net::bind_executor(strand, [&](Result<PlacedOrder<vendor::Broker>> result) {
+    completed = true;
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+    REQUIRE(result.error().broker_code_ == "idempotency_key_unsupported");
+  }));
 
   REQUIRE_FALSE(completed);
   ioc.run();
@@ -626,18 +588,12 @@ TEST_CASE("the port normalizes and plumbs a full order round trip") {
 
   Session::Ref placed_ref;
   session.async_quote(samsung(), net::bind_executor(strand, [](Result<QuoteSnapshot>) {}));
-  session.async_place(
-    order,
-    net::bind_executor(
-      strand,
-      [&](Result<Session::Placed> result) {
-        REQUIRE(result.has_value());
-        REQUIRE(result.value().ack_.order_id_ == "ticket-1");
-        REQUIRE(result.value().ack_.accepted_at_ == stamped);
-        placed_ref = result.value().ref_;
-      }
-    )
-  );
+  session.async_place(order, net::bind_executor(strand, [&](Result<Session::Placed> result) {
+    REQUIRE(result.has_value());
+    REQUIRE(result.value().ack_.order_id_ == "ticket-1");
+    REQUIRE(result.value().ack_.accepted_at_ == stamped);
+    placed_ref = result.value().ref_;
+  }));
   ioc.run();
 
   REQUIRE(placed_ref.primary_ == "ticket-1");
@@ -646,15 +602,10 @@ TEST_CASE("the port normalizes and plumbs a full order round trip") {
 
   Session::WorkingSet working;
   ioc.restart();
-  session.async_working_orders(
-    net::bind_executor(
-      strand,
-      [&](Result<Session::WorkingSet> result) {
-        REQUIRE(result.has_value());
-        working = std::move(result.value());
-      }
-    )
-  );
+  session.async_working_orders(net::bind_executor(strand, [&](Result<Session::WorkingSet> result) {
+    REQUIRE(result.has_value());
+    working = std::move(result.value());
+  }));
   ioc.run();
 
   REQUIRE(working.orders_.size() == 1);
@@ -663,9 +614,10 @@ TEST_CASE("the port normalizes and plumbs a full order round trip") {
 
   ioc.restart();
   session.async_cancel(
-    working.orders_[0].ref_,
-    cancel_all(working.orders_[0]),
-    net::bind_executor(strand, [](Result<Session::Placed> result) { REQUIRE(result.has_value()); })
+    working.orders_[0].ref_, cancel_all(working.orders_[0]),
+    net::bind_executor(strand, [](Result<Session::Placed> result) {
+      REQUIRE(result.has_value());
+    })
   );
   ioc.run();
 
@@ -693,16 +645,10 @@ TEST_CASE("the port passes an expressible history filter through unchanged") {
   OrderHistoryQuery query;
   query.cursor_ = std::string("page-2");
 
-  session.async_order_history(
-    query,
-    net::bind_executor(
-      strand,
-      [](Result<OrderPage> result) {
-        REQUIRE(result.has_value());
-        REQUIRE(result.value().next_cursor_ == std::string("next"));
-      }
-    )
-  );
+  session.async_order_history(query, net::bind_executor(strand, [](Result<OrderPage> result) {
+    REQUIRE(result.has_value());
+    REQUIRE(result.value().next_cursor_ == std::string("next"));
+  }));
   ioc.run();
 
   REQUIRE(client->history_calls_ == 1);
@@ -747,18 +693,12 @@ TEST_CASE("an interval a broker does not publish is refused before any request")
   weekly.interval_ = BarInterval::ONE_WEEK;
 
   bool completed = false;
-  session.async_bars(
-    weekly,
-    net::bind_executor(
-      strand,
-      [&](Result<BarSeries> result) {
-        completed = true;
-        REQUIRE_FALSE(result.has_value());
-        REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
-        REQUIRE(result.error().broker_code_ == "unsupported_interval");
-      }
-    )
-  );
+  session.async_bars(weekly, net::bind_executor(strand, [&](Result<BarSeries> result) {
+    completed = true;
+    REQUIRE_FALSE(result.has_value());
+    REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+    REQUIRE(result.error().broker_code_ == "unsupported_interval");
+  }));
 
   REQUIRE_FALSE(completed);
   ioc.run();
@@ -834,23 +774,14 @@ TEST_CASE("KIS refuses a calendar for a market it does not publish") {
   REQUIRE(refused->category_ == ErrorCategory::INVALID_ARGUMENT);
   REQUIRE(refused->broker_code_ == "unsupported_market");
 
-  REQUIRE_FALSE(
-    BrokerTraits<kis::KisClient>::validate_calendar(Country::KR, std::nullopt).has_value()
-  );
+  REQUIRE_FALSE(BrokerTraits<kis::KisClient>::validate_calendar(Country::KR, std::nullopt).has_value());
 
   // Toss publishes both markets it serves.
-  REQUIRE_FALSE(
-    BrokerTraits<tossinvest::TossClient>::validate_calendar(Country::US, std::nullopt).has_value()
-  );
+  REQUIRE_FALSE(BrokerTraits<tossinvest::TossClient>::validate_calendar(Country::US, std::nullopt).has_value());
 
   // An impossible date is refused by both, before any request.
-  REQUIRE(
-    BrokerTraits<kis::KisClient>::validate_calendar(Country::KR, Date{2026, 2, 30}).has_value()
-  );
-  REQUIRE(
-    BrokerTraits<tossinvest::TossClient>::validate_calendar(Country::KR, Date{2026, 2, 30})
-      .has_value()
-  );
+  REQUIRE(BrokerTraits<kis::KisClient>::validate_calendar(Country::KR, Date{2026, 2, 30}).has_value());
+  REQUIRE(BrokerTraits<tossinvest::TossClient>::validate_calendar(Country::KR, Date{2026, 2, 30}).has_value());
 }
 
 TEST_CASE("reference data is answered one instrument at a time by both brokers") {

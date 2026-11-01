@@ -131,9 +131,7 @@ inline bool same_value(const Decimal64& lhs, const Decimal64& rhs) {
 }
 
 /** Returns whether two optional decimals are both absent or denote the same number. */
-inline bool same_value(
-  const std::optional<Decimal64>& lhs, const std::optional<Decimal64>& rhs
-) {
+inline bool same_value(const std::optional<Decimal64>& lhs, const std::optional<Decimal64>& rhs) {
   if (!lhs.has_value() || !rhs.has_value()) {
     return lhs.has_value() == rhs.has_value();
   }
@@ -151,9 +149,7 @@ inline bool same_value(
 inline std::chrono::system_clock::time_point instruction_sent_by(
   const OpenInstruction& instruction, const MatchWindow& window
 ) {
-  return instruction.closed_at_ ?
-    *instruction.closed_at_ :
-    instruction.opened_at_ + window.maximum_request_;
+  return instruction.closed_at_ ? *instruction.closed_at_ : instruction.opened_at_ + window.maximum_request_;
 }
 
 /**
@@ -164,12 +160,9 @@ inline std::chrono::system_clock::time_point instruction_sent_by(
  * @return `true` once `now` is past `instruction_sent_by` plus the clock skew and listing delay.
  */
 inline bool match_window_closed(
-  const OpenInstruction& instruction,
-  std::chrono::system_clock::time_point now,
-  const MatchWindow& window
+  const OpenInstruction& instruction, std::chrono::system_clock::time_point now, const MatchWindow& window
 ) {
-  return now >= instruction_sent_by(instruction, window) + window.clock_skew_ +
-    window.listing_delay_;
+  return now >= instruction_sent_by(instruction, window) + window.clock_skew_ + window.listing_delay_;
 }
 
 namespace shape_detail {
@@ -279,8 +272,7 @@ inline Evidence attribute_evidence(Enum row_value, Enum entry_value) noexcept {
  * @return The evidence.
  */
 inline Evidence trigger_evidence(
-  const std::optional<Decimal64>& row_trigger,
-  const std::optional<Decimal64>& entry_trigger
+  const std::optional<Decimal64>& row_trigger, const std::optional<Decimal64>& entry_trigger
 ) {
   if (!row_trigger) {
     return entry_trigger ? Evidence::ABSENT : Evidence::CONFIRMS;
@@ -288,9 +280,7 @@ inline Evidence trigger_evidence(
   if (!entry_trigger) {
     return Evidence::ABSENT;
   }
-  return reconcile_detail::same_value(*row_trigger, *entry_trigger) ?
-    Evidence::CONFIRMS :
-    Evidence::CONTRADICTS;
+  return reconcile_detail::same_value(*row_trigger, *entry_trigger) ? Evidence::CONFIRMS : Evidence::CONTRADICTS;
 }
 
 /**
@@ -309,9 +299,7 @@ inline Evidence trigger_evidence(
  * @return `ABSENT` if the row's date was assumed; otherwise `CONFIRMS` if it has no time or its time is
  *   inside the widened send window, and `CONTRADICTS` if not.
  */
-inline Evidence time_evidence(
-  const OpenInstruction& instruction, const OrderSnapshot& row, const MatchWindow& window
-) {
+inline Evidence time_evidence(const OpenInstruction& instruction, const OrderSnapshot& row, const MatchWindow& window) {
   if (row.ordered_date_assumed_) {
     return Evidence::ABSENT;
   }
@@ -320,8 +308,7 @@ inline Evidence time_evidence(
   }
   const auto begin = instruction.opened_at_ - window.clock_skew_;
   const auto end = instruction_sent_by(instruction, window) + window.clock_skew_;
-  return (*row.ordered_at_ >= begin && *row.ordered_at_ <= end) ? Evidence::CONFIRMS
-                                                                : Evidence::CONTRADICTS;
+  return (*row.ordered_at_ >= begin && *row.ordered_at_ <= end) ? Evidence::CONFIRMS : Evidence::CONTRADICTS;
 }
 
 /**
@@ -334,9 +321,7 @@ inline Evidence time_evidence(
  * @return `ABSENT` if the line predates routes or the row names no venue; `CONFIRMS` if the
  *   instruction asked for no venue (as at Toss) or the venues agree; otherwise `CONTRADICTS`.
  */
-inline RouteEvidence route_evidence(
-  const OpenInstruction& instruction, const OrderSnapshot& row
-) {
+inline RouteEvidence route_evidence(const OpenInstruction& instruction, const OrderSnapshot& row) {
   const auto& asked = instruction.entry_.venue_;
   if (!asked) {
     // The line predates the field, so what it asked for is unknowable.
@@ -365,9 +350,7 @@ inline RouteEvidence route_evidence(
  * @param window The allowances.
  * @return `true` if every attribute confirms.
  */
-inline bool row_corresponds(
-  const OpenInstruction& instruction, const OrderSnapshot& row, const MatchWindow& window
-) {
+inline bool row_corresponds(const OpenInstruction& instruction, const OrderSnapshot& row, const MatchWindow& window) {
   const auto& entry = instruction.entry_;
   if (!(row.instrument_ == entry.instrument_)) {
     return false;
@@ -392,13 +375,15 @@ inline bool row_corresponds(
     return false;
   }
   // A match needs every attribute established, not merely not contradicted.
-  for (const auto evidence : {
-         attribute_evidence(row.time_in_force_, entry.time_in_force_),
-         attribute_evidence(row.session_, entry.session_),
-         trigger_evidence(row.trigger_price_, entry.trigger_price_),
-         route_evidence(instruction, row),
-         time_evidence(instruction, row, window),
-       }) {
+  for (
+    const auto evidence : {
+      attribute_evidence(row.time_in_force_, entry.time_in_force_),
+      attribute_evidence(row.session_, entry.session_),
+      trigger_evidence(row.trigger_price_, entry.trigger_price_),
+      route_evidence(instruction, row),
+      time_evidence(instruction, row, window),
+    }
+  ) {
     if (!evidence_confirms(evidence)) {
       return false;
     }
@@ -428,21 +413,22 @@ inline bool row_might_correspond(
   // silent -- an unknown-code row at a venue the instruction did not use is not
   // this order, and letting it force an ambiguity would stall recovery for
   // nothing.
-  for (const auto evidence : {
-         attribute_evidence(row.type_, entry.type_),
-         attribute_evidence(row.time_in_force_, entry.time_in_force_),
-         attribute_evidence(row.session_, entry.session_),
-         trigger_evidence(row.trigger_price_, entry.trigger_price_),
-         route_evidence(instruction, row),
-         time_evidence(instruction, row, window),
-       }) {
+  for (
+    const auto evidence : {
+      attribute_evidence(row.type_, entry.type_),
+      attribute_evidence(row.time_in_force_, entry.time_in_force_),
+      attribute_evidence(row.session_, entry.session_),
+      trigger_evidence(row.trigger_price_, entry.trigger_price_),
+      route_evidence(instruction, row),
+      time_evidence(instruction, row, window),
+    }
+  ) {
     if (evidence_contradicts(evidence)) {
       return false;
     }
   }
 
-  const bool anything_silent =
-    evidence_leaves_open(attribute_evidence(row.type_, entry.type_)) ||
+  const bool anything_silent = evidence_leaves_open(attribute_evidence(row.type_, entry.type_)) ||
     evidence_leaves_open(attribute_evidence(row.time_in_force_, entry.time_in_force_)) ||
     evidence_leaves_open(attribute_evidence(row.session_, entry.session_)) ||
     evidence_leaves_open(trigger_evidence(row.trigger_price_, entry.trigger_price_)) ||
@@ -581,9 +567,7 @@ inline std::vector<OpenInstruction> recorded_placements(const JournalReplay& rep
  * @return The placement, or `nullptr`.
  */
 inline const OpenInstruction* recorded_owner(
-  const OpenInstruction& instruction,
-  const OrderSnapshot& row,
-  const std::vector<OpenInstruction>& recorded,
+  const OpenInstruction& instruction, const OrderSnapshot& row, const std::vector<OpenInstruction>& recorded,
   const MatchWindow& window
 ) {
   if (row.order_id_.empty()) {
@@ -619,10 +603,8 @@ inline const OpenInstruction* recorded_owner(
  * @return The verdict.
  */
 inline OrderMatch match_against(
-  const OpenInstruction& instruction,
-  const std::vector<OrderSnapshot>& rows,
-  const std::vector<OpenInstruction>& recorded,
-  std::chrono::system_clock::time_point now,
+  const OpenInstruction& instruction, const std::vector<OrderSnapshot>& rows,
+  const std::vector<OpenInstruction>& recorded, std::chrono::system_clock::time_point now,
   const MatchWindow& window = {}
 ) {
   OrderMatch match;
@@ -703,8 +685,10 @@ inline OrderMatch match_against(
     match.verdict_ = MatchVerdict::AMBIGUOUS;
     const auto others = match.candidates_ + unreadable;
     match.candidates_ = others + claimed;
-    match.detail_ = "order " + claimed_row->order_id_ + " in the broker's listing fits this instruction, and the "
-      "journal records it for another placement (" + claimant->entry_.id_ + ")" +
+    match.detail_ = "order " + claimed_row->order_id_ +
+      " in the broker's listing fits this instruction, and the "
+      "journal records it for another placement (" +
+      claimant->entry_.id_ + ")" +
       (claimed > 1 ? ", as it does " + std::to_string(claimed - 1) + " more such row(s)" : std::string()) +
       (others > 0 ? "; " + std::to_string(others) + " other row(s) fit as well" : std::string()) +
       "; nothing was resolved";
@@ -752,8 +736,7 @@ inline OrderMatch match_against(
   }
   if (!match_window_closed(instruction, now, window)) {
     match.verdict_ = MatchVerdict::UNDECIDED;
-    match.detail_ =
-      "no matching order yet, and not enough time has passed for the listing to show one";
+    match.detail_ = "no matching order yet, and not enough time has passed for the listing to show one";
     return match;
   }
   match.verdict_ = MatchVerdict::NOT_PLACED;
@@ -777,9 +760,7 @@ inline OrderMatch match_against(
  * @return The verdict.
  */
 inline OrderMatch match_against(
-  const OpenInstruction& instruction,
-  const std::vector<OrderSnapshot>& rows,
-  std::chrono::system_clock::time_point now,
+  const OpenInstruction& instruction, const std::vector<OrderSnapshot>& rows, std::chrono::system_clock::time_point now,
   const MatchWindow& window = {}
 ) {
   return match_against(instruction, rows, {}, now, window);
@@ -808,9 +789,7 @@ inline OrderMatch match_against(
  * @param window The allowances.
  */
 inline void drop_rows_fitting_another_placement(
-  std::vector<OrderSnapshot>& rows,
-  const JournalReplay& replay,
-  const std::vector<OpenInstruction>& matching,
+  std::vector<OrderSnapshot>& rows, const JournalReplay& replay, const std::vector<OpenInstruction>& matching,
   const MatchWindow& window = {}
 ) {
   // The other placements on the instruments being matched, each with the span of its send.
@@ -821,10 +800,10 @@ inline void drop_rows_fitting_another_placement(
     if (entry.action_ != JournalAction::PLACE) {
       continue;
     }
-    const bool on_an_instrument_matched = std::any_of(
-      matching.begin(), matching.end(),
-      [&](const OpenInstruction& instruction) { return instruction.entry_.instrument_ == entry.instrument_; }
-    );
+    const bool on_an_instrument_matched =
+      std::any_of(matching.begin(), matching.end(), [&](const OpenInstruction& instruction) {
+        return instruction.entry_.instrument_ == entry.instrument_;
+      });
     const bool being_matched = std::any_of(matching.begin(), matching.end(), [&](const OpenInstruction& instruction) {
       return instruction.entry_.id_ == entry.id_;
     });
@@ -883,7 +862,9 @@ struct ReconcileReport {
    * @brief Tests whether the sweep settled everything.
    * @return `true` if nothing is still withheld.
    */
-  bool settled() const noexcept { return withheld_.empty(); }
+  bool settled() const noexcept {
+    return withheld_.empty();
+  }
 };
 
 /**
@@ -894,9 +875,7 @@ struct ReconcileReport {
  * @return The line.
  */
 inline JournalEntry resolution_entry(
-  const OpenInstruction& instruction,
-  const OrderMatch& match,
-  std::chrono::system_clock::time_point now
+  const OpenInstruction& instruction, const OrderMatch& match, std::chrono::system_clock::time_point now
 ) {
   auto entry = instruction.entry_;
   // RESOLVED records what the listing showed, not the broker's answer to the instruction.
@@ -930,14 +909,9 @@ inline JournalEntry resolution_entry(
  */
 template <typename Journal>
 ReconcileReport reconcile_against(
-  const std::vector<OpenInstruction>& open,
-  const std::vector<OrderSnapshot>& rows,
-  const JournalReplay& replay,
-  std::chrono::system_clock::time_point now,
-  IndeterminacyLedger& ledger,
-  Journal& journal,
-  const MatchWindow& window = {},
-  std::string_view unplaced_note = {}
+  const std::vector<OpenInstruction>& open, const std::vector<OrderSnapshot>& rows, const JournalReplay& replay,
+  std::chrono::system_clock::time_point now, IndeterminacyLedger& ledger, Journal& journal,
+  const MatchWindow& window = {}, std::string_view unplaced_note = {}
 ) {
   ReconcileReport report;
   report.matches_.reserve(open.size());
@@ -1016,13 +990,9 @@ ReconcileReport reconcile_against(
  */
 template <typename Journal>
 ReconcileReport reconcile_against(
-  const std::vector<OpenInstruction>& open,
-  const std::vector<OrderSnapshot>& rows,
-  std::chrono::system_clock::time_point now,
-  IndeterminacyLedger& ledger,
-  Journal& journal,
-  const MatchWindow& window = {},
-  std::string_view unplaced_note = {}
+  const std::vector<OpenInstruction>& open, const std::vector<OrderSnapshot>& rows,
+  std::chrono::system_clock::time_point now, IndeterminacyLedger& ledger, Journal& journal,
+  const MatchWindow& window = {}, std::string_view unplaced_note = {}
 ) {
   return reconcile_against(open, rows, journal.replay(), now, ledger, journal, window, unplaced_note);
 }
@@ -1036,9 +1006,7 @@ ReconcileReport reconcile_against(
  * @param detail Why nothing was decided.
  * @return A report with every instruction `UNDECIDED` and withheld.
  */
-inline ReconcileReport decide_nothing(
-  const std::vector<OpenInstruction>& open, std::string detail
-) {
+inline ReconcileReport decide_nothing(const std::vector<OpenInstruction>& open, std::string detail) {
   ReconcileReport report;
   report.matches_.reserve(open.size());
   for (const auto& instruction : open) {
@@ -1074,8 +1042,7 @@ inline bool any_placement(const std::vector<OpenInstruction>& open) {
     // Operator-only entries are excluded, because no listing can decide them: `match_against`
     // returns `NEEDS_OPERATOR` before it looks at a single row. Including them bought pointless
     // pagination on Toss and a guaranteed rejected inquiry on KIS, on every sweep, forever.
-    if (instruction.entry_.action_ == JournalAction::PLACE &&
-        !instruction.entry_.requires_operator_) {
+    if (instruction.entry_.action_ == JournalAction::PLACE && !instruction.entry_.requires_operator_) {
       return true;
     }
   }
@@ -1090,8 +1057,8 @@ inline bool any_placement(const std::vector<OpenInstruction>& open) {
  * @return `true` only if all three are stated and equal.
  */
 inline bool exact_copy(const OrderSnapshot& a, const OrderSnapshot& b) {
-  return !a.order_id_.empty() && a.order_id_ == b.order_id_ && a.instrument_ == b.instrument_ &&
-    a.ordered_at_ && b.ordered_at_ && *a.ordered_at_ == *b.ordered_at_;
+  return !a.order_id_.empty() && a.order_id_ == b.order_id_ && a.instrument_ == b.instrument_ && a.ordered_at_ &&
+    b.ordered_at_ && *a.ordered_at_ == *b.ordered_at_;
 }
 
 /**
@@ -1104,8 +1071,10 @@ inline bool exact_copy(const OrderSnapshot& a, const OrderSnapshot& b) {
  * @return `true` if the history row dates the listed order.
  */
 inline bool dates_listed_order(const OrderSnapshot& assumed, const OrderSnapshot& row) {
-  if (row.ordered_date_assumed_ || !row.ordered_at_ || !assumed.ordered_at_ || assumed.order_id_.empty() ||
-      row.order_id_ != assumed.order_id_ || !(row.instrument_ == assumed.instrument_)) {
+  if (
+    row.ordered_date_assumed_ || !row.ordered_at_ || !assumed.ordered_at_ || assumed.order_id_.empty() ||
+    row.order_id_ != assumed.order_id_ || !(row.instrument_ == assumed.instrument_)
+  ) {
     return false;
   }
   // Both stamped from a date and the same `HHmmss` in one zone, so one order's two rows differ by whole days.
@@ -1113,16 +1082,14 @@ inline bool dates_listed_order(const OrderSnapshot& assumed, const OrderSnapshot
     return false;
   }
   // A number reused on another day can belong to a different order at the same time of day.
-  const bool venues_differ = row.venue_ != Venue::UNSPECIFIED && assumed.venue_ != Venue::UNSPECIFIED &&
-    row.venue_ != assumed.venue_;
-  return row.side_ == assumed.side_ &&
-    reconcile_detail::same_value(row.quantity_, assumed.quantity_) &&
+  const bool venues_differ =
+    row.venue_ != Venue::UNSPECIFIED && assumed.venue_ != Venue::UNSPECIFIED && row.venue_ != assumed.venue_;
+  return row.side_ == assumed.side_ && reconcile_detail::same_value(row.quantity_, assumed.quantity_) &&
     reconcile_detail::same_value(row.price_, assumed.price_) &&
     !evidence_contradicts(attribute_evidence(row.type_, assumed.type_)) &&
     !evidence_contradicts(attribute_evidence(row.time_in_force_, assumed.time_in_force_)) &&
     !evidence_contradicts(attribute_evidence(row.session_, assumed.session_)) &&
-    !evidence_contradicts(trigger_evidence(row.trigger_price_, assumed.trigger_price_)) &&
-    !venues_differ;
+    !evidence_contradicts(trigger_evidence(row.trigger_price_, assumed.trigger_price_)) && !venues_differ;
 }
 
 /**
@@ -1138,15 +1105,14 @@ inline bool dates_listed_order(const OrderSnapshot& assumed, const OrderSnapshot
  * @param into The listing, extended in place.
  * @param rows The history rows.
  */
-inline void merge_dated_history(
-  std::vector<OrderSnapshot>& into,
-  const std::vector<OrderSnapshot>& rows
-) {
+inline void merge_dated_history(std::vector<OrderSnapshot>& into, const std::vector<OrderSnapshot>& rows) {
   std::vector<OrderSnapshot> listing;
   listing.reserve(into.size() + rows.size());
   for (auto& listed : into) {
-    const bool dated_by_history = listed.ordered_date_assumed_ &&
-      std::any_of(rows.begin(), rows.end(), [&](const OrderSnapshot& row) { return dates_listed_order(listed, row); });
+    const bool dated_by_history =
+      listed.ordered_date_assumed_ && std::any_of(rows.begin(), rows.end(), [&](const OrderSnapshot& row) {
+        return dates_listed_order(listed, row);
+      });
     if (!dated_by_history) {
       listing.push_back(std::move(listed));
     }
@@ -1222,9 +1188,7 @@ inline Date date_of(std::chrono::system_clock::time_point at) {
  * @param window The allowances.
  * @return The first and last date.
  */
-inline std::pair<Date, Date> history_range_for(
-  const std::vector<OpenInstruction>& open, const MatchWindow& window
-) {
+inline std::pair<Date, Date> history_range_for(const std::vector<OpenInstruction>& open, const MatchWindow& window) {
   auto earliest = open.front().opened_at_;
   auto latest = instruction_sent_by(open.front(), window);
   for (const auto& instruction : open) {
@@ -1267,8 +1231,7 @@ struct RecoveryReport {
    * @return `true` if no instrument was marked and nothing was torn, unparsed or unreadable.
    */
   bool clean() const noexcept {
-    return marked_.empty() && !truncated_ && !unattributable_ && unreadable_lines_ == 0 &&
-      !unreadable_file_;
+    return marked_.empty() && !truncated_ && !unattributable_ && unreadable_lines_ == 0 && !unreadable_file_;
   }
 };
 
@@ -1350,9 +1313,7 @@ RecoveryReport recover_runner(Runner& runner_instance, const Journal& journal) {
   runner_instance.restore_obligations(replay);
   if (report.unattributable_) {
     runner_instance.halt_locally(
-      report.detail_.empty() ?
-        "the order journal was damaged in a way that names no instrument" :
-        report.detail_
+      report.detail_.empty() ? "the order journal was damaged in a way that names no instrument" : report.detail_
     );
   }
   if (report.unreadable_lines_ > 0) {
@@ -1365,9 +1326,7 @@ RecoveryReport recover_runner(Runner& runner_instance, const Journal& journal) {
     // Nothing about the file's contents is known, and unlike a missing journal this one may hold
     // every order a predecessor left in flight. There is nothing to withhold specifically.
     runner_instance.halt_locally(
-      report.detail_.empty() ?
-        "the order journal exists and could not be read" :
-        report.detail_
+      report.detail_.empty() ? "the order journal exists and could not be read" : report.detail_
     );
   }
   return report;

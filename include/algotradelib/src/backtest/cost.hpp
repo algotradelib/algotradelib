@@ -64,7 +64,9 @@ struct CommissionModel {
    * @brief Returns a model that charges nothing (the report says so).
    * @return The model.
    */
-  static CommissionModel none() { return CommissionModel{}; }
+  static CommissionModel none() {
+    return CommissionModel{};
+  }
 
   /**
    * @brief Returns a rate-based model.
@@ -92,9 +94,7 @@ struct CommissionModel {
  *   `no_rate_for_date` or `rate_bounds_unreadable` (see `CommissionSchedule::RateSelection`).
  */
 inline Result<CommissionModel> commission_model_from(
-  const CommissionSchedule& schedule,
-  Country country,
-  const Date& date
+  const CommissionSchedule& schedule, Country country, const Date& date
 ) {
   const auto selection = schedule.rate_for(country, date);
   if (!selection.rate_) {
@@ -105,7 +105,8 @@ inline Result<CommissionModel> commission_model_from(
     // Distinct codes: a missing row wants a rate stated; an unreadable window wants a refetch.
     if (selection.bounds_unreadable_) {
       error.broker_code_ = "rate_bounds_unreadable";
-      error.message_ = "the published schedule holds a commission rate for that market whose date "
+      error.message_ =
+        "the published schedule holds a commission rate for that market whose date "
         "bounds could not be read, so whether it applies on that date is unknown";
       return Result<CommissionModel>(std::move(error));
     }
@@ -153,8 +154,8 @@ struct AppliedRate {
    */
   friend bool operator==(const AppliedRate& lhs, const AppliedRate& rhs) {
     return lhs.country_ == rhs.country_ && lhs.venue_ == rhs.venue_ && lhs.rate_ == rhs.rate_ &&
-      lhs.institution_rate_ == rhs.institution_rate_ && lhs.minimum_ == rhs.minimum_ &&
-      lhs.from_ == rhs.from_ && lhs.until_ == rhs.until_ && lhs.origin_ == rhs.origin_;
+      lhs.institution_rate_ == rhs.institution_rate_ && lhs.minimum_ == rhs.minimum_ && lhs.from_ == rhs.from_ &&
+      lhs.until_ == rhs.until_ && lhs.origin_ == rhs.origin_;
   }
 };
 
@@ -208,11 +209,7 @@ public:
    * @return The policy, or an `INVALID_ARGUMENT` error: `commission_tariff_unnamed` or
    *   `commission_venue_not_an_execution`.
    */
-  static Result<CommissionPolicy> scheduled(
-    CommissionSchedule schedule,
-    VenueKey asserted,
-    Country dating_market
-  ) {
+  static Result<CommissionPolicy> scheduled(CommissionSchedule schedule, VenueKey asserted, Country dating_market) {
     if (commission_origin_names_tariff(schedule.origin_) && schedule.tariff_.empty()) {
       return Result<CommissionPolicy>(refusal(
         "commission_tariff_unnamed",
@@ -238,13 +235,17 @@ public:
    * @brief Tests whether the policy resolves a schedule.
    * @return `true` for a `scheduled` policy.
    */
-  bool is_scheduled() const noexcept { return schedule_.has_value(); }
+  bool is_scheduled() const noexcept {
+    return schedule_.has_value();
+  }
 
   /**
    * @brief Returns the asserted venue.
    * @return The venue a scheduled policy charges at; `VenueKey::any()` for a stated one.
    */
-  const VenueKey& asserted_venue() const noexcept { return asserted_; }
+  const VenueKey& asserted_venue() const noexcept {
+    return asserted_;
+  }
 
   /**
    * @brief Returns the schedule's tariff name.
@@ -268,18 +269,14 @@ public:
    *   `rate_bounds_unreadable` or `no_rate_for_date`.
    */
   Result<CommissionCharge> charge(
-    const Decimal64& quantity,
-    const Decimal64& price,
-    const Date& date,
-    Country country
+    const Decimal64& quantity, const Decimal64& price, const Date& date, Country country
   ) const {
     if (!schedule_) {
       const auto charged = flat_.on(quantity, price);
       if (!charged) {
-        return Result<CommissionCharge>(refusal(
-          "commission_not_representable",
-          "the commission on that execution does not fit an exact decimal"
-        ));
+        return Result<CommissionCharge>(
+          refusal("commission_not_representable", "the commission on that execution does not fit an exact decimal")
+        );
       }
       CommissionCharge result;
       result.broker_ = *charged;
@@ -287,9 +284,8 @@ public:
       result.applied_.country_ = country;
       result.applied_.rate_ = flat_.rate_;
       result.applied_.minimum_ = flat_.minimum_;
-      result.applied_.origin_ = flat_.from_broker_ ?
-        CommissionOrigin::BROKER_PUBLISHED :
-        CommissionOrigin::CALLER_STATED;
+      result.applied_.origin_ =
+        flat_.from_broker_ ? CommissionOrigin::BROKER_PUBLISHED : CommissionOrigin::CALLER_STATED;
       return Result<CommissionCharge>(std::move(result));
     }
 
@@ -300,8 +296,8 @@ public:
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.reached_broker_ = false;
       error.broker_code_ = "commission_date_not_market_local";
-      error.message_ = "this market's rates have dated bounds, and the replay's date " +
-        named(date) + " is that of another market's trading day, so which rate applies cannot be "
+      error.message_ = "this market's rates have dated bounds, and the replay's date " + named(date) +
+        " is that of another market's trading day, so which rate applies cannot be "
         "decided here; price it in a replay whose session is that market's, or state rates with "
         "no dated bounds";
       return Result<CommissionCharge>(std::move(error));
@@ -318,34 +314,32 @@ public:
         error.broker_code_ = "rate_bounds_unreadable";
         error.message_ = "the schedule holds a commission rate for " + described(asserted_) +
           " in this instrument's market whose date bounds could not be read, so whether it applies "
-          "on " + named(date) + " is unknown; refetch the schedule or state the rates";
+          "on " +
+          named(date) + " is unknown; refetch the schedule or state the rates";
         return Result<CommissionCharge>(std::move(error));
       }
       error.broker_code_ = "no_rate_for_date";
-      error.message_ = "the schedule states no commission rate for " + named(date) +
-        " at venue " + described(asserted_) + " in the market this instrument is listed in";
+      error.message_ = "the schedule states no commission rate for " + named(date) + " at venue " +
+        described(asserted_) + " in the market this instrument is listed in";
       return Result<CommissionCharge>(std::move(error));
     }
 
     // No minimum on a scheduled rate: no schedule states one. A caller with a minimum uses `stated`.
     const auto broker = component(quantity, price, rate->rate_, Decimal64::parse("0"));
     if (!broker) {
-      return Result<CommissionCharge>(refusal(
-        "commission_not_representable",
-        "the commission on that execution does not fit an exact decimal"
-      ));
+      return Result<CommissionCharge>(
+        refusal("commission_not_representable", "the commission on that execution does not fit an exact decimal")
+      );
     }
     CommissionCharge result;
     result.broker_ = *broker;
     if (rate->institution_rate_) {
       // Its own component, with no minimum (the minimum is the broker's).
-      const auto institution =
-        component(quantity, price, *rate->institution_rate_, Decimal64::parse("0"));
+      const auto institution = component(quantity, price, *rate->institution_rate_, Decimal64::parse("0"));
       if (!institution) {
-        return Result<CommissionCharge>(refusal(
-          "commission_not_representable",
-          "the institution fee on that execution does not fit an exact decimal"
-        ));
+        return Result<CommissionCharge>(
+          refusal("commission_not_representable", "the institution fee on that execution does not fit an exact decimal")
+        );
       }
       result.institution_ = *institution;
     }
@@ -393,10 +387,7 @@ private:
 
   // One component's charge, truncated to whole units and floored at `minimum`.
   static std::optional<Decimal64> component(
-    const Decimal64& quantity,
-    const Decimal64& price,
-    const Decimal64& rate,
-    const Decimal64& minimum
+    const Decimal64& quantity, const Decimal64& price, const Decimal64& rate, const Decimal64& minimum
   ) {
     CommissionModel model;
     model.rate_ = rate;
@@ -442,9 +433,7 @@ struct SlippageModel {
    *   not fit.
    */
   std::optional<std::pair<Decimal64, Decimal64>> apply(
-    const Decimal64& price,
-    OrderSide side,
-    const PriceRule& rule
+    const Decimal64& price, OrderSide side, const PriceRule& rule
   ) const {
     auto moved = price;
 
@@ -457,9 +446,7 @@ struct SlippageModel {
       if (!amount) {
         return std::nullopt;
       }
-      const auto shifted = side == OrderSide::BUY ?
-        decimal_add(moved, *amount) :
-        decimal_subtract(moved, *amount);
+      const auto shifted = side == OrderSide::BUY ? decimal_add(moved, *amount) : decimal_subtract(moved, *amount);
       if (!shifted) {
         return std::nullopt;
       }
@@ -472,16 +459,12 @@ struct SlippageModel {
       const auto zero = Decimal64::parse("0");
       auto walked = price;
       for (int step = 0; step < ticks_; ++step) {
-        const auto tick = side == OrderSide::BUY ?
-          rule.tick_at(walked) :
-          tick_below(rule, walked);
+        const auto tick = side == OrderSide::BUY ? rule.tick_at(walked) : tick_below(rule, walked);
         if (!tick) {
           // An unknown grid, or the bottom of a known one, contributes nothing rather than a guessed step.
           break;
         }
-        const auto next = side == OrderSide::BUY ?
-          decimal_add(walked, *tick) :
-          decimal_subtract(walked, *tick);
+        const auto next = side == OrderSide::BUY ? decimal_add(walked, *tick) : decimal_subtract(walked, *tick);
         if (!next) {
           return std::nullopt;
         }
@@ -491,24 +474,18 @@ struct SlippageModel {
         }
         walked = *next;
       }
-      const auto steps = side == OrderSide::BUY ?
-        decimal_subtract(walked, price) :
-        decimal_subtract(price, walked);
+      const auto steps = side == OrderSide::BUY ? decimal_subtract(walked, price) : decimal_subtract(price, walked);
       if (!steps) {
         return std::nullopt;
       }
-      const auto shifted = side == OrderSide::BUY ?
-        decimal_add(moved, *steps) :
-        decimal_subtract(moved, *steps);
+      const auto shifted = side == OrderSide::BUY ? decimal_add(moved, *steps) : decimal_subtract(moved, *steps);
       if (!shifted) {
         return std::nullopt;
       }
       moved = *shifted;
     }
 
-    const auto given_up = side == OrderSide::BUY ?
-      decimal_subtract(moved, price) :
-      decimal_subtract(price, moved);
+    const auto given_up = side == OrderSide::BUY ? decimal_subtract(moved, price) : decimal_subtract(price, moved);
     if (!given_up) {
       return std::nullopt;
     }
@@ -519,7 +496,9 @@ struct SlippageModel {
    * @brief Returns a model with no slippage (the report says so).
    * @return The model.
    */
-  static SlippageModel none() { return SlippageModel{}; }
+  static SlippageModel none() {
+    return SlippageModel{};
+  }
 
   /**
    * @brief Returns a basis-point slippage model.

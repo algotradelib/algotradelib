@@ -71,7 +71,12 @@ inline constexpr std::string_view stop_intent_name(StopIntent intent) noexcept {
 }
 
 static_assert(
-  lists_every_value(all_stop_intents, [](StopIntent intent) { return !stop_intent_name(intent).empty(); }),
+  lists_every_value(
+    all_stop_intents,
+    [](StopIntent intent) {
+      return !stop_intent_name(intent).empty();
+    }
+  ),
   "all_stop_intents must list every StopIntent"
 );
 
@@ -169,8 +174,7 @@ public:
     int current = requested_.load(std::memory_order_relaxed);
     // A failed exchange reloads `current`, so the held intent's strength is read again each time.
     while (current < 0 || stop_intent_strength(static_cast<StopIntent>(current)) < stop_intent_strength(intent)) {
-      if (requested_.compare_exchange_weak(
-            current, desired, std::memory_order_release, std::memory_order_relaxed)) {
+      if (requested_.compare_exchange_weak(current, desired, std::memory_order_release, std::memory_order_relaxed)) {
         return;
       }
     }
@@ -197,7 +201,9 @@ public:
   }
 
   /** @brief Clears the request (for tests, or a supervisor deliberately resuming); the loop never does. */
-  void clear() noexcept { requested_.store(-1, std::memory_order_release); }
+  void clear() noexcept {
+    requested_.store(-1, std::memory_order_release);
+  }
 
 private:
   // Negative means no request; otherwise a `StopIntent`.
@@ -208,8 +214,8 @@ private:
   // signal installer is unsound -- which is worth a compile error rather than a subtle deadlock in a
   // handler that fires once a month.
   static_assert(
-    std::atomic<int>::is_always_lock_free,
-    "StopSource requires a lock-free atomic<int> to stay signal-safe");
+    std::atomic<int>::is_always_lock_free, "StopSource requires a lock-free atomic<int> to stay signal-safe"
+  );
 };
 
 /**
@@ -238,13 +244,17 @@ public:
    * @brief Tests whether a path was configured.
    * @return `true` if the channel is enabled.
    */
-  bool enabled() const noexcept { return !path_.empty(); }
+  bool enabled() const noexcept {
+    return !path_.empty();
+  }
 
   /**
    * @brief Returns the watched path.
    * @return The path.
    */
-  const std::string& path() const noexcept { return path_; }
+  const std::string& path() const noexcept {
+    return path_;
+  }
 
   /**
    * @brief Reads the file's first word.
@@ -286,7 +296,9 @@ public:
    * @brief Returns the word the last `poll` did not recognize.
    * @return The word, or empty if the last read was understood or found nothing.
    */
-  const std::string& unrecognized() const noexcept { return unrecognized_; }
+  const std::string& unrecognized() const noexcept {
+    return unrecognized_;
+  }
 
 private:
   std::string path_;

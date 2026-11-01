@@ -8,11 +8,16 @@ using namespace algotradelib;
 
 struct CopyContext {
   int submitted = 0;
-  void submit(strategy::TargetPosition) { ++submitted; }
+  void submit(strategy::TargetPosition) {
+    ++submitted;
+  }
 };
 
 struct Probe {
-  template <class Ctx> void on_bar(Ctx ctx, const strategy::BarEvent&) { ctx.submit(strategy::TargetPosition{}); }
+  template <class Ctx>
+  void on_bar(Ctx ctx, const strategy::BarEvent&) {
+    ctx.submit(strategy::TargetPosition{});
+  }
 };
 
 ATL_ASSERT_STRATEGY(Probe, CopyContext);

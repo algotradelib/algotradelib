@@ -33,9 +33,9 @@
 #include <exception>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <sstream>
-#include <memory>
 #include <string>
 #include <utility>
 
@@ -57,7 +57,6 @@ namespace math = algotradelib::math;
 std::string money_or_absent(const std::optional<algotradelib::Decimal64>& amount) {
   return amount ? amount->str() : std::string("(absent: see the caveats)");
 }
-
 
 using algotradelib::BarInterval;
 using algotradelib::BarQuery;
@@ -83,11 +82,7 @@ struct FetchedHistory {
  * asks only questions both brokers answer.
  */
 template <typename Session>
-std::optional<FetchedHistory> read_history(
-  Session& session,
-  const InstrumentId& instrument,
-  std::size_t count
-) {
+std::optional<FetchedHistory> read_history(Session& session, const InstrumentId& instrument, std::size_t count) {
   auto reference = session.instrument(instrument);
   if (!reference) {
     std::cerr << "could not read reference data: " << reference.error().message_ << '\n';
@@ -130,8 +125,7 @@ void replay_and_report(const char* title, Strategy instance, const FetchedHistor
   config.limits_.permitted_phases_ = std::nullopt;
 
   backtest::Backtester<Strategy> engine(
-    std::move(instance),
-    std::move(config),
+    std::move(instance), std::move(config),
     backtest::NextBarFillModel(
       backtest::CommissionModel::of(Decimal64::parse("0.00015"), Decimal64::parse("100")),
       backtest::SlippageModel::of_ticks(1)
@@ -140,15 +134,12 @@ void replay_and_report(const char* title, Strategy instance, const FetchedHistor
 
   for (const auto& bar : history.bars_.bars_) {
     engine.feed(
-      strategy::make_bar_event(
-        history.bars_.instrument_, history.bars_.interval_, history.bars_.stamp_, bar
-      )
+      strategy::make_bar_event(history.bars_.instrument_, history.bars_.interval_, history.bars_.stamp_, bar)
     );
   }
   engine.finish();
 
-  const auto periods =
-    backtest::periods_per_year(history.bars_.interval_, strategy::SessionWindow::krx(), 245.0);
+  const auto periods = backtest::periods_per_year(history.bars_.interval_, strategy::SessionWindow::krx(), 245.0);
   const auto report = backtest::summarize(engine.result(), engine.fills(), periods);
 
   const auto show = [](math::Scalar value, bool as_percent) {
@@ -157,28 +148,31 @@ void replay_and_report(const char* title, Strategy instance, const FetchedHistor
       text << (math::is_undefined(value) ? "undefined" : "--");
       return text.str();
     }
-    text << std::fixed << std::setprecision(as_percent ? 2 : 3)
-         << (as_percent ? value * 100.0 : value) << (as_percent ? " %" : "");
+    text
+      << std::fixed << std::setprecision(as_percent ? 2 : 3) << (as_percent ? value * 100.0 : value)
+      << (as_percent ? " %" : "");
     return text.str();
   };
 
-  std::cout << title << "\n"
-            << "  bars            " << report.bars_ << "\n"
-            << "  executions      " << report.executions_ << "\n"
-            << "  total return    " << show(report.total_return_, true) << "\n"
-            << "  Sharpe          " << show(report.sharpe_, false) << " per bar, "
-            << show(report.annualized_sharpe_, false) << " annualized\n"
-            << "  Sortino         " << show(report.sortino_, false) << "\n"
-            << "  max drawdown    " << show(report.max_drawdown_, true) << "\n"
-            << "  turnover        " << show(report.total_turnover_, true) << "\n"
-            << "  commission      " << money_or_absent(report.commission_paid_) << "\n"
-            << "  slippage        " << money_or_absent(report.slippage_paid_) << "\n"
-            << "  not modelled    volume, queue position, market impact, borrow\n";
+  std::cout
+    << title << "\n"
+    << "  bars            " << report.bars_ << "\n"
+    << "  executions      " << report.executions_ << "\n"
+    << "  total return    " << show(report.total_return_, true) << "\n"
+    << "  Sharpe          " << show(report.sharpe_, false) << " per bar, " << show(report.annualized_sharpe_, false)
+    << " annualized\n"
+    << "  Sortino         " << show(report.sortino_, false) << "\n"
+    << "  max drawdown    " << show(report.max_drawdown_, true) << "\n"
+    << "  turnover        " << show(report.total_turnover_, true) << "\n"
+    << "  commission      " << money_or_absent(report.commission_paid_) << "\n"
+    << "  slippage        " << money_or_absent(report.slippage_paid_) << "\n"
+    << "  not modelled    volume, queue position, market impact, borrow\n";
   if (report.caveats_.cost_totals_incomplete_) {
     // The reason a total can be absent that is not "no trades" and not "two currencies": an exact
     // sum was refused, so the figures above are short by an amount nobody can name.
-    std::cout << "  cost totals     INCOMPLETE -- an exact sum did not fit; slippage is understated"
-              << " and the fee totals are withheld\n";
+    std::cout
+      << "  cost totals     INCOMPLETE -- an exact sum did not fit; slippage is understated"
+      << " and the fee totals are withheld\n";
   }
   std::cout << "\n";
 }
@@ -194,17 +188,16 @@ int backtest_with(Session& session, const std::string& symbol) {
     return 1;
   }
 
-  std::cout << "broker: " << Session::BrokerTag::name << "   instrument: " << symbol
-            << "   bars: " << history->bars_.bars_.size()
-            << (history->bars_.adjusted_ ? "   adjusted" : "   UNADJUSTED") << "\n"
-            << "the session is now finished with: nothing below reads it\n\n";
+  std::cout
+    << "broker: " << Session::BrokerTag::name << "   instrument: " << symbol << "   bars: "
+    << history->bars_.bars_.size() << (history->bars_.adjusted_ ? "   adjusted" : "   UNADJUSTED") << "\n"
+    << "the session is now finished with: nothing below reads it\n\n";
 
 #if defined(ATL_HAS_EIGEN)
   vanilla::BuyAndHold holding;
   holding.params_.instrument_ = instrument;
   holding.params_.quantity_ = Decimal64::parse("100");
-  replay_and_report("BuyAndHold -- the benchmark every strategy is measured against", holding,
-                    *history);
+  replay_and_report("BuyAndHold -- the benchmark every strategy is measured against", holding, *history);
 
   vanilla::MovingAverageCrossover::Params crossing;
   crossing.instrument_ = instrument;
@@ -237,8 +230,7 @@ int backtest_kis(ssl::context& tls, const std::string& symbol) {
   kis::KisAccount account;
   account.from_env();
 
-  auto client =
-    std::make_shared<kis::KisBlockingClient>(tls, std::move(config), kis_credentials::paced_options());
+  auto client = std::make_shared<kis::KisBlockingClient>(tls, std::move(config), kis_credentials::paced_options());
   BlockingSession<kis::KisBlockingClient> session(std::move(client), std::move(account));
   return backtest_with(session, symbol);
 }

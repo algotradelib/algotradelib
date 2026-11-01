@@ -73,7 +73,12 @@ inline constexpr std::string_view bar_field_name(BarField field) noexcept {
 }
 
 static_assert(
-  lists_every_value(all_bar_fields, [](BarField field) { return !bar_field_name(field).empty(); }),
+  lists_every_value(
+    all_bar_fields,
+    [](BarField field) {
+      return !bar_field_name(field).empty();
+    }
+  ),
   "all_bar_fields must list every BarField"
 );
 
@@ -100,9 +105,7 @@ public:
   explicit SeriesFrame(TimeIndex index, InstrumentId instrument = {})
   : instrument_(std::move(instrument)), index_(std::move(index)) {
     values_ = math::Matrix::Constant(
-      static_cast<math::Index>(index_.size()),
-      static_cast<math::Index>(bar_field_count),
-      missing()
+      static_cast<math::Index>(index_.size()), static_cast<math::Index>(bar_field_count), missing()
     );
   }
 
@@ -110,25 +113,33 @@ public:
    * @brief Returns the number of rows.
    * @return The number of instants (bars) in the frame.
    */
-  std::size_t rows() const noexcept { return index_.size(); }
+  std::size_t rows() const noexcept {
+    return index_.size();
+  }
 
   /**
    * @brief Returns the number of columns.
    * @return `bar_field_count`.
    */
-  std::size_t columns() const noexcept { return bar_field_count; }
+  std::size_t columns() const noexcept {
+    return bar_field_count;
+  }
 
   /**
    * @brief Returns the instants of the rows.
    * @return The frame's time index.
    */
-  const TimeIndex& time() const noexcept { return index_; }
+  const TimeIndex& time() const noexcept {
+    return index_;
+  }
 
   /**
    * @brief Returns the instrument the frame describes.
    * @return The instrument.
    */
-  const InstrumentId& instrument() const noexcept { return instrument_; }
+  const InstrumentId& instrument() const noexcept {
+    return instrument_;
+  }
 
   /**
    * @brief Returns one field's column.
@@ -143,31 +154,41 @@ public:
    * @brief Returns the close column.
    * @return A view of `BarField::CLOSE`.
    */
-  math::SeriesView close() const { return column(BarField::CLOSE); }
+  math::SeriesView close() const {
+    return column(BarField::CLOSE);
+  }
 
   /**
    * @brief Returns the open column.
    * @return A view of `BarField::OPEN`.
    */
-  math::SeriesView open() const { return column(BarField::OPEN); }
+  math::SeriesView open() const {
+    return column(BarField::OPEN);
+  }
 
   /**
    * @brief Returns the high column.
    * @return A view of `BarField::HIGH`.
    */
-  math::SeriesView high() const { return column(BarField::HIGH); }
+  math::SeriesView high() const {
+    return column(BarField::HIGH);
+  }
 
   /**
    * @brief Returns the low column.
    * @return A view of `BarField::LOW`.
    */
-  math::SeriesView low() const { return column(BarField::LOW); }
+  math::SeriesView low() const {
+    return column(BarField::LOW);
+  }
 
   /**
    * @brief Returns the volume column.
    * @return A view of `BarField::VOLUME`.
    */
-  math::SeriesView volume() const { return column(BarField::VOLUME); }
+  math::SeriesView volume() const {
+    return column(BarField::VOLUME);
+  }
 
   /**
    * @brief Reads one value.
@@ -181,9 +202,7 @@ public:
     if (row >= rows()) {
       throw std::out_of_range("frame row is past the end");
     }
-    return values_(
-      static_cast<math::Index>(row), static_cast<math::Index>(bar_field_index(field))
-    );
+    return values_(static_cast<math::Index>(row), static_cast<math::Index>(bar_field_index(field)));
   }
 
   /**
@@ -198,16 +217,16 @@ public:
     if (row >= rows()) {
       throw std::out_of_range("frame row is past the end");
     }
-    values_(
-      static_cast<math::Index>(row), static_cast<math::Index>(bar_field_index(field))
-    ) = value;
+    values_(static_cast<math::Index>(row), static_cast<math::Index>(bar_field_index(field))) = value;
   }
 
   /**
    * @brief Returns all values.
    * @return A view of the rows-by-`bar_field_count` storage, columns in `BarField` order.
    */
-  math::MatrixView values() const { return values_; }
+  math::MatrixView values() const {
+    return values_;
+  }
 
 private:
   InstrumentId instrument_;

@@ -54,11 +54,7 @@ public:
    * @param side The side of the order the price is for.
    * @return The rounded price, or `std::nullopt` if `rule` does not know the grid.
    */
-  static std::optional<Price> rounded(
-    const Decimal64& value,
-    const PriceRule& rule,
-    OrderSide side
-  ) {
+  static std::optional<Price> rounded(const Decimal64& value, const PriceRule& rule, OrderSide side) {
     auto moved = rule.round_to_tick(value, side);
     if (!moved) {
       return std::nullopt;
@@ -70,13 +66,17 @@ public:
    * @brief Returns the price as a decimal.
    * @return The exact value the runner sends.
    */
-  const Decimal64& value() const noexcept { return value_; }
+  const Decimal64& value() const noexcept {
+    return value_;
+  }
 
   /**
    * @brief Returns the price as text, for logs.
    * @return The decimal's text.
    */
-  std::string str() const { return value_.str(); }
+  std::string str() const {
+    return value_.str();
+  }
 
   /**
    * @brief Compares two prices by exact value (scale included; see `Decimal64`).
@@ -94,7 +94,9 @@ public:
    * @param rhs The second price.
    * @return `true` if they differ.
    */
-  friend bool operator!=(const Price& lhs, const Price& rhs) { return !(lhs == rhs); }
+  friend bool operator!=(const Price& lhs, const Price& rhs) {
+    return !(lhs == rhs);
+  }
 
 private:
   explicit Price(Decimal64 value) : value_(std::move(value)) {}
@@ -195,7 +197,9 @@ public:
    * @brief Returns how the size is expressed.
    * @return The kind, which selects the accessor to read.
    */
-  SizeKind kind() const noexcept { return kind_; }
+  SizeKind kind() const noexcept {
+    return kind_;
+  }
 
   /**
    * @brief Returns the quantity.
@@ -259,11 +263,7 @@ public:
    * @return The intent.
    */
   static OrderIntent limit(
-    InstrumentId instrument,
-    OrderSide side,
-    SizeSpec size,
-    Price limit,
-    TimeInForce time_in_force = TimeInForce::DAY
+    InstrumentId instrument, OrderSide side, SizeSpec size, Price limit, TimeInForce time_in_force = TimeInForce::DAY
   ) {
     OrderIntent intent;
     intent.instrument_ = std::move(instrument);
@@ -292,11 +292,7 @@ public:
    * @return The intent.
    */
   static OrderIntent stop_limit(
-    InstrumentId instrument,
-    OrderSide side,
-    SizeSpec size,
-    Price trigger,
-    Price limit,
+    InstrumentId instrument, OrderSide side, SizeSpec size, Price trigger, Price limit,
     TimeInForce time_in_force = TimeInForce::DAY
   ) {
     OrderIntent intent;
@@ -320,10 +316,7 @@ public:
    * @return The intent.
    */
   static OrderIntent market(
-    InstrumentId instrument,
-    OrderSide side,
-    SizeSpec size,
-    TimeInForce time_in_force = TimeInForce::DAY
+    InstrumentId instrument, OrderSide side, SizeSpec size, TimeInForce time_in_force = TimeInForce::DAY
   ) {
     OrderIntent intent;
     intent.instrument_ = std::move(instrument);
@@ -365,49 +358,65 @@ public:
    * @brief Returns the instrument to trade.
    * @return The instrument.
    */
-  const InstrumentId& instrument() const noexcept { return instrument_; }
+  const InstrumentId& instrument() const noexcept {
+    return instrument_;
+  }
 
   /**
    * @brief Returns the side.
    * @return Buy or sell.
    */
-  OrderSide side() const noexcept { return side_; }
+  OrderSide side() const noexcept {
+    return side_;
+  }
 
   /**
    * @brief Returns the order type.
    * @return `LIMIT`, `MARKET` or `STOP_LIMIT`.
    */
-  OrderType type() const noexcept { return type_; }
+  OrderType type() const noexcept {
+    return type_;
+  }
 
   /**
    * @brief Returns how long the order stays valid.
    * @return The time in force.
    */
-  TimeInForce time_in_force() const noexcept { return time_in_force_; }
+  TimeInForce time_in_force() const noexcept {
+    return time_in_force_;
+  }
 
   /**
    * @brief Returns how much to trade.
    * @return The size.
    */
-  const SizeSpec& size() const noexcept { return size_; }
+  const SizeSpec& size() const noexcept {
+    return size_;
+  }
 
   /**
    * @brief Returns the limit price.
    * @return The price for a limit or stop-limit order; `std::nullopt` for a market order.
    */
-  const std::optional<Price>& limit() const noexcept { return limit_; }
+  const std::optional<Price>& limit() const noexcept {
+    return limit_;
+  }
 
   /**
    * @brief Returns the trigger price.
    * @return The trigger for a stop-limit order; `std::nullopt` otherwise.
    */
-  const std::optional<Price>& trigger() const noexcept { return trigger_; }
+  const std::optional<Price>& trigger() const noexcept {
+    return trigger_;
+  }
 
   /**
    * @brief Returns the tag.
    * @return The label set with `with_tag`, or an empty string.
    */
-  const std::string& tag() const noexcept { return tag_; }
+  const std::string& tag() const noexcept {
+    return tag_;
+  }
 
   /**
    * @brief Returns the idempotency key.

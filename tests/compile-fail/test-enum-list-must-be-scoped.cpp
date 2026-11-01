@@ -15,6 +15,8 @@ enum Plain {
 
 inline constexpr std::array<Plain, 2> plain_values{FIRST, SECOND};
 
-static_assert(algotradelib::lists_every_value(plain_values, [](Plain value) { return value == FIRST || value == SECOND; }));
+static_assert(algotradelib::lists_every_value(plain_values, [](Plain value) {
+  return value == FIRST || value == SECOND;
+}));
 
 } // namespace probe

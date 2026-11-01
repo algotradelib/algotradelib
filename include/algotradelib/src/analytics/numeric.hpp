@@ -39,18 +39,12 @@ namespace constant_detail {
 // few ulps of the mean rather than zero. The bound is a generous relative one, `8 * count * epsilon`
 // of the mean's magnitude, against a summation error of about `count * epsilon / 2`.
 inline bool within_rounding(Scalar deviation, Scalar mean, std::size_t count) {
-  return deviation <=
-    std::abs(mean) * static_cast<Scalar>(count) * Scalar{8} * std::numeric_limits<Scalar>::epsilon();
+  return deviation <= std::abs(mean) * static_cast<Scalar>(count) * Scalar{8} * std::numeric_limits<Scalar>::epsilon();
 }
 
 // Whether every observed row of `values` in `[first, first + length)` holds the same value;
 // `present` is the presence mask `math::Observed` gives (`1` observed, `0` not).
-inline bool all_equal(
-  const math::Vector& values,
-  const math::Vector& present,
-  math::Index first,
-  math::Index length
-) {
+inline bool all_equal(const math::Vector& values, const math::Vector& present, math::Index first, math::Index length) {
   bool seen = false;
   Scalar reference{0};
   for (math::Index row = first; row < first + length; ++row) {
@@ -71,13 +65,8 @@ inline bool all_equal(
 // checked value by value. Each caller keeps its own exact-zero test beside it: this one never
 // reads a zero as equality by itself, since a positive dispersion can underflow to a zero deviation.
 inline bool rounded_constant(
-  Scalar deviation,
-  Scalar mean,
-  std::size_t count,
-  const math::Vector& values,
-  const math::Vector& present,
-  math::Index first,
-  math::Index length
+  Scalar deviation, Scalar mean, std::size_t count, const math::Vector& values, const math::Vector& present,
+  math::Index first, math::Index length
 ) {
   return within_rounding(deviation, mean, count) && all_equal(values, present, first, length);
 }

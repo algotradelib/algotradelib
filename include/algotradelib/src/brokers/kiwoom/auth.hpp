@@ -57,13 +57,9 @@ private:
   void refresh() {
     const std::string jsonbody = req_.to_jsonbody();
     KiwoomHttpClient rest(ioc_, ctx_, req_.rest_host(), req_.rest_port());
-    auto response = rest.post(
-      "/oauth2/token", jsonbody, {{"Content-Type", "application/json;charset=UTF-8"}}
-    );
+    auto response = rest.post("/oauth2/token", jsonbody, {{"Content-Type", "application/json;charset=UTF-8"}});
     if (response.result_int() < 200 || response.result_int() >= 300) {
-      throw std::runtime_error(
-        "Token authentication failed with HTTP status " + std::to_string(response.result_int())
-      );
+      throw std::runtime_error("Token authentication failed with HTTP status " + std::to_string(response.result_int()));
     }
     const std::string resp = std::move(response.body());
     boost::system::error_code ec;
@@ -80,9 +76,7 @@ private:
     // `8012` (a missing or wrong grant_type) all arrive this way.
     const auto& doc = jv.as_object();
     if (const auto declared = kiwoom_declared_error(doc)) {
-      throw std::runtime_error(
-        "Kiwoom authentication failed [" + declared->broker_code_ + "]: " + declared->message_
-      );
+      throw std::runtime_error("Kiwoom authentication failed [" + declared->broker_code_ + "]: " + declared->message_);
     }
     rest_resp_.from_json(doc);
   }

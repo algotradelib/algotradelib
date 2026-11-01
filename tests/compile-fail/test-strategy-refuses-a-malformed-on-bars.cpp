@@ -7,7 +7,8 @@
 using namespace algotradelib;
 
 struct MutableSlice {
-  template <class Ctx> void on_bars(Ctx&, strategy::BarSlice&) {}
+  template <class Ctx>
+  void on_bars(Ctx&, strategy::BarSlice&) {}
 };
 
 ATL_ASSERT_STRATEGY(MutableSlice, strategy::MinimalContext);

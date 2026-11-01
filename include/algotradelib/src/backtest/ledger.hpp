@@ -8,12 +8,12 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <type_traits>
 #include <cstdint>
 #include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -215,13 +215,17 @@ public:
    *
    * @return The positions.
    */
-  const std::vector<HoldingPosition>& positions() const noexcept { return positions_; }
+  const std::vector<HoldingPosition>& positions() const noexcept {
+    return positions_;
+  }
 
   /**
    * @brief Returns whether the ledger keeps the executions it applies.
    * @return The setting it was constructed with.
    */
-  ExecutionHistory history() const noexcept { return history_; }
+  ExecutionHistory history() const noexcept {
+    return history_;
+  }
 
   /**
    * @brief Returns every execution applied.
@@ -231,8 +235,10 @@ public:
    */
   const std::vector<Execution>& executions() const {
     if (history_ == ExecutionHistory::NONE) {
-      throw std::logic_error("this ledger keeps no executions (ExecutionHistory::NONE); "
-        "a Backtester's are in ReplayResult::executions_");
+      throw std::logic_error(
+        "this ledger keeps no executions (ExecutionHistory::NONE); "
+        "a Backtester's are in ReplayResult::executions_"
+      );
     }
     return executions_;
   }
@@ -288,9 +294,8 @@ public:
     const auto zero = Decimal64(0, 0);
 
     // Signed quantity: a sale reduces the position.
-    const auto signed_quantity = fill.side_ == OrderSide::BUY ?
-      std::optional<Decimal64>(fill.quantity_) :
-      decimal_subtract(zero, fill.quantity_);
+    const auto signed_quantity =
+      fill.side_ == OrderSide::BUY ? std::optional<Decimal64>(fill.quantity_) : decimal_subtract(zero, fill.quantity_);
     if (!signed_quantity) {
       return false;
     }
@@ -300,9 +305,8 @@ public:
       return false;
     }
     // Cash out on a buy, in on a sale, and commission out either way.
-    const auto cash_change = fill.side_ == OrderSide::BUY ?
-      decimal_subtract(zero, *gross) :
-      std::optional<Decimal64>(*gross);
+    const auto cash_change =
+      fill.side_ == OrderSide::BUY ? decimal_subtract(zero, *gross) : std::optional<Decimal64>(*gross);
     if (!cash_change) {
       return false;
     }
@@ -311,9 +315,8 @@ public:
       return false;
     }
     // Both the broker's commission and the institution fee leave cash.
-    const auto after_fees = execution.institution_fee_ ?
-      decimal_subtract(*after_commission, *execution.institution_fee_) :
-      after_commission;
+    const auto after_fees =
+      execution.institution_fee_ ? decimal_subtract(*after_commission, *execution.institution_fee_) : after_commission;
     if (!after_fees) {
       return false;
     }
@@ -328,8 +331,7 @@ public:
     const auto average = existing != nullptr ? existing->average_purchase_price_ : zero;
 
     // A non-flat position cannot change currency; refuse rather than relabel it.
-    if (existing != nullptr && held.coefficient() != 0 &&
-        !(existing->market_value_.currency_ == currency)) {
+    if (existing != nullptr && held.coefficient() != 0 && !(existing->market_value_.currency_ == currency)) {
       return false;
     }
 
@@ -389,9 +391,7 @@ public:
     // Reducing without crossing leaves the average alone: selling half a position does not change
     // what the remaining half cost.
 
-    const auto cash_total = decimal_add(
-      cash_in(currency).value_or(zero), *after_tax
-    );
+    const auto cash_total = decimal_add(cash_in(currency).value_or(zero), *after_tax);
     if (!cash_total) {
       return false;
     }
@@ -437,8 +437,10 @@ public:
     if (realized_total) {
       set_amount(realized_, currency, *realized_total);
     }
-    static_assert(std::is_nothrow_move_constructible<Execution>::value,
-      "the execution is moved into room made for it, which must not throw");
+    static_assert(
+      std::is_nothrow_move_constructible<Execution>::value,
+      "the execution is moved into room made for it, which must not throw"
+    );
     if (recorded) {
       executions_.push_back(std::move(*recorded));
     }
@@ -474,7 +476,9 @@ public:
    * @param instrument The instrument.
    * @return Its place, or `std::nullopt` if no fill opened a lot in it.
    */
-  std::optional<std::size_t> lot_of(const InstrumentId& instrument) const { return slot_of(instrument); }
+  std::optional<std::size_t> lot_of(const InstrumentId& instrument) const {
+    return slot_of(instrument);
+  }
 
   /**
    * @brief Marks the lot at a place `lot_of` returned to a price, as `mark` does for its instrument.
@@ -501,7 +505,6 @@ public:
     return true;
   }
 
-
   /**
    * @brief Returns the portfolio a strategy sees.
    *
@@ -514,9 +517,7 @@ public:
    * @return The portfolio.
    */
   template <typename BrokerTag>
-  strategy::Portfolio<BrokerTag> snapshot(
-    std::chrono::system_clock::time_point as_of
-  ) const {
+  strategy::Portfolio<BrokerTag> snapshot(std::chrono::system_clock::time_point as_of) const {
     strategy::Portfolio<BrokerTag> portfolio;
     portfolio.positions_ = positions_;
     // Every held share is sellable: a model consistent with crediting sales on the fill (no
@@ -662,9 +663,13 @@ private:
   // The id at a position of `positions_`, for the index.
   struct LotIds {
     const std::vector<HoldingPosition>* positions_;
-    const InstrumentId& operator()(std::size_t at) const noexcept { return (*positions_)[at].instrument_; }
+    const InstrumentId& operator()(std::size_t at) const noexcept {
+      return (*positions_)[at].instrument_;
+    }
   };
-  LotIds lot_ids() const noexcept { return LotIds{&positions_}; }
+  LotIds lot_ids() const noexcept {
+    return LotIds{&positions_};
+  }
 
   HoldingPosition* find_or_open(const InstrumentId& instrument) {
     if (const auto slot = slot_of(instrument)) {
@@ -708,10 +713,7 @@ private:
   }
 
   // Returns how much of `held` this trade closes, which is zero when it only adds.
-  static std::optional<Decimal64> closed_quantity(
-    const Decimal64& held,
-    const Decimal64& traded
-  ) {
+  static std::optional<Decimal64> closed_quantity(const Decimal64& held, const Decimal64& traded) {
     const auto zero = Decimal64(0, 0);
     const bool long_held = decimal_less(zero, held);
     const bool short_held = decimal_less(held, zero);
@@ -744,15 +746,11 @@ private:
 
   // Returns the average of two lots by magnitude, which is what adding to a position produces.
   static std::optional<Decimal64> weighted_average(
-    const Decimal64& held,
-    const Decimal64& held_price,
-    const Decimal64& traded,
-    const Decimal64& traded_price
+    const Decimal64& held, const Decimal64& held_price, const Decimal64& traded, const Decimal64& traded_price
   ) {
     const auto zero = Decimal64(0, 0);
     const auto held_magnitude = decimal_less(held, zero) ? decimal_subtract(zero, held) : held;
-    const auto traded_magnitude =
-      decimal_less(traded, zero) ? decimal_subtract(zero, traded) : traded;
+    const auto traded_magnitude = decimal_less(traded, zero) ? decimal_subtract(zero, traded) : traded;
     if (!held_magnitude || !traded_magnitude) {
       return std::nullopt;
     }
@@ -775,11 +773,7 @@ private:
   // Takes the **total** rather than a change, because the addition is the fallible half and `apply`
   // has already done it before committing anything. What is left cannot fail, which is what lets
   // `apply` promise the ledger is either wholly updated or untouched.
-  static void set_amount(
-    std::vector<Money>& amounts,
-    const Currency& currency,
-    const Decimal64& total
-  ) {
+  static void set_amount(std::vector<Money>& amounts, const Currency& currency, const Decimal64& total) {
     for (auto& amount : amounts) {
       if (amount.currency_ == currency) {
         amount.amount_ = total;

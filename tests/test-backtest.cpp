@@ -47,8 +47,11 @@ inline void same_position(const algotradelib::HoldingPosition& lhs, const algotr
   require(lhs.name_ == rhs.name_, "position name");
   require(lhs.quantity_ == rhs.quantity_, "position quantity");
   require(lhs.sellable_quantity_ == rhs.sellable_quantity_, "position sellable quantity");
-  require(lhs.sellable_basis_.has_value() == rhs.sellable_basis_.has_value() &&
-    (!lhs.sellable_basis_ || same_basis(*lhs.sellable_basis_, *rhs.sellable_basis_)), "position sellable basis");
+  require(
+    lhs.sellable_basis_.has_value() == rhs.sellable_basis_.has_value() &&
+      (!lhs.sellable_basis_ || same_basis(*lhs.sellable_basis_, *rhs.sellable_basis_)),
+    "position sellable basis"
+  );
   require(lhs.average_purchase_price_ == rhs.average_purchase_price_, "position average price");
   require(lhs.last_price_ == rhs.last_price_, "position last price");
   require(lhs.purchase_value_ == rhs.purchase_value_, "position purchase value");
@@ -78,9 +81,12 @@ inline void same_order(const algotradelib::OrderSnapshot& lhs, const algotradeli
   require(lhs.canceled_at_ == rhs.canceled_at_, "order canceled at");
   const auto& a = lhs.execution_;
   const auto& b = rhs.execution_;
-  require(a.filled_quantity_ == b.filled_quantity_ && a.average_filled_price_ == b.average_filled_price_ &&
-    a.filled_amount_ == b.filled_amount_ && a.commission_ == b.commission_ && a.tax_ == b.tax_ &&
-    a.filled_at_ == b.filled_at_ && a.settlement_date_ == b.settlement_date_, "order execution");
+  require(
+    a.filled_quantity_ == b.filled_quantity_ && a.average_filled_price_ == b.average_filled_price_ &&
+      a.filled_amount_ == b.filled_amount_ && a.commission_ == b.commission_ && a.tax_ == b.tax_ &&
+      a.filled_at_ == b.filled_at_ && a.settlement_date_ == b.settlement_date_,
+    "order execution"
+  );
 }
 
 template <typename Portfolio, typename Equity>
@@ -92,8 +98,11 @@ void portfolio(const Portfolio& kept, const Portfolio& rebuilt, const Equity& ru
   require(kept.cash_ == rebuilt.cash_, "cash");
   require(kept.buying_power_.size() == rebuilt.buying_power_.size(), "number of buying powers");
   for (std::size_t at = 0; at < kept.buying_power_.size(); ++at) {
-    require(kept.buying_power_[at].cash_ == rebuilt.buying_power_[at].cash_ &&
-      kept.buying_power_[at].received_at_ == rebuilt.buying_power_[at].received_at_, "buying power");
+    require(
+      kept.buying_power_[at].cash_ == rebuilt.buying_power_[at].cash_ &&
+        kept.buying_power_[at].received_at_ == rebuilt.buying_power_[at].received_at_,
+      "buying power"
+    );
   }
   require(kept.working_.size() == rebuilt.working_.size(), "number of working orders");
   for (std::size_t at = 0; at < kept.working_.size(); ++at) {
@@ -111,8 +120,10 @@ void portfolio(const Portfolio& kept, const Portfolio& rebuilt, const Equity& ru
 template <typename Equity>
 void equity(const Equity& running, const Equity& summed) {
   require(running.has_value() == summed.has_value(), "equity presence");
-  require(!running || (running->coefficient() == summed->coefficient() && running->scale() == summed->scale()),
-    "equity value or scale");
+  require(
+    !running || (running->coefficient() == summed->coefficient() && running->scale() == summed->scale()),
+    "equity value or scale"
+  );
 }
 
 } // namespace replay_check
@@ -131,13 +142,13 @@ using Clock = std::chrono::system_clock;
 Clock::time_point utc(int year, int month, int day, int hour, int minute) {
   const long long a = (month <= 2) ? year - 1 : year;
   const long long m = (month <= 2) ? month + 12 : month;
-  const long long era_days =
-    365 * a + a / 4 - a / 100 + a / 400 + (153 * (m - 3) + 2) / 5 + day - 1;
-  return Clock::time_point{} + std::chrono::hours((era_days - 719468) * 24 + hour) +
-    std::chrono::minutes(minute);
+  const long long era_days = 365 * a + a / 4 - a / 100 + a / 400 + (153 * (m - 3) + 2) / 5 + day - 1;
+  return Clock::time_point{} + std::chrono::hours((era_days - 719468) * 24 + hour) + std::chrono::minutes(minute);
 }
 
-InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
+InstrumentId samsung() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+}
 
 /** A bar closing at `close`, stamped at `at`. */
 strategy::BarEvent bar_at(Clock::time_point at, BarInterval interval, const char* close) {
@@ -229,15 +240,12 @@ TEST_CASE("a calendar interval has no derivable period count, and says so") {
 
 namespace {
 
-Currency krw() { return Currency{"KRW"}; }
+Currency krw() {
+  return Currency{"KRW"};
+}
 
 /** An execution of `quantity` at `price`, with optional commission. */
-backtest::Execution filled(
-  OrderSide side,
-  const char* quantity,
-  const char* price,
-  const char* commission = "0"
-) {
+backtest::Execution filled(OrderSide side, const char* quantity, const char* price, const char* commission = "0") {
   backtest::Execution execution;
   execution.fill_.instrument_ = samsung();
   execution.fill_.side_ = side;
@@ -626,10 +634,7 @@ const PriceRule& krx_grid() {
 }
 
 strategy::PlannedOrder order_of(
-  OrderSide side,
-  const char* quantity,
-  OrderType type = OrderType::MARKET,
-  const char* limit = nullptr
+  OrderSide side, const char* quantity, OrderType type = OrderType::MARKET, const char* limit = nullptr
 ) {
   strategy::PlannedOrder order;
   order.instrument_ = samsung();
@@ -662,7 +667,9 @@ strategy::BarEvent ohlc(const char* o, const char* h, const char* l, const char*
  * the value matters only to the scheduled cases below -- which state their own dates rather than
  * relying on this one.
  */
-Date fill_date() { return Date{2026, 3, 10}; }
+Date fill_date() {
+  return Date{2026, 3, 10};
+}
 
 } // namespace
 
@@ -712,7 +719,8 @@ TEST_CASE("tick slippage walks the grid one step at a time and across band bound
   // From a price off the grid each step still takes the tick where it starts.
   CHECK(ticks(2, "4998", OrderSide::BUY).first == Decimal64::parse("5013"));
   // An unknown grid contributes no tick slippage.
-  const auto unknown = backtest::SlippageModel::of_ticks(3).apply(Decimal64::parse("4990"), OrderSide::BUY, PriceRule{});
+  const auto unknown =
+    backtest::SlippageModel::of_ticks(3).apply(Decimal64::parse("4990"), OrderSide::BUY, PriceRule{});
   REQUIRE(unknown);
   CHECK(unknown->second == Decimal64::parse("0"));
   // Basis points and ticks together: the ticks are walked from the price before slippage.
@@ -732,8 +740,7 @@ TEST_CASE("an immediate-or-cancel order does not rest when the bar misses it") {
   // The identical limit that rests as a day order above.
   auto order = order_of(OrderSide::BUY, "10", OrderType::LIMIT, "68000");
   order.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
-  const auto missed =
-    model.decide(order, ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date());
+  const auto missed = model.decide(order, ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date());
   REQUIRE_FALSE(missed.execution_);
   // Resting is a property of the condition, not of the basis. This read
   // `type_ == LIMIT`, which was the same answer while every order was a day
@@ -743,24 +750,19 @@ TEST_CASE("an immediate-or-cancel order does not rest when the bar misses it") {
   REQUIRE_FALSE(missed.still_working_);
 
   order.time_in_force_ = TimeInForce::FILL_OR_KILL;
-  REQUIRE_FALSE(
-    model.decide(order, ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date()).still_working_
-  );
+  REQUIRE_FALSE(model.decide(order, ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date()).still_working_);
 
   // And the day order it was cloned from still rests, so the assertion above is
   // about the condition rather than about the fixture.
   order.time_in_force_ = TimeInForce::DAY;
-  REQUIRE(
-    model.decide(order, ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date()).still_working_
-  );
+  REQUIRE(model.decide(order, ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date()).still_working_);
 }
 
 TEST_CASE("the fill model states what it assumed, for a report to carry") {
   const backtest::NextBarFillModel model;
   REQUIRE(model.limit_price() == backtest::LimitFillPrice::AT_LIMIT);
   REQUIRE(backtest::limit_fill_price_name(model.limit_price()) == "at_limit");
-  REQUIRE(backtest::limit_fill_price_name(backtest::LimitFillPrice::AT_OPEN_IF_BETTER) ==
-          "at_open_if_better");
+  REQUIRE(backtest::limit_fill_price_name(backtest::LimitFillPrice::AT_OPEN_IF_BETTER) == "at_open_if_better");
 }
 
 // ---------------------------------------------------------------------------
@@ -780,12 +782,7 @@ Instrument samsung_reference() {
 }
 
 /** Builds one commission row without depending on the order of the struct's fields. */
-CommissionRate rate_row(
-  Country country,
-  Decimal64 rate,
-  std::optional<Date> from,
-  std::optional<Date> until
-) {
+CommissionRate rate_row(Country country, Decimal64 rate, std::optional<Date> from, std::optional<Date> until) {
   CommissionRate row;
   row.country_ = country;
   row.rate_ = std::move(rate);
@@ -845,7 +842,8 @@ struct BuysOnce {
     ctx.submit(
       strategy::OrderIntent::market(
         bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
-      ).with_tag("buys-once")
+      )
+        .with_tag("buys-once")
     );
   }
 
@@ -890,7 +888,8 @@ struct BuysOnQuote {
   Clock::time_point now_when_submitted_{};
   std::size_t positions_when_submitted_{0};
 
-  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
 
   template <class Ctx>
   void on_quote(Ctx& ctx, const strategy::QuoteEvent& quote) {
@@ -904,7 +903,8 @@ struct BuysOnQuote {
     ctx.submit(
       strategy::OrderIntent::market(
         quote.quote_.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
-      ).with_tag("buys-on-quote")
+      )
+        .with_tag("buys-on-quote")
     );
   }
 
@@ -933,7 +933,9 @@ struct BuysOnFirstBar {
   }
 
   template <class Ctx>
-  void on_fill(Ctx&, const strategy::Fill& fill) { fill_prices_.push_back(fill.price_); }
+  void on_fill(Ctx&, const strategy::Fill& fill) {
+    fill_prices_.push_back(fill.price_);
+  }
 };
 
 /** A quote for the replayed instrument at `price`. */
@@ -948,12 +950,7 @@ strategy::QuoteEvent quote_at(Clock::time_point at, const char* price) {
 }
 
 /** A bar of the given interval at `at`, with a distinct open and close. */
-strategy::BarEvent moving_bar(
-  Clock::time_point at,
-  BarInterval interval,
-  const char* open,
-  const char* close
-) {
+strategy::BarEvent moving_bar(Clock::time_point at, BarInterval interval, const char* open, const char* close) {
   Bar bar;
   bar.timestamp_ = at;
   bar.open_ = Decimal64::parse(open);
@@ -968,7 +965,9 @@ strategy::BarEvent moving_bar(
  * The close of the one-minute bar ending `minute` minutes past 10:00 KST on 2026-03-10: a single
  * session of intraday bars, across which a DAY order rests as it does live.
  */
-Clock::time_point session_minute(int minute) { return utc(2026, 3, 10, 1, minute); }
+Clock::time_point session_minute(int minute) {
+  return utc(2026, 3, 10, 1, minute);
+}
 
 } // namespace
 
@@ -1000,12 +999,7 @@ TEST_CASE("a weekly bar's period start is not derivable, and the engine says so 
 #endif
 
 /** An open-stamped bar of `interval` at `at`, which is how every shipped adapter stamps one. */
-strategy::BarEvent open_stamped(
-  Clock::time_point at,
-  BarInterval interval,
-  const char* open,
-  const char* close
-) {
+strategy::BarEvent open_stamped(Clock::time_point at, BarInterval interval, const char* open, const char* close) {
   Bar bar;
   bar.timestamp_ = at;
   bar.open_ = Decimal64::parse(open);
@@ -1237,16 +1231,14 @@ TEST_CASE("an annualized figure is unobserved unless a period count was supplied
   const auto without = backtest::summarize(engine.result(), engine.fills());
   REQUIRE_FALSE(math::observed(without.annualized_sharpe_));
 
-  const auto periods =
-    backtest::periods_per_year(BarInterval::ONE_DAY, strategy::SessionWindow::krx(), 245.0);
+  const auto periods = backtest::periods_per_year(BarInterval::ONE_DAY, strategy::SessionWindow::krx(), 245.0);
   REQUIRE(periods);
   const auto with = backtest::summarize(engine.result(), engine.fills(), *periods);
   if (math::observed(with.sharpe_)) {
     REQUIRE(math::observed(with.annualized_sharpe_));
     // The square root of the period count, not the count -- confusing them overstates a daily Sharpe
     // about sixteenfold.
-    REQUIRE(with.annualized_sharpe_ ==
-            Catch::Approx(with.sharpe_ * std::sqrt(245.0)).epsilon(1e-9));
+    REQUIRE(with.annualized_sharpe_ == Catch::Approx(with.sharpe_ * std::sqrt(245.0)).epsilon(1e-9));
   }
 }
 
@@ -1262,10 +1254,46 @@ namespace {
 /** A price path that rises, stalls, falls and recovers, so a trend strategy has both sides. */
 const std::vector<int>& path() {
   static const std::vector<int> closes = {
-    60000, 60500, 61200, 61000, 62000, 63000, 64500, 65000, 66200, 67000,
-    68500, 69000, 70200, 71000, 72500, 73000, 72800, 72000, 71000, 69500,
-    68000, 66500, 65000, 63500, 62000, 61000, 60000, 59000, 58500, 58000,
-    58500, 59500, 61000, 62500, 64000, 65500, 67000, 68500, 70000, 71500,
+    60000,
+    60500,
+    61200,
+    61000,
+    62000,
+    63000,
+    64500,
+    65000,
+    66200,
+    67000,
+    68500,
+    69000,
+    70200,
+    71000,
+    72500,
+    73000,
+    72800,
+    72000,
+    71000,
+    69500,
+    68000,
+    66500,
+    65000,
+    63500,
+    62000,
+    61000,
+    60000,
+    59000,
+    58500,
+    58000,
+    58500,
+    59500,
+    61000,
+    62500,
+    64000,
+    65500,
+    67000,
+    68500,
+    70000,
+    71500,
   };
   return closes;
 }
@@ -1284,9 +1312,7 @@ backtest::Backtester<Strategy> replay(Strategy strategy, BarInterval interval) {
 
   // Minute bars start inside the session and step by a minute; daily bars step by a day. Nothing else
   // differs, and the engine is told nothing about which it is getting.
-  const auto start = interval == BarInterval::ONE_MINUTE ?
-    utc(2026, 3, 10, 0, 1) :
-    utc(2026, 3, 10, 6, 30);
+  const auto start = interval == BarInterval::ONE_MINUTE ? utc(2026, 3, 10, 0, 1) : utc(2026, 3, 10, 6, 30);
   for (std::size_t at = 0; at < path().size(); ++at) {
     const auto step = interval == BarInterval::ONE_MINUTE ?
       std::chrono::minutes(static_cast<int>(at)) :
@@ -1348,8 +1374,7 @@ void behaves_the_same_at_both_intervals(Strategy strategy) {
   REQUIRE(daily.result().executions_.size() == minutes.result().executions_.size());
   REQUIRE(daily.ledger().quantity_of(samsung()) == minutes.ledger().quantity_of(samsung()));
   REQUIRE(daily.ledger().cash_in(Currency{"KRW"}) == minutes.ledger().cash_in(Currency{"KRW"}));
-  REQUIRE(daily.ledger().realized_in(Currency{"KRW"}) ==
-          minutes.ledger().realized_in(Currency{"KRW"}));
+  REQUIRE(daily.ledger().realized_in(Currency{"KRW"}) == minutes.ledger().realized_in(Currency{"KRW"}));
   // And neither ran into an instruction it could not build.
   REQUIRE(daily.result().rejected_.empty());
   REQUIRE(minutes.result().rejected_.empty());
@@ -1553,10 +1578,10 @@ TEST_CASE("the tax is truncated to whole units", "[sell-tax]") {
 
 TEST_CASE("a sell tax rate outside zero to one is refused", "[sell-tax]") {
   const backtest::NextBarFillModel model;
-  CHECK_THROWS_AS(model.with_sell_tax(backtest::SellTax{Decimal64::parse("-0.001"), Country::KR}),
-                  std::invalid_argument);
-  CHECK_THROWS_AS(model.with_sell_tax(backtest::SellTax{Decimal64::parse("1"), Country::KR}),
-                  std::invalid_argument);
+  CHECK_THROWS_AS(
+    model.with_sell_tax(backtest::SellTax{Decimal64::parse("-0.001"), Country::KR}), std::invalid_argument
+  );
+  CHECK_THROWS_AS(model.with_sell_tax(backtest::SellTax{Decimal64::parse("1"), Country::KR}), std::invalid_argument);
   CHECK_NOTHROW(model.with_sell_tax(backtest::SellTax{Decimal64::parse("0"), Country::KR}));
 }
 
@@ -1596,9 +1621,7 @@ TEST_CASE("a rate whose window could not be read is refused as unknown, not as m
 
   // And a whole schedule of readable rows is unchanged.
   CommissionSchedule sound;
-  sound.rates_.push_back(
-    rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, std::nullopt)
-  );
+  sound.rates_.push_back(rate_row(Country::KR, Decimal64::parse("0.00015"), std::nullopt, std::nullopt));
   REQUIRE(backtest::commission_model_from(sound, Country::KR, Date{2026, 9, 23}));
 }
 
@@ -1644,9 +1667,11 @@ TEST_CASE("the replay refuses an order shape it cannot price instead of inventin
   ReplayExecutor executor;
 
   SECTION("a basis a bar cannot price is refused, not filled at the open") {
-    for (const auto type :
-         {OrderType::BEST_LIMIT, OrderType::PRIMARY_LIMIT, OrderType::MID_PRICE,
-          OrderType::CONDITIONAL_LIMIT, OrderType::STOP_LIMIT, OrderType::CLOSING_PRICE}) {
+    for (
+      const auto type :
+      {OrderType::BEST_LIMIT, OrderType::PRIMARY_LIMIT, OrderType::MID_PRICE, OrderType::CONDITIONAL_LIMIT,
+        OrderType::STOP_LIMIT, OrderType::CLOSING_PRICE}
+    ) {
       auto order = resting_buy("10", "60000");
       order.type_ = type;
       INFO("basis " << static_cast<int>(type));
@@ -1660,10 +1685,12 @@ TEST_CASE("the replay refuses an order shape it cannot price instead of inventin
   }
 
   SECTION("a session a bar series does not represent is refused") {
-    for (const auto session :
-         {OrderSession::PRE_MARKET, OrderSession::AFTER_HOURS, OrderSession::AFTER_MARKET,
-          OrderSession::AFTER_HOURS_AUCTION, OrderSession::GTP, OrderSession::OPENING_AUCTION,
-          OrderSession::CLOSING_AUCTION}) {
+    for (
+      const auto session :
+      {OrderSession::PRE_MARKET, OrderSession::AFTER_HOURS, OrderSession::AFTER_MARKET,
+        OrderSession::AFTER_HOURS_AUCTION, OrderSession::GTP, OrderSession::OPENING_AUCTION,
+        OrderSession::CLOSING_AUCTION}
+    ) {
       auto order = resting_buy("10", "60000");
       order.session_ = session;
       REQUIRE(executor.place(order) == runner::SendOutcome::REFUSED_LOCALLY);
@@ -1714,9 +1741,9 @@ struct RestsOneLimit {
     const auto limit = strategy::Price::checked(Decimal64::parse("50000"), krx_grid());
     ctx.submit(
       strategy::OrderIntent::limit(
-        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")),
-        *limit
-      ).with_tag("rests")
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")), *limit
+      )
+        .with_tag("rests")
     );
   }
 };
@@ -1760,10 +1787,12 @@ struct LimitFromQuote {
       return;
     }
     placed_ = true;
-    ctx.submit(strategy::OrderIntent::limit(
-      quote.quote_.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")),
-      *strategy::Price::checked(Decimal64::parse("69000"), krx_grid())
-    ));
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        quote.quote_.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")),
+        *strategy::Price::checked(Decimal64::parse("69000"), krx_grid())
+      )
+    );
   }
 };
 
@@ -1868,10 +1897,7 @@ strategy::Price far_below() {
 
 /** A flat bar for `instrument` at `close`, for interleaving two instruments in one replay. */
 strategy::BarEvent bar_for(
-  InstrumentId instrument,
-  Clock::time_point at,
-  const char* close,
-  BarInterval interval = BarInterval::ONE_DAY
+  InstrumentId instrument, Clock::time_point at, const char* close, BarInterval interval = BarInterval::ONE_DAY
 ) {
   Bar bar;
   bar.timestamp_ = at;
@@ -1884,7 +1910,9 @@ strategy::BarEvent bar_for(
 }
 
 /** A second KRX instrument, so a replay can interleave two of them. */
-InstrumentId hynix() { return InstrumentId{Country::KR, Venue::COMBINED, "000660"}; }
+InstrumentId hynix() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "000660"};
+}
 
 Instrument hynix_reference() {
   auto reference = samsung_reference();
@@ -1901,9 +1929,9 @@ struct RecordsBuyingPower {
     seen_.push_back(ctx.portfolio().buying_power_in(Currency{"KRW"}));
     ctx.submit(
       strategy::OrderIntent::limit(
-        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")),
-        far_below()
-      ).with_tag("records")
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")), far_below()
+      )
+        .with_tag("records")
     );
   }
 };
@@ -1915,9 +1943,7 @@ struct RecordsBuyingPower {
 template <typename Engine>
 void replay_flat_bars(Engine& engine, int bars) {
   for (int minute = 1; minute <= bars; ++minute) {
-    engine.feed(
-      moving_bar(session_minute(minute), BarInterval::ONE_MINUTE, "70000", "70000")
-    );
+    engine.feed(moving_bar(session_minute(minute), BarInterval::ONE_MINUTE, "70000", "70000"));
   }
   engine.finish();
 }
@@ -1926,9 +1952,7 @@ void replay_flat_bars(Engine& engine, int bars) {
 template <typename Engine>
 void replay_flat_days(Engine& engine, int bars) {
   for (int day = 0; day < bars; ++day) {
-    engine.feed(
-      moving_bar(utc(2026, 3, 10 + day, 6, 30), BarInterval::ONE_DAY, "70000", "70000")
-    );
+    engine.feed(moving_bar(utc(2026, 3, 10 + day, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
   }
   engine.finish();
 }
@@ -2011,13 +2035,14 @@ struct WithdrawsTheOtherOnFill {
     ctx.submit(
       strategy::OrderIntent::market(
         bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
-      ).with_tag("fills")
+      )
+        .with_tag("fills")
     );
     ctx.submit(
       strategy::OrderIntent::limit(
-        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")),
-        far_below()
-      ).with_tag("rests")
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")), far_below()
+      )
+        .with_tag("rests")
     );
   }
 
@@ -2048,7 +2073,8 @@ struct PlacesTheOtherOnFill {
     ctx.submit(
       strategy::OrderIntent::market(
         bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
-      ).with_tag("seed")
+      )
+        .with_tag("seed")
     );
   }
 
@@ -2062,9 +2088,8 @@ struct PlacesTheOtherOnFill {
     // stays unfilled whether the engine waits correctly or checks it on the wrong bar, which would
     // make this test pass without establishing either timing claim.
     ctx.submit(
-      strategy::OrderIntent::market(
-        hynix(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
-      ).with_tag("from-a-fill")
+      strategy::OrderIntent::market(hynix(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")))
+        .with_tag("from-a-fill")
     );
   }
 };
@@ -2075,9 +2100,7 @@ TEST_CASE("a fill callback can withdraw an order the same pass had not reached")
   // The order the loop has not filled yet is outstanding, so it is in the portfolio `on_fill` reads
   // and its reference resolves. The queue was once empty for the length of the loop,
   // so `on_fill` saw nothing to withdraw and could not have reached it if it had.
-  backtest::Backtester<WithdrawsTheOtherOnFill> engine(
-    WithdrawsTheOtherOnFill{}, replay_config()
-  );
+  backtest::Backtester<WithdrawsTheOtherOnFill> engine(WithdrawsTheOtherOnFill{}, replay_config());
   replay_flat_bars(engine, 3);
 
   // The market order filled and the resting limit was still outstanding when `on_fill` ran.
@@ -2130,10 +2153,7 @@ CommissionSchedule operator_tariff(std::vector<CommissionRate> rows) {
 
 /** One venue-keyed row with both components stated. */
 CommissionRate venue_rate(
-  Venue venue,
-  const char* rate,
-  const char* institution,
-  std::optional<Date> from = std::nullopt,
+  Venue venue, const char* rate, const char* institution, std::optional<Date> from = std::nullopt,
   std::optional<Date> until = std::nullopt
 ) {
   CommissionRate row;
@@ -2189,8 +2209,7 @@ TEST_CASE("COMBINED cannot be asserted as the venue a fill happened at") {
   // It is what KIS's `SOR` normalizes to: consolidated routing, not a venue an order matched on.
   // A rate row may still be keyed to it, which the core tests assert.
   const auto refused = backtest::CommissionPolicy::scheduled(
-    operator_tariff({venue_rate(Venue::KRX, "0.002", "0")}),
-    *VenueKey::normalized(Venue::COMBINED), Country::KR
+    operator_tariff({venue_rate(Venue::KRX, "0.002", "0")}), *VenueKey::normalized(Venue::COMBINED), Country::KR
   );
   REQUIRE_FALSE(refused);
   CHECK(refused.error().category_ == ErrorCategory::INVALID_ARGUMENT);
@@ -2206,9 +2225,7 @@ TEST_CASE("a caller-stated schedule that does not name its tariff is refused") {
   unnamed.origin_ = CommissionOrigin::CALLER_STATED;
   unnamed.rates_.push_back(venue_rate(Venue::KRX, "0.002", "0"));
 
-  const auto refused = backtest::CommissionPolicy::scheduled(
-    unnamed, *VenueKey::normalized(Venue::KRX), Country::KR
-  );
+  const auto refused = backtest::CommissionPolicy::scheduled(unnamed, *VenueKey::normalized(Venue::KRX), Country::KR);
   REQUIRE_FALSE(refused);
   CHECK(refused.error().broker_code_ == "commission_tariff_unnamed");
 
@@ -2216,9 +2233,7 @@ TEST_CASE("a caller-stated schedule that does not name its tariff is refused") {
   CommissionSchedule published;
   published.origin_ = CommissionOrigin::BROKER_PUBLISHED;
   published.rates_.push_back(venue_rate(Venue::KRX, "0.002", "0"));
-  CHECK(backtest::CommissionPolicy::scheduled(
-    published, *VenueKey::normalized(Venue::KRX), Country::KR
-  ));
+  CHECK(backtest::CommissionPolicy::scheduled(published, *VenueKey::normalized(Venue::KRX), Country::KR));
 }
 
 namespace {
@@ -2237,7 +2252,8 @@ struct BuysOneEachBar {
     ctx.submit(
       strategy::OrderIntent::market(
         bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
-      ).with_tag("buys-one")
+      )
+        .with_tag("buys-one")
     );
   }
 };
@@ -2248,9 +2264,9 @@ struct BuysHuge {
   void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
     ctx.submit(
       strategy::OrderIntent::market(
-        bar.instrument_, OrderSide::BUY,
-        strategy::SizeSpec::quantity(Decimal64::parse("1300000000000"))
-      ).with_tag("buys-huge")
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1300000000000"))
+      )
+        .with_tag("buys-huge")
     );
   }
 };
@@ -2263,7 +2279,9 @@ struct PlacesTwoEachBar {
   std::size_t quotes_seen_{0};
 
   template <class Ctx>
-  void on_phase(Ctx&, strategy::MarketPhase) { ++phases_seen_; }
+  void on_phase(Ctx&, strategy::MarketPhase) {
+    ++phases_seen_;
+  }
 
   template <class Ctx>
   void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
@@ -2272,17 +2290,22 @@ struct PlacesTwoEachBar {
       ctx.submit(
         strategy::OrderIntent::market(
           bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
-        ).with_tag(tag)
+        )
+          .with_tag(tag)
       );
     }
   }
 
   template <class Ctx>
-  void on_fill(Ctx&, const strategy::Fill&) { ++fills_; }
+  void on_fill(Ctx&, const strategy::Fill&) {
+    ++fills_;
+  }
 
   /** Counts quotes, so a halt can be shown to suppress the handler and not merely the counter. */
   template <class Ctx>
-  void on_quote(Ctx&, const strategy::QuoteEvent&) { ++quotes_seen_; }
+  void on_quote(Ctx&, const strategy::QuoteEvent&) {
+    ++quotes_seen_;
+  }
 
   template <class Ctx>
   void on_stop(Ctx& ctx) {
@@ -2290,9 +2313,8 @@ struct PlacesTwoEachBar {
     // If this ever runs after a halt, the order has nowhere honest to go: the replay has already
     // stopped being able to cost one.
     ctx.submit(
-      strategy::OrderIntent::market(
-        samsung(), OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("1"))
-      ).with_tag("stop-flatten")
+      strategy::OrderIntent::market(samsung(), OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("1")))
+        .with_tag("stop-flatten")
     );
   }
 };
@@ -2352,9 +2374,7 @@ TEST_CASE("a mark that will not fit halts the replay before the strategy decides
     const auto second = engine.result().equity_.empty() ? Clock::time_point{} : engine.result().equity_.back().at_;
     const auto phases_before = engine.strategy().phases_seen_;
 
-    engine.feed(moving_bar(
-      utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "9223372036854775807"
-    ));
+    engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "9223372036854775807"));
 
     REQUIRE(engine.result().halted_);
     CHECK(engine.result().halted_->broker_code_ == "mark_not_representable");
@@ -2491,9 +2511,7 @@ TEST_CASE("a fill the ledger cannot record halts the replay rather than disappea
     BuysHuge{}, config, backtest::NextBarFillModel(backtest::CommissionModel::none())
   );
   for (int day = 10; day < 14; ++day) {
-    engine.feed(
-      moving_bar(utc(2026, 3, day, 6, 30), BarInterval::ONE_DAY, "70000.50", "70000.50")
-    );
+    engine.feed(moving_bar(utc(2026, 3, day, 6, 30), BarInterval::ONE_DAY, "70000.50", "70000.50"));
   }
   engine.finish();
 
@@ -2539,33 +2557,25 @@ TEST_CASE("a dated rate for another market's calendar is refused, not charged a 
   american.until_ = Date{2026, 3, 31};
   schedule.rates_.push_back(american);
 
-  auto policy = backtest::CommissionPolicy::scheduled(
-    schedule, *VenueKey::normalized(Venue::KRX), Country::KR
-  );
+  auto policy = backtest::CommissionPolicy::scheduled(schedule, *VenueKey::normalized(Venue::KRX), Country::KR);
   REQUIRE(policy);
 
   // The Korean fill is priced: its market is the one the dates were computed in.
-  CHECK(policy.value().charge(
-    Decimal64::parse("10"), Decimal64::parse("70000"), Date{2026, 3, 10}, Country::KR
-  ));
+  CHECK(policy.value().charge(Decimal64::parse("10"), Decimal64::parse("70000"), Date{2026, 3, 10}, Country::KR));
 
   // The American one is refused, naming why.
-  const auto refused = policy.value().charge(
-    Decimal64::parse("10"), Decimal64::parse("200"), Date{2026, 3, 10}, Country::US
-  );
+  const auto refused =
+    policy.value().charge(Decimal64::parse("10"), Decimal64::parse("200"), Date{2026, 3, 10}, Country::US);
   REQUIRE_FALSE(refused);
   CHECK(refused.error().broker_code_ == "commission_date_not_market_local");
 
   // An open-ended American row is charged, because no boundary can fall on the wrong day.
   schedule.rates_.back().from_.reset();
   schedule.rates_.back().until_.reset();
-  auto undated = backtest::CommissionPolicy::scheduled(
-    schedule, *VenueKey::normalized(Venue::KRX), Country::KR
-  );
+  auto undated = backtest::CommissionPolicy::scheduled(schedule, *VenueKey::normalized(Venue::KRX), Country::KR);
   REQUIRE(undated);
-  const auto charged = undated.value().charge(
-    Decimal64::parse("10"), Decimal64::parse("200"), Date{2026, 3, 10}, Country::US
-  );
+  const auto charged =
+    undated.value().charge(Decimal64::parse("10"), Decimal64::parse("200"), Date{2026, 3, 10}, Country::US);
   REQUIRE(charged);
   CHECK(charged.value().broker_ == Decimal64::parse("10"));
 }
@@ -2578,13 +2588,10 @@ TEST_CASE("a costing refusal names the unreadable window, and the foreign guard 
   krx.until_unreadable_ = true;
   schedule.rates_.push_back(krx);
 
-  auto policy = backtest::CommissionPolicy::scheduled(
-    schedule, *VenueKey::normalized(Venue::KRX), Country::KR
-  );
+  auto policy = backtest::CommissionPolicy::scheduled(schedule, *VenueKey::normalized(Venue::KRX), Country::KR);
   REQUIRE(policy);
-  const auto refused = policy.value().charge(
-    Decimal64::parse("10"), Decimal64::parse("200"), Date{2026, 3, 10}, Country::KR
-  );
+  const auto refused =
+    policy.value().charge(Decimal64::parse("10"), Decimal64::parse("200"), Date{2026, 3, 10}, Country::KR);
   REQUIRE_FALSE(refused);
   CHECK(refused.error().broker_code_ == "rate_bounds_unreadable");
   // A refusal a reader has to reproduce to understand is one they work around, so the date and the
@@ -2604,13 +2611,10 @@ TEST_CASE("a costing refusal names the unreadable window, and the foreign guard 
   american.until_unreadable_ = true;
   foreign.rates_.push_back(american);
 
-  auto abroad = backtest::CommissionPolicy::scheduled(
-    foreign, *VenueKey::normalized(Venue::KRX), Country::KR
-  );
+  auto abroad = backtest::CommissionPolicy::scheduled(foreign, *VenueKey::normalized(Venue::KRX), Country::KR);
   REQUIRE(abroad);
-  const auto not_local = abroad.value().charge(
-    Decimal64::parse("10"), Decimal64::parse("200"), Date{2026, 3, 10}, Country::US
-  );
+  const auto not_local =
+    abroad.value().charge(Decimal64::parse("10"), Decimal64::parse("200"), Date{2026, 3, 10}, Country::US);
   REQUIRE_FALSE(not_local);
   CHECK(not_local.error().broker_code_ == "commission_date_not_market_local");
 }
@@ -2686,11 +2690,8 @@ TEST_CASE("slippage in two currencies is kept apart like every other cost") {
   config.limits_.permitted_phases_ = std::nullopt;
 
   backtest::Backtester<HoldsTen> engine(
-    HoldsTen{},
-    config,
-    backtest::NextBarFillModel(
-      backtest::CommissionModel::none(), backtest::SlippageModel::of_ticks(1)
-    )
+    HoldsTen{}, config,
+    backtest::NextBarFillModel(backtest::CommissionModel::none(), backtest::SlippageModel::of_ticks(1))
   );
   engine.feed(bar_for(samsung(), utc(2026, 3, 10, 6, 30), "70000"));
   engine.feed(bar_for(apple_reference().id_, utc(2026, 3, 10, 6, 31), "200"));
@@ -2710,11 +2711,8 @@ TEST_CASE("slippage in two currencies is kept apart like every other cost") {
 
   // And a single-currency replay still states the scalar, so the absence means something.
   backtest::Backtester<HoldsTen> home(
-    HoldsTen{},
-    replay_config(),
-    backtest::NextBarFillModel(
-      backtest::CommissionModel::none(), backtest::SlippageModel::of_ticks(1)
-    )
+    HoldsTen{}, replay_config(),
+    backtest::NextBarFillModel(backtest::CommissionModel::none(), backtest::SlippageModel::of_ticks(1))
   );
   home.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
   home.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
@@ -2795,15 +2793,15 @@ struct WithdrawsAnotherFromAnUpdate {
     submitted_ = true;
     ctx.submit(
       strategy::OrderIntent::limit(
-        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")),
-        far_below()
-      ).with_tag("first")
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")), far_below()
+      )
+        .with_tag("first")
     );
     ctx.submit(
       strategy::OrderIntent::limit(
-        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("2")),
-        far_below()
-      ).with_tag("second")
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("2")), far_below()
+      )
+        .with_tag("second")
     );
   }
 
@@ -2832,9 +2830,7 @@ TEST_CASE("an update is not dispatched for an order a previous update handler wi
   // batch already holds an event for. Announcing it then would contradict the portfolio installed
   // alongside it -- which correctly no longer lists it -- and would invite a strategy to act on an
   // order that no longer exists.
-  backtest::Backtester<WithdrawsAnotherFromAnUpdate> engine(
-    WithdrawsAnotherFromAnUpdate{}, replay_config()
-  );
+  backtest::Backtester<WithdrawsAnotherFromAnUpdate> engine(WithdrawsAnotherFromAnUpdate{}, replay_config());
   engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
   engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "80000", "81000"));
   engine.finish();
@@ -2860,13 +2856,14 @@ struct PlacesAStop {
       return;
     }
     sent_ = true;
-    ctx.submit(strategy::OrderIntent::stop_limit(
-      bar.instrument_,
-      OrderSide::SELL,
-      strategy::SizeSpec::quantity(Decimal64::parse("10")),
-      *strategy::Price::checked(Decimal64::parse("69500"), PriceRule::krx_equity()),
-      *strategy::Price::checked(Decimal64::parse("69000"), PriceRule::krx_equity())
-    ).with_tag("stop"));
+    ctx.submit(
+      strategy::OrderIntent::stop_limit(
+        bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
+        *strategy::Price::checked(Decimal64::parse("69500"), PriceRule::krx_equity()),
+        *strategy::Price::checked(Decimal64::parse("69000"), PriceRule::krx_equity())
+      )
+        .with_tag("stop")
+    );
   }
 };
 
@@ -2922,17 +2919,15 @@ TEST_CASE("a stop released inside the bar whose limit was not marketable stays w
   const backtest::NextBarFillModel model;
   // A sell stop limited *above* its trigger: at the release the price was 69,500 and the limit wants
   // 69,800. The bar's high came before or after -- it cannot say -- so it does not fill here.
-  const auto released = model.decide(
-    sell_stop("69500", "69800"), ohlc("70000", "70500", "68000", "68500"), krx_grid(), fill_date()
-  );
+  const auto released =
+    model.decide(sell_stop("69500", "69800"), ohlc("70000", "70500", "68000", "68500"), krx_grid(), fill_date());
   CHECK_FALSE(released.execution_);
   CHECK(released.released_);
   CHECK(released.still_working_);
 
   // The next bar treats it as the limit it has become.
   const auto later = model.decide(
-    sell_stop("69500", "69800"), ohlc("69000", "70000", "68800", "69900"), krx_grid(), fill_date(),
-    std::nullopt, true
+    sell_stop("69500", "69800"), ohlc("69000", "70000", "68800", "69900"), krx_grid(), fill_date(), std::nullopt, true
   );
   REQUIRE(later.execution_);
   CHECK_FALSE(later.released_);
@@ -2943,9 +2938,7 @@ TEST_CASE("a stop released inside the bar whose limit was not marketable stays w
 TEST_CASE("a stop the open gapped through is priced as a limit against the whole bar", "[trigger]") {
   const backtest::NextBarFillModel at_limit;
   const backtest::NextBarFillModel open_if_better(
-    backtest::CommissionModel::none(),
-    backtest::SlippageModel::none(),
-    backtest::LimitFillPrice::AT_OPEN_IF_BETTER
+    backtest::CommissionModel::none(), backtest::SlippageModel::none(), backtest::LimitFillPrice::AT_OPEN_IF_BETTER
   );
 
   SECTION("through the trigger and not the limit") {
@@ -2961,18 +2954,16 @@ TEST_CASE("a stop the open gapped through is priced as a limit against the whole
   }
 
   SECTION("through both, and the bar never came back to the limit") {
-    const auto gapped = at_limit.decide(
-      sell_stop("69500", "69000"), ohlc("68000", "68800", "67500", "68200"), krx_grid(), fill_date()
-    );
+    const auto gapped =
+      at_limit.decide(sell_stop("69500", "69000"), ohlc("68000", "68800", "67500", "68200"), krx_grid(), fill_date());
     CHECK_FALSE(gapped.execution_);
     CHECK(gapped.released_);
     CHECK(gapped.still_working_);
   }
 
   SECTION("a buy stop gapped through") {
-    const auto buy = at_limit.decide(
-      buy_stop("70500", "71000"), ohlc("70800", "71500", "70600", "71200"), krx_grid(), fill_date()
-    );
+    const auto buy =
+      at_limit.decide(buy_stop("70500", "71000"), ohlc("70800", "71500", "70600", "71200"), krx_grid(), fill_date());
     REQUIRE(buy.execution_);
     CHECK_FALSE(buy.intrabar_release_fill_);
     CHECK(buy.execution_->fill_.price_ == Decimal64::parse("71000"));
@@ -2995,13 +2986,14 @@ struct StopsThenTargetsFlat {
       return;
     }
     if (bars_ == 2) {
-      ctx.submit(strategy::OrderIntent::stop_limit(
-        bar.instrument_,
-        OrderSide::SELL,
-        strategy::SizeSpec::quantity(Decimal64::parse("10")),
-        *strategy::Price::checked(Decimal64::parse("66500"), PriceRule::krx_equity()),
-        *strategy::Price::checked(Decimal64::parse("66000"), PriceRule::krx_equity())
-      ).with_tag("stop"));
+      ctx.submit(
+        strategy::OrderIntent::stop_limit(
+          bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
+          *strategy::Price::checked(Decimal64::parse("66500"), PriceRule::krx_equity()),
+          *strategy::Price::checked(Decimal64::parse("66000"), PriceRule::krx_equity())
+        )
+          .with_tag("stop")
+      );
       return;
     }
     strategy::TargetPosition flat;
@@ -3045,16 +3037,14 @@ TEST_CASE("a stop released inside the bar is credited a price the bar traded", "
   SECTION("a limit below the bar's low is credited the low, not the limit") {
     // Released at 69,500 and marketable there, but the bar never traded below 69,000: crediting the
     // 68,000 limit would name a price nobody could have been filled at.
-    const auto sell = model.decide(
-      sell_stop("69500", "68000"), ohlc("70000", "70500", "69000", "69200"), krx_grid(), fill_date()
-    );
+    const auto sell =
+      model.decide(sell_stop("69500", "68000"), ohlc("70000", "70500", "69000", "69200"), krx_grid(), fill_date());
     REQUIRE(sell.execution_);
     CHECK(sell.intrabar_release_fill_);
     CHECK(sell.execution_->fill_.price_ == Decimal64::parse("69000"));
 
-    const auto buy = model.decide(
-      buy_stop("70500", "72000"), ohlc("70000", "71000", "69500", "70800"), krx_grid(), fill_date()
-    );
+    const auto buy =
+      model.decide(buy_stop("70500", "72000"), ohlc("70000", "71000", "69500", "70800"), krx_grid(), fill_date());
     REQUIRE(buy.execution_);
     CHECK(buy.execution_->fill_.price_ == Decimal64::parse("71000"));
   }
@@ -3062,16 +3052,14 @@ TEST_CASE("a stop released inside the bar is credited a price the bar traded", "
   SECTION("a limit the close proves the price came back to fills on the same bar") {
     // Limited above the trigger, so not marketable at the release -- but the close is always last, and
     // at 69,900 it proves the price rose through the 69,800 limit after falling through 69,500.
-    const auto sell = model.decide(
-      sell_stop("69500", "69800"), ohlc("70000", "70500", "68000", "69900"), krx_grid(), fill_date()
-    );
+    const auto sell =
+      model.decide(sell_stop("69500", "69800"), ohlc("70000", "70500", "68000", "69900"), krx_grid(), fill_date());
     REQUIRE(sell.execution_);
     CHECK(sell.intrabar_release_fill_);
     CHECK(sell.execution_->fill_.price_ == Decimal64::parse("69800"));
 
-    const auto buy = model.decide(
-      buy_stop("70500", "70200"), ohlc("70000", "71500", "69800", "70100"), krx_grid(), fill_date()
-    );
+    const auto buy =
+      model.decide(buy_stop("70500", "70200"), ohlc("70000", "71500", "69800", "70100"), krx_grid(), fill_date());
     REQUIRE(buy.execution_);
     CHECK(buy.execution_->fill_.price_ == Decimal64::parse("70200"));
   }
@@ -3090,34 +3078,29 @@ TEST_CASE("a stop released inside the bar is credited a price the bar traded", "
 
 TEST_CASE("a stop fill is never credited through its limit, slippage included", "[trigger]") {
   const backtest::NextBarFillModel slipping(
-    backtest::CommissionModel::none(),
-    backtest::SlippageModel::of_basis_points(Decimal64::parse("10"))
+    backtest::CommissionModel::none(), backtest::SlippageModel::of_basis_points(Decimal64::parse("10"))
   );
   // Credited 69,000 before slippage; ten basis points would record 68,931, below the limit.
-  const auto sell = slipping.decide(
-    sell_stop("69500", "69000"), ohlc("70000", "70500", "68000", "68500"), krx_grid(), fill_date()
-  );
+  const auto sell =
+    slipping.decide(sell_stop("69500", "69000"), ohlc("70000", "70500", "68000", "68500"), krx_grid(), fill_date());
   REQUIRE(sell.execution_);
   CHECK(sell.execution_->fill_.price_ == Decimal64::parse("69000"));
 
   // Credited the bar's 69,000 low with the limit far below: ten basis points would record 68,931,
   // below every price the bar showed, so it is held at the low.
-  const auto out_of_bar = slipping.decide(
-    sell_stop("69500", "68000"), ohlc("70000", "70500", "69000", "69200"), krx_grid(), fill_date()
-  );
+  const auto out_of_bar =
+    slipping.decide(sell_stop("69500", "68000"), ohlc("70000", "70500", "69000", "69200"), krx_grid(), fill_date());
   REQUIRE(out_of_bar.execution_);
   CHECK(out_of_bar.execution_->fill_.price_ == Decimal64::parse("69000"));
 
   // Where the bar leaves room, slippage still applies: opened at 69,200 through the trigger and
   // credited the open under `AT_OPEN_IF_BETTER`, it slips to 69,130.8, above the 69,000 low.
   const backtest::NextBarFillModel roomy_model(
-    backtest::CommissionModel::none(),
-    backtest::SlippageModel::of_basis_points(Decimal64::parse("10")),
+    backtest::CommissionModel::none(), backtest::SlippageModel::of_basis_points(Decimal64::parse("10")),
     backtest::LimitFillPrice::AT_OPEN_IF_BETTER
   );
-  const auto roomy = roomy_model.decide(
-    sell_stop("69500", "68000"), ohlc("69200", "69400", "69000", "69100"), krx_grid(), fill_date()
-  );
+  const auto roomy =
+    roomy_model.decide(sell_stop("69500", "68000"), ohlc("69200", "69400", "69000", "69100"), krx_grid(), fill_date());
   REQUIRE(roomy.execution_);
   CHECK(roomy.execution_->fill_.price_ == Decimal64::parse("69130.8"));
 }
@@ -3136,23 +3119,18 @@ struct PlacesStopAt {
       return;
     }
     sent_ = true;
-    ctx.submit(strategy::OrderIntent::stop_limit(
-      bar.instrument_,
-      OrderSide::SELL,
-      strategy::SizeSpec::quantity(Decimal64::parse("10")),
-      *strategy::Price::checked(Decimal64::parse(trigger_), PriceRule::krx_equity()),
-      *strategy::Price::checked(Decimal64::parse(limit_), PriceRule::krx_equity())
-    ));
+    ctx.submit(
+      strategy::OrderIntent::stop_limit(
+        bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
+        *strategy::Price::checked(Decimal64::parse(trigger_), PriceRule::krx_equity()),
+        *strategy::Price::checked(Decimal64::parse(limit_), PriceRule::krx_equity())
+      )
+    );
   }
 };
 
 strategy::BarEvent stop_bar(
-  int day,
-  const char* o,
-  const char* h,
-  const char* l,
-  const char* c,
-  BarInterval interval = BarInterval::ONE_DAY
+  int day, const char* o, const char* h, const char* l, const char* c, BarInterval interval = BarInterval::ONE_DAY
 ) {
   Bar bar;
   // A daily bar of the `day`th, or the one-minute bar ending `day` minutes past 10:00 on the 10th.
@@ -3186,18 +3164,15 @@ TEST_CASE("negative slippage never lifts a stop fill past its bar", "[trigger]")
   // `SlippageModel` accepts a negative figure, which moves a fill
   // in the order's favour; past the bar's opposite extreme that is a price the bar never showed.
   const backtest::NextBarFillModel generous(
-    backtest::CommissionModel::none(),
-    backtest::SlippageModel::of_basis_points(Decimal64::parse("-1000"))
+    backtest::CommissionModel::none(), backtest::SlippageModel::of_basis_points(Decimal64::parse("-1000"))
   );
-  const auto sell = generous.decide(
-    sell_stop("69500", "68000"), ohlc("69200", "69400", "69000", "69100"), krx_grid(), fill_date()
-  );
+  const auto sell =
+    generous.decide(sell_stop("69500", "68000"), ohlc("69200", "69400", "69000", "69100"), krx_grid(), fill_date());
   REQUIRE(sell.execution_);
   CHECK(sell.execution_->fill_.price_ == Decimal64::parse("69400"));
 
-  const auto buy = generous.decide(
-    buy_stop("70500", "72000"), ohlc("70800", "71000", "70600", "70900"), krx_grid(), fill_date()
-  );
+  const auto buy =
+    generous.decide(buy_stop("70500", "72000"), ohlc("70800", "71000", "70600", "70900"), krx_grid(), fill_date());
   REQUIRE(buy.execution_);
   CHECK(buy.execution_->fill_.price_ == Decimal64::parse("70600"));
 }
@@ -3207,19 +3182,16 @@ TEST_CASE("favourable slippage cannot credit a price the bar reached before the 
   // bar: its high came before the 69,500 trigger, and after the release the price never returned
   // above 69,500. Negative slippage used to lift the fill to that high.
   const backtest::NextBarFillModel generous(
-    backtest::CommissionModel::none(),
-    backtest::SlippageModel::of_basis_points(Decimal64::parse("-1000"))
+    backtest::CommissionModel::none(), backtest::SlippageModel::of_basis_points(Decimal64::parse("-1000"))
   );
-  const auto sell = generous.decide(
-    sell_stop("69500", "68000"), ohlc("70000", "70500", "69000", "69200"), krx_grid(), fill_date()
-  );
+  const auto sell =
+    generous.decide(sell_stop("69500", "68000"), ohlc("70000", "70500", "69000", "69200"), krx_grid(), fill_date());
   REQUIRE(sell.execution_);
   CHECK(sell.intrabar_release_fill_);
   CHECK(sell.execution_->fill_.price_ == Decimal64::parse("69000"));
 
-  const auto buy = generous.decide(
-    buy_stop("70500", "72000"), ohlc("70000", "71000", "69500", "70800"), krx_grid(), fill_date()
-  );
+  const auto buy =
+    generous.decide(buy_stop("70500", "72000"), ohlc("70000", "71000", "69500", "70800"), krx_grid(), fill_date());
   REQUIRE(buy.execution_);
   CHECK(buy.intrabar_release_fill_);
   CHECK(buy.execution_->fill_.price_ == Decimal64::parse("71000"));
@@ -3244,15 +3216,19 @@ struct ChangesItsMindInOneBatch {
       entry.target_quantity_ = Decimal64::parse("10");
       ctx.submit(entry);
     } else if (bars_ == 2) {
-      ctx.submit(strategy::OrderIntent::stop_limit(
-        bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
-        *strategy::Price::checked(Decimal64::parse("66500"), PriceRule::krx_equity()),
-        *strategy::Price::checked(Decimal64::parse("66000"), PriceRule::krx_equity())
-      ));
-      ctx.submit(strategy::OrderIntent::limit(
-        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")),
-        *strategy::Price::checked(Decimal64::parse("60000"), PriceRule::krx_equity())
-      ));
+      ctx.submit(
+        strategy::OrderIntent::stop_limit(
+          bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
+          *strategy::Price::checked(Decimal64::parse("66500"), PriceRule::krx_equity()),
+          *strategy::Price::checked(Decimal64::parse("66000"), PriceRule::krx_equity())
+        )
+      );
+      ctx.submit(
+        strategy::OrderIntent::limit(
+          bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")),
+          *strategy::Price::checked(Decimal64::parse("60000"), PriceRule::krx_equity())
+        )
+      );
     }
   }
 
@@ -3265,10 +3241,12 @@ struct ChangesItsMindInOneBatch {
       flat.target_quantity_ = Decimal64::parse("0");
       ctx.submit(flat);
     } else if (order.type_ == OrderType::LIMIT && order.side_ == OrderSide::BUY) {
-      ctx.submit(strategy::OrderIntent::limit(
-        order.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")),
-        *strategy::Price::checked(Decimal64::parse("60000"), PriceRule::krx_equity())
-      ));
+      ctx.submit(
+        strategy::OrderIntent::limit(
+          order.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")),
+          *strategy::Price::checked(Decimal64::parse("60000"), PriceRule::krx_equity())
+        )
+      );
     }
   }
 };
@@ -3297,21 +3275,20 @@ TEST_CASE("a limit fill held at the bar's far extreme is counted as bounded", "[
   // Negative slippage from a better open reaches past the bar: held at the low (a buy) or the high (a
   // sell), which the counter must report like any other bound.
   const backtest::NextBarFillModel generous(
-    backtest::CommissionModel::none(),
-    backtest::SlippageModel::of_basis_points(Decimal64::parse("-2000")),
+    backtest::CommissionModel::none(), backtest::SlippageModel::of_basis_points(Decimal64::parse("-2000")),
     backtest::LimitFillPrice::AT_OPEN_IF_BETTER
   );
   const auto buy = generous.decide(
-    order_of(OrderSide::BUY, "10", OrderType::LIMIT, "72000"),
-    ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date()
+    order_of(OrderSide::BUY, "10", OrderType::LIMIT, "72000"), ohlc("70000", "71000", "69000", "70500"), krx_grid(),
+    fill_date()
   );
   REQUIRE(buy.execution_);
   CHECK(buy.execution_->fill_.price_ == Decimal64::parse("69000"));
   CHECK(buy.bounded_);
 
   const auto sell = generous.decide(
-    order_of(OrderSide::SELL, "10", OrderType::LIMIT, "68000"),
-    ohlc("70000", "71000", "69000", "70500"), krx_grid(), fill_date()
+    order_of(OrderSide::SELL, "10", OrderType::LIMIT, "68000"), ohlc("70000", "71000", "69000", "70500"), krx_grid(),
+    fill_date()
   );
   REQUIRE(sell.execution_);
   CHECK(sell.execution_->fill_.price_ == Decimal64::parse("71000"));
@@ -3405,9 +3382,15 @@ public:
     return updates;
   }
 
-  std::size_t tracked_orders() const noexcept { return tracked_.size(); }
-  std::size_t untracked_rows() const noexcept { return untracked_; }
-  std::size_t contradicted_rows() const noexcept { return contradicted_; }
+  std::size_t tracked_orders() const noexcept {
+    return tracked_.size();
+  }
+  std::size_t untracked_rows() const noexcept {
+    return untracked_;
+  }
+  std::size_t contradicted_rows() const noexcept {
+    return contradicted_;
+  }
 
   /** The orders tracked, in order, as a listing would state them. */
   std::vector<WatchRow> listing() const {
@@ -3543,7 +3526,9 @@ TEST_CASE("an order-update watch reports what a row-by-row scan of the listings 
       }
       for (auto edits = 1 + draw(2); edits > 0; --edits) {
         const auto at = static_cast<std::size_t>(draw(static_cast<std::uint32_t>(rows.size()) + 1));
-        const auto some = rows.empty() ? watch_row("o0", "", OrderStatus::PENDING) : rows[draw(static_cast<std::uint32_t>(rows.size()))];
+        const auto some = rows.empty() ?
+          watch_row("o0", "", OrderStatus::PENDING) :
+          rows[draw(static_cast<std::uint32_t>(rows.size()))];
         auto moved = some;
         moved.order_.status_ = statuses[draw(3)];
         moved.order_.execution_.filled_quantity_ = Decimal64::parse(fills[draw(3)]);
@@ -3563,7 +3548,9 @@ TEST_CASE("an order-update watch reports what a row-by-row scan of the listings 
             }
             break;
           case 2: // a new order, or one listed elsewhere, comes in here
-            rows.insert(place, draw(2) == 0 ? watch_row("o" + std::to_string(draw(12)), "", OrderStatus::PENDING) : some);
+            rows.insert(
+              place, draw(2) == 0 ? watch_row("o" + std::to_string(draw(12)), "", OrderStatus::PENDING) : some
+            );
             break;
           case 3: // a later row repeats an earlier order, agreeing or not
             rows.push_back(draw(2) == 0 ? some : moved);
@@ -3606,9 +3593,8 @@ TEST_CASE("an order-update watch reports what a row-by-row scan of the listings 
         const auto secondary = draw(4) == 0 ? "s" + std::to_string(draw(2)) : std::string();
         // Most rows keep the reading the reference had last; some move.
         const bool moves = draw(5) == 0;
-        auto row = watch_row(
-          primary, secondary, moves ? statuses[draw(3)] : OrderStatus::PENDING, moves ? fills[draw(3)] : "0"
-        );
+        auto row =
+          watch_row(primary, secondary, moves ? statuses[draw(3)] : OrderStatus::PENDING, moves ? fills[draw(3)] : "0");
         row.reserved_ = draw(20) == 0;
         rows.push_back(row);
       }
@@ -3633,7 +3619,9 @@ TEST_CASE("an order-update watch reports what a row-by-row scan of the listings 
   CHECK(edited > 100);
 }
 
-TEST_CASE("a listing that repeats the last one reports nothing, and the next change reports the new row", "[order-updates]") {
+TEST_CASE(
+  "a listing that repeats the last one reports nothing, and the next change reports the new row", "[order-updates]"
+) {
   using Watch = algotradelib::runner::OrderUpdateWatch<algotradelib::runner::DryTag>;
   const auto named = [](WatchRow row, const std::string& name) {
     row.order_.name_ = name;
@@ -3706,7 +3694,10 @@ TEST_CASE("a listing that repeats the last one reports nothing, and the next cha
   Watch prefixed;
   prefixed.changed({a, b});
   CHECK(ids_of(prefixed.changed({a, b, c})) == std::vector<std::string>{"c"});
-  CHECK(ids_of(prefixed.changed({a, b, watch_row("c", "", OrderStatus::PARTIAL_FILLED, "2")})) == std::vector<std::string>{"c"});
+  CHECK(
+    ids_of(prefixed.changed({a, b, watch_row("c", "", OrderStatus::PARTIAL_FILLED, "2")})) ==
+    std::vector<std::string>{"c"}
+  );
   CHECK(prefixed.changed({a, b}).empty());
   CHECK(prefixed.tracked_orders() == 2);
   // Two disagreeing readings after an unchanged leading order are still a contradiction.
@@ -3737,11 +3728,7 @@ namespace {
 
 /** A bar of `id` stamped at `at`, opening at `open` and closing at `close`. */
 strategy::BarEvent slice_bar(
-  const InstrumentId& id,
-  Clock::time_point at,
-  BarInterval interval,
-  const char* open,
-  const char* close,
+  const InstrumentId& id, Clock::time_point at, BarInterval interval, const char* open, const char* close,
   BarStamp stamp = BarStamp::CLOSE
 ) {
   Bar bar;
@@ -3797,14 +3784,15 @@ struct RecordsSlices {
       seen.symbols_.push_back(event.instrument_.symbol_);
 #if defined(ATL_HAS_EIGEN)
       const auto* series = ctx.bars(event.instrument_, slice.interval_);
-      seen.cached_to_its_bar_ = seen.cached_to_its_bar_ && series != nullptr &&
-        series->newest_instant() == event.bar_.timestamp_;
+      seen.cached_to_its_bar_ =
+        seen.cached_to_its_bar_ && series != nullptr && series->newest_instant() == event.bar_.timestamp_;
 #endif
     }
     if (buy_ && seen_.size() == buy_on_) {
-      ctx.submit(strategy::OrderIntent::market(
-        *buy_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
-      ).with_tag("slice"));
+      ctx.submit(
+        strategy::OrderIntent::market(*buy_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")))
+          .with_tag("slice")
+      );
     }
     seen_.push_back(std::move(seen));
     events_.push_back("bars");
@@ -3964,9 +3952,7 @@ TEST_CASE("on_bars refuses a bar it could not show consistently before anything 
     engine.feed(quote_at(samsung(), t, "101"));
     REQUIRE(engine.strategy().seen_.size() == 1);
     const auto bars_before = engine.result().bars_;
-    CHECK_THROWS_AS(
-      engine.feed(slice_bar(hynix(), t, BarInterval::ONE_DAY, "200", "201")), std::invalid_argument
-    );
+    CHECK_THROWS_AS(engine.feed(slice_bar(hynix(), t, BarInterval::ONE_DAY, "200", "201")), std::invalid_argument);
     CHECK(engine.result().bars_ == bars_before);
     engine.finish();
     CHECK(engine.strategy().seen_.size() == 1);
@@ -3986,12 +3972,8 @@ TEST_CASE("on_bars refuses a bar it could not show consistently before anything 
     // An open-stamped daily bar ends a day after its stamp, so it can share a period end with a
     // close-stamped one of the same instrument.
     backtest::Backtester<RecordsSlices> engine(RecordsSlices{}, replay_config());
-    engine.feed(slice_bar(
-      samsung(), t - std::chrono::hours(24), BarInterval::ONE_DAY, "100", "101", BarStamp::OPEN
-    ));
-    CHECK_THROWS_AS(
-      engine.feed(slice_bar(samsung(), t, BarInterval::ONE_DAY, "100", "101")), std::invalid_argument
-    );
+    engine.feed(slice_bar(samsung(), t - std::chrono::hours(24), BarInterval::ONE_DAY, "100", "101", BarStamp::OPEN));
+    CHECK_THROWS_AS(engine.feed(slice_bar(samsung(), t, BarInterval::ONE_DAY, "100", "101")), std::invalid_argument);
     CHECK(engine.result().bars_ == 1);
   }
 
@@ -3999,9 +3981,7 @@ TEST_CASE("on_bars refuses a bar it could not show consistently before anything 
     backtest::Backtester<RecordsSlices> engine(RecordsSlices{}, replay_config());
     engine.feed(slice_bar(samsung(), t, BarInterval::ONE_MINUTE, "100", "101"));
     engine.feed(quote_at(samsung(), t, "101"));
-    CHECK_THROWS_AS(
-      engine.feed(slice_bar(samsung(), t, BarInterval::ONE_WEEK, "50", "101")), std::invalid_argument
-    );
+    CHECK_THROWS_AS(engine.feed(slice_bar(samsung(), t, BarInterval::ONE_WEEK, "50", "101")), std::invalid_argument);
     CHECK(engine.result().bars_ == 1);
   }
 
@@ -4020,18 +4000,14 @@ TEST_CASE("on_bars refuses a bar it could not show consistently before anything 
     engine.feed(slice_bar(samsung(), t, BarInterval::ONE_DAY, "100", "101"));
     engine.finish();
     REQUIRE(engine.strategy().seen_.size() == 1);
-    CHECK_THROWS_AS(
-      engine.feed(slice_bar(hynix(), t, BarInterval::ONE_DAY, "200", "201")), std::invalid_argument
-    );
+    CHECK_THROWS_AS(engine.feed(slice_bar(hynix(), t, BarInterval::ONE_DAY, "200", "201")), std::invalid_argument);
     CHECK(engine.strategy().seen_.size() == 1);
   }
 
   SECTION("a quote earlier than the period being collected") {
     backtest::Backtester<RecordsSlices> engine(RecordsSlices{}, pair_config());
     engine.feed(slice_bar(samsung(), t, BarInterval::ONE_DAY, "100", "101"));
-    CHECK_THROWS_AS(
-      engine.feed(quote_at(samsung(), t - std::chrono::minutes(1), "100")), std::invalid_argument
-    );
+    CHECK_THROWS_AS(engine.feed(quote_at(samsung(), t - std::chrono::minutes(1), "100")), std::invalid_argument);
     CHECK(engine.result().quotes_ == 0);
   }
 }
@@ -4043,9 +4019,7 @@ TEST_CASE("a period of forty instruments reaches on_bars whole and still refuses
   config.instruments_.clear();
   std::vector<InstrumentId> ids;
   for (int k = 0; k <= 40; ++k) {
-    ids.push_back(
-      InstrumentId{Country::KR, all_venues[static_cast<std::size_t>(k % 4)], "S" + std::to_string(k / 4)}
-    );
+    ids.push_back(InstrumentId{Country::KR, all_venues[static_cast<std::size_t>(k % 4)], "S" + std::to_string(k / 4)});
     auto reference = samsung_reference();
     reference.id_ = ids.back();
     config.instruments_.push_back(reference);
@@ -4086,9 +4060,8 @@ TEST_CASE("a slice with a bar stating its end is decided at that end and not at 
     RecordsSlices strategy;
     strategy.buy_ = samsung();
     backtest::Backtester<RecordsSlices> engine(std::move(strategy), pair_config());
-    const auto nominal = slice_bar(
-      samsung(), t - std::chrono::hours(24), BarInterval::ONE_DAY, "100", "101", BarStamp::OPEN
-    );
+    const auto nominal =
+      slice_bar(samsung(), t - std::chrono::hours(24), BarInterval::ONE_DAY, "100", "101", BarStamp::OPEN);
     const auto exact = slice_bar(hynix(), t, BarInterval::ONE_DAY, "200", "201");
     if (exact_first) {
       engine.feed(exact);
@@ -4098,12 +4071,8 @@ TEST_CASE("a slice with a bar stating its end is decided at that end and not at 
       engine.feed(exact);
     }
     // Began an hour before the decision: not eligible.
-    engine.feed(slice_bar(
-      samsung(), t - std::chrono::hours(1), BarInterval::ONE_DAY, "150", "151", BarStamp::OPEN
-    ));
-    engine.feed(slice_bar(
-      samsung(), t + std::chrono::hours(23), BarInterval::ONE_DAY, "170", "171", BarStamp::OPEN
-    ));
+    engine.feed(slice_bar(samsung(), t - std::chrono::hours(1), BarInterval::ONE_DAY, "150", "151", BarStamp::OPEN));
+    engine.feed(slice_bar(samsung(), t + std::chrono::hours(23), BarInterval::ONE_DAY, "170", "171", BarStamp::OPEN));
     engine.finish();
     REQUIRE(engine.strategy().fill_prices_.size() == 1);
     CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("170"));
@@ -4140,9 +4109,12 @@ struct WithdrawsBeforeTheSlice {
       return;
     }
     placed_ = true;
-    ctx.submit(strategy::OrderIntent::limit(
-      samsung(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")), far_below()
-    ).with_tag("rests"));
+    ctx.submit(
+      strategy::OrderIntent::limit(
+        samsung(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")), far_below()
+      )
+        .with_tag("rests")
+    );
   }
 
   template <class Ctx>
@@ -4185,9 +4157,7 @@ TEST_CASE("a halt drops the period being collected and finish does not deliver i
   REQUIRE(engine.strategy().fill_prices_.size() == 1);
   // The third period's first bar is collected; the second halts the replay at its mark.
   engine.feed(slice_bar(hynix(), utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "200", "201"));
-  engine.feed(slice_bar(
-    samsung(), utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "9223372036854775807"
-  ));
+  engine.feed(slice_bar(samsung(), utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "9223372036854775807"));
   REQUIRE(engine.result().halted_);
   const auto delivered = engine.strategy().seen_.size();
   engine.finish();
@@ -4243,9 +4213,9 @@ struct PairRuleBySlice {
 template <typename Strategy>
 std::vector<backtest::Execution> pair_rule_executions() {
   backtest::Backtester<Strategy> engine(Strategy{}, pair_config());
-  const std::array<std::array<const char*, 2>, 6> closes{{
-    {"100", "90"}, {"95", "99"}, {"110", "100"}, {"108", "109"}, {"120", "100"}, {"121", "100"}
-  }};
+  const std::array<std::array<const char*, 2>, 6> closes{
+    {{"100", "90"}, {"95", "99"}, {"110", "100"}, {"108", "109"}, {"120", "100"}, {"121", "100"}}
+  };
   for (std::size_t day = 0; day < closes.size(); ++day) {
     const auto at = utc(2026, 3, 9 + static_cast<int>(day), 6, 30);
     engine.feed(slice_bar(samsung(), at, BarInterval::ONE_DAY, closes[day][0], closes[day][0]));
@@ -4286,7 +4256,10 @@ TEST_CASE("a replay models limit and market orders under every condition and sto
     return planned;
   };
   const TimeInForce conditions[] = {
-    TimeInForce::UNKNOWN, TimeInForce::DAY, TimeInForce::IMMEDIATE_OR_CANCEL, TimeInForce::FILL_OR_KILL,
+    TimeInForce::UNKNOWN,
+    TimeInForce::DAY,
+    TimeInForce::IMMEDIATE_OR_CANCEL,
+    TimeInForce::FILL_OR_KILL,
   };
   for (const auto condition : conditions) {
     INFO(static_cast<int>(condition));
@@ -4297,14 +4270,21 @@ TEST_CASE("a replay models limit and market orders under every condition and sto
     CHECK_FALSE(ReplayExecutor::can_model(order(OrderType::LIMIT, condition, true, true)));
     CHECK_FALSE(ReplayExecutor::can_model(order(OrderType::MARKET, condition, false, true)));
     // A stop-limit needs both prices, and only a day one is modelled.
-    CHECK(ReplayExecutor::can_model(order(OrderType::STOP_LIMIT, condition, true, true)) ==
-      (condition == TimeInForce::DAY));
+    CHECK(
+      ReplayExecutor::can_model(order(OrderType::STOP_LIMIT, condition, true, true)) == (condition == TimeInForce::DAY)
+    );
     CHECK_FALSE(ReplayExecutor::can_model(order(OrderType::STOP_LIMIT, condition, true, false)));
     CHECK_FALSE(ReplayExecutor::can_model(order(OrderType::STOP_LIMIT, condition, false, true)));
-    for (const auto type : {
-           OrderType::UNKNOWN, OrderType::CONDITIONAL_LIMIT, OrderType::BEST_LIMIT, OrderType::PRIMARY_LIMIT,
-           OrderType::MID_PRICE, OrderType::CLOSING_PRICE,
-         }) {
+    for (
+      const auto type : {
+        OrderType::UNKNOWN,
+        OrderType::CONDITIONAL_LIMIT,
+        OrderType::BEST_LIMIT,
+        OrderType::PRIMARY_LIMIT,
+        OrderType::MID_PRICE,
+        OrderType::CLOSING_PRICE,
+      }
+    ) {
       CHECK_FALSE(ReplayExecutor::can_model(order(type, condition, true, false)));
     }
   }
@@ -4325,10 +4305,18 @@ namespace {
  */
 std::string result_digest(const backtest::ReplayResult& r) {
   std::string out;
-  const auto n = [](auto value) { return std::to_string(value); };
-  const auto when = [](Clock::time_point at) { return std::to_string(at.time_since_epoch().count()); };
-  const auto maybe_when = [&](const std::optional<Clock::time_point>& at) { return at ? when(*at) : std::string("-"); };
-  const auto maybe = [](const std::optional<Decimal64>& value) { return value ? value->str() : std::string("-"); };
+  const auto n = [](auto value) {
+    return std::to_string(value);
+  };
+  const auto when = [](Clock::time_point at) {
+    return std::to_string(at.time_since_epoch().count());
+  };
+  const auto maybe_when = [&](const std::optional<Clock::time_point>& at) {
+    return at ? when(*at) : std::string("-");
+  };
+  const auto maybe = [](const std::optional<Decimal64>& value) {
+    return value ? value->str() : std::string("-");
+  };
   const auto id = [&](const InstrumentId& i) {
     return n(static_cast<int>(i.country_)) + "/" + n(static_cast<int>(i.venue_)) + "/" + i.symbol_;
   };
@@ -4346,8 +4334,8 @@ std::string result_digest(const backtest::ReplayResult& r) {
     n(r.unchecked_fill_causality_) + " unvalued " + n(r.unvalued_bars_) + " " + maybe_when(r.first_unvalued_) +
     " releases " + n(r.stop_releases_) + " intrabar " + n(r.stop_fills_intrabar_) + " bounded " +
     n(r.limit_fills_bounded_) + " overdrawn " + n(r.overdrawn_bars_) + " " + maybe_when(r.first_overdrawn_) +
-    " lowest " + (r.lowest_cash_ ? r.lowest_cash_->amount_.str() + " " + r.lowest_cash_->currency_.str() : "-") +
-    " " + maybe_when(r.lowest_cash_at_) + " expired " + n(r.expired_day_orders_) + "\n";
+    " lowest " + (r.lowest_cash_ ? r.lowest_cash_->amount_.str() + " " + r.lowest_cash_->currency_.str() : "-") + " " +
+    maybe_when(r.lowest_cash_at_) + " expired " + n(r.expired_day_orders_) + "\n";
   if (r.halted_) {
     const auto& e = *r.halted_;
     out += "halted " + n(static_cast<int>(e.category_)) + " " + n(e.reached_broker_) + " " + n(e.http_status_) + " [" +
@@ -4390,12 +4378,15 @@ std::string result_digest(const backtest::ReplayResult& r) {
 template <class Ctx>
 std::string seen_by(Ctx& ctx) {
   const auto& portfolio = ctx.portfolio();
-  const auto maybe = [](const std::optional<Decimal64>& value) { return value ? value->str() : std::string("-"); };
+  const auto maybe = [](const std::optional<Decimal64>& value) {
+    return value ? value->str() : std::string("-");
+  };
   std::string out = "@" + std::to_string(portfolio.as_of_.time_since_epoch().count()) + "/" +
     std::to_string(portfolio.working_as_of_.time_since_epoch().count());
   for (const auto& position : portfolio.positions_) {
     out += " P" + position.instrument_.symbol_ + "=" + position.quantity_.str() + "/" +
-      maybe(position.sellable_quantity_) + "/" + position.average_purchase_price_.str() + "/" + position.last_price_.str();
+      maybe(position.sellable_quantity_) + "/" + position.average_purchase_price_.str() + "/" +
+      position.last_price_.str();
   }
   for (const auto& money : portfolio.cash_) {
     out += " C" + money.amount_.str();
@@ -4454,7 +4445,10 @@ struct WanderBase {
         ctx.submit(strategy::OrderIntent::limit(id, OrderSide::SELL, some, at(close + 100 * draw(12))).with_tag("ask"));
         break;
       case 3:
-        ctx.submit(strategy::OrderIntent::stop_limit(id, OrderSide::SELL, some, at(close - 200), at(close - 300)).with_tag("stop"));
+        ctx.submit(
+          strategy::OrderIntent::stop_limit(id, OrderSide::SELL, some, at(close - 200), at(close - 300))
+            .with_tag("stop")
+        );
         break;
       case 4:
         for (const auto& working : ctx.portfolio().working_) {
@@ -4476,9 +4470,12 @@ struct WanderBase {
         break;
       }
       case 7:
-        ctx.submit(strategy::OrderIntent::market(
-          id, OrderSide::BUY, strategy::SizeSpec::target_weight(Decimal64(static_cast<long>(draw(20)), 2))
-        ).with_tag("weight"));
+        ctx.submit(
+          strategy::OrderIntent::market(
+            id, OrderSide::BUY, strategy::SizeSpec::target_weight(Decimal64(static_cast<long>(draw(20)), 2))
+          )
+            .with_tag("weight")
+        );
         break;
       default:
         break;
@@ -4705,7 +4702,9 @@ Wandered wander(std::uint32_t seed, const backtest::ReplayConfig& config) {
         bar.high_ = Decimal64(std::max(open, close) + 100 * static_cast<long>(step(3)), 0);
         bar.low_ = Decimal64(std::min(open, close) - 100 * static_cast<long>(step(3)), 0);
         bar.volume_ = Decimal64::parse("1000");
-        engine.feed(strategy::make_bar_event(k == 0 ? samsung() : hynix(), BarInterval::ONE_MINUTE, BarStamp::CLOSE, bar));
+        engine.feed(
+          strategy::make_bar_event(k == 0 ? samsung() : hynix(), BarInterval::ONE_MINUTE, BarStamp::CLOSE, bar)
+        );
       }
     }
   }
@@ -4732,15 +4731,21 @@ struct FlatOnceBehindAStop {
   void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
     ++bars_;
     if (bars_ == 1) {
-      ctx.submit(strategy::OrderIntent::market(
-        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
-      ).with_tag("entry"));
+      ctx.submit(
+        strategy::OrderIntent::market(
+          bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
+        )
+          .with_tag("entry")
+      );
     } else if (bars_ == 3) {
-      ctx.submit(strategy::OrderIntent::stop_limit(
-        bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
-        *strategy::Price::checked(Decimal64::parse("66500"), PriceRule::krx_equity()),
-        *strategy::Price::checked(Decimal64::parse("66000"), PriceRule::krx_equity())
-      ).with_tag("stop"));
+      ctx.submit(
+        strategy::OrderIntent::stop_limit(
+          bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
+          *strategy::Price::checked(Decimal64::parse("66500"), PriceRule::krx_equity()),
+          *strategy::Price::checked(Decimal64::parse("66000"), PriceRule::krx_equity())
+        )
+          .with_tag("stop")
+      );
     } else if (bars_ == 5) {
       strategy::TargetPosition flat;
       flat.instrument_ = bar.instrument_;
@@ -4851,8 +4856,11 @@ TEST_CASE("a replay tells fills only to a strategy that has on_fill and changes 
   }
   // The runs did what the comparison is about: orders filled, rested and expired, targets waited behind stops, the
   // guard refused some, the hearing types were told about fills and updates, and the acting ones about updates.
-  INFO("executions " << executions << ", behind stops " << behind_stops << ", refused " << refused << ", expired "
-    << expired << ", fills heard " << fills_heard << ", updates heard " << updates_heard << ", update records " << update_records);
+  INFO(
+    "executions "
+    << executions << ", behind stops " << behind_stops << ", refused " << refused << ", expired " << expired
+    << ", fills heard " << fills_heard << ", updates heard " << updates_heard << ", update records " << update_records
+  );
   CHECK(executions > 400);
   CHECK(behind_stops > 20);
   CHECK(refused > 50);
@@ -4880,12 +4888,19 @@ TEST_CASE("the result digest the replay comparisons use tells apart a change to 
     auto& point = r.equity_.back();
     point.period_return_ = std::nextafter(point.period_return_, 1.0);
   });
-  differs("a missing return", [](backtest::ReplayResult& r) { r.equity_.back().period_return_ = math::missing(); });
-  differs("an equity amount's scale", [](backtest::ReplayResult& r) {
-    r.equity_.back().equity_ = Decimal64(r.equity_.back().equity_.coefficient() * 10, r.equity_.back().equity_.scale() + 1);
+  differs("a missing return", [](backtest::ReplayResult& r) {
+    r.equity_.back().period_return_ = math::missing();
   });
-  differs("the result's currency", [](backtest::ReplayResult& r) { r.currency_ = Currency{"USD"}; });
-  differs("an execution's currency", [](backtest::ReplayResult& r) { r.executions_.front().currency_ = Currency{"USD"}; });
+  differs("an equity amount's scale", [](backtest::ReplayResult& r) {
+    r.equity_.back().equity_ =
+      Decimal64(r.equity_.back().equity_.coefficient() * 10, r.equity_.back().equity_.scale() + 1);
+  });
+  differs("the result's currency", [](backtest::ReplayResult& r) {
+    r.currency_ = Currency{"USD"};
+  });
+  differs("an execution's currency", [](backtest::ReplayResult& r) {
+    r.executions_.front().currency_ = Currency{"USD"};
+  });
   differs("an instrument's country", [](backtest::ReplayResult& r) {
     r.executions_.front().fill_.instrument_.country_ = Country::US;
   });
@@ -4898,14 +4913,19 @@ TEST_CASE("the result digest the replay comparisons use tells apart a change to 
   differs("an applied rate's dates", [](backtest::ReplayResult& r) {
     r.executions_.front().applied_.from_ = Date{2026, 1, 1};
   });
-  differs("an applied rate's count", [](backtest::ReplayResult& r) { ++r.executions_.front().applied_.executions_; });
-  differs("an applied rate's country", [](backtest::ReplayResult& r) { r.executions_.front().applied_.country_ = Country::US; });
+  differs("an applied rate's count", [](backtest::ReplayResult& r) {
+    ++r.executions_.front().applied_.executions_;
+  });
+  differs("an applied rate's country", [](backtest::ReplayResult& r) {
+    r.executions_.front().applied_.country_ = Country::US;
+  });
   differs("a refusal's halt reason", [](backtest::ReplayResult& r) {
     r.refused_.front().halt_reason_ = strategy::HaltReason::OPERATOR;
   });
   differs("a lowest cash's currency", [](backtest::ReplayResult& r) {
     const auto amount = r.lowest_cash_ ? r.lowest_cash_->amount_ : Decimal64::parse("1");
-    const auto currency = r.lowest_cash_ && r.lowest_cash_->currency_ == Currency{"USD"} ? Currency{"KRW"} : Currency{"USD"};
+    const auto currency =
+      r.lowest_cash_ && r.lowest_cash_->currency_ == Currency{"USD"} ? Currency{"KRW"} : Currency{"USD"};
     r.lowest_cash_ = Money{amount, currency};
     r.lowest_cash_at_ = r.equity_.front().at_;
   });
@@ -4914,7 +4934,9 @@ TEST_CASE("the result digest the replay comparisons use tells apart a change to 
     error.message_ = "-";
     r.halted_ = error;
   });
-  differs("a tag with a space moved", [](backtest::ReplayResult& r) { r.rejected_.front().tag_ += " "; });
+  differs("a tag with a space moved", [](backtest::ReplayResult& r) {
+    r.rejected_.front().tag_ += " ";
+  });
   // Against a halted result, so the change below is the field's own and not the halt's presence.
   auto halted = base;
   halted.halted_ = BrokerError{};
@@ -4962,11 +4984,17 @@ struct RewritesWhatItReads {
     positions_seen_.push_back(ctx.portfolio().positions_.size());
     if (bars_ == 1) {
       // One that fills at once, so a position exists, and one that rests below the market.
-      ctx.submit(strategy::OrderIntent::market(
-        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))));
+      ctx.submit(
+        strategy::OrderIntent::market(
+          bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
+        )
+      );
       const auto limit = strategy::Price::checked(Decimal64::parse("50000"), krx_grid());
-      ctx.submit(strategy::OrderIntent::limit(
-        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")), *limit));
+      ctx.submit(
+        strategy::OrderIntent::limit(
+          bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")), *limit
+        )
+      );
     } else if (bars_ == 3) {
       auto reference = *ctx.instrument(bar.instrument_);
       reference.currency_ = Currency{"USD"};
@@ -5018,7 +5046,9 @@ TEST_CASE("a ledger's running equity is the full sum digit for digit or falls ba
     execution.slippage_ = Decimal64::parse("0");
     return execution;
   };
-  const auto id = [](const char* symbol) { return InstrumentId{Country::KR, Venue::COMBINED, symbol}; };
+  const auto id = [](const char* symbol) {
+    return InstrumentId{Country::KR, Venue::COMBINED, symbol};
+  };
 
   SECTION("the cash as stored until a lot is held, then normalized; a zero mark and a flat lot") {
     // 100.00, at a scale `parse` would not keep.
@@ -5120,8 +5150,10 @@ TEST_CASE("a ledger applies one of its own executions while making room for it")
   const auto before = ledger.executions().size();
   REQUIRE(ledger.apply(ledger.executions().front(), ledger.executions().front().currency_));
   CHECK(ledger.executions().size() == before + 1);
-  CHECK(ledger.quantity_of(bought.fill_.instrument_) ==
-    std::optional<Decimal64>(Decimal64(static_cast<std::int64_t>(before + 1), 0)));
+  CHECK(
+    ledger.quantity_of(bought.fill_.instrument_) ==
+    std::optional<Decimal64>(Decimal64(static_cast<std::int64_t>(before + 1), 0))
+  );
 }
 
 namespace {
@@ -5137,10 +5169,15 @@ struct MovesAContextIn {
   template <class Ctx>
   void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
     ++bars_;
-    symbols_seen_.push_back(ctx.portfolio().positions_.empty() ? "" : ctx.portfolio().positions_[0].instrument_.symbol_);
+    symbols_seen_.push_back(
+      ctx.portfolio().positions_.empty() ? "" : ctx.portfolio().positions_[0].instrument_.symbol_
+    );
     if (bars_ == 1) {
-      ctx.submit(strategy::OrderIntent::market(
-        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))));
+      ctx.submit(
+        strategy::OrderIntent::market(
+          bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
+        )
+      );
     } else if (bars_ == 3) {
       auto portfolio = ctx.portfolio();
       portfolio.positions_[0].instrument_.symbol_ = "WRONG";
@@ -5171,7 +5208,9 @@ TEST_CASE("a replay's queue keeps placement order and finds orders by reference 
   // Removal marks an order removed in place and the storage is compacted once removed orders outnumber the
   // rest; neither may change the order the others are listed in, nor which reference finds which order.
   ReplayExecutor executor;
-  const auto id_of = [](int k) { return InstrumentId{Country::KR, Venue::COMBINED, "S" + std::to_string(k)}; };
+  const auto id_of = [](int k) {
+    return InstrumentId{Country::KR, Venue::COMBINED, "S" + std::to_string(k)};
+  };
   std::vector<OrderRef<backtest::BacktestTag>> refs;
   for (int k = 0; k < 40; ++k) {
     strategy::PlannedOrder order;
@@ -5255,7 +5294,9 @@ TEST_CASE("a replay's queue moved away leaves its source empty and usable") {
     CHECK(source.queued().size() == 0);
     CHECK(source.queued().begin() == source.queued().end());
     std::size_t visited = 0;
-    source.for_each_queued_in(InstrumentId{Country::KR, Venue::COMBINED, "A"}, [&visited](const auto&) { ++visited; });
+    source.for_each_queued_in(InstrumentId{Country::KR, Venue::COMBINED, "A"}, [&visited](const auto&) {
+      ++visited;
+    });
     CHECK(visited == 0);
     REQUIRE(source.place(order_in("A")) == runner::SendOutcome::ACCEPTED);
     CHECK(source.queued().size() == 1);
@@ -5318,7 +5359,11 @@ struct BuysEachOnce {
       }
     }
     bought_.push_back(bar.instrument_.symbol_);
-    ctx.submit(strategy::OrderIntent::market(bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))));
+    ctx.submit(
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
+      )
+    );
   }
 };
 
@@ -5395,8 +5440,10 @@ TEST_CASE("one instrument's equity curve is the same per period as per bar") {
   for (std::size_t at = 0; at < per_bar.size(); ++at) {
     CHECK(per_bar[at].at_ == per_period[at].at_);
     CHECK(per_bar[at].equity_ == per_period[at].equity_);
-    CHECK((per_bar[at].period_return_ == per_period[at].period_return_ ||
-           (std::isnan(per_bar[at].period_return_) && std::isnan(per_period[at].period_return_))));
+    CHECK((
+      per_bar[at].period_return_ == per_period[at].period_return_ ||
+      (std::isnan(per_bar[at].period_return_) && std::isnan(per_period[at].period_return_))
+    ));
   }
 }
 
@@ -5496,9 +5543,13 @@ struct TradesWithoutHistory {
   void act(Ctx& ctx, const InstrumentId& id) {
     ++bars_;
     if (bars_ == 2) {
-      ctx.submit(strategy::OrderIntent::market(id, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))));
+      ctx.submit(
+        strategy::OrderIntent::market(id, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")))
+      );
     } else if (bars_ == 4) {
-      ctx.submit(strategy::OrderIntent::market(id, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("4"))));
+      ctx.submit(
+        strategy::OrderIntent::market(id, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("4")))
+      );
     }
   }
 };
@@ -5506,13 +5557,17 @@ struct TradesWithoutHistory {
 template <bool Reads>
 struct BarTradesWithoutHistory : TradesWithoutHistory<Reads> {
   template <class Ctx>
-  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) { this->act(ctx, bar.instrument_); }
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    this->act(ctx, bar.instrument_);
+  }
 };
 
 template <bool Reads>
 struct SliceTradesWithoutHistory : TradesWithoutHistory<Reads> {
   template <class Ctx>
-  void on_bars(Ctx& ctx, const strategy::BarSlice& slice) { this->act(ctx, slice.bars_.front().instrument_); }
+  void on_bars(Ctx& ctx, const strategy::BarSlice& slice) {
+    this->act(ctx, slice.bars_.front().instrument_);
+  }
 };
 
 template <class Strategy>
@@ -5580,7 +5635,9 @@ TEST_CASE("a replay of a strategy reading no bar history matches one keeping it"
   require_same_replay(
     replay_six_minutes<BarTradesWithoutHistory<true>>(), replay_six_minutes<BarTradesWithoutHistory<false>>()
   );
-  require_same_replay(replay_six_minutes<SliceTradesWithoutHistory<true>>(), replay_six_minutes<SliceTradesWithoutHistory<false>>());
+  require_same_replay(
+    replay_six_minutes<SliceTradesWithoutHistory<true>>(), replay_six_minutes<SliceTradesWithoutHistory<false>>()
+  );
 }
 
 TEST_CASE("a replay keeping no bar history refuses a read after a context is moved into its own") {
@@ -5631,7 +5688,11 @@ struct ThrowsOnItsFirstFill {
   template <class Ctx>
   void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
     if (++bars_ == 1) {
-      ctx.submit(strategy::OrderIntent::market(bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))));
+      ctx.submit(
+        strategy::OrderIntent::market(
+          bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
+        )
+      );
     }
   }
   template <class Ctx>
@@ -5651,7 +5712,8 @@ TEST_CASE("a lot opened by a fill whose handler threw is still marked on later b
   backtest::Backtester<ThrowsOnItsFirstFill> engine(ThrowsOnItsFirstFill{}, replay_config());
   engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
   CHECK_THROWS_AS(
-    engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000")), std::runtime_error);
+    engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000")), std::runtime_error
+  );
   engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "71000", "72000"));
   engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "72000", "73000"));
   REQUIRE(engine.ledger().positions().size() == 1);

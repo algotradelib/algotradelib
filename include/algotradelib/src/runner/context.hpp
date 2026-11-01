@@ -69,7 +69,9 @@ struct Revision {
   Revision() = default;
   Revision(const Revision&) = delete;
   Revision& operator=(const Revision&) = delete;
-  Revision(Revision&& other) noexcept : value_(other.value_ + 1) { ++other.value_; }
+  Revision(Revision&& other) noexcept : value_(other.value_ + 1) {
+    ++other.value_;
+  }
   Revision& operator=(Revision&& other) noexcept {
     value_ = (value_ > other.value_ ? value_ : other.value_) + 1;
     ++other.value_;
@@ -104,13 +106,19 @@ class PortfolioAccess {
   }
 
   template <typename Ctx>
-  static std::uint64_t replacements(const Ctx& context) noexcept { return context.replacements_.value_; }
+  static std::uint64_t replacements(const Ctx& context) noexcept {
+    return context.replacements_.value_;
+  }
 
   template <typename Ctx>
-  static std::uint64_t runner_edits(const Ctx& context) noexcept { return context.runner_edits_; }
+  static std::uint64_t runner_edits(const Ctx& context) noexcept {
+    return context.runner_edits_;
+  }
 
   template <typename Ctx>
-  static std::uint64_t reference_changes(const Ctx& context) noexcept { return context.reference_changes_; }
+  static std::uint64_t reference_changes(const Ctx& context) noexcept {
+    return context.reference_changes_;
+  }
 
   // Sets an instrument's last price and returns where it is kept, for a replay that sets it again on every bar:
   // the entry, once made, stays where it is for the context's life (a map node).
@@ -284,7 +292,9 @@ public:
      * @brief Returns the lines recorded since the last `take`.
      * @return The lines, oldest first.
      */
-    const std::vector<std::string>& lines() const noexcept { return lines_; }
+    const std::vector<std::string>& lines() const noexcept {
+      return lines_;
+    }
 
     /**
      * @brief Removes and returns the recorded lines.
@@ -315,25 +325,33 @@ public:
    * @brief Returns the instant the runner is acting at.
    * @return The current instant (a replay's clock in a backtest).
    */
-  std::chrono::system_clock::time_point now() const noexcept { return now_; }
+  std::chrono::system_clock::time_point now() const noexcept {
+    return now_;
+  }
 
   /**
    * @brief Returns the market phase.
    * @return The phase.
    */
-  MarketPhase phase() const noexcept { return phase_; }
+  MarketPhase phase() const noexcept {
+    return phase_;
+  }
 
   /**
    * @brief Returns the trading calendar the runner last read.
    * @return The calendar; empty if none was read.
    */
-  const TradingCalendar& calendar() const noexcept { return calendar_; }
+  const TradingCalendar& calendar() const noexcept {
+    return calendar_;
+  }
 
   /**
    * @brief Returns the portfolio: positions, buying power and the orders still working.
    * @return The portfolio.
    */
-  const Portfolio<BrokerTag>& portfolio() const noexcept { return portfolio_; }
+  const Portfolio<BrokerTag>& portfolio() const noexcept {
+    return portfolio_;
+  }
 
   /**
    * @brief Returns an instrument's reference data, including its price grid.
@@ -389,10 +407,7 @@ public:
    * @throws std::logic_error if the runner keeps no bar history, because its strategy declares
    *   `reads_bar_history = false`; also before any bar.
    */
-  const analytics::SeriesBuffer* bars(
-    const InstrumentId& id,
-    BarInterval interval = BarInterval::ONE_DAY
-  ) const {
+  const analytics::SeriesBuffer* bars(const InstrumentId& id, BarInterval interval = BarInterval::ONE_DAY) const {
     require_bar_history();
     const auto found = history_.entries_.find(id);
     if (found == history_.entries_.end()) {
@@ -410,7 +425,9 @@ public:
    * @brief Returns the log.
    * @return The log.
    */
-  Log& log() noexcept { return log_; }
+  Log& log() noexcept {
+    return log_;
+  }
 
   // --- What a strategy asks for ---------------------------------------------------------
 
@@ -418,13 +435,17 @@ public:
    * @brief Queues an order; the runner checks and sends it after the handler returns.
    * @param intent The order.
    */
-  void submit(OrderIntent intent) { queued_.emplace_back(std::move(intent)); }
+  void submit(OrderIntent intent) {
+    queued_.emplace_back(std::move(intent));
+  }
 
   /**
    * @brief Queues a target position; the runner trades the difference from the portfolio.
    * @param target The target.
    */
-  void submit(TargetPosition target) { queued_.emplace_back(std::move(target)); }
+  void submit(TargetPosition target) {
+    queued_.emplace_back(std::move(target));
+  }
 
   /**
    * @brief Queues a cancellation of a working order.
@@ -441,7 +462,9 @@ public:
    * @brief Returns the queued requests without removing them (for runners).
    * @return The requests, in order.
    */
-  const std::vector<Instruction<BrokerTag>>& queued() const noexcept { return queued_; }
+  const std::vector<Instruction<BrokerTag>>& queued() const noexcept {
+    return queued_;
+  }
 
   /**
    * @brief Removes and returns the queued requests (for runners).
@@ -457,13 +480,17 @@ public:
    * @brief Sets the current instant (for runners).
    * @param when The instant.
    */
-  void set_now(std::chrono::system_clock::time_point when) noexcept { now_ = when; }
+  void set_now(std::chrono::system_clock::time_point when) noexcept {
+    now_ = when;
+  }
 
   /**
    * @brief Sets the market phase (for runners).
    * @param phase The phase.
    */
-  void set_phase(MarketPhase phase) noexcept { phase_ = phase; }
+  void set_phase(MarketPhase phase) noexcept {
+    phase_ = phase;
+  }
 
   /**
    * @brief Replaces the trading calendar (for runners and sources, not strategies).
@@ -474,7 +501,9 @@ public:
    *
    * @param calendar The calendar.
    */
-  void set_calendar(TradingCalendar calendar) { calendar_ = std::move(calendar); }
+  void set_calendar(TradingCalendar calendar) {
+    calendar_ = std::move(calendar);
+  }
 
   /**
    * @brief Replaces the portfolio (for runners).

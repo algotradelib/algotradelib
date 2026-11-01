@@ -45,8 +45,7 @@ std::string mask_account_number(std::string_view account_number) {
   if (account_number.size() <= 4) {
     return std::string(account_number.size(), '*');
   }
-  return std::string(account_number.size() - 4, '*') +
-    std::string(account_number.substr(account_number.size() - 4));
+  return std::string(account_number.size() - 4, '*') + std::string(account_number.substr(account_number.size() - 4));
 }
 
 /** @brief Prints a structured broker or transport failure. */
@@ -71,16 +70,14 @@ void print_error(std::string_view operation, const BrokerError& error) {
 void print_holdings(const HoldingsSnapshot& snapshot) {
   std::cout << "positions: " << snapshot.positions_.size() << '\n';
   for (const auto& position : snapshot.positions_) {
-    std::cout << "  " << position.instrument_.symbol_ << "  " << position.name_
-      << "  quantity=" << position.quantity_.str()
-      << "  market=" << position.market_value_.amount_.str() << ' '
-      << position.market_value_.currency_.str() << '\n';
+    std::cout
+      << "  " << position.instrument_.symbol_ << "  " << position.name_ << "  quantity=" << position.quantity_.str()
+      << "  market=" << position.market_value_.amount_.str() << ' ' << position.market_value_.currency_.str() << '\n';
   }
   for (const auto& total : snapshot.totals_) {
-    std::cout << "  total " << total.currency_.str()
-      << "  purchase=" << total.purchase_value_.str()
-      << "  market=" << total.market_value_.str()
-      << "  unrealized=" << total.unrealized_profit_loss_.str() << '\n';
+    std::cout
+      << "  total " << total.currency_.str() << "  purchase=" << total.purchase_value_.str()
+      << "  market=" << total.market_value_.str() << "  unrealized=" << total.unrealized_profit_loss_.str() << '\n';
   }
 }
 
@@ -89,10 +86,9 @@ template <typename Broker>
 void print_working_orders(const algotradelib::WorkingOrders<Broker>& orders) {
   std::cout << "working orders: " << orders.orders_.size() << '\n';
   for (const auto& working : orders.orders_) {
-    std::cout << "  " << working.order_.instrument_.symbol_
-      << "  reference=" << working.ref_.str()
-      << "  ordered=" << working.order_.quantity_.str()
-      << "  filled=" << working.order_.execution_.filled_quantity_.str();
+    std::cout
+      << "  " << working.order_.instrument_.symbol_ << "  reference=" << working.ref_.str() << "  ordered="
+      << working.order_.quantity_.str() << "  filled=" << working.order_.execution_.filled_quantity_.str();
     if (working.amendable_quantity_) {
       std::cout << "  amendable=" << working.amendable_quantity_->str();
     } else {
@@ -114,10 +110,8 @@ int report(BlockingSession<Client>& session) {
   using Caps = BrokerCaps<Client>;
 
   std::cout << "broker: " << session.broker_name() << '\n';
-  std::cout << "reports an amendable quantity: "
-    << (Caps::has_amendable_quantity ? "yes" : "no") << '\n';
-  std::cout << "accepts an idempotency key: "
-    << (Caps::has_client_order_id ? "yes" : "no") << '\n';
+  std::cout << "reports an amendable quantity: " << (Caps::has_amendable_quantity ? "yes" : "no") << '\n';
+  std::cout << "accepts an idempotency key: " << (Caps::has_client_order_id ? "yes" : "no") << '\n';
 
   auto holdings = session.holdings();
   if (!holdings) {
@@ -151,8 +145,7 @@ int report_kis(ssl::context& tls) {
 
   std::cout << "environment: " << (config.is_demo_ ? "demo" : "live") << '\n';
 
-  auto client =
-    std::make_shared<kis::KisBlockingClient>(tls, std::move(config), kis_credentials::paced_options());
+  auto client = std::make_shared<kis::KisBlockingClient>(tls, std::move(config), kis_credentials::paced_options());
   BlockingSession<kis::KisBlockingClient> session(std::move(client), std::move(account));
   return report(session);
 }
@@ -180,7 +173,8 @@ int report_tossinvest(ssl::context& tls, const char* requested_sequence) {
       return 1;
     }
     for (const auto& account : accounts.value()) {
-      std::cout << "account " << mask_account_number(account.display_number_) << "  type=" << account.type_
+      std::cout
+        << "account " << mask_account_number(account.display_number_) << "  type=" << account.type_
         << "  sequence=" << account.selector_ << '\n';
     }
     sequence = accounts.value().front().selector_;

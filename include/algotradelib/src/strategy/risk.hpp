@@ -165,7 +165,12 @@ inline constexpr std::string_view halt_reason_name(HaltReason reason) noexcept {
 }
 
 static_assert(
-  lists_every_value(all_halt_reasons, [](HaltReason reason) { return !halt_reason_name(reason).empty(); }),
+  lists_every_value(
+    all_halt_reasons,
+    [](HaltReason reason) {
+      return !halt_reason_name(reason).empty();
+    }
+  ),
   "all_halt_reasons must list every HaltReason"
 );
 
@@ -329,9 +334,7 @@ struct RiskLimits {
    * `runner::Runner::sends_outside_permitted_phase` counts them. Cancellations are never checked
    * against this.
    */
-  std::optional<std::vector<MarketPhase>> permitted_phases_{
-    std::vector<MarketPhase>{MarketPhase::OPEN}
-  };
+  std::optional<std::vector<MarketPhase>> permitted_phases_{std::vector<MarketPhase>{MarketPhase::OPEN}};
 };
 
 /**
@@ -431,12 +434,8 @@ enum class CandidateContribution {
  */
 template <typename Broker>
 std::optional<Decimal64> projected_gross_exposure(
-  const Portfolio<Broker>& portfolio,
-  const std::vector<InstrumentBasis>& basis,
-  const Currency& currency,
-  const PlannedOrder* candidate,
-  const std::optional<Decimal64>& candidate_price,
-  CandidateContribution contribution
+  const Portfolio<Broker>& portfolio, const std::vector<InstrumentBasis>& basis, const Currency& currency,
+  const PlannedOrder* candidate, const std::optional<Decimal64>& candidate_price, CandidateContribution contribution
 ) {
   const auto zero = Decimal64::parse("0");
 
@@ -513,9 +512,7 @@ std::optional<Decimal64> projected_gross_exposure(
       if (!(working.order_.instrument_ == id) || !order_is_open(working.order_.status_)) {
         continue;
       }
-      const auto remaining = decimal_subtract(
-        working.order_.quantity_, working.order_.execution_.filled_quantity_
-      );
+      const auto remaining = decimal_subtract(working.order_.quantity_, working.order_.execution_.filled_quantity_);
       if (!remaining) {
         return std::nullopt;
       }
@@ -524,9 +521,7 @@ std::optional<Decimal64> projected_gross_exposure(
       if (decimal_less(*remaining, zero)) {
         return std::nullopt;
       }
-      const auto sum = decimal_add(
-        working.order_.side_ == OrderSide::BUY ? buys : sells, *remaining
-      );
+      const auto sum = decimal_add(working.order_.side_ == OrderSide::BUY ? buys : sells, *remaining);
       if (!sum) {
         return std::nullopt;
       }
@@ -561,9 +556,7 @@ std::optional<Decimal64> projected_gross_exposure(
           break;
       }
       if (adds_quantity) {
-        const auto sum = decimal_add(
-          candidate->side_ == OrderSide::BUY ? buys : sells, candidate->quantity_
-        );
+        const auto sum = decimal_add(candidate->side_ == OrderSide::BUY ? buys : sells, candidate->quantity_);
         if (!sum) {
           return std::nullopt;
         }
@@ -617,9 +610,7 @@ std::optional<Decimal64> projected_gross_exposure(
  *   `std::nullopt` as `false`.
  */
 template <typename Broker>
-std::optional<bool> closes_toward_flat(
-  const Portfolio<Broker>& portfolio, const PlannedOrder& order
-) {
+std::optional<bool> closes_toward_flat(const Portfolio<Broker>& portfolio, const PlannedOrder& order) {
   const auto zero = Decimal64::parse("0");
 
   // Net across every row; a split holding must not understate `held`.
@@ -651,9 +642,7 @@ std::optional<bool> closes_toward_flat(
     if (!order_is_open(working.order_.status_)) {
       continue;
     }
-    const auto remaining = decimal_subtract(
-      working.order_.quantity_, working.order_.execution_.filled_quantity_
-    );
+    const auto remaining = decimal_subtract(working.order_.quantity_, working.order_.execution_.filled_quantity_);
     // A row filled beyond its quantity is a contradiction; refuse rather than count zero.
     if (!remaining || decimal_less(*remaining, zero)) {
       return std::nullopt;
@@ -748,7 +737,9 @@ public:
    * @brief Returns the limits.
    * @return The limits in force.
    */
-  const RiskLimits& limits() const noexcept { return limits_; }
+  const RiskLimits& limits() const noexcept {
+    return limits_;
+  }
 
   /**
    * @brief Tests whether a phase permits opening or increasing a position.
@@ -776,7 +767,9 @@ public:
    * `runner::PollingLoop`, or a strategy such as `vanilla::TimedLiquidation`. The hold is in memory;
    * `runner::FileStopChannel` and `runner::SignalStop` stop a running process from outside.
    */
-  void halt() noexcept { held_[index_of(HaltReason::OPERATOR)] = true; }
+  void halt() noexcept {
+    held_[index_of(HaltReason::OPERATOR)] = true;
+  }
 
   /**
    * @brief Takes a hold, with a description.
@@ -796,10 +789,14 @@ public:
    * @brief Takes a hold, with no description.
    * @param reason The hold.
    */
-  void halt(HaltReason reason) { halt(reason, std::string()); }
+  void halt(HaltReason reason) {
+    halt(reason, std::string());
+  }
 
   /** @brief Releases the operator's hold; other holds, if any, still stop trading. */
-  void resume() noexcept { resume(HaltReason::OPERATOR); }
+  void resume() noexcept {
+    resume(HaltReason::OPERATOR);
+  }
 
   /**
    * @brief Releases a hold; releasing one that is not held does nothing.
@@ -828,7 +825,9 @@ public:
    * @param reason The hold.
    * @return `true` if it is held.
    */
-  bool halted(HaltReason reason) const noexcept { return held_[index_of(reason)]; }
+  bool halted(HaltReason reason) const noexcept {
+    return held_[index_of(reason)];
+  }
 
   /**
    * @brief Returns the hold that stops placements, the most fundamental first.
@@ -902,7 +901,9 @@ public:
    *
    * @return The total count.
    */
-  std::size_t total_sent() const noexcept { return total_sent_; }
+  std::size_t total_sent() const noexcept {
+    return total_sent_;
+  }
 
   /**
    * @brief Returns how many orders were sent within `RiskLimits::rate_window_` before an instant.
@@ -917,9 +918,10 @@ public:
       return static_cast<std::size_t>(std::count_if(sent_.begin(), sent_.end(), in_window));
     }
     // In time order, the sends outside the window come first; the same test finds where they end.
-    const auto first = std::partition_point(
-      sent_.begin(), sent_.end(), [&](std::chrono::system_clock::time_point when) { return !in_window(when); }
-    );
+    const auto first =
+      std::partition_point(sent_.begin(), sent_.end(), [&](std::chrono::system_clock::time_point when) {
+        return !in_window(when);
+      });
     return static_cast<std::size_t>(sent_.end() - first);
   }
 
@@ -945,9 +947,7 @@ public:
    */
   template <typename Broker>
   std::optional<GuardRejection> check(
-    const PlannedOrder& order,
-    const Portfolio<Broker>& portfolio,
-    const GuardInputs& inputs
+    const PlannedOrder& order, const Portfolio<Broker>& portfolio, const GuardInputs& inputs
   ) const {
     return evaluate(order, portfolio, inputs).rejection_;
   }
@@ -967,9 +967,7 @@ public:
    */
   template <typename Broker>
   GuardDecision evaluate(
-    const PlannedOrder& order,
-    const Portfolio<Broker>& portfolio,
-    const GuardInputs& inputs
+    const PlannedOrder& order, const Portfolio<Broker>& portfolio, const GuardInputs& inputs
   ) const {
     const auto refuse = [&order](GuardReason reason) {
       GuardRejection rejection;
@@ -978,16 +976,15 @@ public:
       rejection.tag_ = order.tag_;
       return GuardDecision{std::optional<GuardRejection>(rejection), false};
     };
-    const auto refuse_with =
-      [&order](GuardReason reason, Decimal64 limit, Decimal64 attempted) {
-        GuardRejection rejection;
-        rejection.reason_ = reason;
-        rejection.instrument_ = order.instrument_;
-        rejection.tag_ = order.tag_;
-        rejection.limit_ = std::move(limit);
-        rejection.attempted_ = std::move(attempted);
-        return GuardDecision{std::optional<GuardRejection>(rejection), false};
-      };
+    const auto refuse_with = [&order](GuardReason reason, Decimal64 limit, Decimal64 attempted) {
+      GuardRejection rejection;
+      rejection.reason_ = reason;
+      rejection.instrument_ = order.instrument_;
+      rejection.tag_ = order.tag_;
+      rejection.limit_ = std::move(limit);
+      rejection.attempted_ = std::move(attempted);
+      return GuardDecision{std::optional<GuardRejection>(rejection), false};
+    };
     // Set by the phase check and reported only if the order survives every later limit, since
     // `refuse` and `refuse_with` both build a decision with it false. An order the exception
     // admitted and a ceiling then refused was not admitted.
@@ -1033,11 +1030,9 @@ public:
       }
     }
 
-    if (limits_.max_orders_per_window_ &&
-        recent_orders(inputs.now_) >= *limits_.max_orders_per_window_) {
+    if (limits_.max_orders_per_window_ && recent_orders(inputs.now_) >= *limits_.max_orders_per_window_) {
       return refuse_with(
-        GuardReason::ORDER_RATE_EXCEEDED,
-        Decimal64(static_cast<std::int64_t>(*limits_.max_orders_per_window_), 0),
+        GuardReason::ORDER_RATE_EXCEEDED, Decimal64(static_cast<std::int64_t>(*limits_.max_orders_per_window_), 0),
         Decimal64(static_cast<std::int64_t>(recent_orders(inputs.now_) + 1), 0)
       );
     }
@@ -1046,8 +1041,7 @@ public:
     // Without one, a notional or exposure limit cannot be evaluated, and a limit that cannot be
     // evaluated must refuse rather than wave the order through.
     const auto price = order.price_ ? order.price_ : inputs.reference_price_;
-    const bool needs_value =
-      limits_.max_order_notional_.has_value() || limits_.max_gross_exposure_.has_value() ||
+    const bool needs_value = limits_.max_order_notional_.has_value() || limits_.max_gross_exposure_.has_value() ||
       (limits_.enforce_buying_power_ && order.side_ == OrderSide::BUY);
     if (needs_value && !price) {
       return refuse(GuardReason::VALUE_NOT_KNOWN);
@@ -1061,11 +1055,8 @@ public:
       }
     }
 
-    if (limits_.max_order_notional_ && value &&
-        decimal_less(*limits_.max_order_notional_, *value)) {
-      return refuse_with(
-        GuardReason::ORDER_NOTIONAL_TOO_LARGE, *limits_.max_order_notional_, *value
-      );
+    if (limits_.max_order_notional_ && value && decimal_less(*limits_.max_order_notional_, *value)) {
+      return refuse_with(GuardReason::ORDER_NOTIONAL_TOO_LARGE, *limits_.max_order_notional_, *value);
     }
 
     if (limits_.enforce_sellable_quantity_ && order.side_ == OrderSide::SELL) {
@@ -1128,9 +1119,8 @@ public:
       if (!committed) {
         return refuse(GuardReason::POSITION_LIMIT_EXCEEDED);
       }
-      const auto signed_quantity = order.side_ == OrderSide::BUY ?
-        std::optional<Decimal64>(*committed) :
-        decimal_subtract(zero, *committed);
+      const auto signed_quantity =
+        order.side_ == OrderSide::BUY ? std::optional<Decimal64>(*committed) : decimal_subtract(zero, *committed);
       if (!signed_quantity) {
         return refuse(GuardReason::POSITION_LIMIT_EXCEEDED);
       }
@@ -1139,16 +1129,13 @@ public:
         return refuse(GuardReason::POSITION_LIMIT_EXCEEDED);
       }
       // The ceiling is on magnitude, so a short of the same size is limited as a long is.
-      const auto magnitude = decimal_less(*resulting, zero) ?
-        decimal_subtract(zero, *resulting) :
-        std::optional<Decimal64>(*resulting);
+      const auto magnitude =
+        decimal_less(*resulting, zero) ? decimal_subtract(zero, *resulting) : std::optional<Decimal64>(*resulting);
       if (!magnitude) {
         return refuse(GuardReason::POSITION_LIMIT_EXCEEDED);
       }
       if (decimal_less(*limits_.max_position_quantity_, *magnitude)) {
-        return refuse_with(
-          GuardReason::POSITION_LIMIT_EXCEEDED, *limits_.max_position_quantity_, *magnitude
-        );
+        return refuse_with(GuardReason::POSITION_LIMIT_EXCEEDED, *limits_.max_position_quantity_, *magnitude);
       }
     }
 
@@ -1170,16 +1157,13 @@ public:
         // over it can still sell out. Compare against `PRICE_ONLY` (same prices, no quantity), not
         // `nullptr`, so the difference is the order's quantity and not its limit price.
         const auto without = projected_gross_exposure(
-          portfolio, inputs.exposure_basis_, *inputs.order_currency_, &order, price,
-          CandidateContribution::PRICE_ONLY
+          portfolio, inputs.exposure_basis_, *inputs.order_currency_, &order, price, CandidateContribution::PRICE_ONLY
         );
         if (!without) {
           return refuse(GuardReason::VALUE_NOT_KNOWN);
         }
         if (decimal_less(*without, *resulting)) {
-          return refuse_with(
-            GuardReason::GROSS_EXPOSURE_EXCEEDED, *limits_.max_gross_exposure_, *resulting
-          );
+          return refuse_with(GuardReason::GROSS_EXPOSURE_EXCEEDED, *limits_.max_gross_exposure_, *resulting);
         }
       }
     }

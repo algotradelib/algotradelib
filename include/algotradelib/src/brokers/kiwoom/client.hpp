@@ -3,10 +3,10 @@
 #include "./config.hpp"
 #include "./errors.hpp"
 
-#include "../common.hpp"
 #include "../../core/instrument.hpp"
 #include "../../core/market_data.hpp"
 #include "../../core/types.hpp"
+#include "../common.hpp"
 
 #include <boost/asio/any_completion_handler.hpp>
 #include <boost/asio/any_io_executor.hpp>
@@ -38,7 +38,9 @@ struct KiwoomAccount {
    *   credential drives exactly one account.
    * @return `true`.
    */
-  friend bool operator==(const KiwoomAccount&, const KiwoomAccount&) { return true; }
+  friend bool operator==(const KiwoomAccount&, const KiwoomAccount&) {
+    return true;
+  }
 };
 
 /** @brief One account Kiwoom's `ka00001` reports for the bound credential. */
@@ -153,9 +155,8 @@ struct KiwoomHistoryQuery {
  */
 inline Date today_in_seoul() {
   const auto seoul = std::chrono::system_clock::now() + std::chrono::hours(9);
-  const std::time_t raw = std::chrono::system_clock::to_time_t(
-    std::chrono::time_point_cast<std::chrono::seconds>(seoul)
-  );
+  const std::time_t raw =
+    std::chrono::system_clock::to_time_t(std::chrono::time_point_cast<std::chrono::seconds>(seoul));
   std::tm parts{};
 #ifdef _WIN32
   gmtime_s(&parts, &raw);
@@ -238,10 +239,7 @@ inline bool valid_trigger_value(const Decimal64& trigger) {
  * @param trigger The trigger price.
  * @return An `INVALID_ARGUMENT` error, or `std::nullopt`.
  */
-inline std::optional<BrokerError> invalid_trigger(
-  OrderType type,
-  const std::optional<Decimal64>& trigger
-) {
+inline std::optional<BrokerError> invalid_trigger(OrderType type, const std::optional<Decimal64>& trigger) {
   BrokerError error;
   error.category_ = ErrorCategory::INVALID_ARGUMENT;
   error.reached_broker_ = false;
@@ -423,10 +421,7 @@ inline std::string bare_symbol(std::string_view reported) {
 }
 
 // Reads Kiwoom's `HHmmss` or `HH:mm:ss` clock time as an instant on `date` in Seoul.
-inline std::optional<std::chrono::system_clock::time_point> seoul_timestamp(
-  const Date& date,
-  std::string_view clock
-) {
+inline std::optional<std::chrono::system_clock::time_point> seoul_timestamp(const Date& date, std::string_view clock) {
   std::string digits;
   for (const char character : clock) {
     if (character >= '0' && character <= '9') {
@@ -536,27 +531,27 @@ struct KiwoomOrderShapeRow {
  */
 inline constexpr std::array<KiwoomOrderShapeRow, 21> kOrderShapes{{
   // Each row: code, name, alternate name, type, condition, session, requestable.
-  {"0",  "보통",           "지정가",      OrderType::LIMIT,             TimeInForce::DAY,                 OrderSession::REGULAR,             true},
-  {"3",  "시장가",         nullptr,       OrderType::MARKET,            TimeInForce::DAY,                 OrderSession::REGULAR,             true},
-  {"5",  "조건부지정가",   nullptr,       OrderType::CONDITIONAL_LIMIT, TimeInForce::DAY,                 OrderSession::REGULAR,             true},
-  {"6",  "최유리지정가",   nullptr,       OrderType::BEST_LIMIT,        TimeInForce::DAY,                 OrderSession::REGULAR,             true},
-  {"7",  "최우선지정가",   nullptr,       OrderType::PRIMARY_LIMIT,     TimeInForce::DAY,                 OrderSession::REGULAR,             true},
-  {"10", "보통(IOC)",      "지정가(IOC)", OrderType::LIMIT,             TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,             true},
-  {"13", "시장가(IOC)",    nullptr,       OrderType::MARKET,            TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,             true},
-  {"16", "최유리(IOC)",    nullptr,       OrderType::BEST_LIMIT,        TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,             true},
-  {"20", "보통(FOK)",      "지정가(FOK)", OrderType::LIMIT,             TimeInForce::FILL_OR_KILL,        OrderSession::REGULAR,             true},
-  {"23", "시장가(FOK)",    nullptr,       OrderType::MARKET,            TimeInForce::FILL_OR_KILL,        OrderSession::REGULAR,             true},
-  {"26", "최유리(FOK)",    nullptr,       OrderType::BEST_LIMIT,        TimeInForce::FILL_OR_KILL,        OrderSession::REGULAR,             true},
-  {"29", "중간가",         nullptr,       OrderType::MID_PRICE,         TimeInForce::DAY,                 OrderSession::REGULAR,             true},
-  {"30", "중간가(IOC)",    nullptr,       OrderType::MID_PRICE,         TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,             true},
-  {"31", "중간가(FOK)",    nullptr,       OrderType::MID_PRICE,         TimeInForce::FILL_OR_KILL,        OrderSession::REGULAR,             true},
-  {"61", "장시작전시간외", nullptr,       OrderType::CLOSING_PRICE,     TimeInForce::DAY,                 OrderSession::PRE_MARKET,          true},
-  {"81", "장마감후시간외", nullptr,       OrderType::CLOSING_PRICE,     TimeInForce::DAY,                 OrderSession::AFTER_HOURS,         true},
-  {"40", "보통(GTP)",      nullptr,       OrderType::LIMIT,             TimeInForce::DAY,                 OrderSession::GTP,                 true},
-  {"46", "최유리(GTP)",    nullptr,       OrderType::BEST_LIMIT,        TimeInForce::DAY,                 OrderSession::GTP,                 true},
-  {"47", "최우선(GTP)",    nullptr,       OrderType::PRIMARY_LIMIT,     TimeInForce::DAY,                 OrderSession::GTP,                 true},
-  {"28", "스톱지정가",     nullptr,       OrderType::STOP_LIMIT,        TimeInForce::DAY,                 OrderSession::REGULAR,             true},
-  {nullptr, "시간외단일가", nullptr,      OrderType::LIMIT,             TimeInForce::DAY,                 OrderSession::AFTER_HOURS_AUCTION, false},
+  {"0", "보통", "지정가", OrderType::LIMIT, TimeInForce::DAY, OrderSession::REGULAR, true},
+  {"3", "시장가", nullptr, OrderType::MARKET, TimeInForce::DAY, OrderSession::REGULAR, true},
+  {"5", "조건부지정가", nullptr, OrderType::CONDITIONAL_LIMIT, TimeInForce::DAY, OrderSession::REGULAR, true},
+  {"6", "최유리지정가", nullptr, OrderType::BEST_LIMIT, TimeInForce::DAY, OrderSession::REGULAR, true},
+  {"7", "최우선지정가", nullptr, OrderType::PRIMARY_LIMIT, TimeInForce::DAY, OrderSession::REGULAR, true},
+  {"10", "보통(IOC)", "지정가(IOC)", OrderType::LIMIT, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR, true},
+  {"13", "시장가(IOC)", nullptr, OrderType::MARKET, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR, true},
+  {"16", "최유리(IOC)", nullptr, OrderType::BEST_LIMIT, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR, true},
+  {"20", "보통(FOK)", "지정가(FOK)", OrderType::LIMIT, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR, true},
+  {"23", "시장가(FOK)", nullptr, OrderType::MARKET, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR, true},
+  {"26", "최유리(FOK)", nullptr, OrderType::BEST_LIMIT, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR, true},
+  {"29", "중간가", nullptr, OrderType::MID_PRICE, TimeInForce::DAY, OrderSession::REGULAR, true},
+  {"30", "중간가(IOC)", nullptr, OrderType::MID_PRICE, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR, true},
+  {"31", "중간가(FOK)", nullptr, OrderType::MID_PRICE, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR, true},
+  {"61", "장시작전시간외", nullptr, OrderType::CLOSING_PRICE, TimeInForce::DAY, OrderSession::PRE_MARKET, true},
+  {"81", "장마감후시간외", nullptr, OrderType::CLOSING_PRICE, TimeInForce::DAY, OrderSession::AFTER_HOURS, true},
+  {"40", "보통(GTP)", nullptr, OrderType::LIMIT, TimeInForce::DAY, OrderSession::GTP, true},
+  {"46", "최유리(GTP)", nullptr, OrderType::BEST_LIMIT, TimeInForce::DAY, OrderSession::GTP, true},
+  {"47", "최우선(GTP)", nullptr, OrderType::PRIMARY_LIMIT, TimeInForce::DAY, OrderSession::GTP, true},
+  {"28", "스톱지정가", nullptr, OrderType::STOP_LIMIT, TimeInForce::DAY, OrderSession::REGULAR, true},
+  {nullptr, "시간외단일가", nullptr, OrderType::LIMIT, TimeInForce::DAY, OrderSession::AFTER_HOURS_AUCTION, false},
 }};
 
 /**
@@ -569,10 +564,7 @@ inline constexpr std::array<KiwoomOrderShapeRow, 21> kOrderShapes{{
  *   the code cannot be sent, otherwise `std::nullopt`.
  */
 inline std::optional<BrokerError> order_division(
-  OrderType type,
-  TimeInForce time_in_force,
-  OrderSession session,
-  std::string& division
+  OrderType type, TimeInForce time_in_force, OrderSession session, std::string& division
 ) {
   const KiwoomOrderShapeRow* matched = nullptr;
   for (const auto& row : kOrderShapes) {
@@ -592,7 +584,8 @@ inline std::optional<BrokerError> order_division(
     return error;
   }
   if (!matched->requestable_ || matched->code_ == nullptr) {
-    const auto why = matched->code_ == nullptr ? ": it publishes no order code for that shape at all" :
+    const auto why = matched->code_ == nullptr ?
+      ": it publishes no order code for that shape at all" :
       ": the code is read on a response and not sent on a request";
     error.message_ =
       std::string("Kiwoom reports ") + matched->name_ + " on an inquiry but this library cannot place one" + why;
@@ -659,7 +652,9 @@ inline const char* exchange_code(Venue venue) noexcept {
  * @param asked The order's venue.
  * @return `asked`.
  */
-inline constexpr Venue kiwoom_effective_route(Venue asked) noexcept { return asked; }
+inline constexpr Venue kiwoom_effective_route(Venue asked) noexcept {
+  return asked;
+}
 
 /**
  * @brief Converts a venue Kiwoom names on a response (`stex_tp`, `dmst_stex_tp`).
@@ -801,8 +796,7 @@ inline std::optional<BrokerError> unsupported_bar_interval(BarInterval interval)
   error.category_ = ErrorCategory::INVALID_ARGUMENT;
   error.reached_broker_ = false;
   error.broker_code_ = "unsupported_interval";
-  error.message_ =
-    std::string("this Kiwoom client does not request ") + std::string(bar_interval_name(interval)) +
+  error.message_ = std::string("this Kiwoom client does not request ") + std::string(bar_interval_name(interval)) +
     " bars yet (Kiwoom serves them through ka10080's tic_scope, which this adapter has not observed)";
   return error;
 }
@@ -922,16 +916,12 @@ public:
    * @param options HTTP options (set `rate_limit_` to pace requests).
    */
   KiwoomClient(
-    net::any_io_executor executor,
-    ssl::context& context,
-    KiwoomConfig config,
-    network::HttpClientOptions options = {}
+    net::any_io_executor executor, ssl::context& context, KiwoomConfig config, network::HttpClientOptions options = {}
   )
-  : strand_(net::make_strand(std::move(executor))), config_(std::move(config)),
+  : strand_(net::make_strand(std::move(executor))),
+    config_(std::move(config)),
     http_(
-      std::make_shared<network::AsyncHttpClient>(
-        strand_, context, config_.rest_host(), config_.rest_port(), options
-      )
+      std::make_shared<network::AsyncHttpClient>(strand_, context, config_.rest_host(), config_.rest_port(), options)
     ) {}
 
   /**
@@ -945,18 +935,14 @@ public:
   auto async_quote(InstrumentId instrument, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<QuoteSnapshot>)>(
       [self = shared_from_this()](auto handler, InstrumentId subject) mutable {
-        net::post(
-          self->strand_,
-          [self, subject = std::move(subject), handler = std::move(handler)]() mutable {
-            self->start_market_read<QuoteSnapshot>(
-              std::move(subject), "ka10007", "/api/dostk/mrkcond", QuoteHandler(std::move(handler)),
-              &KiwoomClient::parse_quote
-            );
-          }
-        );
+        net::post(self->strand_, [self, subject = std::move(subject), handler = std::move(handler)]() mutable {
+          self->start_market_read<QuoteSnapshot>(
+            std::move(subject), "ka10007", "/api/dostk/mrkcond", QuoteHandler(std::move(handler)),
+            &KiwoomClient::parse_quote
+          );
+        });
       },
-      token,
-      std::move(instrument)
+      token, std::move(instrument)
     );
   }
 
@@ -971,18 +957,14 @@ public:
   auto async_price_limits(InstrumentId instrument, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<PriceLimits>)>(
       [self = shared_from_this()](auto handler, InstrumentId subject) mutable {
-        net::post(
-          self->strand_,
-          [self, subject = std::move(subject), handler = std::move(handler)]() mutable {
-            self->start_market_read<PriceLimits>(
-              std::move(subject), "ka10007", "/api/dostk/mrkcond",
-              PriceLimitsHandler(std::move(handler)), &KiwoomClient::parse_price_limits
-            );
-          }
-        );
+        net::post(self->strand_, [self, subject = std::move(subject), handler = std::move(handler)]() mutable {
+          self->start_market_read<PriceLimits>(
+            std::move(subject), "ka10007", "/api/dostk/mrkcond", PriceLimitsHandler(std::move(handler)),
+            &KiwoomClient::parse_price_limits
+          );
+        });
       },
-      token,
-      std::move(instrument)
+      token, std::move(instrument)
     );
   }
 
@@ -997,18 +979,14 @@ public:
   auto async_depth(InstrumentId instrument, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<DepthSnapshot>)>(
       [self = shared_from_this()](auto handler, InstrumentId subject) mutable {
-        net::post(
-          self->strand_,
-          [self, subject = std::move(subject), handler = std::move(handler)]() mutable {
-            self->start_market_read<DepthSnapshot>(
-              std::move(subject), "ka10004", "/api/dostk/mrkcond", DepthHandler(std::move(handler)),
-              &KiwoomClient::parse_depth
-            );
-          }
-        );
+        net::post(self->strand_, [self, subject = std::move(subject), handler = std::move(handler)]() mutable {
+          self->start_market_read<DepthSnapshot>(
+            std::move(subject), "ka10004", "/api/dostk/mrkcond", DepthHandler(std::move(handler)),
+            &KiwoomClient::parse_depth
+          );
+        });
       },
-      token,
-      std::move(instrument)
+      token, std::move(instrument)
     );
   }
 
@@ -1024,16 +1002,11 @@ public:
   auto async_trades(InstrumentId instrument, int count, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<std::vector<TradePrint>>)>(
       [self = shared_from_this()](auto handler, InstrumentId subject, int wanted) mutable {
-        net::post(
-          self->strand_,
-          [self, subject = std::move(subject), wanted, handler = std::move(handler)]() mutable {
-            self->start_trades(std::move(subject), wanted, TradesHandler(std::move(handler)));
-          }
-        );
+        net::post(self->strand_, [self, subject = std::move(subject), wanted, handler = std::move(handler)]() mutable {
+          self->start_trades(std::move(subject), wanted, TradesHandler(std::move(handler)));
+        });
       },
-      token,
-      std::move(instrument),
-      count
+      token, std::move(instrument), count
     );
   }
 
@@ -1048,15 +1021,11 @@ public:
   auto async_instrument(InstrumentId instrument, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<Instrument>)>(
       [self = shared_from_this()](auto handler, InstrumentId subject) mutable {
-        net::post(
-          self->strand_,
-          [self, subject = std::move(subject), handler = std::move(handler)]() mutable {
-            self->start_instrument(std::move(subject), InstrumentHandler(std::move(handler)));
-          }
-        );
+        net::post(self->strand_, [self, subject = std::move(subject), handler = std::move(handler)]() mutable {
+          self->start_instrument(std::move(subject), InstrumentHandler(std::move(handler)));
+        });
       },
-      token,
-      std::move(instrument)
+      token, std::move(instrument)
     );
   }
 
@@ -1079,15 +1048,11 @@ public:
   auto async_bars(BarQuery query, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<BarSeries>)>(
       [self = shared_from_this()](auto handler, BarQuery wanted) mutable {
-        net::post(
-          self->strand_,
-          [self, wanted = std::move(wanted), handler = std::move(handler)]() mutable {
-            self->start_bars(std::move(wanted), BarsHandler(std::move(handler)));
-          }
-        );
+        net::post(self->strand_, [self, wanted = std::move(wanted), handler = std::move(handler)]() mutable {
+          self->start_bars(std::move(wanted), BarsHandler(std::move(handler)));
+        });
       },
-      token,
-      std::move(query)
+      token, std::move(query)
     );
   }
 
@@ -1095,13 +1060,17 @@ public:
    * @brief Returns the configuration (the session reads its holdings assertions from it).
    * @return The configuration.
    */
-  const KiwoomConfig& config() const noexcept { return config_; }
+  const KiwoomConfig& config() const noexcept {
+    return config_;
+  }
 
   /**
    * @brief Returns the client's strand.
    * @return The strand.
    */
-  net::strand<net::any_io_executor> get_executor() const noexcept { return strand_; }
+  net::strand<net::any_io_executor> get_executor() const noexcept {
+    return strand_;
+  }
 
   /**
    * @brief Requests the holdings `kt00018` lists for `KiwoomConfig::holdings_venue_` (refused before
@@ -1120,15 +1089,11 @@ public:
   auto async_holdings(KiwoomAccount account, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<HoldingsSnapshot>)>(
       [self = shared_from_this()](auto handler, KiwoomAccount) mutable {
-        net::post(
-          self->strand_,
-          [self, handler = std::move(handler)]() mutable {
-            self->start_holdings(HoldingsHandler(std::move(handler)));
-          }
-        );
+        net::post(self->strand_, [self, handler = std::move(handler)]() mutable {
+          self->start_holdings(HoldingsHandler(std::move(handler)));
+        });
       },
-      token,
-      account
+      token, account
     );
   }
 
@@ -1144,16 +1109,11 @@ public:
   auto async_buying_power(Currency currency, KiwoomAccount account, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<BuyingPower>)>(
       [self = shared_from_this()](auto handler, Currency wanted, KiwoomAccount) mutable {
-        net::post(
-          self->strand_,
-          [self, wanted, handler = std::move(handler)]() mutable {
-            self->start_buying_power(wanted, BuyingPowerHandler(std::move(handler)));
-          }
-        );
+        net::post(self->strand_, [self, wanted, handler = std::move(handler)]() mutable {
+          self->start_buying_power(wanted, BuyingPowerHandler(std::move(handler)));
+        });
       },
-      token,
-      currency,
-      account
+      token, currency, account
     );
   }
 
@@ -1167,12 +1127,9 @@ public:
   auto async_deposit(CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<KiwoomDeposit>)>(
       [self = shared_from_this()](auto handler) mutable {
-        net::post(
-          self->strand_,
-          [self, handler = std::move(handler)]() mutable {
-            self->start_deposit(DepositHandler(std::move(handler)));
-          }
-        );
+        net::post(self->strand_, [self, handler = std::move(handler)]() mutable {
+          self->start_deposit(DepositHandler(std::move(handler)));
+        });
       },
       token
     );
@@ -1189,10 +1146,7 @@ public:
    */
   template <typename CompletionToken>
   auto async_orderable_amount(
-    InstrumentId instrument,
-    OrderSide side,
-    std::optional<Decimal64> price,
-    CompletionToken&& token
+    InstrumentId instrument, OrderSide side, std::optional<Decimal64> price, CompletionToken&& token
   ) {
     return net::async_initiate<CompletionToken, void(Result<KiwoomOrderableAmount>)>(
       [self = shared_from_this()](
@@ -1200,20 +1154,15 @@ public:
       ) mutable {
         net::post(
           self->strand_,
-          [
-            self, subject = std::move(subject), direction, limit = std::move(limit),
-            handler = std::move(handler)
-          ]() mutable {
+          [self, subject = std::move(subject), direction, limit = std::move(limit),
+            handler = std::move(handler)]() mutable {
             self->start_orderable_amount(
               std::move(subject), direction, std::move(limit), OrderableHandler(std::move(handler))
             );
           }
         );
       },
-      token,
-      std::move(instrument),
-      side,
-      std::move(price)
+      token, std::move(instrument), side, std::move(price)
     );
   }
 
@@ -1227,12 +1176,9 @@ public:
   auto async_accounts(CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<std::vector<KiwoomAccountInfo>>)>(
       [self = shared_from_this()](auto handler) mutable {
-        net::post(
-          self->strand_,
-          [self, handler = std::move(handler)]() mutable {
-            self->start_accounts(AccountsHandler(std::move(handler)));
-          }
-        );
+        net::post(self->strand_, [self, handler = std::move(handler)]() mutable {
+          self->start_accounts(AccountsHandler(std::move(handler)));
+        });
       },
       token
     );
@@ -1273,16 +1219,11 @@ public:
   auto async_place_order(KiwoomAccount account, OrderRequest order, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<KiwoomOrderAck>)>(
       [self = shared_from_this()](auto handler, KiwoomAccount, OrderRequest placed) mutable {
-        net::post(
-          self->strand_,
-          [self, placed = std::move(placed), handler = std::move(handler)]() mutable {
-            self->start_place_order(std::move(placed), OrderAckHandler(std::move(handler)));
-          }
-        );
+        net::post(self->strand_, [self, placed = std::move(placed), handler = std::move(handler)]() mutable {
+          self->start_place_order(std::move(placed), OrderAckHandler(std::move(handler)));
+        });
       },
-      token,
-      account,
-      std::move(order)
+      token, account, std::move(order)
     );
   }
 
@@ -1301,25 +1242,14 @@ public:
    * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>
-  auto async_replace_order(
-    KiwoomAccount account,
-    KiwoomAmendment amendment,
-    CompletionToken&& token
-  ) {
+  auto async_replace_order(KiwoomAccount account, KiwoomAmendment amendment, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<KiwoomOrderAck>)>(
       [self = shared_from_this()](auto handler, KiwoomAccount, KiwoomAmendment change) mutable {
-        net::post(
-          self->strand_,
-          [self, change = std::move(change), handler = std::move(handler)]() mutable {
-            self->start_amend_order(
-              std::move(change), false, OrderAckHandler(std::move(handler))
-            );
-          }
-        );
+        net::post(self->strand_, [self, change = std::move(change), handler = std::move(handler)]() mutable {
+          self->start_amend_order(std::move(change), false, OrderAckHandler(std::move(handler)));
+        });
       },
-      token,
-      account,
-      std::move(amendment)
+      token, account, std::move(amendment)
     );
   }
 
@@ -1343,23 +1273,14 @@ public:
    * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>
-  auto async_cancel_order(
-    KiwoomAccount account,
-    KiwoomAmendment amendment,
-    CompletionToken&& token
-  ) {
+  auto async_cancel_order(KiwoomAccount account, KiwoomAmendment amendment, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<KiwoomOrderAck>)>(
       [self = shared_from_this()](auto handler, KiwoomAccount, KiwoomAmendment change) mutable {
-        net::post(
-          self->strand_,
-          [self, change = std::move(change), handler = std::move(handler)]() mutable {
-            self->start_amend_order(std::move(change), true, OrderAckHandler(std::move(handler)));
-          }
-        );
+        net::post(self->strand_, [self, change = std::move(change), handler = std::move(handler)]() mutable {
+          self->start_amend_order(std::move(change), true, OrderAckHandler(std::move(handler)));
+        });
       },
-      token,
-      account,
-      std::move(amendment)
+      token, account, std::move(amendment)
     );
   }
 
@@ -1374,15 +1295,11 @@ public:
   auto async_open_orders(KiwoomAccount account, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<KiwoomOpenOrderPage>)>(
       [self = shared_from_this()](auto handler, KiwoomAccount) mutable {
-        net::post(
-          self->strand_,
-          [self, handler = std::move(handler)]() mutable {
-            self->start_open_orders(OpenOrderHandler(std::move(handler)));
-          }
-        );
+        net::post(self->strand_, [self, handler = std::move(handler)]() mutable {
+          self->start_open_orders(OpenOrderHandler(std::move(handler)));
+        });
       },
-      token,
-      account
+      token, account
     );
   }
 
@@ -1395,23 +1312,14 @@ public:
    * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>
-  auto async_order_history(
-    KiwoomAccount account,
-    KiwoomHistoryQuery query,
-    CompletionToken&& token
-  ) {
+  auto async_order_history(KiwoomAccount account, KiwoomHistoryQuery query, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<OrderPage>)>(
       [self = shared_from_this()](auto handler, KiwoomAccount, KiwoomHistoryQuery wanted) mutable {
-        net::post(
-          self->strand_,
-          [self, wanted = std::move(wanted), handler = std::move(handler)]() mutable {
-            self->start_order_history(std::move(wanted), OrderPageHandler(std::move(handler)));
-          }
-        );
+        net::post(self->strand_, [self, wanted = std::move(wanted), handler = std::move(handler)]() mutable {
+          self->start_order_history(std::move(wanted), OrderPageHandler(std::move(handler)));
+        });
       },
-      token,
-      account,
-      std::move(query)
+      token, account, std::move(query)
     );
   }
 
@@ -1433,7 +1341,9 @@ public:
    *   with `CANCELLED`. A request already being sent has `reached_broker_` set and an unknown outcome.
    *   A request refused before sending is still refused.
    */
-  void close() { http_->close(); }
+  void close() {
+    http_->close();
+  }
 
 private:
   friend struct KiwoomClientTestAccess;
@@ -1455,10 +1365,7 @@ private:
   // the unfilled listing and the execution detail — so a request with the right path and the wrong
   // header is a valid request for the wrong thing, and there is exactly one place that pairs them.
   network::HttpRequest make_request(
-    std::string_view api_id,
-    std::string_view path,
-    std::string body,
-    network::RateLimitGroup group,
+    std::string_view api_id, std::string_view path, std::string body, network::RateLimitGroup group,
     std::string_view next_key = {}
   ) const {
     network::HttpRequest request;
@@ -1524,14 +1431,11 @@ private:
     request.target_ = "/oauth2/token";
     request.body_ = config_.to_jsonbody();
     request.headers_.emplace_back("content-type", "application/json;charset=UTF-8");
-    http_->async_request(
-      std::move(request),
-      [self = shared_from_this()](Result<network::HttpResponse> result) mutable {
-        net::post(self->strand_, [self, result = std::move(result)]() mutable {
-          self->finish_token(std::move(result));
-        });
-      }
-    );
+    http_->async_request(std::move(request), [self = shared_from_this()](Result<network::HttpResponse> result) mutable {
+      net::post(self->strand_, [self, result = std::move(result)]() mutable {
+        self->finish_token(std::move(result));
+      });
+    });
   }
 
   // Parses a token response and releases every waiter, with the failure if there was one.
@@ -1613,8 +1517,7 @@ private:
   // looks at any field, so a declared failure is never read as data. Only an order reply states an
   // operation: for every other caller the default keeps a refusal from being recognized.
   static Result<json::object> document(
-    Result<network::HttpResponse> response,
-    KiwoomOrderOperation operation = KiwoomOrderOperation::UNCLASSIFIED,
+    Result<network::HttpResponse> response, KiwoomOrderOperation operation = KiwoomOrderOperation::UNCLASSIFIED,
     bool demo = false
   ) {
     if (!response) {
@@ -1639,8 +1542,10 @@ private:
 
   // Refuses an instrument this adapter's domestic endpoints cannot address.
   static std::optional<BrokerError> validate_instrument(const InstrumentId& instrument) {
-    if (instrument.country_ == Country::KR && broker_detail::valid_symbol(instrument.symbol_) &&
-        (instrument.symbol_.size() == 6 || instrument.symbol_.size() == 7)) {
+    if (
+      instrument.country_ == Country::KR && broker_detail::valid_symbol(instrument.symbol_) &&
+      (instrument.symbol_.size() == 6 || instrument.symbol_.size() == 7)
+    ) {
       return std::nullopt;
     }
     BrokerError error;
@@ -1663,43 +1568,31 @@ private:
   // Issues one market-data read and hands the response to `parse`.
   template <typename T, typename Handler, typename Parse>
   void start_market_read(
-    InstrumentId instrument,
-    std::string api_id,
-    std::string path,
-    Handler completion,
-    Parse parse
+    InstrumentId instrument, std::string api_id, std::string path, Handler completion, Parse parse
   ) {
     if (auto invalid = validate_instrument(instrument)) {
       deliver(std::move(completion), Result<T>(std::move(*invalid)));
       return;
     }
-    ensure_token(
-      TokenHandler(
-        [
-          self = shared_from_this(), instrument = std::move(instrument),
-          api_id = std::move(api_id), path = std::move(path), completion = std::move(completion),
-          parse
-        ](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->deliver(std::move(completion), Result<T>(std::move(*token_error)));
-            return;
-          }
-          auto request = self->make_request(
-            api_id, path, self->symbol_body(instrument), network::RateLimitGroup::MARKET_DATA
-          );
-          self->http_->async_request(
-            std::move(request),
-            [self, instrument = std::move(instrument), completion = std::move(completion), parse](
-              Result<network::HttpResponse> result
-            ) mutable {
-              self->deliver(
-                std::move(completion), parse(std::move(instrument), std::move(result))
-              );
-            }
-          );
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), instrument = std::move(instrument), api_id = std::move(api_id),
+        path = std::move(path), completion = std::move(completion),
+        parse](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->deliver(std::move(completion), Result<T>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        auto request =
+          self->make_request(api_id, path, self->symbol_body(instrument), network::RateLimitGroup::MARKET_DATA);
+        self->http_->async_request(
+          std::move(request),
+          [self, instrument = std::move(instrument), completion = std::move(completion),
+            parse](Result<network::HttpResponse> result) mutable {
+            self->deliver(std::move(completion), parse(std::move(instrument), std::move(result)));
+          }
+        );
+      }
+    ));
   }
 
   // Normalizes `ka10007` into a quote.
@@ -1707,10 +1600,7 @@ private:
   // The last price, the volume and the top of the book all come off one response, so the quote
   // carries a `top_of_book_` — which neither shipped adapter fills, because neither KIS's nor
   // Toss's quote endpoint publishes one. Kiwoom's does, in the same response, at no extra request.
-  static Result<QuoteSnapshot> parse_quote(
-    InstrumentId instrument,
-    Result<network::HttpResponse> result
-  ) {
+  static Result<QuoteSnapshot> parse_quote(InstrumentId instrument, Result<network::HttpResponse> result) {
     auto body = document(std::move(result));
     if (!body) {
       return Result<QuoteSnapshot>(std::move(body.error()));
@@ -1749,10 +1639,7 @@ private:
   //
   // KRX sets a limit on every listed equity, so both bounds are expected; a blank or zero bound is
   // reported as absent rather than as a bound of nothing.
-  static Result<PriceLimits> parse_price_limits(
-    InstrumentId instrument,
-    Result<network::HttpResponse> result
-  ) {
+  static Result<PriceLimits> parse_price_limits(InstrumentId instrument, Result<network::HttpResponse> result) {
     static_cast<void>(instrument);
     auto body = document(std::move(result));
     if (!body) {
@@ -1779,10 +1666,7 @@ private:
   // Kiwoom names the first level differently from the rest — `sel_fpr_bid` and `buy_fpr_bid` for
   // level one, `sel_2th_pre_bid` through `sel_10th_pre_bid` for the others — so the field names are
   // built rather than listed, and level one is spelled out.
-  static Result<DepthSnapshot> parse_depth(
-    InstrumentId instrument,
-    Result<network::HttpResponse> result
-  ) {
+  static Result<DepthSnapshot> parse_depth(InstrumentId instrument, Result<network::HttpResponse> result) {
     auto body = document(std::move(result));
     if (!body) {
       return Result<DepthSnapshot>(std::move(body.error()));
@@ -1793,8 +1677,7 @@ private:
       book.instrument_ = std::move(instrument);
       book.currency_ = Currency::krw();
       book.received_at_ = std::chrono::system_clock::now();
-      book.exchange_time_ =
-        detail::seoul_timestamp(today_in_seoul(), detail::text_field(row, "bid_req_base_tm"));
+      book.exchange_time_ = detail::seoul_timestamp(today_in_seoul(), detail::text_field(row, "bid_req_base_tm"));
       append_level(book.asks_, row, "sel_fpr_bid", "sel_fpr_req");
       append_level(book.bids_, row, "buy_fpr_bid", "buy_fpr_req");
       for (int level = 2; level <= 10; ++level) {
@@ -1811,9 +1694,7 @@ private:
 
   // Appends one book level, skipping the empty ones Kiwoom pads a thin book with.
   static void append_level(
-    std::vector<DepthLevel>& side,
-    const json::object& row,
-    const std::string& price_key,
+    std::vector<DepthLevel>& side, const json::object& row, const std::string& price_key,
     const std::string& quantity_key
   ) {
     const auto price = detail::magnitude(row, price_key);
@@ -1912,31 +1793,24 @@ private:
       deliver(std::move(completion), Result<Prints>(std::move(*invalid)));
       return;
     }
-    ensure_token(
-      TokenHandler(
-        [
-          self = shared_from_this(), instrument = std::move(instrument), count,
-          completion = std::move(completion)
-        ](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->deliver(std::move(completion), Result<Prints>(std::move(*token_error)));
-            return;
-          }
-          auto request = self->make_request(
-            "ka10003", "/api/dostk/stkinfo", self->symbol_body(instrument),
-            network::RateLimitGroup::MARKET_DATA
-          );
-          self->http_->async_request(
-            std::move(request),
-            [self, count, completion = std::move(completion)](
-              Result<network::HttpResponse> result
-            ) mutable {
-              self->deliver(std::move(completion), parse_trades(std::move(result), count));
-            }
-          );
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), instrument = std::move(instrument), count,
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->deliver(std::move(completion), Result<Prints>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        auto request = self->make_request(
+          "ka10003", "/api/dostk/stkinfo", self->symbol_body(instrument), network::RateLimitGroup::MARKET_DATA
+        );
+        self->http_->async_request(
+          std::move(request),
+          [self, count, completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+            self->deliver(std::move(completion), parse_trades(std::move(result), count));
+          }
+        );
+      }
+    ));
   }
 
   // Normalizes `ka10003`'s recent executions, newest first as Kiwoom sends them.
@@ -1944,10 +1818,7 @@ private:
   // Kiwoom reports a print's time as `HHmmss` with no date, so the KST calendar day is supplied
   // from the clock. A print is intraday by construction, so this is the day it happened on — the
   // same reasoning the KIS adapter records for the same field.
-  static Result<std::vector<TradePrint>> parse_trades(
-    Result<network::HttpResponse> result,
-    int count
-  ) {
+  static Result<std::vector<TradePrint>> parse_trades(Result<network::HttpResponse> result, int count) {
     using Prints = std::vector<TradePrint>;
     auto body = document(std::move(result));
     if (!body) {
@@ -1992,44 +1863,33 @@ private:
       deliver(std::move(completion), Result<Instrument>(std::move(*invalid)));
       return;
     }
-    ensure_token(
-      TokenHandler(
-        [
-          self = shared_from_this(), instrument = std::move(instrument),
-          completion = std::move(completion)
-        ](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->deliver(std::move(completion), Result<Instrument>(std::move(*token_error)));
-            return;
-          }
-          // `ka10100` documents `stk_cd` as 종목코드 6자리 and names no tape, unlike every
-          // market-data endpoint. Reference data is not a price, so it has no book to come off.
-          json::object body;
-          body["stk_cd"] = instrument.symbol_;
-          auto request = self->make_request(
-            "ka10100", "/api/dostk/stkinfo", json::serialize(body),
-            network::RateLimitGroup::REFERENCE
-          );
-          self->http_->async_request(
-            std::move(request),
-            [self, instrument = std::move(instrument), completion = std::move(completion)](
-              Result<network::HttpResponse> result
-            ) mutable {
-              self->deliver(
-                std::move(completion), parse_instrument(std::move(instrument), std::move(result))
-              );
-            }
-          );
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), instrument = std::move(instrument),
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->deliver(std::move(completion), Result<Instrument>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        // `ka10100` documents `stk_cd` as 종목코드 6자리 and names no tape, unlike every
+        // market-data endpoint. Reference data is not a price, so it has no book to come off.
+        json::object body;
+        body["stk_cd"] = instrument.symbol_;
+        auto request = self->make_request(
+          "ka10100", "/api/dostk/stkinfo", json::serialize(body), network::RateLimitGroup::REFERENCE
+        );
+        self->http_->async_request(
+          std::move(request),
+          [self, instrument = std::move(instrument),
+            completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+            self->deliver(std::move(completion), parse_instrument(std::move(instrument), std::move(result)));
+          }
+        );
+      }
+    ));
   }
 
   // Normalizes `ka10100` into reference data.
-  static Result<Instrument> parse_instrument(
-    InstrumentId instrument,
-    Result<network::HttpResponse> result
-  ) {
+  static Result<Instrument> parse_instrument(InstrumentId instrument, Result<network::HttpResponse> result) {
     auto body = document(std::move(result));
     if (!body) {
       return Result<Instrument>(std::move(body.error()));
@@ -2077,8 +1937,10 @@ private:
   // phrases it publishes and `UNKNOWN` for any other: supervision is not delisting, and inventing a
   // `DELISTED` from a warning would be worse than saying nothing.
   static InstrumentStatus kiwoom_status(std::string_view audit) {
-    for (const std::string_view listed :
-         {"정상", "관리종목", "거래정지", "단기과열", "투자주의", "투자경고", "투자주의환기종목"}) {
+    for (
+      const std::string_view listed :
+      {"정상", "관리종목", "거래정지", "단기과열", "투자주의", "투자경고", "투자주의환기종목"}
+    ) {
       if (audit == listed) {
         return InstrumentStatus::ACTIVE;
       }
@@ -2119,9 +1981,7 @@ private:
       return;
     }
     auto operation = std::make_shared<BarOperation>(std::move(query), std::move(completion));
-    const auto bound = operation->query_.before_ ?
-      *operation->query_.before_ :
-      std::chrono::system_clock::now();
+    const auto bound = operation->query_.before_ ? *operation->query_.before_ : std::chrono::system_clock::now();
     operation->date_ = seoul_date_of(bound);
     request_bars(operation);
   }
@@ -2144,47 +2004,35 @@ private:
 
   // Issues one page of a bar request.
   void request_bars(std::shared_ptr<BarOperation> operation) {
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->deliver(
-              std::move(operation->completion_), Result<BarSeries>(std::move(*token_error))
-            );
-            return;
-          }
-          json::object body;
-          body["stk_cd"] = self->config_.tape_symbol(operation->query_.instrument_.symbol_);
-          if (operation->query_.interval_ == BarInterval::ONE_MINUTE) {
-            body["tic_scope"] = "1";
-          }
-          // `upd_stkpc_tp`: `1` asks for prices adjusted for corporate actions, `0` for raw ones.
-          // `BarQuery::adjusted_` exists because the brokers disagree about how to spell it, and
-          // Kiwoom's spelling is the opposite of KIS's `FID_ORG_ADJ_PRC`.
-          body["upd_stkpc_tp"] = operation->query_.adjusted_ ? "1" : "0";
-          body["base_dt"] = detail::compact_text(operation->date_);
-          auto request = self->make_request(
-            chart_api_id(operation->query_.interval_), "/api/dostk/chart",
-            json::serialize(body), network::RateLimitGroup::MARKET_DATA, operation->next_key_
-          );
-          self->http_->async_request(
-            std::move(request),
-            [self, operation](Result<network::HttpResponse> result) mutable {
-              net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
-                self->handle_bars_page(operation, std::move(result));
-              });
-            }
-          );
-        }
-      )
-    );
+    ensure_token(TokenHandler([self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
+      if (token_error) {
+        self->deliver(std::move(operation->completion_), Result<BarSeries>(std::move(*token_error)));
+        return;
+      }
+      json::object body;
+      body["stk_cd"] = self->config_.tape_symbol(operation->query_.instrument_.symbol_);
+      if (operation->query_.interval_ == BarInterval::ONE_MINUTE) {
+        body["tic_scope"] = "1";
+      }
+      // `upd_stkpc_tp`: `1` asks for prices adjusted for corporate actions, `0` for raw ones.
+      // `BarQuery::adjusted_` exists because the brokers disagree about how to spell it, and
+      // Kiwoom's spelling is the opposite of KIS's `FID_ORG_ADJ_PRC`.
+      body["upd_stkpc_tp"] = operation->query_.adjusted_ ? "1" : "0";
+      body["base_dt"] = detail::compact_text(operation->date_);
+      auto request = self->make_request(
+        chart_api_id(operation->query_.interval_), "/api/dostk/chart", json::serialize(body),
+        network::RateLimitGroup::MARKET_DATA, operation->next_key_
+      );
+      self->http_->async_request(std::move(request), [self, operation](Result<network::HttpResponse> result) mutable {
+        net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
+          self->handle_bars_page(operation, std::move(result));
+        });
+      });
+    }));
   }
 
   // Accumulates one page of bars and either continues or finishes.
-  void handle_bars_page(
-    const std::shared_ptr<BarOperation>& operation,
-    Result<network::HttpResponse> result
-  ) {
+  void handle_bars_page(const std::shared_ptr<BarOperation>& operation, Result<network::HttpResponse> result) {
     if (!result) {
       deliver(std::move(operation->completion_), Result<BarSeries>(std::move(result.error())));
       return;
@@ -2199,23 +2047,16 @@ private:
     try {
       const auto rows = body.value().if_contains(chart_rows_field(operation->query_.interval_));
       if (!rows || !rows->is_array()) {
-        throw std::runtime_error(
-          std::string("missing array field: ") + chart_rows_field(operation->query_.interval_)
-        );
+        throw std::runtime_error(std::string("missing array field: ") + chart_rows_field(operation->query_.interval_));
       }
       for (const auto& value : rows->as_array()) {
         if (!value.is_object()) {
           throw std::runtime_error("chart row is not an object");
         }
-        operation->descending_.push_back(
-          parse_bar(value.as_object(), operation->query_.interval_)
-        );
+        operation->descending_.push_back(parse_bar(value.as_object(), operation->query_.interval_));
       }
     } catch (const std::exception& exception) {
-      deliver(
-        std::move(operation->completion_),
-        Result<BarSeries>(protocol_error("invalid_bars_response", exception))
-      );
+      deliver(std::move(operation->completion_), Result<BarSeries>(protocol_error("invalid_bars_response", exception)));
       return;
     }
 
@@ -2224,10 +2065,7 @@ private:
         finish_bars(operation);
         return;
       case PageStep::INCOMPLETE:
-        deliver(
-          std::move(operation->completion_),
-          Result<BarSeries>(incomplete_listing("bars", operation->pages_))
-        );
+        deliver(std::move(operation->completion_), Result<BarSeries>(incomplete_listing("bars", operation->pages_)));
         return;
       case PageStep::CONTINUE:
         request_bars(operation);
@@ -2246,17 +2084,12 @@ private:
   //
   // A page that returned nothing also ends the walk. Without that, a broker answering `Y` with an
   // empty array would spend the whole page budget learning nothing.
-  static PageStep advance_bars(
-    BarOperation& operation,
-    std::optional<std::string> next_key,
-    std::size_t before
-  ) {
+  static PageStep advance_bars(BarOperation& operation, std::optional<std::string> next_key, std::size_t before) {
     operation.more_ = next_key.has_value();
     operation.next_key_ = next_key ? std::move(*next_key) : std::string();
     ++operation.pages_;
     const bool grew = operation.descending_.size() > before;
-    const bool satisfied =
-      static_cast<int>(operation.descending_.size()) >= operation.query_.count_;
+    const bool satisfied = static_cast<int>(operation.descending_.size()) >= operation.query_.count_;
     if (satisfied || !operation.more_) {
       return PageStep::FINISH;
     }
@@ -2286,8 +2119,7 @@ private:
         throw std::runtime_error("invalid minute bar timestamp");
       }
       const auto date = detail::compact_date(std::string_view(stamp).substr(0, 8));
-      const auto timestamp =
-        date ? detail::seoul_timestamp(*date, std::string_view(stamp).substr(8)) : std::nullopt;
+      const auto timestamp = date ? detail::seoul_timestamp(*date, std::string_view(stamp).substr(8)) : std::nullopt;
       if (!timestamp) {
         throw std::runtime_error("invalid minute bar timestamp");
       }
@@ -2379,12 +2211,7 @@ private:
   // One function for the three account listings, because the decision is the same for all of them
   // and the consequence of getting it wrong is the same too. It is separate from the handlers so
   // that the decision can be exercised without a socket.
-  static PageStep advance_page(
-    std::string& next_key_slot,
-    int& pages,
-    bool grew,
-    std::optional<std::string> next_key
-  ) {
+  static PageStep advance_page(std::string& next_key_slot, int& pages, bool grew, std::optional<std::string> next_key) {
     ++pages;
     if (!next_key) {
       return PageStep::FINISH;
@@ -2415,9 +2242,8 @@ private:
     error.category_ = ErrorCategory::PROTOCOL;
     error.broker_code_ = "incomplete_listing";
     error.reached_broker_ = true;
-    error.message_ = std::string("Kiwoom still offered another page of ") + std::string(what) +
-      " after " + std::to_string(pages) +
-      " page(s); the listing is incomplete and is refused rather than returned in part";
+    error.message_ = std::string("Kiwoom still offered another page of ") + std::string(what) + " after " +
+      std::to_string(pages) + " page(s); the listing is incomplete and is refused rather than returned in part";
     return error;
   }
 
@@ -2470,8 +2296,9 @@ private:
   // because an assertion is not a measurement.
   static SellableBasis holdings_sellable_basis(KiwoomSellableScope scope) {
     return SellableBasis{
-      scope == KiwoomSellableScope::WHOLE_HOLDING ? SellableBasis::Coverage::WHOLE_HOLDING
-                                                 : SellableBasis::Coverage::UNESTABLISHED,
+      scope == KiwoomSellableScope::WHOLE_HOLDING ?
+        SellableBasis::Coverage::WHOLE_HOLDING :
+        SellableBasis::Coverage::UNESTABLISHED,
       SellableBasis::RestingTreatment::DEDUCT,
       false,
     };
@@ -2502,30 +2329,20 @@ private:
 
   // Issues one page of the holdings inquiry.
   void request_holdings(std::shared_ptr<HoldingsOperation> operation) {
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->deliver(
-              std::move(operation->completion_), Result<HoldingsSnapshot>(std::move(*token_error))
-            );
-            return;
-          }
-          auto request = self->make_request(
-            "kt00018", "/api/dostk/acnt", self->holdings_body(),
-            network::RateLimitGroup::ACCOUNT, operation->next_key_
-          );
-          self->http_->async_request(
-            std::move(request),
-            [self, operation](Result<network::HttpResponse> result) mutable {
-              net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
-                self->handle_holdings_page(operation, std::move(result));
-              });
-            }
-          );
-        }
-      )
-    );
+    ensure_token(TokenHandler([self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
+      if (token_error) {
+        self->deliver(std::move(operation->completion_), Result<HoldingsSnapshot>(std::move(*token_error)));
+        return;
+      }
+      auto request = self->make_request(
+        "kt00018", "/api/dostk/acnt", self->holdings_body(), network::RateLimitGroup::ACCOUNT, operation->next_key_
+      );
+      self->http_->async_request(std::move(request), [self, operation](Result<network::HttpResponse> result) mutable {
+        net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
+          self->handle_holdings_page(operation, std::move(result));
+        });
+      });
+    }));
   }
 
   // Builds `kt00018`'s body: one summed listing, from the configured venue.
@@ -2542,22 +2359,15 @@ private:
   }
 
   // Accumulates one page of holdings and either continues or completes.
-  void handle_holdings_page(
-    const std::shared_ptr<HoldingsOperation>& operation,
-    Result<network::HttpResponse> result
-  ) {
+  void handle_holdings_page(const std::shared_ptr<HoldingsOperation>& operation, Result<network::HttpResponse> result) {
     if (!result) {
-      deliver(
-        std::move(operation->completion_), Result<HoldingsSnapshot>(std::move(result.error()))
-      );
+      deliver(std::move(operation->completion_), Result<HoldingsSnapshot>(std::move(result.error())));
       return;
     }
     const auto next_key = continuation_key(result.value());
     auto body = document(std::move(result));
     if (!body) {
-      deliver(
-        std::move(operation->completion_), Result<HoldingsSnapshot>(std::move(body.error()))
-      );
+      deliver(std::move(operation->completion_), Result<HoldingsSnapshot>(std::move(body.error())));
       return;
     }
     const std::size_t before = operation->snapshot_.positions_.size();
@@ -2581,17 +2391,12 @@ private:
         // describe one book out of two. The *resting* treatment is this library's conservative rule
         // either way and is not a caller's to assert: deducting a resting sell Kiwoom had also
         // deducted refuses a trade, where the opposite sells the same shares twice.
-        operation->snapshot_.sellable_basis_ =
-          holdings_sellable_basis(config_.holdings_sellable_scope_);
-        deliver(
-          std::move(operation->completion_),
-          Result<HoldingsSnapshot>(std::move(operation->snapshot_))
-        );
+        operation->snapshot_.sellable_basis_ = holdings_sellable_basis(config_.holdings_sellable_scope_);
+        deliver(std::move(operation->completion_), Result<HoldingsSnapshot>(std::move(operation->snapshot_)));
         return;
       case PageStep::INCOMPLETE:
         deliver(
-          std::move(operation->completion_),
-          Result<HoldingsSnapshot>(incomplete_listing("holdings", operation->pages_))
+          std::move(operation->completion_), Result<HoldingsSnapshot>(incomplete_listing("holdings", operation->pages_))
         );
         return;
       case PageStep::CONTINUE:
@@ -2616,11 +2421,7 @@ private:
   // what `HoldingsTotals` documents: a paged listing can return part of the positions beside an
   // account-wide summary, so the two need not agree and the broker's own figure is the one to
   // report. Only the first page's summary is taken, because every page repeats it.
-  static void append_holdings_page(
-    HoldingsSnapshot& snapshot,
-    bool& totals_seen,
-    const json::object& page
-  ) {
+  static void append_holdings_page(HoldingsSnapshot& snapshot, bool& totals_seen, const json::object& page) {
     if (!totals_seen) {
       HoldingsTotals totals;
       totals.currency_ = Currency::krw();
@@ -2678,13 +2479,10 @@ private:
     position.last_price_ = detail::magnitude_or_zero(row, "cur_prc");
     position.purchase_value_ = Money{detail::magnitude_or_zero(row, "pur_amt"), Currency::krw()};
     position.market_value_ = Money{detail::magnitude_or_zero(row, "evlt_amt"), Currency::krw()};
-    position.unrealized_profit_loss_ =
-      Money{detail::signed_or_zero(row, "evltv_prft"), Currency::krw()};
+    position.unrealized_profit_loss_ = Money{detail::signed_or_zero(row, "evltv_prft"), Currency::krw()};
     // `prft_rt` is a percentage with a sign; the normalized field is a fraction.
     if (const auto percent = detail::signed_value(row, "prft_rt")) {
-      position.unrealized_return_ = broker_detail::percent_to_ratio(
-        detail::text_field(row, "prft_rt")
-      );
+      position.unrealized_return_ = broker_detail::percent_to_ratio(detail::text_field(row, "prft_rt"));
     }
     return position;
   }
@@ -2700,54 +2498,41 @@ private:
       deliver(std::move(completion), Result<BuyingPower>(std::move(error)));
       return;
     }
-    start_deposit(
-      DepositHandler(
-        [self = shared_from_this(), completion = std::move(completion)](
-          Result<KiwoomDeposit> result
-        ) mutable {
-          if (!result) {
-            self->deliver(std::move(completion), Result<BuyingPower>(std::move(result.error())));
-            return;
-          }
-          BuyingPower power;
-          power.cash_ = Money{result.value().spendable_, result.value().currency_};
-          power.received_at_ = result.value().received_at_;
-          self->deliver(std::move(completion), Result<BuyingPower>(std::move(power)));
+    start_deposit(DepositHandler(
+      [self = shared_from_this(), completion = std::move(completion)](Result<KiwoomDeposit> result) mutable {
+        if (!result) {
+          self->deliver(std::move(completion), Result<BuyingPower>(std::move(result.error())));
+          return;
         }
-      )
-    );
+        BuyingPower power;
+        power.cash_ = Money{result.value().spendable_, result.value().currency_};
+        power.received_at_ = result.value().received_at_;
+        self->deliver(std::move(completion), Result<BuyingPower>(std::move(power)));
+      }
+    ));
   }
 
   // Issues `kt00001` 예수금상세현황요청.
   void start_deposit(DepositHandler completion) {
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), completion = std::move(completion)](
-          std::optional<BrokerError> token_error
-        ) mutable {
-          if (token_error) {
-            self->deliver(std::move(completion), Result<KiwoomDeposit>(std::move(*token_error)));
-            return;
-          }
-          json::object body;
-          // `3:추정조회` includes today's unsettled activity; `2:일반조회` does not. The estimate is
-          // what a figure named "what may be spent" has to mean intraday.
-          body["qry_tp"] = "3";
-          auto request = self->make_request(
-            "kt00001", "/api/dostk/acnt", json::serialize(body),
-            network::RateLimitGroup::ACCOUNT
-          );
-          self->http_->async_request(
-            std::move(request),
-            [self, completion = std::move(completion)](
-              Result<network::HttpResponse> result
-            ) mutable {
-              self->deliver(std::move(completion), parse_deposit(std::move(result)));
-            }
-          );
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->deliver(std::move(completion), Result<KiwoomDeposit>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        json::object body;
+        // `3:추정조회` includes today's unsettled activity; `2:일반조회` does not. The estimate is
+        // what a figure named "what may be spent" has to mean intraday.
+        body["qry_tp"] = "3";
+        auto request =
+          self->make_request("kt00001", "/api/dostk/acnt", json::serialize(body), network::RateLimitGroup::ACCOUNT);
+        self->http_->async_request(
+          std::move(request), [self, completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+            self->deliver(std::move(completion), parse_deposit(std::move(result)));
+          }
+        );
+      }
+    ));
   }
 
   // Normalizes `kt00001` into Kiwoom's own deposit detail.
@@ -2779,52 +2564,36 @@ private:
 
   // Issues `kt00010` 주문인출가능금액요청 for one instrument.
   void start_orderable_amount(
-    InstrumentId instrument,
-    OrderSide side,
-    std::optional<Decimal64> price,
-    OrderableHandler completion
+    InstrumentId instrument, OrderSide side, std::optional<Decimal64> price, OrderableHandler completion
   ) {
     if (auto invalid = validate_instrument(instrument)) {
       deliver(std::move(completion), Result<KiwoomOrderableAmount>(std::move(*invalid)));
       return;
     }
-    ensure_token(
-      TokenHandler(
-        [
-          self = shared_from_this(), instrument = std::move(instrument), side,
-          price = std::move(price), completion = std::move(completion)
-        ](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->deliver(
-              std::move(completion), Result<KiwoomOrderableAmount>(std::move(*token_error))
-            );
-            return;
-          }
-          json::object body;
-          body["stk_cd"] = instrument.symbol_;
-          body["trde_tp"] = side == OrderSide::SELL ? "1" : "2";
-          body["uv"] = price ? price->str() : "";
-          auto request = self->make_request(
-            "kt00010", "/api/dostk/acnt", json::serialize(body),
-            network::RateLimitGroup::ACCOUNT
-          );
-          self->http_->async_request(
-            std::move(request),
-            [self, completion = std::move(completion)](
-              Result<network::HttpResponse> result
-            ) mutable {
-              self->deliver(std::move(completion), parse_orderable_amount(std::move(result)));
-            }
-          );
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), instrument = std::move(instrument), side, price = std::move(price),
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->deliver(std::move(completion), Result<KiwoomOrderableAmount>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        json::object body;
+        body["stk_cd"] = instrument.symbol_;
+        body["trde_tp"] = side == OrderSide::SELL ? "1" : "2";
+        body["uv"] = price ? price->str() : "";
+        auto request =
+          self->make_request("kt00010", "/api/dostk/acnt", json::serialize(body), network::RateLimitGroup::ACCOUNT);
+        self->http_->async_request(
+          std::move(request), [self, completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+            self->deliver(std::move(completion), parse_orderable_amount(std::move(result)));
+          }
+        );
+      }
+    ));
   }
 
   // Normalizes `kt00010` into the per-margin-tier amounts and quantities.
-  static Result<KiwoomOrderableAmount> parse_orderable_amount(
-    Result<network::HttpResponse> result
-  ) {
+  static Result<KiwoomOrderableAmount> parse_orderable_amount(Result<network::HttpResponse> result) {
     auto body = document(std::move(result));
     if (!body) {
       return Result<KiwoomOrderableAmount>(std::move(body.error()));
@@ -2840,8 +2609,7 @@ private:
       orderable.orderable_cash_ = detail::signed_or_zero(row, "ord_alowa");
       orderable.withdrawable_ = detail::signed_or_zero(row, "wthd_alowa");
       orderable.settled_deposit_ = detail::signed_or_zero(row, "d2entra");
-      orderable.margin_reduction_applies_ =
-        detail::text_field(row, "profa_rdex_aplc_tp") == "1";
+      orderable.margin_reduction_applies_ = detail::text_field(row, "profa_rdex_aplc_tp") == "1";
       for (const int percent : {20, 30, 40, 50, 60, 100}) {
         KiwoomMarginTier tier;
         tier.margin_percent_ = percent;
@@ -2858,38 +2626,27 @@ private:
       orderable.tiers_.push_back(reduced);
       return Result<KiwoomOrderableAmount>(std::move(orderable));
     } catch (const std::exception& exception) {
-      return Result<KiwoomOrderableAmount>(
-        protocol_error("invalid_orderable_amount_response", exception)
-      );
+      return Result<KiwoomOrderableAmount>(protocol_error("invalid_orderable_amount_response", exception));
     }
   }
 
   // Issues `ka00001` 계좌번호조회, which answers with the one account the credential drives.
   void start_accounts(AccountsHandler completion) {
     using Accounts = std::vector<KiwoomAccountInfo>;
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), completion = std::move(completion)](
-          std::optional<BrokerError> token_error
-        ) mutable {
-          if (token_error) {
-            self->deliver(std::move(completion), Result<Accounts>(std::move(*token_error)));
-            return;
-          }
-          auto request = self->make_request(
-            "ka00001", "/api/dostk/acnt", "{}", network::RateLimitGroup::ACCOUNT
-          );
-          self->http_->async_request(
-            std::move(request),
-            [self, completion = std::move(completion)](
-              Result<network::HttpResponse> result
-            ) mutable {
-              self->deliver(std::move(completion), parse_accounts(std::move(result)));
-            }
-          );
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->deliver(std::move(completion), Result<Accounts>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        auto request = self->make_request("ka00001", "/api/dostk/acnt", "{}", network::RateLimitGroup::ACCOUNT);
+        self->http_->async_request(
+          std::move(request), [self, completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+            self->deliver(std::move(completion), parse_accounts(std::move(result)));
+          }
+        );
+      }
+    ));
   }
 
   // Normalizes `ka00001` into a listing of one.
@@ -2897,9 +2654,7 @@ private:
   // A listing rather than a single value, because that is the port's shape — and the shape is
   // honest here: Kiwoom answers with the account the credential drives and there is no other to
   // choose between.
-  static Result<std::vector<KiwoomAccountInfo>> parse_accounts(
-    Result<network::HttpResponse> result
-  ) {
+  static Result<std::vector<KiwoomAccountInfo>> parse_accounts(Result<network::HttpResponse> result) {
     using Accounts = std::vector<KiwoomAccountInfo>;
     auto body = document(std::move(result));
     if (!body) {
@@ -2922,10 +2677,7 @@ private:
   //
   // `allow_zero` is Kiwoom's all-remaining value on an amendment, which it documents as the
   // quantity `0`. A *placement* of zero shares is still refused.
-  static std::optional<BrokerError> validate_quantity(
-    const Decimal64& quantity,
-    bool allow_zero = false
-  ) {
+  static std::optional<BrokerError> validate_quantity(const Decimal64& quantity, bool allow_zero = false) {
     const bool positive = quantity.coefficient() > 0;
     if ((positive || (allow_zero && quantity.coefficient() == 0)) && quantity.scale() == 0) {
       return std::nullopt;
@@ -2945,10 +2697,7 @@ private:
   // `carries_caller_price`, not `== LIMIT`: 조건부지정가 is a limit instruction until the close, and
   // treating it as unpriced is how KIS's adapter once transmitted `ORD_UNPR="0"` — an order at zero
   // rather than at the stated limit.
-  static std::optional<BrokerError> validate_price(
-    OrderType type,
-    const std::optional<Decimal64>& price
-  ) {
+  static std::optional<BrokerError> validate_price(OrderType type, const std::optional<Decimal64>& price) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
     error.reached_broker_ = false;
@@ -2999,13 +2748,13 @@ private:
   }
 
   // The identity venue this adapter reports every Korean instrument at.
-  static constexpr Venue instrument_venue() { return Venue::COMBINED; }
+  static constexpr Venue instrument_venue() {
+    return Venue::COMBINED;
+  }
 
   // Returns an error when an order cannot be represented as a Kiwoom instruction.
   static std::optional<BrokerError> validate_order(
-    KiwoomPositionScope scope,
-    const OrderRequest& order,
-    std::string& division
+    KiwoomPositionScope scope, const OrderRequest& order, std::string& division
   ) {
     if (auto error = unsupported_client_order_id(order)) {
       return error;
@@ -3054,9 +2803,7 @@ private:
   // Its own function for the reason the KIS adapter gives: the decision a test needs to exercise is
   // the one the submission path takes, not one a test re-derives from the same inputs.
   static std::optional<BrokerError> validate_amendment(
-    KiwoomPositionScope scope,
-    const KiwoomAmendment& amendment,
-    bool cancel
+    KiwoomPositionScope scope, const KiwoomAmendment& amendment, bool cancel
   ) {
     if (auto error = validate_quantity(amendment.quantity_, true)) {
       return error;
@@ -3120,9 +2867,7 @@ private:
 
   // Builds `kt10000`/`kt10001`'s body. The side selects the endpoint, not a field.
   static network::HttpRequest place_order_request(
-    const KiwoomClient& client,
-    const OrderRequest& order,
-    std::string_view division
+    const KiwoomClient& client, const OrderRequest& order, std::string_view division
   ) {
     json::object body;
     body["dmst_stex_tp"] = exchange_code(order.venue_);
@@ -3136,18 +2881,14 @@ private:
     // body carries the `""` it always has.
     body["cond_uv"] = order.trigger_price_ ? order.trigger_price_->str() : "";
     return client.make_request(
-      order.side_ == OrderSide::BUY ? "kt10000" : "kt10001",
-      "/api/dostk/ordr",
-      json::serialize(body),
+      order.side_ == OrderSide::BUY ? "kt10000" : "kt10001", "/api/dostk/ordr", json::serialize(body),
       network::RateLimitGroup::TRADING
     );
   }
 
   // Builds `kt10002`'s or `kt10003`'s body.
   static network::HttpRequest amend_order_request(
-    const KiwoomClient& client,
-    const KiwoomAmendment& amendment,
-    bool cancel
+    const KiwoomClient& client, const KiwoomAmendment& amendment, bool cancel
   ) {
     json::object body;
     body["dmst_stex_tp"] = exchange_code(amendment.venue_);
@@ -3158,14 +2899,10 @@ private:
     } else {
       body["mdfy_qty"] = amendment.quantity_.str();
       body["mdfy_uv"] = amendment.price_ ? amendment.price_->str() : "";
-      body["mdfy_cond_uv"] =
-        amendment.condition_price_ ? amendment.condition_price_->str() : "";
+      body["mdfy_cond_uv"] = amendment.condition_price_ ? amendment.condition_price_->str() : "";
     }
     return client.make_request(
-      cancel ? "kt10003" : "kt10002",
-      "/api/dostk/ordr",
-      json::serialize(body),
-      network::RateLimitGroup::TRADING
+      cancel ? "kt10003" : "kt10002", "/api/dostk/ordr", json::serialize(body), network::RateLimitGroup::TRADING
     );
   }
 
@@ -3176,34 +2913,26 @@ private:
       deliver(std::move(completion), Result<KiwoomOrderAck>(std::move(*invalid)));
       return;
     }
-    ensure_token(
-      TokenHandler(
-        [
-          self = shared_from_this(), order = std::move(order), division = std::move(division),
-          completion = std::move(completion)
-        ](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->deliver(
-              std::move(completion), Result<KiwoomOrderAck>(std::move(*token_error))
-            );
-            return;
-          }
-          auto request = place_order_request(*self, order, division);
-          const std::string symbol = order.instrument_.symbol_;
-          self->http_->async_request(
-            std::move(request),
-            [self, symbol, demo = self->config_.is_demo_, completion = std::move(completion)](
-              Result<network::HttpResponse> result
-            ) mutable {
-              self->deliver(
-                std::move(completion),
-                parse_order_ack(symbol, std::move(result), KiwoomOrderOperation::PLACE, demo)
-              );
-            }
-          );
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), order = std::move(order), division = std::move(division),
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->deliver(std::move(completion), Result<KiwoomOrderAck>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        auto request = place_order_request(*self, order, division);
+        const std::string symbol = order.instrument_.symbol_;
+        self->http_->async_request(
+          std::move(request),
+          [self, symbol, demo = self->config_.is_demo_,
+            completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+            self->deliver(
+              std::move(completion), parse_order_ack(symbol, std::move(result), KiwoomOrderOperation::PLACE, demo)
+            );
+          }
+        );
+      }
+    ));
   }
 
   // Validates and submits a modification or a cancellation.
@@ -3212,34 +2941,25 @@ private:
       deliver(std::move(completion), Result<KiwoomOrderAck>(std::move(*invalid)));
       return;
     }
-    ensure_token(
-      TokenHandler(
-        [
-          self = shared_from_this(), amendment = std::move(amendment), cancel,
-          completion = std::move(completion)
-        ](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->deliver(
-              std::move(completion), Result<KiwoomOrderAck>(std::move(*token_error))
-            );
-            return;
-          }
-          auto request = amend_order_request(*self, amendment, cancel);
-          const std::string symbol = amendment.order_.symbol_;
-          const auto operation = cancel ? KiwoomOrderOperation::CANCEL : KiwoomOrderOperation::AMEND;
-          self->http_->async_request(
-            std::move(request),
-            [self, symbol, operation, demo = self->config_.is_demo_, completion = std::move(completion)](
-              Result<network::HttpResponse> result
-            ) mutable {
-              self->deliver(
-                std::move(completion), parse_order_ack(symbol, std::move(result), operation, demo)
-              );
-            }
-          );
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), amendment = std::move(amendment), cancel,
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->deliver(std::move(completion), Result<KiwoomOrderAck>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        auto request = amend_order_request(*self, amendment, cancel);
+        const std::string symbol = amendment.order_.symbol_;
+        const auto operation = cancel ? KiwoomOrderOperation::CANCEL : KiwoomOrderOperation::AMEND;
+        self->http_->async_request(
+          std::move(request),
+          [self, symbol, operation, demo = self->config_.is_demo_,
+            completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+            self->deliver(std::move(completion), parse_order_ack(symbol, std::move(result), operation, demo));
+          }
+        );
+      }
+    ));
   }
 
   // Normalizes an order response into an acknowledgement and a reference.
@@ -3249,10 +2969,8 @@ private:
   // usable for a later amendment. `operation` and `demo` describe the request this reply answers;
   // left out, no refusal is recognized.
   static Result<KiwoomOrderAck> parse_order_ack(
-    const std::string& symbol,
-    Result<network::HttpResponse> result,
-    KiwoomOrderOperation operation = KiwoomOrderOperation::UNCLASSIFIED,
-    bool demo = false
+    const std::string& symbol, Result<network::HttpResponse> result,
+    KiwoomOrderOperation operation = KiwoomOrderOperation::UNCLASSIFIED, bool demo = false
   ) {
     auto body = document(std::move(result), operation, demo);
     if (!body) {
@@ -3298,58 +3016,42 @@ private:
 
   // Issues one page of `ka10075` 미체결요청.
   void request_open_orders(std::shared_ptr<OpenOrderOperation> operation) {
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->deliver(
-              std::move(operation->completion_),
-              Result<KiwoomOpenOrderPage>(std::move(*token_error))
-            );
-            return;
-          }
-          json::object body;
-          body["all_stk_tp"] = "0";
-          body["trde_tp"] = "0";
-          body["stk_cd"] = "";
-          // `0 : 통합` -- unlike the balance inquiry, the unfilled listing *does* publish an
-          // all-venue value, so a working order resting at either venue is listed. Nothing is
-          // scoped here and nothing needs to be.
-          body["stex_tp"] = "0";
-          auto request = self->make_request(
-            "ka10075", "/api/dostk/acnt", json::serialize(body),
-            network::RateLimitGroup::ACCOUNT, operation->next_key_
-          );
-          self->http_->async_request(
-            std::move(request),
-            [self, operation](Result<network::HttpResponse> result) mutable {
-              net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
-                self->handle_open_orders_page(operation, std::move(result));
-              });
-            }
-          );
-        }
-      )
-    );
+    ensure_token(TokenHandler([self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
+      if (token_error) {
+        self->deliver(std::move(operation->completion_), Result<KiwoomOpenOrderPage>(std::move(*token_error)));
+        return;
+      }
+      json::object body;
+      body["all_stk_tp"] = "0";
+      body["trde_tp"] = "0";
+      body["stk_cd"] = "";
+      // `0 : 통합` -- unlike the balance inquiry, the unfilled listing *does* publish an
+      // all-venue value, so a working order resting at either venue is listed. Nothing is
+      // scoped here and nothing needs to be.
+      body["stex_tp"] = "0";
+      auto request = self->make_request(
+        "ka10075", "/api/dostk/acnt", json::serialize(body), network::RateLimitGroup::ACCOUNT, operation->next_key_
+      );
+      self->http_->async_request(std::move(request), [self, operation](Result<network::HttpResponse> result) mutable {
+        net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
+          self->handle_open_orders_page(operation, std::move(result));
+        });
+      });
+    }));
   }
 
   // Accumulates one page of amendable orders and either continues or completes.
   void handle_open_orders_page(
-    const std::shared_ptr<OpenOrderOperation>& operation,
-    Result<network::HttpResponse> result
+    const std::shared_ptr<OpenOrderOperation>& operation, Result<network::HttpResponse> result
   ) {
     if (!result) {
-      deliver(
-        std::move(operation->completion_), Result<KiwoomOpenOrderPage>(std::move(result.error()))
-      );
+      deliver(std::move(operation->completion_), Result<KiwoomOpenOrderPage>(std::move(result.error())));
       return;
     }
     const auto next_key = continuation_key(result.value());
     auto body = document(std::move(result));
     if (!body) {
-      deliver(
-        std::move(operation->completion_), Result<KiwoomOpenOrderPage>(std::move(body.error()))
-      );
+      deliver(std::move(operation->completion_), Result<KiwoomOpenOrderPage>(std::move(body.error())));
       return;
     }
     const std::size_t before = operation->page_.orders_.size();
@@ -3377,10 +3079,7 @@ private:
     switch (advance_page(operation->next_key_, operation->pages_, grew, std::move(next_key))) {
       case PageStep::FINISH:
         operation->page_.received_at_ = std::chrono::system_clock::now();
-        deliver(
-          std::move(operation->completion_),
-          Result<KiwoomOpenOrderPage>(std::move(operation->page_))
-        );
+        deliver(std::move(operation->completion_), Result<KiwoomOpenOrderPage>(std::move(operation->page_)));
         return;
       case PageStep::INCOMPLETE:
         deliver(
@@ -3408,8 +3107,7 @@ private:
       return *side;
     }
     throw std::runtime_error(
-      "order row states a side this adapter cannot read: '" + label +
-      "'; it names neither 매수 nor 매도"
+      "order row states a side this adapter cannot read: '" + label + "'; it names neither 매수 nor 매도"
     );
   }
 
@@ -3433,9 +3131,7 @@ private:
     order.side_ = read_side(detail::text_field(row, "io_tp_nm"));
     apply_shape(open_order.shape_name_, order);
     order.status_ = normalized_order_status(detail::text_field(row, "ord_stt"));
-    order.venue_ = listed_venue(
-      detail::text_field(row, "stex_tp"), detail::text_field(row, "sor_yn")
-    );
+    order.venue_ = listed_venue(detail::text_field(row, "stex_tp"), detail::text_field(row, "sor_yn"));
     order.quantity_ = detail::required_magnitude(row, "ord_qty");
     order.price_ = positive(detail::magnitude(row, "ord_pric"));
     order.trigger_price_ = reported_trigger(row, "stop_pric");
@@ -3486,20 +3182,16 @@ private:
   // The two statuses tested are the two `normalized_order_status` can produce that mean the order
   // is over, named here rather than asked of `strategy::order_is_open`: an adapter must not depend
   // on the strategy layer, and `core/` is where the two layers may meet.
-  static void resolve_open_status(
-    const std::optional<Decimal64>& amendable, OrderSnapshot& order
-  ) {
-    const bool reported_over =
-      order.status_ == OrderStatus::FILLED || order.status_ == OrderStatus::CANCELED;
+  static void resolve_open_status(const std::optional<Decimal64>& amendable, OrderSnapshot& order) {
+    const bool reported_over = order.status_ == OrderStatus::FILLED || order.status_ == OrderStatus::CANCELED;
     if (!reported_over) {
       return;
     }
     if (!amendable || amendable->coefficient() <= 0) {
       return;
     }
-    order.status_ = order.execution_.filled_quantity_.coefficient() > 0 ?
-      OrderStatus::PARTIAL_FILLED :
-      OrderStatus::PENDING;
+    order.status_ =
+      order.execution_.filled_quantity_.coefficient() > 0 ? OrderStatus::PARTIAL_FILLED : OrderStatus::PENDING;
   }
 
   // Writes the three normalized shape facts from Kiwoom's Korean label.
@@ -3564,47 +3256,36 @@ private:
 
   // Issues one page of `kt00007` 계좌별주문체결내역상세요청.
   void request_order_history(std::shared_ptr<HistoryOperation> operation) {
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->deliver(
-              std::move(operation->completion_), Result<OrderPage>(std::move(*token_error))
-            );
-            return;
-          }
-          json::object body;
-          body["ord_dt"] = detail::compact_text(operation->query_.date_);
-          // `1:주문순` lists in order-number order, which is the order the rows were created in.
-          body["qry_tp"] = "1";
-          body["stk_bond_tp"] = "1";
-          body["sell_tp"] = "0";
-          body["stk_cd"] = operation->query_.symbol_;
-          body["fr_ord_no"] = "";
-          // `%` is 전체: every venue. Unlike the balance inquiry, this one publishes an all-venue
-          // value, so a history listing is never scoped to one book.
-          body["dmst_stex_tp"] = "%";
-          auto request = self->make_request(
-            "kt00007", "/api/dostk/acnt", json::serialize(body),
-            network::RateLimitGroup::ACCOUNT, operation->next_key_
-          );
-          self->http_->async_request(
-            std::move(request),
-            [self, operation](Result<network::HttpResponse> result) mutable {
-              net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
-                self->handle_order_history_page(operation, std::move(result));
-              });
-            }
-          );
-        }
-      )
-    );
+    ensure_token(TokenHandler([self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
+      if (token_error) {
+        self->deliver(std::move(operation->completion_), Result<OrderPage>(std::move(*token_error)));
+        return;
+      }
+      json::object body;
+      body["ord_dt"] = detail::compact_text(operation->query_.date_);
+      // `1:주문순` lists in order-number order, which is the order the rows were created in.
+      body["qry_tp"] = "1";
+      body["stk_bond_tp"] = "1";
+      body["sell_tp"] = "0";
+      body["stk_cd"] = operation->query_.symbol_;
+      body["fr_ord_no"] = "";
+      // `%` is 전체: every venue. Unlike the balance inquiry, this one publishes an all-venue
+      // value, so a history listing is never scoped to one book.
+      body["dmst_stex_tp"] = "%";
+      auto request = self->make_request(
+        "kt00007", "/api/dostk/acnt", json::serialize(body), network::RateLimitGroup::ACCOUNT, operation->next_key_
+      );
+      self->http_->async_request(std::move(request), [self, operation](Result<network::HttpResponse> result) mutable {
+        net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
+          self->handle_order_history_page(operation, std::move(result));
+        });
+      });
+    }));
   }
 
   // Accumulates one page of order history and either continues or completes.
   void handle_order_history_page(
-    const std::shared_ptr<HistoryOperation>& operation,
-    Result<network::HttpResponse> result
+    const std::shared_ptr<HistoryOperation>& operation, Result<network::HttpResponse> result
   ) {
     if (!result) {
       deliver(std::move(operation->completion_), Result<OrderPage>(std::move(result.error())));
@@ -3653,8 +3334,7 @@ private:
         return;
       case PageStep::INCOMPLETE:
         deliver(
-          std::move(operation->completion_),
-          Result<OrderPage>(incomplete_listing("order history", operation->pages_))
+          std::move(operation->completion_), Result<OrderPage>(incomplete_listing("order history", operation->pages_))
         );
         return;
       case PageStep::CONTINUE:
@@ -3673,8 +3353,8 @@ private:
     const auto amendment = detail::text_field(row, "mdfy_cncl");
     link.plain_ = amendment.empty() || amendment == "일반";
     link.remaining_ = detail::magnitude(row, "ord_remnq");
-    const bool cancellation = amendment == "취소확인" ||
-      (demo && amendment == "취소" && detail::text_field(row, "acpt_tp") == "주문완료");
+    const bool cancellation =
+      amendment == "취소확인" || (demo && amendment == "취소" && detail::text_field(row, "acpt_tp") == "주문완료");
     if (cancellation) {
       const auto original = detail::text_field(row, "ori_ord");
       if (original.find_first_not_of('0') != std::string::npos) {
@@ -3710,10 +3390,11 @@ private:
       }
       auto& original = orders[*found];
       const auto& link = links[*found];
-      if (!link.plain_ || !link.remaining_ || link.remaining_->coefficient() != 0 ||
-          original.instrument_.symbol_ != orders[cancel].instrument_.symbol_ ||
-          original.side_ != orders[cancel].side_ ||
-          !decimal_less(original.execution_.filled_quantity_, original.quantity_)) {
+      if (
+        !link.plain_ || !link.remaining_ || link.remaining_->coefficient() != 0 ||
+        original.instrument_.symbol_ != orders[cancel].instrument_.symbol_ || original.side_ != orders[cancel].side_ ||
+        !decimal_less(original.execution_.filled_quantity_, original.quantity_)
+      ) {
         continue;
       }
       original.status_ = OrderStatus::CANCELED;
@@ -3795,14 +3476,8 @@ public:
    * @param config The credentials and environment.
    * @param options HTTP options.
    */
-  KiwoomBlockingClient(
-    ssl::context& context,
-    KiwoomConfig config,
-    network::HttpClientOptions options = {}
-  )
-  : client_(
-      std::make_shared<KiwoomClient>(ioc_.get_executor(), context, std::move(config), options)
-    ) {}
+  KiwoomBlockingClient(ssl::context& context, KiwoomConfig config, network::HttpClientOptions options = {})
+  : client_(std::make_shared<KiwoomClient>(ioc_.get_executor(), context, std::move(config), options)) {}
 
   /**
    * @brief Returns the current normalized quote or a structured error.
@@ -3811,7 +3486,9 @@ public:
    */
   Result<QuoteSnapshot> quote(InstrumentId instrument) {
     return run<QuoteSnapshot>(
-      [&](auto&& sink) { client_->async_quote(std::move(instrument), std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_quote(std::move(instrument), std::move(sink));
+      },
       "quote"
     );
   }
@@ -3823,7 +3500,9 @@ public:
    */
   Result<PriceLimits> price_limits(InstrumentId instrument) {
     return run<PriceLimits>(
-      [&](auto&& sink) { client_->async_price_limits(std::move(instrument), std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_price_limits(std::move(instrument), std::move(sink));
+      },
       "price limits"
     );
   }
@@ -3835,7 +3514,9 @@ public:
    */
   Result<DepthSnapshot> depth(InstrumentId instrument) {
     return run<DepthSnapshot>(
-      [&](auto&& sink) { client_->async_depth(std::move(instrument), std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_depth(std::move(instrument), std::move(sink));
+      },
       "depth"
     );
   }
@@ -3848,7 +3529,9 @@ public:
    */
   Result<std::vector<TradePrint>> trades(InstrumentId instrument, int count) {
     return run<std::vector<TradePrint>>(
-      [&](auto&& sink) { client_->async_trades(std::move(instrument), count, std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_trades(std::move(instrument), count, std::move(sink));
+      },
       "trades"
     );
   }
@@ -3860,7 +3543,9 @@ public:
    */
   Result<Instrument> instrument(InstrumentId subject) {
     return run<Instrument>(
-      [&](auto&& sink) { client_->async_instrument(std::move(subject), std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_instrument(std::move(subject), std::move(sink));
+      },
       "instrument"
     );
   }
@@ -3872,7 +3557,9 @@ public:
    */
   Result<BarSeries> bars(BarQuery query) {
     return run<BarSeries>(
-      [&](auto&& sink) { client_->async_bars(std::move(query), std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_bars(std::move(query), std::move(sink));
+      },
       "bars"
     );
   }
@@ -3881,7 +3568,9 @@ public:
    * @brief Returns the configuration; see `KiwoomClient::config`.
    * @return The configuration.
    */
-  const KiwoomConfig& config() const noexcept { return client_->config(); }
+  const KiwoomConfig& config() const noexcept {
+    return client_->config();
+  }
 
   /**
    * @brief Returns the holdings for `KiwoomConfig::holdings_venue_`; see `KiwoomClient::async_holdings`.
@@ -3890,7 +3579,9 @@ public:
    */
   Result<HoldingsSnapshot> holdings(KiwoomAccount account) {
     return run<HoldingsSnapshot>(
-      [&](auto&& sink) { client_->async_holdings(account, std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_holdings(account, std::move(sink));
+      },
       "holdings"
     );
   }
@@ -3903,7 +3594,9 @@ public:
    */
   Result<BuyingPower> buying_power(Currency currency, KiwoomAccount account) {
     return run<BuyingPower>(
-      [&](auto&& sink) { client_->async_buying_power(currency, account, std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_buying_power(currency, account, std::move(sink));
+      },
       "buying power"
     );
   }
@@ -3914,7 +3607,9 @@ public:
    */
   Result<KiwoomDeposit> deposit() {
     return run<KiwoomDeposit>(
-      [&](auto&& sink) { client_->async_deposit(std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_deposit(std::move(sink));
+      },
       "deposit"
     );
   }
@@ -3927,15 +3622,11 @@ public:
    * @return The result, or an error.
    */
   Result<KiwoomOrderableAmount> orderable_amount(
-    InstrumentId instrument,
-    OrderSide side,
-    std::optional<Decimal64> price = std::nullopt
+    InstrumentId instrument, OrderSide side, std::optional<Decimal64> price = std::nullopt
   ) {
     return run<KiwoomOrderableAmount>(
       [&](auto&& sink) {
-        client_->async_orderable_amount(
-          std::move(instrument), side, std::move(price), std::move(sink)
-        );
+        client_->async_orderable_amount(std::move(instrument), side, std::move(price), std::move(sink));
       },
       "orderable amount"
     );
@@ -3947,7 +3638,9 @@ public:
    */
   Result<std::vector<KiwoomAccountInfo>> accounts() {
     return run<std::vector<KiwoomAccountInfo>>(
-      [&](auto&& sink) { client_->async_accounts(std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_accounts(std::move(sink));
+      },
       "accounts"
     );
   }
@@ -4007,7 +3700,9 @@ public:
    */
   Result<KiwoomOpenOrderPage> open_orders(KiwoomAccount account) {
     return run<KiwoomOpenOrderPage>(
-      [&](auto&& sink) { client_->async_open_orders(account, std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_open_orders(account, std::move(sink));
+      },
       "open orders"
     );
   }
@@ -4028,7 +3723,9 @@ public:
   }
 
   /** @brief Closes the client for good; see `KiwoomClient::close`. */
-  void close() { client_->close(); }
+  void close() {
+    client_->close();
+  }
 
   /**
    * @brief Returns the rate limiter's statistics.
@@ -4038,7 +3735,9 @@ public:
    *
    * @return The statistics, or null if the client has no rate-limit budget.
    */
-  const network::RateLimitStats* rate_limit_stats() const { return client_->rate_limit_stats(); }
+  const network::RateLimitStats* rate_limit_stats() const {
+    return client_->rate_limit_stats();
+  }
 
 private:
   // Drives one asynchronous operation to completion on the private loop.
@@ -4046,7 +3745,9 @@ private:
   Result<T> run(Start start, std::string_view operation) {
     std::optional<Result<T>> result;
     ioc_.restart();
-    start([&result](Result<T> value) { result.emplace(std::move(value)); });
+    start([&result](Result<T> value) {
+      result.emplace(std::move(value));
+    });
     ioc_.run();
     if (!result) {
       BrokerError error;

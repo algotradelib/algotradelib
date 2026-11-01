@@ -1,11 +1,11 @@
 #pragma once
 
-#include "./config.hpp"
 #include "../common.hpp"
+#include "./config.hpp"
 
 #include <boost/asio/any_completion_handler.hpp>
-#include <boost/asio/async_result.hpp>
 #include <boost/asio/associated_executor.hpp>
+#include <boost/asio/async_result.hpp>
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/strand.hpp>
@@ -63,9 +63,7 @@ struct KisAccount {
     if (!ifs.is_open()) {
       throw std::runtime_error("Cannot open KIS credential file: " + filename);
     }
-    const std::string content(
-      std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>{}
-    );
+    const std::string content(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>{});
     boost::system::error_code ec;
     const auto document = boost::json::parse(content, ec);
     if (ec || !document.is_object()) {
@@ -78,8 +76,8 @@ struct KisAccount {
       }
       if (!value->is_string() || !broker_detail::decimal_digits(value->get_string(), digits)) {
         throw std::runtime_error(
-          "KIS credential file " + filename + " has a " + name + " that is not " +
-          std::to_string(digits) + " digits in a string"
+          "KIS credential file " + filename + " has a " + name + " that is not " + std::to_string(digits) +
+          " digits in a string"
         );
       }
       return std::string(value->get_string());
@@ -199,9 +197,8 @@ struct KisHistoryRange {
  */
 inline Date today_in_seoul() {
   const auto seoul = std::chrono::system_clock::now() + std::chrono::hours(9);
-  const std::time_t raw = std::chrono::system_clock::to_time_t(
-    std::chrono::time_point_cast<std::chrono::seconds>(seoul)
-  );
+  const std::time_t raw =
+    std::chrono::system_clock::to_time_t(std::chrono::time_point_cast<std::chrono::seconds>(seoul));
   std::tm parts{};
 #ifdef _WIN32
   gmtime_s(&parts, &raw);
@@ -370,19 +367,13 @@ public:
    *   An empty `fresh_connection_for_orders_` is taken as on for a demo configuration and off for a real one.
    */
   KisClient(
-    net::any_io_executor executor,
-    ssl::context& context,
-    KisConfig config,
-    network::HttpClientOptions options = {}
+    net::any_io_executor executor, ssl::context& context, KisConfig config, network::HttpClientOptions options = {}
   )
-  : strand_(net::make_strand(std::move(executor))), config_(std::move(config)),
+  : strand_(net::make_strand(std::move(executor))),
+    config_(std::move(config)),
     http_(
       std::make_shared<network::AsyncHttpClient>(
-        strand_,
-        context,
-        config_.rest_host(),
-        config_.rest_port(),
-        transport_options(std::move(options), config_)
+        strand_, context, config_.rest_host(), config_.rest_port(), transport_options(std::move(options), config_)
       )
     ) {}
 
@@ -406,12 +397,9 @@ public:
     return net::async_initiate<CompletionToken, void(Result<BarSeries>)>(
       [self = shared_from_this(), query = std::move(query)](auto&& handler) mutable {
         auto completion = BarsHandler(std::forward<decltype(handler)>(handler));
-        net::post(
-          self->strand_,
-          [self, query = std::move(query), completion = std::move(completion)]() mutable {
-            self->start_bars(std::move(query), std::move(completion));
-          }
-        );
+        net::post(self->strand_, [self, query = std::move(query), completion = std::move(completion)]() mutable {
+          self->start_bars(std::move(query), std::move(completion));
+        });
       },
       token
     );
@@ -430,8 +418,7 @@ public:
       [self = shared_from_this(), instrument = std::move(instrument)](auto&& handler) mutable {
         auto completion = InstrumentHandler(std::forward<decltype(handler)>(handler));
         net::post(
-          self->strand_,
-          [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
+          self->strand_, [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
             self->start_instrument(std::move(instrument), std::move(completion));
           }
         );
@@ -457,12 +444,9 @@ public:
     return net::async_initiate<CompletionToken, void(Result<TradingCalendar>)>(
       [self = shared_from_this(), from, refresh](auto&& handler) mutable {
         auto completion = CalendarHandler(std::forward<decltype(handler)>(handler));
-        net::post(
-          self->strand_,
-          [self, from, refresh, completion = std::move(completion)]() mutable {
-            self->start_calendar(from, refresh, std::move(completion));
-          }
-        );
+        net::post(self->strand_, [self, from, refresh, completion = std::move(completion)]() mutable {
+          self->start_calendar(from, refresh, std::move(completion));
+        });
       },
       token
     );
@@ -481,14 +465,10 @@ public:
       [self = shared_from_this(), instrument = std::move(instrument)](auto&& handler) mutable {
         auto completion = PriceLimitsHandler(std::forward<decltype(handler)>(handler));
         net::post(
-          self->strand_,
-          [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
+          self->strand_, [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
             self->start_market_read(
-              std::move(instrument),
-              "/uapi/domestic-stock/v1/quotations/inquire-price",
-              "FHKST01010100",
-              std::move(completion),
-              parse_price_limits
+              std::move(instrument), "/uapi/domestic-stock/v1/quotations/inquire-price", "FHKST01010100",
+              std::move(completion), parse_price_limits
             );
           }
         );
@@ -509,20 +489,14 @@ public:
   template <typename CompletionToken>
   auto async_trades(InstrumentId instrument, int count, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<std::vector<TradePrint>>)>(
-      [self = shared_from_this(), instrument = std::move(instrument), count](
-        auto&& handler
-      ) mutable {
+      [self = shared_from_this(), instrument = std::move(instrument), count](auto&& handler) mutable {
         auto completion = TradesHandler(std::forward<decltype(handler)>(handler));
         net::post(
           self->strand_,
-          [self, instrument = std::move(instrument), count, completion = std::move(completion)]()
-            mutable {
+          [self, instrument = std::move(instrument), count, completion = std::move(completion)]() mutable {
             self->start_market_read(
-              std::move(instrument),
-              "/uapi/domestic-stock/v1/quotations/inquire-ccnl",
-              "FHKST01010300",
-              std::move(completion),
-              [count](InstrumentId subject, Result<network::HttpResponse> response) {
+              std::move(instrument), "/uapi/domestic-stock/v1/quotations/inquire-ccnl", "FHKST01010300",
+              std::move(completion), [count](InstrumentId subject, Result<network::HttpResponse> response) {
                 return parse_trades(std::move(subject), std::move(response), count);
               }
             );
@@ -546,8 +520,7 @@ public:
       [self = shared_from_this(), instrument = std::move(instrument)](auto&& handler) mutable {
         auto completion = DepthHandler(std::forward<decltype(handler)>(handler));
         net::post(
-          self->strand_,
-          [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
+          self->strand_, [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
             self->start_depth(std::move(instrument), std::move(completion));
           }
         );
@@ -569,8 +542,7 @@ public:
       [self = shared_from_this(), instrument = std::move(instrument)](auto&& handler) mutable {
         auto completion = QuoteHandler(std::forward<decltype(handler)>(handler));
         net::post(
-          self->strand_,
-          [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
+          self->strand_, [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
             self->start_quote(std::move(instrument), std::move(completion));
           }
         );
@@ -593,9 +565,7 @@ public:
       [self = shared_from_this(), currency, account = std::move(account)](auto&& handler) mutable {
         auto completion = BuyingPowerHandler(std::forward<decltype(handler)>(handler));
         net::post(
-          self->strand_,
-          [self, currency, account = std::move(account), completion = std::move(completion)]()
-            mutable {
+          self->strand_, [self, currency, account = std::move(account), completion = std::move(completion)]() mutable {
             self->start_buying_power(currency, std::move(account), std::move(completion));
           }
         );
@@ -616,12 +586,9 @@ public:
     return net::async_initiate<CompletionToken, void(Result<HoldingsSnapshot>)>(
       [self = shared_from_this(), account = std::move(account)](auto&& handler) mutable {
         auto completion = HoldingsHandler(std::forward<decltype(handler)>(handler));
-        net::post(
-          self->strand_,
-          [self, account = std::move(account), completion = std::move(completion)]() mutable {
-            self->start_holdings(std::move(account), std::move(completion));
-          }
-        );
+        net::post(self->strand_, [self, account = std::move(account), completion = std::move(completion)]() mutable {
+          self->start_holdings(std::move(account), std::move(completion));
+        });
       },
       token
     );
@@ -656,20 +623,11 @@ public:
   template <typename CompletionToken>
   auto async_place_order(KisAccount account, OrderRequest order, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<KisOrderAck>)>(
-      [
-        self = shared_from_this(),
-        account = std::move(account),
-        order = std::move(order)
-      ](auto&& handler) mutable {
+      [self = shared_from_this(), account = std::move(account), order = std::move(order)](auto&& handler) mutable {
         auto completion = OrderAckHandler(std::forward<decltype(handler)>(handler));
         net::post(
           self->strand_,
-          [
-            self,
-            account = std::move(account),
-            order = std::move(order),
-            completion = std::move(completion)
-          ]() mutable {
+          [self, account = std::move(account), order = std::move(order), completion = std::move(completion)]() mutable {
             self->start_place_order(std::move(account), std::move(order), std::move(completion));
           }
         );
@@ -692,23 +650,14 @@ public:
   template <typename CompletionToken>
   auto async_replace_order(KisAccount account, KisAmendment amendment, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<KisOrderAck>)>(
-      [
-        self = shared_from_this(),
-        account = std::move(account),
-        amendment = std::move(amendment)
-      ](auto&& handler) mutable {
+      [self = shared_from_this(), account = std::move(account),
+        amendment = std::move(amendment)](auto&& handler) mutable {
         auto completion = OrderAckHandler(std::forward<decltype(handler)>(handler));
         net::post(
           self->strand_,
-          [
-            self,
-            account = std::move(account),
-            amendment = std::move(amendment),
-            completion = std::move(completion)
-          ]() mutable {
-            self->start_amend_order(
-              std::move(account), std::move(amendment), false, std::move(completion)
-            );
+          [self, account = std::move(account), amendment = std::move(amendment),
+            completion = std::move(completion)]() mutable {
+            self->start_amend_order(std::move(account), std::move(amendment), false, std::move(completion));
           }
         );
       },
@@ -737,23 +686,14 @@ public:
   template <typename CompletionToken>
   auto async_cancel_order(KisAccount account, KisAmendment amendment, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<KisOrderAck>)>(
-      [
-        self = shared_from_this(),
-        account = std::move(account),
-        amendment = std::move(amendment)
-      ](auto&& handler) mutable {
+      [self = shared_from_this(), account = std::move(account),
+        amendment = std::move(amendment)](auto&& handler) mutable {
         auto completion = OrderAckHandler(std::forward<decltype(handler)>(handler));
         net::post(
           self->strand_,
-          [
-            self,
-            account = std::move(account),
-            amendment = std::move(amendment),
-            completion = std::move(completion)
-          ]() mutable {
-            self->start_amend_order(
-              std::move(account), std::move(amendment), true, std::move(completion)
-            );
+          [self, account = std::move(account), amendment = std::move(amendment),
+            completion = std::move(completion)]() mutable {
+            self->start_amend_order(std::move(account), std::move(amendment), true, std::move(completion));
           }
         );
       },
@@ -779,12 +719,9 @@ public:
     return net::async_initiate<CompletionToken, void(Result<KisOpenOrderPage>)>(
       [self = shared_from_this(), account = std::move(account)](auto&& handler) mutable {
         auto completion = OpenOrderHandler(std::forward<decltype(handler)>(handler));
-        net::post(
-          self->strand_,
-          [self, account = std::move(account), completion = std::move(completion)]() mutable {
-            self->start_open_orders(std::move(account), std::move(completion));
-          }
-        );
+        net::post(self->strand_, [self, account = std::move(account), completion = std::move(completion)]() mutable {
+          self->start_open_orders(std::move(account), std::move(completion));
+        });
       },
       token
     );
@@ -805,20 +742,10 @@ public:
   template <typename CompletionToken>
   auto async_order_history(KisAccount account, KisHistoryRange range, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<OrderPage>)>(
-      [
-        self = shared_from_this(),
-        account = std::move(account),
-        range
-      ](auto&& handler) mutable {
+      [self = shared_from_this(), account = std::move(account), range](auto&& handler) mutable {
         auto completion = OrderPageHandler(std::forward<decltype(handler)>(handler));
         net::post(
-          self->strand_,
-          [
-            self,
-            account = std::move(account),
-            range,
-            completion = std::move(completion)
-          ]() mutable {
+          self->strand_, [self, account = std::move(account), range, completion = std::move(completion)]() mutable {
             self->start_order_history(std::move(account), range, std::move(completion));
           }
         );
@@ -851,7 +778,9 @@ public:
    *
    * @return The token, empty until a request has obtained one.
    */
-  KisRest token() const { return token_; }
+  KisRest token() const {
+    return token_;
+  }
 
   /**
    * @brief Uses a token issued earlier for the same app key and environment instead of requesting
@@ -880,7 +809,9 @@ public:
    *   A later calendar request the cache covers is still answered, and a request refused before
    *   sending is still refused.
    */
-  void close() { http_->close(); }
+  void close() {
+    http_->close();
+  }
 
 private:
   friend struct KisClientTestAccess;
@@ -945,24 +876,16 @@ private:
 
     auto operation = std::make_shared<BarOperation>(std::move(query), std::move(completion));
     operation->minutes_ = operation->query_.interval_ == BarInterval::ONE_MINUTE;
-    const auto bound = operation->query_.before_ ?
-      *operation->query_.before_ :
-      std::chrono::system_clock::now();
+    const auto bound = operation->query_.before_ ? *operation->query_.before_ : std::chrono::system_clock::now();
     korea_calendar(bound, operation->date_, operation->time_);
 
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->deliver(
-              std::move(operation->completion_), Result<BarSeries>(std::move(*token_error))
-            );
-            return;
-          }
-          self->request_bars(operation);
-        }
-      )
-    );
+    ensure_token(TokenHandler([self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
+      if (token_error) {
+        self->deliver(std::move(operation->completion_), Result<BarSeries>(std::move(*token_error)));
+        return;
+      }
+      self->request_bars(operation);
+    }));
   }
 
   // Returns an error when KIS cannot answer the request as described.
@@ -977,8 +900,7 @@ private:
     }
     if (!valid_domestic_symbol(query.instrument_.symbol_)) {
       error.broker_code_ = "invalid_instrument";
-      error.message_ =
-        "KIS bar symbol must contain six letters or digits, or seven for an ETN";
+      error.message_ = "KIS bar symbol must contain six letters or digits, or seven for an ETN";
       return error;
     }
     if (query.count_ < 1) {
@@ -1047,15 +969,10 @@ private:
   }
 
   // Splits an instant into the KST calendar date and `HHMMSS` KIS asks for.
-  static void korea_calendar(
-    std::chrono::system_clock::time_point value,
-    Date& date,
-    std::string& time
-  ) {
+  static void korea_calendar(std::chrono::system_clock::time_point value, Date& date, std::string& time) {
     const auto seoul = value + std::chrono::hours(9);
-    const std::time_t raw = std::chrono::system_clock::to_time_t(
-      std::chrono::time_point_cast<std::chrono::seconds>(seoul)
-    );
+    const std::time_t raw =
+      std::chrono::system_clock::to_time_t(std::chrono::time_point_cast<std::chrono::seconds>(seoul));
     std::tm parts{};
 #ifdef _WIN32
     gmtime_s(&parts, &raw);
@@ -1084,11 +1001,21 @@ private:
       --earlier.year_;
     }
     static constexpr unsigned days_per_month[] = {
-      31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+      31,
+      28,
+      31,
+      30,
+      31,
+      30,
+      31,
+      31,
+      30,
+      31,
+      30,
+      31,
     };
     unsigned days = days_per_month[earlier.month_ - 1];
-    const bool leap =
-      earlier.year_ % 4 == 0 && (earlier.year_ % 100 != 0 || earlier.year_ % 400 == 0);
+    const bool leap = earlier.year_ % 4 == 0 && (earlier.year_ % 100 != 0 || earlier.year_ % 400 == 0);
     if (earlier.month_ == 2 && leap) {
       ++days;
     }
@@ -1113,10 +1040,8 @@ private:
       for (int step = 0; step < span && from.year_ > 1; ++step) {
         from = previous_day(from);
       }
-      request.target_ =
-        "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice" +
-        market_query(config_, operation->query_.instrument_.symbol_) +
-        "&FID_INPUT_DATE_1=" + compact_date(from) +
+      request.target_ = "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice" +
+        market_query(config_, operation->query_.instrument_.symbol_) + "&FID_INPUT_DATE_1=" + compact_date(from) +
         "&FID_INPUT_DATE_2=" + compact_date(operation->date_) +
         "&FID_PERIOD_DIV_CODE=" + period_code(operation->query_.interval_) +
         // KIS spells this the other way round from every reading of its name:
@@ -1124,17 +1049,15 @@ private:
         "&FID_ORG_ADJ_PRC=" + std::string(operation->query_.adjusted_ ? "0" : "1");
       transaction = "FHKST03010100";
     } else if (today_in_korea(operation->date_)) {
-      request.target_ =
-        "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice" +
-        market_query(config_, operation->query_.instrument_.symbol_) +
-        "&FID_INPUT_HOUR_1=" + operation->time_ + "&FID_PW_DATA_INCU_YN=Y&FID_ETC_CLS_CODE=";
+      request.target_ = "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice" +
+        market_query(config_, operation->query_.instrument_.symbol_) + "&FID_INPUT_HOUR_1=" + operation->time_ +
+        "&FID_PW_DATA_INCU_YN=Y&FID_ETC_CLS_CODE=";
       transaction = "FHKST03010200";
     } else {
-      request.target_ =
-        "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice" +
+      request.target_ = "/uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice" +
         market_query(config_, operation->query_.instrument_.symbol_) +
-        "&FID_INPUT_DATE_1=" + compact_date(operation->date_) +
-        "&FID_INPUT_HOUR_1=" + operation->time_ + "&FID_PW_DATA_INCU_YN=Y&FID_FAKE_TICK_INCU_YN=N";
+        "&FID_INPUT_DATE_1=" + compact_date(operation->date_) + "&FID_INPUT_HOUR_1=" + operation->time_ +
+        "&FID_PW_DATA_INCU_YN=Y&FID_FAKE_TICK_INCU_YN=N";
       transaction = "FHKST03010230";
     }
 
@@ -1149,8 +1072,7 @@ private:
 
     ++operation->pages_;
     http_->async_request(
-      std::move(request),
-      [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
+      std::move(request), [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
         self->handle_bars_page(operation, std::move(result));
       }
     );
@@ -1165,14 +1087,11 @@ private:
   }
 
   // Accumulates one page and either continues or finishes the request.
-  void handle_bars_page(
-    const std::shared_ptr<BarOperation>& operation,
-    Result<network::HttpResponse> result
-  ) {
+  void handle_bars_page(const std::shared_ptr<BarOperation>& operation, Result<network::HttpResponse> result) {
     const auto before = operation->descending_.size();
-    if (auto failure = parse_bars_page(
-          std::move(result), operation->query_, operation->minutes_, operation->descending_
-        )) {
+    if (
+      auto failure = parse_bars_page(std::move(result), operation->query_, operation->minutes_, operation->descending_)
+    ) {
       deliver(std::move(operation->completion_), Result<BarSeries>(std::move(*failure)));
       return;
     }
@@ -1220,10 +1139,7 @@ private:
   // is, and a page that brings nothing older counts as empty, which ends the request rather than asking
   // for the same page again.
   static std::optional<BrokerError> parse_bars_page(
-    Result<network::HttpResponse> result,
-    const BarQuery& query,
-    bool minutes,
-    std::vector<Bar>& into
+    Result<network::HttpResponse> result, const BarQuery& query, bool minutes, std::vector<Bar>& into
   ) {
     if (!result) {
       return std::move(result.error());
@@ -1290,12 +1206,8 @@ private:
     bar.timestamp_ = *timestamp;
     bar.high_ = Decimal64::parse(broker_detail::json_string(row, "stck_hgpr"));
     bar.low_ = Decimal64::parse(broker_detail::json_string(row, "stck_lwpr"));
-    bar.close_ = Decimal64::parse(
-      broker_detail::json_string(row, minutes ? "stck_prpr" : "stck_clpr")
-    );
-    bar.volume_ = Decimal64::parse(
-      broker_detail::json_string(row, minutes ? "cntg_vol" : "acml_vol")
-    );
+    bar.close_ = Decimal64::parse(broker_detail::json_string(row, minutes ? "stck_prpr" : "stck_clpr"));
+    bar.volume_ = Decimal64::parse(broker_detail::json_string(row, minutes ? "cntg_vol" : "acml_vol"));
     if (const auto value = row.if_contains("acml_tr_pbmn"); value && value->is_string()) {
       const std::string traded(value->as_string());
       if (!traded.empty()) {
@@ -1303,8 +1215,7 @@ private:
       }
     }
     const auto unchanged = row.if_contains("mod_yn");
-    const bool no_trade =
-      unchanged && unchanged->is_string() && std::string_view(unchanged->as_string()) == "Y";
+    const bool no_trade = unchanged && unchanged->is_string() && std::string_view(unchanged->as_string()) == "Y";
     if (!no_trade) {
       bar.open_ = Decimal64::parse(broker_detail::json_string(row, "stck_oprc"));
     }
@@ -1356,47 +1267,38 @@ private:
       return;
     }
 
-    ensure_token(
-      TokenHandler(
-        [
-          self = shared_from_this(),
-          instrument = std::move(instrument),
-          completion = std::move(completion)
-        ](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->deliver(std::move(completion), Result<Instrument>(std::move(*token_error)));
-            return;
-          }
-          network::HttpRequest request;
-          // Reference data is the lowest-priority traffic there is.
-          request.group_ = network::RateLimitGroup::REFERENCE;
-          request.method_ = http::verb::get;
-          // 300 covers 주식, ETF, ETN, and ELW, which is the whole equity universe
-          // this library addresses.
-          request.target_ =
-            "/uapi/domestic-stock/v1/quotations/search-stock-info?PRDT_TYPE_CD=300&PDNO=" +
-            broker_detail::query_encode(instrument.symbol_);
-          request.headers_ = {
-            {"authorization", "Bearer " + self->token_.access_token_},
-            {"appkey", self->config_.key()},
-            {"appsecret", self->config_.secret()},
-            {"tr_id", "CTPF1002R"},
-            {"custtype", "P"},
-            {"content-type", "application/json; charset=utf-8"},
-          };
-          self->http_->async_request(
-            std::move(request),
-            [self, instrument = std::move(instrument), completion = std::move(completion)](
-              Result<network::HttpResponse> result
-            ) mutable {
-              self->deliver(
-                std::move(completion), parse_instrument(std::move(instrument), std::move(result))
-              );
-            }
-          );
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), instrument = std::move(instrument),
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->deliver(std::move(completion), Result<Instrument>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        network::HttpRequest request;
+        // Reference data is the lowest-priority traffic there is.
+        request.group_ = network::RateLimitGroup::REFERENCE;
+        request.method_ = http::verb::get;
+        // 300 covers 주식, ETF, ETN, and ELW, which is the whole equity universe
+        // this library addresses.
+        request.target_ = "/uapi/domestic-stock/v1/quotations/search-stock-info?PRDT_TYPE_CD=300&PDNO=" +
+          broker_detail::query_encode(instrument.symbol_);
+        request.headers_ = {
+          {"authorization", "Bearer " + self->token_.access_token_},
+          {"appkey", self->config_.key()},
+          {"appsecret", self->config_.secret()},
+          {"tr_id", "CTPF1002R"},
+          {"custtype", "P"},
+          {"content-type", "application/json; charset=utf-8"},
+        };
+        self->http_->async_request(
+          std::move(request),
+          [self, instrument = std::move(instrument),
+            completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+            self->deliver(std::move(completion), parse_instrument(std::move(instrument), std::move(result)));
+          }
+        );
+      }
+    ));
   }
 
   // Normalizes KIS's reference data for one instrument.
@@ -1413,10 +1315,7 @@ private:
   //
   // `price_rule_` is the library's own grid: the quote's `aspr_unit` is the tick at one price, not
   // the ladder.
-  static Result<Instrument> parse_instrument(
-    InstrumentId requested,
-    Result<network::HttpResponse> result
-  ) {
+  static Result<Instrument> parse_instrument(InstrumentId requested, Result<network::HttpResponse> result) {
     auto document = market_document(std::move(result));
     if (!document) {
       return Result<Instrument>(std::move(document.error()));
@@ -1439,14 +1338,12 @@ private:
       instrument.isin_ = broker_detail::json_string(row, "std_pdno");
       const auto market = broker_detail::json_string(row, "mket_id_cd");
       instrument.segment_ = kis_market_segment(market);
-      instrument.type_ =
-        kis_security_type(broker_detail::json_string(row, "scty_grp_id_cd"));
+      instrument.type_ = kis_security_type(broker_detail::json_string(row, "scty_grp_id_cd"));
       instrument.currency_ = Currency::krw();
       instrument.shares_outstanding_ = positive_decimal(row, "lstg_stqt");
       instrument.listed_on_ = compact_date_field(row, listing_date_field(market));
       instrument.delisted_on_ = compact_date_field(row, delisting_date_field(market));
-      instrument.price_rule_ =
-        price_rule_for(instrument.id_.country_, instrument.type_);
+      instrument.price_rule_ = price_rule_for(instrument.id_.country_, instrument.type_);
       return Result<Instrument>(std::move(instrument));
     } catch (const std::exception& exception) {
       BrokerError error;
@@ -1542,10 +1439,7 @@ private:
   // Every character is checked as a digit before any arithmetic. This used `std::stoi` per
   // component, which takes a numeric prefix, so `"1996122x"` read as 1996-12-02 -- a different,
   // valid date instead of an unreadable one.
-  static StatedDate compact_date_field(
-    const json::object& row,
-    std::string_view key
-  ) {
+  static StatedDate compact_date_field(const json::object& row, std::string_view key) {
     const auto value = row.if_contains(key);
     if (!value || value->is_null()) {
       return StatedDate{};
@@ -1570,8 +1464,7 @@ private:
     int pages_{0};
     CalendarHandler completion_;
 
-    CalendarOperation(Date from, CalendarHandler completion)
-    : from_(from), completion_(std::move(completion)) {}
+    CalendarOperation(Date from, CalendarHandler completion) : from_(from), completion_(std::move(completion)) {}
   };
 
   // Most continuation pages one calendar request may consume.
@@ -1599,19 +1492,13 @@ private:
 
     auto operation = std::make_shared<CalendarOperation>(from, std::move(completion));
     operation->calendar_.country_ = Country::KR;
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->deliver(
-              std::move(operation->completion_), Result<TradingCalendar>(std::move(*token_error))
-            );
-            return;
-          }
-          self->request_calendar(operation);
-        }
-      )
-    );
+    ensure_token(TokenHandler([self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
+      if (token_error) {
+        self->deliver(std::move(operation->completion_), Result<TradingCalendar>(std::move(*token_error)));
+        return;
+      }
+      self->request_calendar(operation);
+    }));
   }
 
   // Returns whether the cached calendar already answers for `from` onwards.
@@ -1638,9 +1525,7 @@ private:
     // The calendar is reference data, the lowest-priority traffic there is.
     request.group_ = network::RateLimitGroup::REFERENCE;
     request.method_ = http::verb::get;
-    request.target_ =
-      "/uapi/domestic-stock/v1/quotations/chk-holiday?BASS_DT=" +
-      compact_date(operation->from_) +
+    request.target_ = "/uapi/domestic-stock/v1/quotations/chk-holiday?BASS_DT=" + compact_date(operation->from_) +
       "&CTX_AREA_NK=" + broker_detail::query_encode(operation->next_cursor_) +
       "&CTX_AREA_FK=" + broker_detail::query_encode(operation->search_cursor_);
     request.headers_ = {
@@ -1655,18 +1540,14 @@ private:
 
     ++operation->pages_;
     http_->async_request(
-      std::move(request),
-      [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
+      std::move(request), [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
         self->handle_calendar_page(operation, std::move(result));
       }
     );
   }
 
   // Accumulates one page and either continues or finishes and caches.
-  void handle_calendar_page(
-    const std::shared_ptr<CalendarOperation>& operation,
-    Result<network::HttpResponse> result
-  ) {
+  void handle_calendar_page(const std::shared_ptr<CalendarOperation>& operation, Result<network::HttpResponse> result) {
     // Progress is rows *consumed*, not rows kept: a page whose every date was unreadable adds no
     // day, and reading that as the end of the listing would drop the pages after it -- today's row
     // among them, possibly.
@@ -1676,9 +1557,7 @@ private:
     std::string next = operation->next_cursor_;
 
     if (auto failure = parse_calendar_page(std::move(result), operation->calendar_, search, next)) {
-      deliver(
-        std::move(operation->completion_), Result<TradingCalendar>(std::move(*failure))
-      );
+      deliver(std::move(operation->completion_), Result<TradingCalendar>(std::move(*failure)));
       return;
     }
 
@@ -1712,9 +1591,7 @@ private:
   // it. Rows are staged and appended only once the whole page parses, so a page that does fail
   // leaves `calendar` as it was.
   static std::optional<BrokerError> parse_calendar_page(
-    Result<network::HttpResponse> result,
-    TradingCalendar& calendar,
-    std::string& search_cursor,
+    Result<network::HttpResponse> result, TradingCalendar& calendar, std::string& search_cursor,
     std::string& next_cursor
   ) {
     auto document = market_document(std::move(result));
@@ -1734,9 +1611,8 @@ private:
         }
         const auto& row = value.as_object();
         const auto stated = row.if_contains("bass_dt");
-        const auto date = stated && stated->is_string()
-          ? broker_detail::compact_date(stated->as_string())
-          : std::nullopt;
+        const auto date =
+          stated && stated->is_string() ? broker_detail::compact_date(stated->as_string()) : std::nullopt;
         if (!date) {
           ++unreadable;
           continue;
@@ -1761,9 +1637,7 @@ private:
 
   // Reads the calendar continuation cursors, which KIS names without the 100 suffix.
   static void read_calendar_cursors(
-    const json::object& document,
-    std::string& search_cursor,
-    std::string& next_cursor
+    const json::object& document, std::string& search_cursor, std::string& next_cursor
   ) {
     if (const auto value = document.if_contains("ctx_area_fk"); value && value->is_string()) {
       search_cursor = std::string(value->as_string());
@@ -1779,11 +1653,7 @@ private:
   // the validation, token handling, and traffic class live here once.
   template <typename Handler, typename Parse>
   void start_market_read(
-    InstrumentId instrument,
-    std::string path,
-    std::string transaction,
-    Handler completion,
-    Parse parse
+    InstrumentId instrument, std::string path, std::string transaction, Handler completion, Parse parse
   ) {
     using ResultType = decltype(parse(InstrumentId{}, Result<network::HttpResponse>(BrokerError{})));
     if (instrument.country_ != Country::KR || !valid_domestic_symbol(instrument.symbol_)) {
@@ -1796,46 +1666,36 @@ private:
       return;
     }
 
-    ensure_token(
-      TokenHandler(
-        [
-          self = shared_from_this(),
-          instrument = std::move(instrument),
-          path = std::move(path),
-          transaction = std::move(transaction),
-          completion = std::move(completion),
-          parse
-        ](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->deliver(std::move(completion), ResultType(std::move(*token_error)));
-            return;
-          }
-          network::HttpRequest request;
-          // Market data is the traffic the trading reserve holds back.
-          request.group_ = network::RateLimitGroup::MARKET_DATA;
-          request.method_ = http::verb::get;
-          request.target_ = path + market_query(self->config_, instrument.symbol_);
-          request.headers_ = {
-            {"authorization", "Bearer " + self->token_.access_token_},
-            {"appkey", self->config_.key()},
-            {"appsecret", self->config_.secret()},
-            {"tr_id", transaction},
-            {"custtype", "P"},
-            {"content-type", "application/json; charset=utf-8"},
-          };
-          self->http_->async_request(
-            std::move(request),
-            [self, instrument = std::move(instrument), completion = std::move(completion), parse](
-              Result<network::HttpResponse> result
-            ) mutable {
-              self->deliver(
-                std::move(completion), parse(std::move(instrument), std::move(result))
-              );
-            }
-          );
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), instrument = std::move(instrument), path = std::move(path),
+        transaction = std::move(transaction), completion = std::move(completion),
+        parse](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->deliver(std::move(completion), ResultType(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        network::HttpRequest request;
+        // Market data is the traffic the trading reserve holds back.
+        request.group_ = network::RateLimitGroup::MARKET_DATA;
+        request.method_ = http::verb::get;
+        request.target_ = path + market_query(self->config_, instrument.symbol_);
+        request.headers_ = {
+          {"authorization", "Bearer " + self->token_.access_token_},
+          {"appkey", self->config_.key()},
+          {"appsecret", self->config_.secret()},
+          {"tr_id", transaction},
+          {"custtype", "P"},
+          {"content-type", "application/json; charset=utf-8"},
+        };
+        self->http_->async_request(
+          std::move(request),
+          [self, instrument = std::move(instrument), completion = std::move(completion),
+            parse](Result<network::HttpResponse> result) mutable {
+            self->deliver(std::move(completion), parse(std::move(instrument), std::move(result)));
+          }
+        );
+      }
+    ));
   }
 
   // Returns a market-data response's declared payload, or the error ending it.
@@ -1872,10 +1732,7 @@ private:
   //
   // KRX sets a limit on every listed equity, so both bounds are expected here; a
   // blank or zero bound is reported as absent rather than as a bound of nothing.
-  static Result<PriceLimits> parse_price_limits(
-    InstrumentId instrument,
-    Result<network::HttpResponse> result
-  ) {
+  static Result<PriceLimits> parse_price_limits(InstrumentId instrument, Result<network::HttpResponse> result) {
     static_cast<void>(instrument);
     auto document = market_document(std::move(result));
     if (!document) {
@@ -1902,10 +1759,7 @@ private:
   }
 
   // Reads a decimal that KIS leaves blank or zero when it has no value.
-  static std::optional<Decimal64> positive_decimal(
-    const json::object& row,
-    std::string_view key
-  ) {
+  static std::optional<Decimal64> positive_decimal(const json::object& row, std::string_view key) {
     const auto value = row.if_contains(key);
     if (!value || !value->is_string()) {
       return std::nullopt;
@@ -1927,9 +1781,7 @@ private:
   // day is supplied from the clock. A print is intraday by construction, so this is
   // the day it happened on.
   static Result<std::vector<TradePrint>> parse_trades(
-    InstrumentId instrument,
-    Result<network::HttpResponse> result,
-    int count
+    InstrumentId instrument, Result<network::HttpResponse> result, int count
   ) {
     static_cast<void>(instrument);
     auto document = market_document(std::move(result));
@@ -1993,47 +1845,36 @@ private:
       return;
     }
 
-    ensure_token(
-      TokenHandler(
-        [
-          self = shared_from_this(),
-          instrument = std::move(instrument),
-          completion = std::move(completion)
-        ](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->deliver(
-              std::move(completion), Result<DepthSnapshot>(std::move(*token_error))
-            );
-            return;
-          }
-          network::HttpRequest request;
-          // The book is polling traffic, held back by the trading reserve.
-          request.group_ = network::RateLimitGroup::MARKET_DATA;
-          request.method_ = http::verb::get;
-          request.target_ =
-            "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn"
-            + market_query(self->config_, instrument.symbol_);
-          request.headers_ = {
-            {"authorization", "Bearer " + self->token_.access_token_},
-            {"appkey", self->config_.key()},
-            {"appsecret", self->config_.secret()},
-            {"tr_id", "FHKST01010200"},
-            {"custtype", "P"},
-            {"content-type", "application/json; charset=utf-8"},
-          };
-          self->http_->async_request(
-            std::move(request),
-            [self, instrument = std::move(instrument), completion = std::move(completion)](
-              Result<network::HttpResponse> result
-            ) mutable {
-              self->deliver(
-                std::move(completion), parse_depth(std::move(instrument), std::move(result))
-              );
-            }
-          );
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), instrument = std::move(instrument),
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->deliver(std::move(completion), Result<DepthSnapshot>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        network::HttpRequest request;
+        // The book is polling traffic, held back by the trading reserve.
+        request.group_ = network::RateLimitGroup::MARKET_DATA;
+        request.method_ = http::verb::get;
+        request.target_ = "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn" +
+          market_query(self->config_, instrument.symbol_);
+        request.headers_ = {
+          {"authorization", "Bearer " + self->token_.access_token_},
+          {"appkey", self->config_.key()},
+          {"appsecret", self->config_.secret()},
+          {"tr_id", "FHKST01010200"},
+          {"custtype", "P"},
+          {"content-type", "application/json; charset=utf-8"},
+        };
+        self->http_->async_request(
+          std::move(request),
+          [self, instrument = std::move(instrument),
+            completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+            self->deliver(std::move(completion), parse_depth(std::move(instrument), std::move(result)));
+          }
+        );
+      }
+    ));
   }
 
   // Normalizes one KIS order book.
@@ -2046,10 +1887,7 @@ private:
   // The after-hours totals KIS also reports (`ovtm_total_askp_rsqn` and its
   // siblings) and its expected-execution columns are deliberately not normalized:
   // Toss publishes no counterpart. They are dropped here, not exposed.
-  static Result<DepthSnapshot> parse_depth(
-    InstrumentId instrument,
-    Result<network::HttpResponse> result
-  ) {
+  static Result<DepthSnapshot> parse_depth(InstrumentId instrument, Result<network::HttpResponse> result) {
     if (!result) {
       return Result<DepthSnapshot>(std::move(result.error()));
     }
@@ -2102,10 +1940,7 @@ private:
 
   // Reads one numbered level, skipping a level that is not resting.
   static void append_level(
-    const json::object& row,
-    std::string_view price_prefix,
-    std::string_view quantity_prefix,
-    int level,
+    const json::object& row, std::string_view price_prefix, std::string_view quantity_prefix, int level,
     std::vector<DepthLevel>& levels
   ) {
     const auto suffix = std::to_string(level);
@@ -2137,23 +1972,16 @@ private:
       return;
     }
 
-    ensure_token(
-      TokenHandler(
-        [
-          self = shared_from_this(),
-          instrument = std::move(instrument),
-          completion = std::move(completion)
-        ](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->complete(
-              std::move(completion), Result<QuoteSnapshot>(std::move(*token_error))
-            );
-            return;
-          }
-          self->request_quote(std::move(instrument), std::move(completion));
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), instrument = std::move(instrument),
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->complete(std::move(completion), Result<QuoteSnapshot>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        self->request_quote(std::move(instrument), std::move(completion));
+      }
+    ));
   }
 
   void start_buying_power(Currency currency, KisAccount account, BuyingPowerHandler completion) {
@@ -2166,44 +1994,32 @@ private:
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.reached_broker_ = false;
       error.broker_code_ = "unsupported_currency";
-      error.message_ =
-        "the KIS domestic buying-power inquiry answers in KRW only, not " + currency.str();
+      error.message_ = "the KIS domestic buying-power inquiry answers in KRW only, not " + currency.str();
       invalid = std::move(error);
     }
     if (invalid) {
       complete_buying_power(std::move(completion), Result<BuyingPower>(std::move(*invalid)));
       return;
     }
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), account = std::move(account),
-         completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->complete_buying_power(
-              std::move(completion), Result<BuyingPower>(std::move(*token_error))
-            );
-            return;
-          }
-          self->request_buying_power(std::move(account), std::move(completion));
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), account = std::move(account),
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->complete_buying_power(std::move(completion), Result<BuyingPower>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        self->request_buying_power(std::move(account), std::move(completion));
+      }
+    ));
   }
 
   void request_buying_power(KisAccount account, BuyingPowerHandler completion) {
     http_->async_request(
       buying_power_request(config_, token_.access_token_, account),
-      [self = shared_from_this(), completion = std::move(completion)](
-        Result<network::HttpResponse> result
-      ) mutable {
-        net::post(
-          self->strand_,
-          [self, completion = std::move(completion), result = std::move(result)]() mutable {
-            self->complete_buying_power(
-              std::move(completion), parse_buying_power(std::move(result))
-            );
-          }
-        );
+      [self = shared_from_this(), completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+        net::post(self->strand_, [self, completion = std::move(completion), result = std::move(result)]() mutable {
+          self->complete_buying_power(std::move(completion), parse_buying_power(std::move(result)));
+        });
       }
     );
   }
@@ -2224,9 +2040,7 @@ private:
   // won an order can actually spend, and a buying-power check exists to be conservative. A caller
   // wanting the wider figure asks this client directly.
   static network::HttpRequest buying_power_request(
-    const KisConfig& config,
-    std::string_view access_token,
-    const KisAccount& account
+    const KisConfig& config, std::string_view access_token, const KisAccount& account
   ) {
     network::HttpRequest request;
     request.group_ = network::RateLimitGroup::ACCOUNT;
@@ -2288,26 +2102,18 @@ private:
 
   void start_holdings(KisAccount account, HoldingsHandler completion) {
     if (auto invalid = validate_account(account)) {
-      complete_holdings(
-        std::move(completion), Result<HoldingsSnapshot>(std::move(*invalid))
-      );
+      complete_holdings(std::move(completion), Result<HoldingsSnapshot>(std::move(*invalid)));
       return;
     }
 
-    auto operation = std::make_shared<HoldingsOperation>(
-      std::move(account), std::move(completion)
-    );
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->finish_holdings(operation, Result<HoldingsSnapshot>(std::move(*token_error)));
-            return;
-          }
-          self->request_holdings(operation);
-        }
-      )
-    );
+    auto operation = std::make_shared<HoldingsOperation>(std::move(account), std::move(completion));
+    ensure_token(TokenHandler([self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
+      if (token_error) {
+        self->finish_holdings(operation, Result<HoldingsSnapshot>(std::move(*token_error)));
+        return;
+      }
+      self->request_holdings(operation);
+    }));
   }
 
   void ensure_token(TokenHandler handler) {
@@ -2328,14 +2134,11 @@ private:
     request.target_ = "/oauth2/tokenP";
     request.body_ = config_.to_jsonbody();
     request.headers_.emplace_back("content-type", "application/json");
-    http_->async_request(
-      std::move(request),
-      [self = shared_from_this()](Result<network::HttpResponse> result) mutable {
-        net::post(self->strand_, [self, result = std::move(result)]() mutable {
-          self->finish_token(std::move(result));
-        });
-      }
-    );
+    http_->async_request(std::move(request), [self = shared_from_this()](Result<network::HttpResponse> result) mutable {
+      net::post(self->strand_, [self, result = std::move(result)]() mutable {
+        self->finish_token(std::move(result));
+      });
+    });
   }
 
   void finish_token(Result<network::HttpResponse> result) {
@@ -2412,9 +2215,7 @@ private:
     // Quote polling is the traffic a reserve exists to hold back.
     request.group_ = network::RateLimitGroup::MARKET_DATA;
     request.method_ = http::verb::get;
-    request.target_ =
-      "/uapi/domestic-stock/v1/quotations/inquire-price"
-      + market_query(config_, instrument.symbol_);
+    request.target_ = "/uapi/domestic-stock/v1/quotations/inquire-price" + market_query(config_, instrument.symbol_);
     request.headers_ = {
       {"authorization", "Bearer " + token_.access_token_},
       {"appkey", config_.key()},
@@ -2425,22 +2226,13 @@ private:
     };
     http_->async_request(
       std::move(request),
-      [
-        self = shared_from_this(),
-        instrument = std::move(instrument),
-        completion = std::move(completion)
-      ](Result<network::HttpResponse> result) mutable {
+      [self = shared_from_this(), instrument = std::move(instrument),
+        completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
         net::post(
           self->strand_,
-          [
-            self,
-            instrument = std::move(instrument),
-            completion = std::move(completion),
-            result = std::move(result)
-          ]() mutable {
-            self->complete(
-              std::move(completion), parse_quote(std::move(instrument), std::move(result))
-            );
+          [self, instrument = std::move(instrument), completion = std::move(completion),
+            result = std::move(result)]() mutable {
+            self->complete(std::move(completion), parse_quote(std::move(instrument), std::move(result)));
           }
         );
       }
@@ -2449,33 +2241,21 @@ private:
 
   void request_holdings(const std::shared_ptr<HoldingsOperation>& operation) {
     auto request = make_holdings_request(
-      operation->account_,
-      config_,
-      token_.access_token_,
-      operation->foreign_cursor_,
-      operation->domestic_cursor_,
+      operation->account_, config_, token_.access_token_, operation->foreign_cursor_, operation->domestic_cursor_,
       operation->page_count_ > 0
     );
     http_->async_request(
-      std::move(request),
-      [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
-        net::post(
-          self->strand_,
-          [self, operation, result = std::move(result)]() mutable {
-            self->handle_holdings_page(operation, std::move(result));
-          }
-        );
+      std::move(request), [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
+        net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
+          self->handle_holdings_page(operation, std::move(result));
+        });
       }
     );
   }
 
   static network::HttpRequest make_holdings_request(
-    const KisAccount& account,
-    const KisConfig& config,
-    std::string_view access_token,
-    std::string_view foreign_cursor,
-    std::string_view domestic_cursor,
-    bool continuation
+    const KisAccount& account, const KisConfig& config, std::string_view access_token, std::string_view foreign_cursor,
+    std::string_view domestic_cursor, bool continuation
   ) {
     network::HttpRequest request;
     // Holdings rank above polling but may not spend the trading reserve.
@@ -2487,8 +2267,7 @@ private:
       account.account_number_ + "&ACNT_PRDT_CD=" + account.product_code_ +
       "&AFHR_FLPR_YN=Y&OFL_YN=&INQR_DVSN=01&UNPR_DVSN=01&FUND_STTL_ICLD_YN=N"
       "&FNCG_AMT_AUTO_RDPT_YN=N&PRCS_DVSN=00&CTX_AREA_FK100=" +
-      broker_detail::query_encode(foreign_cursor) + "&CTX_AREA_NK100=" +
-      broker_detail::query_encode(domestic_cursor);
+      broker_detail::query_encode(foreign_cursor) + "&CTX_AREA_NK100=" + broker_detail::query_encode(domestic_cursor);
     request.headers_ = {
       {"authorization", "Bearer " + std::string(access_token)},
       {"appkey", config.key()},
@@ -2502,22 +2281,14 @@ private:
   }
 
   static std::optional<BrokerError> append_holdings_page(
-    HoldingsSnapshot& snapshot,
-    std::size_t& page_count,
-    std::string& foreign_cursor,
-    std::string& domestic_cursor,
-    HoldingsSnapshot page,
-    std::string next_foreign_cursor,
-    std::string next_domestic_cursor,
-    bool has_next
+    HoldingsSnapshot& snapshot, std::size_t& page_count, std::string& foreign_cursor, std::string& domestic_cursor,
+    HoldingsSnapshot page, std::string next_foreign_cursor, std::string next_domestic_cursor, bool has_next
   ) {
     if (has_next) {
-      const bool cursor_did_not_advance = next_foreign_cursor == foreign_cursor &&
-        next_domestic_cursor == domestic_cursor;
+      const bool cursor_did_not_advance =
+        next_foreign_cursor == foreign_cursor && next_domestic_cursor == domestic_cursor;
       if (
-        page_count + 1 >= 100 ||
-        (next_foreign_cursor.empty() && next_domestic_cursor.empty()) ||
-        cursor_did_not_advance
+        page_count + 1 >= 100 || (next_foreign_cursor.empty() && next_domestic_cursor.empty()) || cursor_did_not_advance
       ) {
         BrokerError error;
         error.category_ = ErrorCategory::PROTOCOL;
@@ -2528,8 +2299,7 @@ private:
     }
 
     snapshot.positions_.insert(
-      snapshot.positions_.end(),
-      std::make_move_iterator(page.positions_.begin()),
+      snapshot.positions_.end(), std::make_move_iterator(page.positions_.begin()),
       std::make_move_iterator(page.positions_.end())
     );
     if (!page.totals_.empty()) {
@@ -2550,32 +2320,22 @@ private:
     }
 
     const auto continuation = result.value().base().find("tr_cont");
-    const bool has_next = continuation != result.value().base().end() &&
-      (continuation->value() == "M" || continuation->value() == "F");
+    const bool has_next =
+      continuation != result.value().base().end() && (continuation->value() == "M" || continuation->value() == "F");
     std::string foreign_cursor;
     std::string domestic_cursor;
-    auto page = parse_holdings_page(
-      std::move(result), foreign_cursor, domestic_cursor
-    );
+    auto page = parse_holdings_page(std::move(result), foreign_cursor, domestic_cursor);
     if (!page) {
       finish_holdings(operation, Result<HoldingsSnapshot>(std::move(page.error())));
       return;
     }
 
     auto pagination_error = append_holdings_page(
-      operation->snapshot_,
-      operation->page_count_,
-      operation->foreign_cursor_,
-      operation->domestic_cursor_,
-      std::move(page.value()),
-      std::move(foreign_cursor),
-      std::move(domestic_cursor),
-      has_next
+      operation->snapshot_, operation->page_count_, operation->foreign_cursor_, operation->domestic_cursor_,
+      std::move(page.value()), std::move(foreign_cursor), std::move(domestic_cursor), has_next
     );
     if (pagination_error) {
-      finish_holdings(
-        operation, Result<HoldingsSnapshot>(std::move(*pagination_error))
-      );
+      finish_holdings(operation, Result<HoldingsSnapshot>(std::move(*pagination_error)));
       return;
     }
 
@@ -2636,8 +2396,7 @@ private:
       }
       QuoteSnapshot quote;
       quote.instrument_ = std::move(instrument);
-      quote.last_price_ =
-        Decimal64::parse(broker_detail::json_string(output->as_object(), "stck_prpr"));
+      quote.last_price_ = Decimal64::parse(broker_detail::json_string(output->as_object(), "stck_prpr"));
       quote.currency_ = Currency::krw();
       quote.received_at_ = std::chrono::system_clock::now();
       return Result<QuoteSnapshot>(std::move(quote));
@@ -2653,15 +2412,11 @@ private:
   static Result<HoldingsSnapshot> parse_holdings(Result<network::HttpResponse> result) {
     std::string foreign_cursor;
     std::string domestic_cursor;
-    return parse_holdings_page(
-      std::move(result), foreign_cursor, domestic_cursor
-    );
+    return parse_holdings_page(std::move(result), foreign_cursor, domestic_cursor);
   }
 
   static Result<HoldingsSnapshot> parse_holdings_page(
-    Result<network::HttpResponse> result,
-    std::string& foreign_cursor,
-    std::string& domestic_cursor
+    Result<network::HttpResponse> result, std::string& foreign_cursor, std::string& domestic_cursor
   ) {
     if (!result) {
       return Result<HoldingsSnapshot>(std::move(result.error()));
@@ -2711,20 +2466,15 @@ private:
         };
         position.name_ = broker_detail::json_string(output, "prdt_name");
         position.quantity_ = Decimal64::parse(broker_detail::json_string(output, "hldg_qty"));
-        position.sellable_quantity_ =
-          Decimal64::parse(broker_detail::json_string(output, "ord_psbl_qty"));
-        position.average_purchase_price_ =
-          Decimal64::parse(broker_detail::json_string(output, "pchs_avg_pric"));
+        position.sellable_quantity_ = Decimal64::parse(broker_detail::json_string(output, "ord_psbl_qty"));
+        position.average_purchase_price_ = Decimal64::parse(broker_detail::json_string(output, "pchs_avg_pric"));
         position.last_price_ = Decimal64::parse(broker_detail::json_string(output, "prpr"));
-        position.purchase_value_ = Money{
-          Decimal64::parse(broker_detail::json_string(output, "pchs_amt")), Currency::krw()
-        };
-        position.market_value_ = Money{
-          Decimal64::parse(broker_detail::json_string(output, "evlu_amt")), Currency::krw()
-        };
-        position.unrealized_profit_loss_ = Money{
-          Decimal64::parse(broker_detail::json_string(output, "evlu_pfls_amt")), Currency::krw()
-        };
+        position.purchase_value_ =
+          Money{Decimal64::parse(broker_detail::json_string(output, "pchs_amt")), Currency::krw()};
+        position.market_value_ =
+          Money{Decimal64::parse(broker_detail::json_string(output, "evlu_amt")), Currency::krw()};
+        position.unrealized_profit_loss_ =
+          Money{Decimal64::parse(broker_detail::json_string(output, "evlu_pfls_amt")), Currency::krw()};
         position.unrealized_return_ =
           broker_detail::percent_to_ratio(broker_detail::json_string(output, "evlu_pfls_rt"));
         snapshot.positions_.push_back(std::move(position));
@@ -2746,14 +2496,10 @@ private:
         );
       }
 
-      if (
-        const auto value = document->if_contains("ctx_area_fk100"); value && value->is_string()
-      ) {
+      if (const auto value = document->if_contains("ctx_area_fk100"); value && value->is_string()) {
         foreign_cursor = value->as_string().c_str();
       }
-      if (
-        const auto value = document->if_contains("ctx_area_nk100"); value && value->is_string()
-      ) {
+      if (const auto value = document->if_contains("ctx_area_nk100"); value && value->is_string()) {
         domestic_cursor = value->as_string().c_str();
       }
       return Result<HoldingsSnapshot>(std::move(snapshot));
@@ -2792,12 +2538,9 @@ private:
 
     // Captures the inquiry inputs and final completion handler.
     OrderHistoryOperation(
-      KisAccount selected_account,
-      KisHistoryRange selected_range,
-      OrderPageHandler selected_completion
+      KisAccount selected_account, KisHistoryRange selected_range, OrderPageHandler selected_completion
     )
-    : account_(std::move(selected_account)), range_(selected_range),
-      completion_(std::move(selected_completion)) {}
+    : account_(std::move(selected_account)), range_(selected_range), completion_(std::move(selected_completion)) {}
   };
 
   // Returns an error when the account selector cannot address a KIS account.
@@ -2834,10 +2577,7 @@ private:
   // A limit order without a price and a market order carrying a price are both
   // rejected before any network I/O, because either would make the transmitted
   // order differ from the one the caller described.
-  static std::optional<BrokerError> validate_price(
-    OrderType type,
-    const std::optional<Decimal64>& price
-  ) {
+  static std::optional<BrokerError> validate_price(OrderType type, const std::optional<Decimal64>& price) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
     error.reached_broker_ = false;
@@ -2884,10 +2624,7 @@ private:
   //
   // Nothing about the trigger's direction or its relation to the limit is checked: the sheet
   // documents neither, and a local rule KIS does not state would refuse orders KIS accepts.
-  static std::optional<BrokerError> validate_trigger(
-    OrderType type,
-    const std::optional<Decimal64>& trigger
-  ) {
+  static std::optional<BrokerError> validate_trigger(OrderType type, const std::optional<Decimal64>& trigger) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
     error.reached_broker_ = false;
@@ -2959,39 +2696,39 @@ private:
   // is approximated by a neighbouring value.
   static constexpr std::array<OrderShapeRow, 28> kOrderShapes{{
     // Each row: code, type, condition, session, venues, requestable.
-    {"00", OrderType::LIMIT,             TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
-    {"01", OrderType::MARKET,            TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx |        kSor, true},
-    {"02", OrderType::CONDITIONAL_LIMIT, TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx,               true},
-    {"03", OrderType::BEST_LIMIT,        TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
-    {"04", OrderType::PRIMARY_LIMIT,     TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
-    {"05", OrderType::CLOSING_PRICE,     TimeInForce::DAY,                 OrderSession::PRE_MARKET,          kKrx,               true},
-    {"06", OrderType::CLOSING_PRICE,     TimeInForce::DAY,                 OrderSession::AFTER_HOURS,         kKrx,               true},
+    {"00", OrderType::LIMIT, TimeInForce::DAY, OrderSession::REGULAR, kKrx | kNxt | kSor, true},
+    {"01", OrderType::MARKET, TimeInForce::DAY, OrderSession::REGULAR, kKrx | kSor, true},
+    {"02", OrderType::CONDITIONAL_LIMIT, TimeInForce::DAY, OrderSession::REGULAR, kKrx, true},
+    {"03", OrderType::BEST_LIMIT, TimeInForce::DAY, OrderSession::REGULAR, kKrx | kNxt | kSor, true},
+    {"04", OrderType::PRIMARY_LIMIT, TimeInForce::DAY, OrderSession::REGULAR, kKrx | kNxt | kSor, true},
+    {"05", OrderType::CLOSING_PRICE, TimeInForce::DAY, OrderSession::PRE_MARKET, kKrx, true},
+    {"06", OrderType::CLOSING_PRICE, TimeInForce::DAY, OrderSession::AFTER_HOURS, kKrx, true},
     // Response-only: the order sheet does not publish 07. Reading 시간외 단일가
     // as a *limit* in an auction session is an inference, not something either
     // sheet states -- they name the auction without giving its price rule. It is
     // the reading that makes the code factor, and the field it would be wrong
     // about is one this library cannot send anyway.
-    {"07", OrderType::LIMIT,             TimeInForce::DAY,                 OrderSession::AFTER_HOURS_AUCTION, kKrx,               false},
-    {"11", OrderType::LIMIT,             TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
-    {"12", OrderType::LIMIT,             TimeInForce::FILL_OR_KILL,        OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
-    {"13", OrderType::MARKET,            TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
-    {"14", OrderType::MARKET,            TimeInForce::FILL_OR_KILL,        OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
-    {"15", OrderType::BEST_LIMIT,        TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
-    {"16", OrderType::BEST_LIMIT,        TimeInForce::FILL_OR_KILL,        OrderSession::REGULAR,             kKrx | kNxt | kSor, true},
-    {"21", OrderType::MID_PRICE,         TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx | kNxt,        true},
-    {"22", OrderType::STOP_LIMIT,        TimeInForce::DAY,                 OrderSession::REGULAR,             kKrx | kNxt,        true},
-    {"23", OrderType::MID_PRICE,         TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,             kKrx | kNxt,        true},
-    {"24", OrderType::MID_PRICE,         TimeInForce::FILL_OR_KILL,        OrderSession::REGULAR,             kKrx | kNxt,        true},
-    {"27", OrderType::LIMIT,             TimeInForce::DAY,                 OrderSession::GTP,                 kNxt,               true},
-    {"28", OrderType::BEST_LIMIT,        TimeInForce::DAY,                 OrderSession::GTP,                 kNxt,               true},
-    {"29", OrderType::PRIMARY_LIMIT,     TimeInForce::DAY,                 OrderSession::GTP,                 kNxt,               true},
-    {"41", OrderType::LIMIT,             TimeInForce::DAY,                 OrderSession::AFTER_MARKET,        kKrx,               true},
-    {"42", OrderType::LIMIT,             TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::AFTER_MARKET,        kKrx,               true},
-    {"43", OrderType::LIMIT,             TimeInForce::FILL_OR_KILL,        OrderSession::AFTER_MARKET,        kKrx,               true},
-    {"44", OrderType::BEST_LIMIT,        TimeInForce::DAY,                 OrderSession::AFTER_MARKET,        kKrx,               true},
-    {"45", OrderType::BEST_LIMIT,        TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::AFTER_MARKET,        kKrx,               true},
-    {"46", OrderType::BEST_LIMIT,        TimeInForce::FILL_OR_KILL,        OrderSession::AFTER_MARKET,        kKrx,               true},
-    {"47", OrderType::PRIMARY_LIMIT,     TimeInForce::DAY,                 OrderSession::AFTER_MARKET,        kKrx,               true},
+    {"07", OrderType::LIMIT, TimeInForce::DAY, OrderSession::AFTER_HOURS_AUCTION, kKrx, false},
+    {"11", OrderType::LIMIT, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR, kKrx | kNxt | kSor, true},
+    {"12", OrderType::LIMIT, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR, kKrx | kNxt | kSor, true},
+    {"13", OrderType::MARKET, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR, kKrx | kNxt | kSor, true},
+    {"14", OrderType::MARKET, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR, kKrx | kNxt | kSor, true},
+    {"15", OrderType::BEST_LIMIT, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR, kKrx | kNxt | kSor, true},
+    {"16", OrderType::BEST_LIMIT, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR, kKrx | kNxt | kSor, true},
+    {"21", OrderType::MID_PRICE, TimeInForce::DAY, OrderSession::REGULAR, kKrx | kNxt, true},
+    {"22", OrderType::STOP_LIMIT, TimeInForce::DAY, OrderSession::REGULAR, kKrx | kNxt, true},
+    {"23", OrderType::MID_PRICE, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR, kKrx | kNxt, true},
+    {"24", OrderType::MID_PRICE, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR, kKrx | kNxt, true},
+    {"27", OrderType::LIMIT, TimeInForce::DAY, OrderSession::GTP, kNxt, true},
+    {"28", OrderType::BEST_LIMIT, TimeInForce::DAY, OrderSession::GTP, kNxt, true},
+    {"29", OrderType::PRIMARY_LIMIT, TimeInForce::DAY, OrderSession::GTP, kNxt, true},
+    {"41", OrderType::LIMIT, TimeInForce::DAY, OrderSession::AFTER_MARKET, kKrx, true},
+    {"42", OrderType::LIMIT, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::AFTER_MARKET, kKrx, true},
+    {"43", OrderType::LIMIT, TimeInForce::FILL_OR_KILL, OrderSession::AFTER_MARKET, kKrx, true},
+    {"44", OrderType::BEST_LIMIT, TimeInForce::DAY, OrderSession::AFTER_MARKET, kKrx, true},
+    {"45", OrderType::BEST_LIMIT, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::AFTER_MARKET, kKrx, true},
+    {"46", OrderType::BEST_LIMIT, TimeInForce::FILL_OR_KILL, OrderSession::AFTER_MARKET, kKrx, true},
+    {"47", OrderType::PRIMARY_LIMIT, TimeInForce::DAY, OrderSession::AFTER_MARKET, kKrx, true},
   }};
 
   // Returns the venue bit an `EXCG_ID_DVSN_CD` value stands for.
@@ -3024,11 +2761,7 @@ private:
   // this replaces was silent — a market order bound for NXT was sent as `01`,
   // which the sheet lists under `[KRX]` and `[SOR]` and not under `[NXT]`.
   static std::optional<BrokerError> order_division(
-    OrderType type,
-    TimeInForce time_in_force,
-    OrderSession session,
-    Venue venue,
-    std::string& division
+    OrderType type, TimeInForce time_in_force, OrderSession session, Venue venue, std::string& division
   ) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
@@ -3043,21 +2776,18 @@ private:
       }
     }
     if (matched == nullptr) {
-      error.message_ =
-        std::string("KIS publishes no order code for this combination of price basis, ") +
+      error.message_ = std::string("KIS publishes no order code for this combination of price basis, ") +
         "validity condition and session";
       return error;
     }
     if (!matched->requestable_) {
-      error.message_ =
-        std::string("KIS reports order code ") + matched->code_ +
+      error.message_ = std::string("KIS reports order code ") + matched->code_ +
         " on an inquiry but does not publish it as a placeable order";
       return error;
     }
     if ((matched->venues_ & venue_bit(venue)) == 0) {
-      error.message_ =
-        std::string("KIS order code ") + matched->code_ + " is not offered at " +
-        exchange_code(venue) + "; the venue publishes its own set of order codes";
+      error.message_ = std::string("KIS order code ") + matched->code_ + " is not offered at " + exchange_code(venue) +
+        "; the venue publishes its own set of order codes";
       return error;
     }
     division = matched->code_;
@@ -3074,8 +2804,7 @@ private:
       return false;
     }
     for (const char ch : symbol) {
-      const bool valid = (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') ||
-        (ch >= 'a' && ch <= 'z');
+      const bool valid = (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
       if (!valid) {
         return false;
       }
@@ -3094,15 +2823,12 @@ private:
     if (!broker_detail::decimal_digits(order.order_number_, 10)) {
       return false;
     }
-    return order.branch_number_.empty() ||
-      broker_detail::decimal_digits(order.branch_number_, 5);
+    return order.branch_number_.empty() || broker_detail::decimal_digits(order.branch_number_, 5);
   }
 
   // Returns an error when the order cannot be represented as a KIS cash order.
   static std::optional<BrokerError> validate_order(
-    const KisConfig& config,
-    const OrderRequest& order,
-    std::string& division
+    const KisConfig& config, const OrderRequest& order, std::string& division
   ) {
     if (auto error = unsupported_client_order_id(order)) {
       return error;
@@ -3137,8 +2863,7 @@ private:
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.reached_broker_ = false;
       error.broker_code_ = "invalid_instrument";
-      error.message_ =
-        "KIS domestic order symbol must contain six letters or digits, or seven for an ETN";
+      error.message_ = "KIS domestic order symbol must contain six letters or digits, or seven for an ETN";
       return error;
     }
     if (auto error = validate_quantity(order.quantity_)) {
@@ -3153,13 +2878,7 @@ private:
     if (auto error = validate_venue(config, order.venue_)) {
       return error;
     }
-    return order_division(
-      order.type_,
-      order.time_in_force_,
-      order.session_,
-      order.venue_,
-      division
-    );
+    return order_division(order.type_, order.time_in_force_, order.session_, order.venue_, division);
   }
 
   // Returns an error when an amendment cannot be represented as a KIS instruction.
@@ -3172,10 +2891,7 @@ private:
   // first version of the amendment test did exactly that and survived the
   // mutation it had been written to catch.
   static std::optional<BrokerError> validate_amendment(
-    const KisConfig& config,
-    const KisAmendment& amendment,
-    std::string& division,
-    bool cancel = false
+    const KisConfig& config, const KisAmendment& amendment, std::string& division, bool cancel = false
   ) {
     if (auto error = validate_quantity(amendment.quantity_)) {
       return error;
@@ -3198,13 +2914,7 @@ private:
     if (auto error = validate_venue(config, amendment.venue_)) {
       return error;
     }
-    return order_division(
-      amendment.type_,
-      amendment.time_in_force_,
-      amendment.session_,
-      amendment.venue_,
-      division
-    );
+    return order_division(amendment.type_, amendment.time_in_force_, amendment.session_, amendment.venue_, division);
   }
 
   // Returns KIS's `EXCG_ID_DVSN_CD` value for a normalized venue, or `""` to
@@ -3291,10 +3001,7 @@ private:
 
   // Builds the authenticated KIS cash-order POST request.
   static network::HttpRequest make_place_order_request(
-    const KisAccount& account,
-    const KisConfig& config,
-    std::string_view access_token,
-    const OrderRequest& order,
+    const KisAccount& account, const KisConfig& config, std::string_view access_token, const OrderRequest& order,
     std::string_view division
   ) {
     json::object body{
@@ -3311,8 +3018,7 @@ private:
     if (order.trigger_price_) {
       body.emplace("CNDT_PRIC", order.trigger_price_->str());
     }
-    if (const auto* exchange = transmitted_exchange(config, order.venue_);
-        *exchange != '\0') {
+    if (const auto* exchange = transmitted_exchange(config, order.venue_); *exchange != '\0') {
       body.emplace("EXCG_ID_DVSN_CD", exchange);
     }
 
@@ -3327,9 +3033,7 @@ private:
       {"authorization", "Bearer " + std::string(access_token)},
       {"appkey", config.key()},
       {"appsecret", config.secret()},
-      {"tr_id", buy ?
-        (config.is_demo_ ? "VTTC0012U" : "TTTC0012U") :
-        (config.is_demo_ ? "VTTC0011U" : "TTTC0011U")},
+      {"tr_id", buy ? (config.is_demo_ ? "VTTC0012U" : "TTTC0012U") : (config.is_demo_ ? "VTTC0011U" : "TTTC0011U")},
       {"custtype", "P"},
       {"content-type", "application/json; charset=utf-8"},
     };
@@ -3338,12 +3042,8 @@ private:
 
   // Builds the authenticated KIS modification or cancellation POST request.
   static network::HttpRequest make_amend_order_request(
-    const KisAccount& account,
-    const KisConfig& config,
-    std::string_view access_token,
-    const KisAmendment& amendment,
-    bool cancel,
-    std::string_view division
+    const KisAccount& account, const KisConfig& config, std::string_view access_token, const KisAmendment& amendment,
+    bool cancel, std::string_view division
   ) {
     json::object body{
       {"CANO", account.account_number_},
@@ -3358,16 +3058,17 @@ private:
     };
     // On a modification `validate_amendment` has already required this exactly for `22`. On a
     // cancellation nothing was refused, so the same test decides whether to restate it.
-    if (amendment.trigger_price_ && carries_trigger_price(amendment.type_) &&
-        valid_trigger_value(*amendment.trigger_price_)) {
+    if (
+      amendment.trigger_price_ && carries_trigger_price(amendment.type_) &&
+      valid_trigger_value(*amendment.trigger_price_)
+    ) {
       body.emplace("CNDT_PRIC", amendment.trigger_price_->str());
     }
     // The 주식주문(정정취소) sheet publishes `EXCG_ID_DVSN_CD` and the same
     // per-venue `ORD_DVSN` sets as the placement sheet, and this never sent it:
     // an amendment to an order living at NXT was addressed to KRX, the sheet's
     // documented default for an omitted field.
-    if (const auto* exchange = transmitted_exchange(config, amendment.venue_);
-        *exchange != '\0') {
+    if (const auto* exchange = transmitted_exchange(config, amendment.venue_); *exchange != '\0') {
       body.emplace("EXCG_ID_DVSN_CD", exchange);
     }
 
@@ -3453,9 +3154,7 @@ private:
   // from the demo server (`demo`) or the real one, or nothing if `code` is not such a refusal. Each
   // code is recognized from the server it was seen from only, with the `rt_cd` it was seen with.
   static std::optional<std::string_view> recognized_refusal_status(
-    OrderOperation operation,
-    std::string_view code,
-    bool demo
+    OrderOperation operation, std::string_view code, bool demo
   ) {
     if (!demo) {
       if (operation == OrderOperation::PLACE && code == "APBK3061") {
@@ -3488,10 +3187,7 @@ private:
   // reply acknowledging an order is never read as a refusal. A refused cancellation says only that the cancellation did nothing, not what
   // became of the order it named.
   static std::optional<BrokerError> kis_recognized_refusal(
-    int http_status,
-    const json::object& document,
-    OrderOperation operation,
-    bool demo
+    int http_status, const json::object& document, OrderOperation operation, bool demo
   ) {
     if (http_status != 200) {
       return std::nullopt;
@@ -3503,8 +3199,10 @@ private:
       return std::nullopt;
     }
     const auto expected = recognized_refusal_status(operation, std::string_view(code->as_string()), demo);
-    if (!expected || !status || !status->is_string() || std::string_view(status->as_string()) != *expected ||
-        !message || !message->is_string() || message->as_string().empty()) {
+    if (
+      !expected || !status || !status->is_string() || std::string_view(status->as_string()) != *expected || !message ||
+      !message->is_string() || message->as_string().empty()
+    ) {
       return std::nullopt;
     }
     const std::string stated(code->as_string());
@@ -3532,9 +3230,7 @@ private:
   // Parses a KIS order-instruction response into its composite acknowledgement. `operation` and
   // `demo` describe the request this reply answers; left out, no refusal is recognized.
   static Result<KisOrderAck> parse_order_ack(
-    Result<network::HttpResponse> result,
-    OrderOperation operation = OrderOperation::UNCLASSIFIED,
-    bool demo = false
+    Result<network::HttpResponse> result, OrderOperation operation = OrderOperation::UNCLASSIFIED, bool demo = false
   ) {
     if (!result) {
       return Result<KisOrderAck>(std::move(result.error()));
@@ -3588,37 +3284,22 @@ private:
       return;
     }
 
-    ensure_token(
-      TokenHandler(
-        [
-          self = shared_from_this(),
-          account = std::move(account),
-          order = std::move(order),
-          division = std::move(division),
-          completion = std::move(completion)
-        ](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->complete_order_ack(
-              std::move(completion), Result<KisOrderAck>(std::move(*token_error))
-            );
-            return;
-          }
-          auto request = make_place_order_request(
-            account, self->config_, self->token_.access_token_, order, division
-          );
-          self->request_order_ack(std::move(request), OrderOperation::PLACE, std::move(completion));
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), account = std::move(account), order = std::move(order),
+        division = std::move(division),
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->complete_order_ack(std::move(completion), Result<KisOrderAck>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        auto request = make_place_order_request(account, self->config_, self->token_.access_token_, order, division);
+        self->request_order_ack(std::move(request), OrderOperation::PLACE, std::move(completion));
+      }
+    ));
   }
 
   // Validates and starts one KIS modification or cancellation submission.
-  void start_amend_order(
-    KisAccount account,
-    KisAmendment amendment,
-    bool cancel,
-    OrderAckHandler completion
-  ) {
+  void start_amend_order(KisAccount account, KisAmendment amendment, bool cancel, OrderAckHandler completion) {
     std::string division;
     auto invalid = validate_account(account);
     if (!invalid && !valid_order_reference(amendment.order_)) {
@@ -3639,51 +3320,34 @@ private:
       return;
     }
 
-    ensure_token(
-      TokenHandler(
-        [
-          self = shared_from_this(),
-          account = std::move(account),
-          amendment = std::move(amendment),
-          cancel,
-          division = std::move(division),
-          completion = std::move(completion)
-        ](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->complete_order_ack(
-              std::move(completion), Result<KisOrderAck>(std::move(*token_error))
-            );
-            return;
-          }
-          auto request = make_amend_order_request(
-            account, self->config_, self->token_.access_token_, amendment, cancel, division
-          );
-          self->request_order_ack(
-            std::move(request), cancel ? OrderOperation::CANCEL : OrderOperation::AMEND, std::move(completion)
-          );
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), account = std::move(account), amendment = std::move(amendment), cancel,
+        division = std::move(division),
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->complete_order_ack(std::move(completion), Result<KisOrderAck>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        auto request =
+          make_amend_order_request(account, self->config_, self->token_.access_token_, amendment, cancel, division);
+        self->request_order_ack(
+          std::move(request), cancel ? OrderOperation::CANCEL : OrderOperation::AMEND, std::move(completion)
+        );
+      }
+    ));
   }
 
   // Sends an order-writing request and dispatches its parsed acknowledgement. The operation and the
   // environment are fixed here, with the request, and travel with its reply.
-  void request_order_ack(
-    network::HttpRequest request,
-    OrderOperation operation,
-    OrderAckHandler completion
-  ) {
+  void request_order_ack(network::HttpRequest request, OrderOperation operation, OrderAckHandler completion) {
     http_->async_request(
       std::move(request),
-      [self = shared_from_this(), operation, demo = config_.is_demo_, completion = std::move(completion)](
-        Result<network::HttpResponse> result
-      ) mutable {
+      [self = shared_from_this(), operation, demo = config_.is_demo_,
+        completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
         net::post(
           self->strand_,
           [self, operation, demo, completion = std::move(completion), result = std::move(result)]() mutable {
-            self->complete_order_ack(
-              std::move(completion), parse_order_ack(std::move(result), operation, demo)
-            );
+            self->complete_order_ack(std::move(completion), parse_order_ack(std::move(result), operation, demo));
           }
         );
       }
@@ -3698,40 +3362,29 @@ private:
       return;
     }
 
-    auto operation = std::make_shared<OpenOrderOperation>(
-      std::move(account), std::move(completion)
-    );
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->complete_open_orders(
-              std::move(operation->completion_),
-              Result<KisOpenOrderPage>(std::move(*token_error))
-            );
-            return;
-          }
-          self->request_open_orders(operation);
-        }
-      )
-    );
+    auto operation = std::make_shared<OpenOrderOperation>(std::move(account), std::move(completion));
+    ensure_token(TokenHandler([self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
+      if (token_error) {
+        self->complete_open_orders(
+          std::move(operation->completion_), Result<KisOpenOrderPage>(std::move(*token_error))
+        );
+        return;
+      }
+      self->request_open_orders(operation);
+    }));
   }
 
   // Builds one page request for KIS orders that remain modifiable.
   static network::HttpRequest make_open_orders_request(
-    const KisAccount& account,
-    const KisConfig& config,
-    std::string_view access_token,
-    std::string_view foreign_cursor,
-    std::string_view domestic_cursor,
-    bool continuation
+    const KisAccount& account, const KisConfig& config, std::string_view access_token, std::string_view foreign_cursor,
+    std::string_view domestic_cursor, bool continuation
   ) {
     if (config.is_demo_) {
       // Demo has no `TTTC0084R`: today's unfilled orders (`CCLD_DVSN=02`) from the daily inquiry.
       const auto today = today_in_seoul();
       return make_order_history_request(
-        account, config, access_token, KisHistoryRange{today, today}, foreign_cursor,
-        domestic_cursor, continuation, "02"
+        account, config, access_token, KisHistoryRange{today, today}, foreign_cursor, domestic_cursor, continuation,
+        "02"
       );
     }
     network::HttpRequest request;
@@ -3745,9 +3398,8 @@ private:
       "/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl"
       "?CANO=" +
       account.account_number_ + "&ACNT_PRDT_CD=" + account.product_code_ +
-      "&INQR_DVSN_1=0&INQR_DVSN_2=0&CTX_AREA_FK100=" +
-      broker_detail::query_encode(foreign_cursor) + "&CTX_AREA_NK100=" +
-      broker_detail::query_encode(domestic_cursor);
+      "&INQR_DVSN_1=0&INQR_DVSN_2=0&CTX_AREA_FK100=" + broker_detail::query_encode(foreign_cursor) +
+      "&CTX_AREA_NK100=" + broker_detail::query_encode(domestic_cursor);
     request.headers_ = {
       {"authorization", "Bearer " + std::string(access_token)},
       {"appkey", config.key()},
@@ -3763,70 +3415,47 @@ private:
   // Sends the next modifiable-order page request for `operation`.
   void request_open_orders(const std::shared_ptr<OpenOrderOperation>& operation) {
     auto request = make_open_orders_request(
-      operation->account_,
-      config_,
-      token_.access_token_,
-      operation->foreign_cursor_,
-      operation->domestic_cursor_,
+      operation->account_, config_, token_.access_token_, operation->foreign_cursor_, operation->domestic_cursor_,
       operation->page_count_ > 0
     );
     http_->async_request(
-      std::move(request),
-      [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
-        net::post(
-          self->strand_,
-          [self, operation, result = std::move(result)]() mutable {
-            self->handle_open_orders_page(operation, std::move(result));
-          }
-        );
+      std::move(request), [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
+        net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
+          self->handle_open_orders_page(operation, std::move(result));
+        });
       }
     );
   }
 
   // Accumulates one modifiable-order page and advances its continuation.
   void handle_open_orders_page(
-    const std::shared_ptr<OpenOrderOperation>& operation,
-    Result<network::HttpResponse> result
+    const std::shared_ptr<OpenOrderOperation>& operation, Result<network::HttpResponse> result
   ) {
     if (!result) {
-      complete_open_orders(
-        std::move(operation->completion_), Result<KisOpenOrderPage>(std::move(result.error()))
-      );
+      complete_open_orders(std::move(operation->completion_), Result<KisOpenOrderPage>(std::move(result.error())));
       return;
     }
 
     const bool has_next = continuation_pending(result.value());
     std::string foreign_cursor;
     std::string domestic_cursor;
-    auto page = parse_open_orders_page(
-      std::move(result), foreign_cursor, domestic_cursor, config_.is_demo_
-    );
+    auto page = parse_open_orders_page(std::move(result), foreign_cursor, domestic_cursor, config_.is_demo_);
     if (!page) {
-      complete_open_orders(
-        std::move(operation->completion_), Result<KisOpenOrderPage>(std::move(page.error()))
-      );
+      complete_open_orders(std::move(operation->completion_), Result<KisOpenOrderPage>(std::move(page.error())));
       return;
     }
 
     auto pagination_error = advance_cursors(
-      operation->page_count_,
-      operation->foreign_cursor_,
-      operation->domestic_cursor_,
-      std::move(foreign_cursor),
-      std::move(domestic_cursor),
-      has_next,
-      "KIS modifiable-order continuation did not advance"
+      operation->page_count_, operation->foreign_cursor_, operation->domestic_cursor_, std::move(foreign_cursor),
+      std::move(domestic_cursor), has_next, "KIS modifiable-order continuation did not advance"
     );
     if (pagination_error) {
-      complete_open_orders(
-        std::move(operation->completion_), Result<KisOpenOrderPage>(std::move(*pagination_error))
-      );
+      complete_open_orders(std::move(operation->completion_), Result<KisOpenOrderPage>(std::move(*pagination_error)));
       return;
     }
 
     operation->page_.orders_.insert(
-      operation->page_.orders_.end(),
-      std::make_move_iterator(page.value().orders_.begin()),
+      operation->page_.orders_.end(), std::make_move_iterator(page.value().orders_.begin()),
       std::make_move_iterator(page.value().orders_.end())
     );
     if (has_next) {
@@ -3835,9 +3464,7 @@ private:
     }
 
     operation->page_.received_at_ = std::chrono::system_clock::now();
-    complete_open_orders(
-      std::move(operation->completion_), Result<KisOpenOrderPage>(std::move(operation->page_))
-    );
+    complete_open_orders(std::move(operation->completion_), Result<KisOpenOrderPage>(std::move(operation->page_)));
   }
 
   // Parses one KIS modifiable-order response page and its cursors.
@@ -3845,10 +3472,7 @@ private:
   // `demo` reads the daily order inquiry's `output1` instead, which is what the request asked for on
   // demo, and lists each row with a remaining quantity.
   static Result<KisOpenOrderPage> parse_open_orders_page(
-    Result<network::HttpResponse> result,
-    std::string& foreign_cursor,
-    std::string& domestic_cursor,
-    bool demo = false
+    Result<network::HttpResponse> result, std::string& foreign_cursor, std::string& domestic_cursor, bool demo = false
   ) {
     if (!result) {
       return Result<KisOpenOrderPage>(std::move(result.error()));
@@ -3887,10 +3511,8 @@ private:
         open_order.order_ref_.order_number_ = broker_detail::json_string(row, "odno");
         open_order.original_order_.branch_number_ = open_order.order_ref_.branch_number_;
         open_order.original_order_.order_number_ = broker_detail::json_string(row, "orgn_odno");
-        open_order.amendable_quantity_ =
-          Decimal64::parse(broker_detail::json_string(row, "psbl_qty"));
-        if (const auto* released = row.if_contains("stpm_efct_occr_yn");
-            released != nullptr && released->is_string()) {
+        open_order.amendable_quantity_ = Decimal64::parse(broker_detail::json_string(row, "psbl_qty"));
+        if (const auto* released = row.if_contains("stpm_efct_occr_yn"); released != nullptr && released->is_string()) {
           open_order.stop_released_ = std::string(released->get_string());
         }
 
@@ -3906,9 +3528,7 @@ private:
         };
         order.venue_ = reported_venue(row);
         order.name_ = broker_detail::json_string(row, "prdt_name");
-        order.side_ = normalized_order_side(
-          broker_detail::json_string(row, "sll_buy_dvsn_cd")
-        );
+        order.side_ = normalized_order_side(broker_detail::json_string(row, "sll_buy_dvsn_cd"));
         apply_order_shape(broker_detail::json_string(row, "ord_dvsn_cd"), order);
         order.quantity_ = Decimal64::parse(broker_detail::json_string(row, "ord_qty"));
         if (carries_caller_price(order.type_)) {
@@ -3916,14 +3536,11 @@ private:
         }
         order.trigger_price_ = reported_trigger(row);
         order.currency_ = Currency::krw();
-        order.execution_.filled_quantity_ =
-          Decimal64::parse(broker_detail::json_string(row, "tot_ccld_qty"));
-        order.execution_.filled_amount_ = Money{
-          Decimal64::parse(broker_detail::json_string(row, "tot_ccld_amt")), Currency::krw()
-        };
-        order.status_ = order.execution_.filled_quantity_.coefficient() > 0 ?
-          OrderStatus::PARTIAL_FILLED :
-          OrderStatus::PENDING;
+        order.execution_.filled_quantity_ = Decimal64::parse(broker_detail::json_string(row, "tot_ccld_qty"));
+        order.execution_.filled_amount_ =
+          Money{Decimal64::parse(broker_detail::json_string(row, "tot_ccld_amt")), Currency::krw()};
+        order.status_ =
+          order.execution_.filled_quantity_.coefficient() > 0 ? OrderStatus::PARTIAL_FILLED : OrderStatus::PENDING;
         page.orders_.push_back(std::move(open_order));
       }
 
@@ -3941,10 +3558,7 @@ private:
   // Validates and starts a complete KIS order-history inquiry.
   void start_order_history(KisAccount account, KisHistoryRange range, OrderPageHandler completion) {
     auto invalid = validate_account(account);
-    if (
-      !invalid &&
-      (!is_valid_date(range.from_) || !is_valid_date(range.to_) || range.to_ < range.from_)
-    ) {
+    if (!invalid && (!is_valid_date(range.from_) || !is_valid_date(range.to_) || range.to_ < range.from_)) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.reached_broker_ = false;
@@ -3957,33 +3571,20 @@ private:
       return;
     }
 
-    auto operation = std::make_shared<OrderHistoryOperation>(
-      std::move(account), range, std::move(completion)
-    );
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->complete_order_page(
-              std::move(operation->completion_), Result<OrderPage>(std::move(*token_error))
-            );
-            return;
-          }
-          self->request_order_history(operation);
-        }
-      )
-    );
+    auto operation = std::make_shared<OrderHistoryOperation>(std::move(account), range, std::move(completion));
+    ensure_token(TokenHandler([self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
+      if (token_error) {
+        self->complete_order_page(std::move(operation->completion_), Result<OrderPage>(std::move(*token_error)));
+        return;
+      }
+      self->request_order_history(operation);
+    }));
   }
 
   // Builds one page request for KIS daily order and execution history.
   static network::HttpRequest make_order_history_request(
-    const KisAccount& account,
-    const KisConfig& config,
-    std::string_view access_token,
-    const KisHistoryRange& range,
-    std::string_view foreign_cursor,
-    std::string_view domestic_cursor,
-    bool continuation,
+    const KisAccount& account, const KisConfig& config, std::string_view access_token, const KisHistoryRange& range,
+    std::string_view foreign_cursor, std::string_view domestic_cursor, bool continuation,
     std::string_view executions = "00"
   ) {
     network::HttpRequest request;
@@ -3993,14 +3594,13 @@ private:
     request.target_ =
       "/uapi/domestic-stock/v1/trading/inquire-daily-ccld"
       "?CANO=" +
-      account.account_number_ + "&ACNT_PRDT_CD=" + account.product_code_ + "&INQR_STRT_DT=" +
-      compact_date(range.from_) + "&INQR_END_DT=" + compact_date(range.to_) +
+      account.account_number_ + "&ACNT_PRDT_CD=" + account.product_code_ +
+      "&INQR_STRT_DT=" + compact_date(range.from_) + "&INQR_END_DT=" + compact_date(range.to_) +
       "&SLL_BUY_DVSN_CD=00&PDNO=&ORD_GNO_BRNO=&ODNO=&CCLD_DVSN=" + std::string(executions) +
       "&INQR_DVSN=00"
       "&INQR_DVSN_1=&INQR_DVSN_3=00&EXCG_ID_DVSN_CD=" +
-      (config.is_demo_ ? "KRX" : "ALL") + "&CTX_AREA_FK100=" +
-      broker_detail::query_encode(foreign_cursor) + "&CTX_AREA_NK100=" +
-      broker_detail::query_encode(domestic_cursor);
+      (config.is_demo_ ? "KRX" : "ALL") + "&CTX_AREA_FK100=" + broker_detail::query_encode(foreign_cursor) +
+      "&CTX_AREA_NK100=" + broker_detail::query_encode(domestic_cursor);
     request.headers_ = {
       {"authorization", "Bearer " + std::string(access_token)},
       {"appkey", config.key()},
@@ -4016,36 +3616,24 @@ private:
   // Sends the next order-history page request for `operation`.
   void request_order_history(const std::shared_ptr<OrderHistoryOperation>& operation) {
     auto request = make_order_history_request(
-      operation->account_,
-      config_,
-      token_.access_token_,
-      operation->range_,
-      operation->foreign_cursor_,
-      operation->domestic_cursor_,
-      operation->page_count_ > 0
+      operation->account_, config_, token_.access_token_, operation->range_, operation->foreign_cursor_,
+      operation->domestic_cursor_, operation->page_count_ > 0
     );
     http_->async_request(
-      std::move(request),
-      [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
-        net::post(
-          self->strand_,
-          [self, operation, result = std::move(result)]() mutable {
-            self->handle_order_history_page(operation, std::move(result));
-          }
-        );
+      std::move(request), [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
+        net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
+          self->handle_order_history_page(operation, std::move(result));
+        });
       }
     );
   }
 
   // Accumulates one order-history page and advances its continuation.
   void handle_order_history_page(
-    const std::shared_ptr<OrderHistoryOperation>& operation,
-    Result<network::HttpResponse> result
+    const std::shared_ptr<OrderHistoryOperation>& operation, Result<network::HttpResponse> result
   ) {
     if (!result) {
-      complete_order_page(
-        std::move(operation->completion_), Result<OrderPage>(std::move(result.error()))
-      );
+      complete_order_page(std::move(operation->completion_), Result<OrderPage>(std::move(result.error())));
       return;
     }
 
@@ -4054,31 +3642,21 @@ private:
     std::string domestic_cursor;
     auto page = parse_order_history_page(std::move(result), foreign_cursor, domestic_cursor);
     if (!page) {
-      complete_order_page(
-        std::move(operation->completion_), Result<OrderPage>(std::move(page.error()))
-      );
+      complete_order_page(std::move(operation->completion_), Result<OrderPage>(std::move(page.error())));
       return;
     }
 
     auto pagination_error = advance_cursors(
-      operation->page_count_,
-      operation->foreign_cursor_,
-      operation->domestic_cursor_,
-      std::move(foreign_cursor),
-      std::move(domestic_cursor),
-      has_next,
-      "KIS order-history continuation did not advance"
+      operation->page_count_, operation->foreign_cursor_, operation->domestic_cursor_, std::move(foreign_cursor),
+      std::move(domestic_cursor), has_next, "KIS order-history continuation did not advance"
     );
     if (pagination_error) {
-      complete_order_page(
-        std::move(operation->completion_), Result<OrderPage>(std::move(*pagination_error))
-      );
+      complete_order_page(std::move(operation->completion_), Result<OrderPage>(std::move(*pagination_error)));
       return;
     }
 
     operation->page_.orders_.insert(
-      operation->page_.orders_.end(),
-      std::make_move_iterator(page.value().orders_.begin()),
+      operation->page_.orders_.end(), std::make_move_iterator(page.value().orders_.begin()),
       std::make_move_iterator(page.value().orders_.end())
     );
     if (has_next) {
@@ -4087,9 +3665,7 @@ private:
     }
 
     operation->page_.received_at_ = std::chrono::system_clock::now();
-    complete_order_page(
-      std::move(operation->completion_), Result<OrderPage>(std::move(operation->page_))
-    );
+    complete_order_page(std::move(operation->completion_), Result<OrderPage>(std::move(operation->page_)));
   }
 
   // Builds the order one daily-inquiry row describes.
@@ -4109,9 +3685,7 @@ private:
     };
     order.venue_ = reported_venue(row);
     order.name_ = broker_detail::json_string(row, "prdt_name");
-    order.side_ = normalized_order_side(
-      broker_detail::json_string(row, "sll_buy_dvsn_cd")
-    );
+    order.side_ = normalized_order_side(broker_detail::json_string(row, "sll_buy_dvsn_cd"));
     apply_order_shape(broker_detail::json_string(row, "ord_dvsn_cd"), order);
     order.quantity_ = Decimal64::parse(broker_detail::json_string(row, "ord_qty"));
     if (carries_caller_price(order.type_)) {
@@ -4119,9 +3693,8 @@ private:
     }
     order.trigger_price_ = reported_trigger(row);
     order.currency_ = Currency::krw();
-    order.ordered_at_ = korea_timestamp(
-      broker_detail::json_string(row, "ord_dt"), broker_detail::json_string(row, "ord_tmd")
-    );
+    order.ordered_at_ =
+      korea_timestamp(broker_detail::json_string(row, "ord_dt"), broker_detail::json_string(row, "ord_tmd"));
 
     const auto filled = Decimal64::parse(broker_detail::json_string(row, "tot_ccld_qty"));
     const auto remaining = Decimal64::parse(broker_detail::json_string(row, "rmn_qty"));
@@ -4129,15 +3702,12 @@ private:
     const bool canceled = broker_detail::json_string(row, "cncl_yn") == "Y";
 
     order.execution_.filled_quantity_ = filled;
-    order.execution_.filled_amount_ = Money{
-      Decimal64::parse(broker_detail::json_string(row, "tot_ccld_amt")), Currency::krw()
-    };
-    if (const auto average = Decimal64::parse(broker_detail::json_string(row, "avg_prvs"));
-        average.coefficient() > 0) {
+    order.execution_.filled_amount_ =
+      Money{Decimal64::parse(broker_detail::json_string(row, "tot_ccld_amt")), Currency::krw()};
+    if (const auto average = Decimal64::parse(broker_detail::json_string(row, "avg_prvs")); average.coefficient() > 0) {
       order.execution_.average_filled_price_ = average;
     }
-    order.status_ =
-      derive_order_status(order.quantity_, filled, remaining, rejected, canceled);
+    order.status_ = derive_order_status(order.quantity_, filled, remaining, rejected, canceled);
     return order;
   }
 
@@ -4180,9 +3750,7 @@ private:
 
   // Parses one KIS daily order-history response page and its cursors.
   static Result<OrderPage> parse_order_history_page(
-    Result<network::HttpResponse> result,
-    std::string& foreign_cursor,
-    std::string& domestic_cursor
+    Result<network::HttpResponse> result, std::string& foreign_cursor, std::string& domestic_cursor
   ) {
     if (!result) {
       return Result<OrderPage>(std::move(result.error()));
@@ -4235,10 +3803,7 @@ private:
   // `OrderExecution`, so the terminal state is reported without discarding
   // what was executed before it.
   static OrderStatus derive_order_status(
-    const Decimal64& ordered,
-    const Decimal64& filled,
-    const Decimal64& remaining,
-    const Decimal64& rejected,
+    const Decimal64& ordered, const Decimal64& filled, const Decimal64& remaining, const Decimal64& rejected,
     bool canceled
   ) {
     if (rejected.coefficient() > 0 && filled.coefficient() == 0) {
@@ -4316,7 +3881,9 @@ private:
   // KIS reports no venue on a holding, so this is about identity only. Where an
   // order *was* routed is `reported_venue` below, and it lives on
   // `OrderSnapshot::venue_` rather than on the instrument.
-  static constexpr Venue instrument_venue() { return Venue::COMBINED; }
+  static constexpr Venue instrument_venue() {
+    return Venue::COMBINED;
+  }
 
   // Returns an order's trigger from `stpm_cndt_pric`, or nothing.
   //
@@ -4387,16 +3954,11 @@ private:
   // Returns whether the response header requests another continuation page.
   static bool continuation_pending(const network::HttpResponse& response) {
     const auto continuation = response.base().find("tr_cont");
-    return continuation != response.base().end() &&
-      (continuation->value() == "M" || continuation->value() == "F");
+    return continuation != response.base().end() && (continuation->value() == "M" || continuation->value() == "F");
   }
 
   // Copies KIS's continuation cursors out of a response document.
-  static void read_cursors(
-    const json::object& document,
-    std::string& foreign_cursor,
-    std::string& domestic_cursor
-  ) {
+  static void read_cursors(const json::object& document, std::string& foreign_cursor, std::string& domestic_cursor) {
     if (const auto value = document.if_contains("ctx_area_fk100"); value && value->is_string()) {
       foreign_cursor = value->as_string().c_str();
     }
@@ -4410,21 +3972,14 @@ private:
   // An empty, unchanged, or excessively long continuation would loop forever
   // against a misbehaving response, so each is reported as a protocol error.
   static std::optional<BrokerError> advance_cursors(
-    std::size_t& page_count,
-    std::string& foreign_cursor,
-    std::string& domestic_cursor,
-    std::string next_foreign_cursor,
-    std::string next_domestic_cursor,
-    bool has_next,
-    std::string_view message
+    std::size_t& page_count, std::string& foreign_cursor, std::string& domestic_cursor, std::string next_foreign_cursor,
+    std::string next_domestic_cursor, bool has_next, std::string_view message
   ) {
     if (has_next) {
-      const bool cursor_did_not_advance = next_foreign_cursor == foreign_cursor &&
-        next_domestic_cursor == domestic_cursor;
+      const bool cursor_did_not_advance =
+        next_foreign_cursor == foreign_cursor && next_domestic_cursor == domestic_cursor;
       if (
-        page_count + 1 >= 100 ||
-        (next_foreign_cursor.empty() && next_domestic_cursor.empty()) ||
-        cursor_did_not_advance
+        page_count + 1 >= 100 || (next_foreign_cursor.empty() && next_domestic_cursor.empty()) || cursor_did_not_advance
       ) {
         BrokerError error;
         error.category_ = ErrorCategory::PROTOCOL;
@@ -4444,9 +3999,7 @@ private:
   // Formats a calendar date as KIS's `YYYYMMDD` inquiry bound.
   static std::string compact_date(const Date& date) {
     char buffer[9];
-    std::snprintf(
-      buffer, sizeof(buffer), "%04d%02u%02u", date.year_, date.month_, date.day_
-    );
+    std::snprintf(buffer, sizeof(buffer), "%04d%02u%02u", date.year_, date.month_, date.day_);
     return std::string(buffer);
   }
 
@@ -4456,17 +4009,25 @@ private:
   // `+09:00` offset is documented broker behaviour rather than an assumption
   // about the caller's locale.
   static std::optional<std::chrono::system_clock::time_point> korea_timestamp(
-    std::string_view date,
-    std::string_view time
+    std::string_view date, std::string_view time
   ) {
     if (date.size() != 8 || time.size() != 6) {
       return std::nullopt;
     }
     std::string iso;
     iso.reserve(25);
-    iso.append(date.substr(0, 4)).append("-").append(date.substr(4, 2)).append("-")
-      .append(date.substr(6, 2)).append("T").append(time.substr(0, 2)).append(":")
-      .append(time.substr(2, 2)).append(":").append(time.substr(4, 2)).append("+09:00");
+    iso.append(date.substr(0, 4))
+      .append("-")
+      .append(date.substr(4, 2))
+      .append("-")
+      .append(date.substr(6, 2))
+      .append("T")
+      .append(time.substr(0, 2))
+      .append(":")
+      .append(time.substr(2, 2))
+      .append(":")
+      .append(time.substr(4, 2))
+      .append("+09:00");
     return parse_iso8601_timestamp(iso);
   }
 
@@ -4533,10 +4094,7 @@ private:
     deliver(std::move(handler), std::move(result));
   }
 
-  void finish_holdings(
-    const std::shared_ptr<HoldingsOperation>& operation,
-    Result<HoldingsSnapshot> result
-  ) {
+  void finish_holdings(const std::shared_ptr<HoldingsOperation>& operation, Result<HoldingsSnapshot> result) {
     complete_holdings(std::move(operation->completion_), std::move(result));
   }
 
@@ -4560,11 +4118,7 @@ public:
    * @param config The credentials and environment.
    * @param options HTTP options.
    */
-  KisBlockingClient(
-    ssl::context& context,
-    KisConfig config,
-    network::HttpClientOptions options = {}
-  )
+  KisBlockingClient(ssl::context& context, KisConfig config, network::HttpClientOptions options = {})
   : client_(std::make_shared<KisClient>(ioc_.get_executor(), context, std::move(config), options)) {}
 
   /**
@@ -4574,7 +4128,9 @@ public:
    */
   Result<QuoteSnapshot> quote(InstrumentId instrument) {
     return run<QuoteSnapshot>(
-      [&](auto&& sink) { client_->async_quote(std::move(instrument), std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_quote(std::move(instrument), std::move(sink));
+      },
       "quote"
     );
   }
@@ -4586,7 +4142,9 @@ public:
    */
   Result<Instrument> instrument(InstrumentId subject) {
     return run<Instrument>(
-      [&](auto&& sink) { client_->async_instrument(std::move(subject), std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_instrument(std::move(subject), std::move(sink));
+      },
       "instrument"
     );
   }
@@ -4599,7 +4157,9 @@ public:
    */
   Result<TradingCalendar> calendar(Date from, bool refresh = false) {
     return run<TradingCalendar>(
-      [&](auto&& sink) { client_->async_calendar(from, refresh, std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_calendar(from, refresh, std::move(sink));
+      },
       "calendar"
     );
   }
@@ -4611,7 +4171,9 @@ public:
    */
   Result<PriceLimits> price_limits(InstrumentId instrument) {
     return run<PriceLimits>(
-      [&](auto&& sink) { client_->async_price_limits(std::move(instrument), std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_price_limits(std::move(instrument), std::move(sink));
+      },
       "price_limits"
     );
   }
@@ -4638,7 +4200,9 @@ public:
    */
   Result<DepthSnapshot> depth(InstrumentId instrument) {
     return run<DepthSnapshot>(
-      [&](auto&& sink) { client_->async_depth(std::move(instrument), std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_depth(std::move(instrument), std::move(sink));
+      },
       "depth"
     );
   }
@@ -4650,7 +4214,9 @@ public:
    */
   Result<BarSeries> bars(BarQuery query) {
     return run<BarSeries>(
-      [&](auto&& sink) { client_->async_bars(std::move(query), std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_bars(std::move(query), std::move(sink));
+      },
       "bars"
     );
   }
@@ -4662,7 +4228,9 @@ public:
    */
   Result<HoldingsSnapshot> holdings(KisAccount account) {
     return run<HoldingsSnapshot>(
-      [&](auto&& sink) { client_->async_holdings(std::move(account), std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_holdings(std::move(account), std::move(sink));
+      },
       "holdings"
     );
   }
@@ -4681,7 +4249,6 @@ public:
       "buying_power"
     );
   }
-
 
   /**
    * @brief Places a cash order; see `KisClient::async_place_order`.
@@ -4742,7 +4309,9 @@ public:
    */
   Result<KisOpenOrderPage> open_orders(KisAccount account) {
     return run<KisOpenOrderPage>(
-      [&](auto&& sink) { client_->async_open_orders(std::move(account), std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_open_orders(std::move(account), std::move(sink));
+      },
       "modifiable-order inquiry"
     );
   }
@@ -4774,14 +4343,18 @@ public:
    * @brief Returns the access token; see `KisClient::token`.
    * @return The token, empty until a request has obtained one.
    */
-  KisRest token() const { return client_->token(); }
+  KisRest token() const {
+    return client_->token();
+  }
 
   /**
    * @brief Uses a token issued earlier; see `KisClient::adopt_token`.
    * @param token The token.
    * @return `false` if the token is empty or expires within five minutes.
    */
-  bool adopt_token(KisRest token) { return client_->adopt_token(std::move(token)); }
+  bool adopt_token(KisRest token) {
+    return client_->adopt_token(std::move(token));
+  }
 
 private:
   // Drives one asynchronous operation to completion on the private loop.
@@ -4789,7 +4362,9 @@ private:
   Result<T> run(Start start, std::string_view operation) {
     std::optional<Result<T>> result;
     ioc_.restart();
-    start([&result](Result<T> value) { result.emplace(std::move(value)); });
+    start([&result](Result<T> value) {
+      result.emplace(std::move(value));
+    });
     ioc_.run();
     if (!result) {
       BrokerError error;

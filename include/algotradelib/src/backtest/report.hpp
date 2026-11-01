@@ -5,8 +5,8 @@
 #include <algotradelib/analytics>
 #include <algotradelib/core>
 
-#include <cstddef>
 #include <chrono>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <utility>
@@ -325,10 +325,8 @@ struct Report {
  *   is not empty.
  */
 inline Report summarize(
-  const ReplayResult& result,
-  const NextBarFillModel& fills,
-  std::optional<math::Scalar> periods_per_year = std::nullopt,
-  math::Scalar risk_free = math::Scalar{0}
+  const ReplayResult& result, const NextBarFillModel& fills,
+  std::optional<math::Scalar> periods_per_year = std::nullopt, math::Scalar risk_free = math::Scalar{0}
 ) {
   Report report;
   report.bars_ = result.bars_;
@@ -386,9 +384,7 @@ inline Report summarize(
   for (const auto& execution : result.executions_) {
     accumulate(report.commission_by_currency_, Money{execution.commission_, execution.currency_});
     if (execution.institution_fee_) {
-      accumulate(
-        report.institution_by_currency_, Money{*execution.institution_fee_, execution.currency_}
-      );
+      accumulate(report.institution_by_currency_, Money{*execution.institution_fee_, execution.currency_});
     } else {
       // The rate stated one figure, so this execution's commission is inclusive and the split total
       // below cannot be completed. Counted rather than approximated.
@@ -445,8 +441,9 @@ inline Report summarize(
   }
   // Present only when every charged rate split the two components, so the total is complete rather
   // than a sum over the subset that happened to state one.
-  if (costs_fit && report.caveats_.inclusive_commission_executions_ == 0 &&
-      report.institution_by_currency_.size() == 1) {
+  if (
+    costs_fit && report.caveats_.inclusive_commission_executions_ == 0 && report.institution_by_currency_.size() == 1
+  ) {
     report.institution_fees_paid_ = report.institution_by_currency_.front().amount_;
   }
   if (costs_fit && report.slippage_by_currency_.size() == 1) {
@@ -506,9 +503,8 @@ inline Report summarize(
   }
   report.max_drawdown_ = analytics::max_drawdown(levels).magnitude_;
 
-  report.annualized_sharpe_ = periods_per_year ?
-    analytics::annualize_ratio(report.sharpe_, *periods_per_year) :
-    math::missing();
+  report.annualized_sharpe_ =
+    periods_per_year ? analytics::annualize_ratio(report.sharpe_, *periods_per_year) : math::missing();
 
   // Every trade outside the curve: it holds only the opening cash, and its figures describe no trading.
   const auto outside = report.caveats_.other_currency_executions_;

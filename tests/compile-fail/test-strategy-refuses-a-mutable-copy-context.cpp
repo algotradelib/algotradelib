@@ -11,11 +11,16 @@ struct MutableCopyContext {
   int submitted = 0;
   MutableCopyContext() = default;
   MutableCopyContext(MutableCopyContext& other) : submitted(other.submitted) {}
-  void submit(strategy::TargetPosition) { ++submitted; }
+  void submit(strategy::TargetPosition) {
+    ++submitted;
+  }
 };
 
 struct Probe {
-  template <class Ctx> void on_bar(Ctx ctx, const strategy::BarEvent&) { ctx.submit(strategy::TargetPosition{}); }
+  template <class Ctx>
+  void on_bar(Ctx ctx, const strategy::BarEvent&) {
+    ctx.submit(strategy::TargetPosition{});
+  }
 };
 
 ATL_ASSERT_STRATEGY(Probe, MutableCopyContext);

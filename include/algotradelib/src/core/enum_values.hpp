@@ -127,9 +127,7 @@ constexpr bool lists_every_value(const Enum (&values)[N], IsEnumerator is_enumer
  */
 template <typename Enum, std::size_t N, typename Name>
 constexpr std::optional<Enum> value_named(
-  const std::array<Enum, N>& values,
-  Name name,
-  std::string_view text
+  const std::array<Enum, N>& values, Name name, std::string_view text
 ) noexcept {
   if (text.empty()) {
     return std::nullopt;

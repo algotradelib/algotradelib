@@ -351,9 +351,7 @@ inline PriceRule price_rule_for(Country country, SecurityType type) {
     case SecurityType::ETF:
     case SecurityType::FOREIGN_ETF:
     case SecurityType::ETN:
-      return PriceRule::unknown(
-        "KRX prices funds and notes on a ladder this library does not carry"
-      );
+      return PriceRule::unknown("KRX prices funds and notes on a ladder this library does not carry");
     case SecurityType::STOCK_WARRANT:
     case SecurityType::UNKNOWN:
       break;
@@ -418,7 +416,9 @@ public:
    * @brief Returns what the broker's field said.
    * @return The state.
    */
-  State state() const noexcept { return state_; }
+  State state() const noexcept {
+    return state_;
+  }
 
   /**
    * @brief Returns the date.
@@ -448,7 +448,9 @@ public:
    * @param rhs The second value.
    * @return `true` if they differ.
    */
-  friend bool operator!=(const StatedDate& lhs, const StatedDate& rhs) { return !(lhs == rhs); }
+  friend bool operator!=(const StatedDate& lhs, const StatedDate& rhs) {
+    return !(lhs == rhs);
+  }
 
 private:
   State state_{State::NOT_STATED};

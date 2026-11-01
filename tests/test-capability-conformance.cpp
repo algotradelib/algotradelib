@@ -67,26 +67,42 @@ struct RowsEnd {};
  */
 struct LvalueCursor {
   const AccountRow* at_;
-  const AccountRow& operator*() & { return *at_; }
+  const AccountRow& operator*() & {
+    return *at_;
+  }
   LvalueCursor& operator++() {
     ++at_;
     return *this;
   }
-  friend bool operator!=(const LvalueCursor& cursor, const RowsEnd&) { return cursor.at_ != nullptr; }
+  friend bool operator!=(const LvalueCursor& cursor, const RowsEnd&) {
+    return cursor.at_ != nullptr;
+  }
 };
 
 /** A range over `LvalueCursor`, empty. */
 struct LvalueRows {
-  LvalueCursor begin() const { return LvalueCursor{nullptr}; }
-  RowsEnd end() const { return {}; }
-  std::size_t size() const { return 0; }
+  LvalueCursor begin() const {
+    return LvalueCursor{nullptr};
+  }
+  RowsEnd end() const {
+    return {};
+  }
+  std::size_t size() const {
+    return 0;
+  }
 };
 
 /** A range with `begin`, `end` and `size` and no `value_type`, which a range-for accepts. */
 struct AccountRange {
-  const AccountRow* begin() const { return nullptr; }
-  const AccountRow* end() const { return nullptr; }
-  std::size_t size() const { return 0; }
+  const AccountRow* begin() const {
+    return nullptr;
+  }
+  const AccountRow* end() const {
+    return nullptr;
+  }
+  std::size_t size() const {
+    return 0;
+  }
 };
 
 struct AccountsWithoutValueType {};
@@ -138,9 +154,15 @@ struct BrokerTraits<conformance_fakes::AccountsWithoutValueType> : conformance_f
   static Result<conformance_fakes::AccountRange> accounts(conformance_fakes::AccountsWithoutValueType&) {
     return Result<conformance_fakes::AccountRange>(conformance_fakes::AccountRange{});
   }
-  static std::string display_of(const conformance_fakes::AccountRow& row) { return row.number_; }
-  static std::string type_of(const conformance_fakes::AccountRow&) { return "cash"; }
-  static int selector_of(const conformance_fakes::AccountRow&) { return 1; }
+  static std::string display_of(const conformance_fakes::AccountRow& row) {
+    return row.number_;
+  }
+  static std::string type_of(const conformance_fakes::AccountRow&) {
+    return "cash";
+  }
+  static int selector_of(const conformance_fakes::AccountRow&) {
+    return 1;
+  }
 };
 
 /** Account discovery over a range whose cursor works only as a named lvalue. */
@@ -152,9 +174,15 @@ struct BrokerTraits<conformance_fakes::AccountsOverLvalueCursor> : conformance_f
   static Result<conformance_fakes::LvalueRows> accounts(conformance_fakes::AccountsOverLvalueCursor&) {
     return Result<conformance_fakes::LvalueRows>(conformance_fakes::LvalueRows{});
   }
-  static std::string display_of(const conformance_fakes::AccountRow& row) { return row.number_; }
-  static std::string type_of(const conformance_fakes::AccountRow&) { return "cash"; }
-  static int selector_of(const conformance_fakes::AccountRow&) { return 1; }
+  static std::string display_of(const conformance_fakes::AccountRow& row) {
+    return row.number_;
+  }
+  static std::string type_of(const conformance_fakes::AccountRow&) {
+    return "cash";
+  }
+  static int selector_of(const conformance_fakes::AccountRow&) {
+    return 1;
+  }
 };
 
 } // namespace algotradelib

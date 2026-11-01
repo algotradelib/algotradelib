@@ -44,7 +44,9 @@ struct WebSocketSessionTestAccess {
     session.on_connect(beast::error_code{}, tcp::endpoint{});
   }
 
-  static void tls_established(WssSession& session) { session.on_ssl_handshake(beast::error_code{}); }
+  static void tls_established(WssSession& session) {
+    session.on_ssl_handshake(beast::error_code{});
+  }
 
   template <typename Session>
   static void upgraded(Session& session) {
@@ -73,8 +75,12 @@ public:
 
 protected:
   void on_message(std::string_view) override {}
-  void on_open() override { ++opened_; }
-  void on_closed() override { ++closed_; }
+  void on_open() override {
+    ++opened_;
+  }
+  void on_closed() override {
+    ++closed_;
+  }
 };
 
 /** Delivers one connect stage after `close()`, then checks the session closed and can close again. */
@@ -99,7 +105,9 @@ void check_stage(net::io_context& ioc, const std::shared_ptr<Session>& session, 
 
 } // namespace
 
-TEST_CASE("a connect stage that completes after close() closes the session instead of opening it", "[network][websocket]") {
+TEST_CASE(
+  "a connect stage that completes after close() closes the session instead of opening it", "[network][websocket]"
+) {
   net::io_context ioc;
 
   SECTION("WsSession: the lookup") {
@@ -120,24 +128,18 @@ TEST_CASE("a connect stage that completes after close() closes the session inste
 
   ssl::context context(ssl::context::tls_client);
   SECTION("WssSession: the TCP connect") {
-    check_stage(
-      ioc, std::make_shared<Probe<network::WssSession>>(ioc, context, "localhost", "1"), [](auto& session) {
-        WebSocketSessionTestAccess::connected(session);
-      }
-    );
+    check_stage(ioc, std::make_shared<Probe<network::WssSession>>(ioc, context, "localhost", "1"), [](auto& session) {
+      WebSocketSessionTestAccess::connected(session);
+    });
   }
   SECTION("WssSession: the TLS handshake") {
-    check_stage(
-      ioc, std::make_shared<Probe<network::WssSession>>(ioc, context, "localhost", "1"), [](auto& session) {
-        WebSocketSessionTestAccess::tls_established(session);
-      }
-    );
+    check_stage(ioc, std::make_shared<Probe<network::WssSession>>(ioc, context, "localhost", "1"), [](auto& session) {
+      WebSocketSessionTestAccess::tls_established(session);
+    });
   }
   SECTION("WssSession: the upgrade") {
-    check_stage(
-      ioc, std::make_shared<Probe<network::WssSession>>(ioc, context, "localhost", "1"), [](auto& session) {
-        WebSocketSessionTestAccess::upgraded(session);
-      }
-    );
+    check_stage(ioc, std::make_shared<Probe<network::WssSession>>(ioc, context, "localhost", "1"), [](auto& session) {
+      WebSocketSessionTestAccess::upgraded(session);
+    });
   }
 }

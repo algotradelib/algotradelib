@@ -34,10 +34,14 @@ using algotradelib::OrderType;
 using algotradelib::Venue;
 using Clock = std::chrono::system_clock;
 
-InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
+InstrumentId samsung() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+}
 
 /** @brief The instant this run pretends to be sending at, so the output is identical every time. */
-Clock::time_point sent_at() { return Clock::time_point{} + std::chrono::hours(24 * 20000); }
+Clock::time_point sent_at() {
+  return Clock::time_point{} + std::chrono::hours(24 * 20000);
+}
 
 strategy::PlannedOrder buy_ten() {
   strategy::PlannedOrder order;
@@ -125,9 +129,9 @@ int main() {
       std::cout << "could not open " << path << " for appending: " << journal.rejection() << "\n";
       return 1;
     }
-    runner::JournalingExecutor<KilledExecutor<runner::DryTag>, runner::FileJournal,
-      runner::ManualClock>
-      executor{KilledExecutor<runner::DryTag>{}, journal, runner::ManualClock{sent_at()}};
+    runner::JournalingExecutor<KilledExecutor<runner::DryTag>, runner::FileJournal, runner::ManualClock> executor{
+      KilledExecutor<runner::DryTag>{}, journal, runner::ManualClock{sent_at()}
+    };
     executor.set_id_prefix("run-a");
     try {
       executor.place(buy_ten());
@@ -144,37 +148,36 @@ int main() {
 
   std::cout << "2. A new process starts. Its ledger is empty.\n\n";
   runner::IndeterminacyLedger ledger;
-  std::cout << "   Before recovery, may it trade " << samsung().symbol_
-    << "? " << (ledger.requires_reconcile(samsung()) ? "no" : "yes")
-    << "  <- and that is the trap\n";
+  std::cout
+    << "   Before recovery, may it trade " << samsung().symbol_ << "? "
+    << (ledger.requires_reconcile(samsung()) ? "no" : "yes") << "  <- and that is the trap\n";
 
   const auto recovery = runner::recover_into(runner::read_journal_file(path), ledger);
-  std::cout << "   After recovery:                  "
-    << (ledger.requires_reconcile(samsung()) ? "no" : "yes") << "\n";
-  std::cout << "   Instruments marked: " << recovery.marked_.size()
-    << ", instructions owed: " << recovery.open_.size() << "\n\n";
+  std::cout << "   After recovery:                  " << (ledger.requires_reconcile(samsung()) ? "no" : "yes") << "\n";
+  std::cout
+    << "   Instruments marked: " << recovery.marked_.size() << ", instructions owed: " << recovery.open_.size()
+    << "\n\n";
 
   std::cout << "3. The broker's own order list is read, and it is the only thing that resolves.\n\n";
 
   // Too soon. An accepted write does not appear in a listing instantly, so an absent row this early
   // is not evidence that the order does not exist.
   runner::FileJournal journal(path, "example:demo-account");
-  const auto early = runner::reconcile_against(
-    recovery.open_, {}, sent_at() + std::chrono::seconds(5), ledger, journal
-  );
-  std::cout << "   Five seconds later, an empty listing: "
-    << runner::match_verdict_name(early.matches_.front().verdict_)
+  const auto early =
+    runner::reconcile_against(recovery.open_, {}, sent_at() + std::chrono::seconds(5), ledger, journal);
+  std::cout
+    << "   Five seconds later, an empty listing: " << runner::match_verdict_name(early.matches_.front().verdict_)
     << " -- still withheld\n";
 
   // Later, the row is there. The order existed after all.
-  const auto settled = runner::reconcile_against(
-    recovery.open_, {listed_order()}, sent_at() + std::chrono::minutes(10), ledger, journal
-  );
-  std::cout << "   Ten minutes later, the order is listed: "
-    << runner::match_verdict_name(settled.matches_.front().verdict_) << " as "
-    << settled.matches_.front().order_id_ << "\n";
-  std::cout << "   May it trade " << samsung().symbol_ << " now? "
-    << (ledger.requires_reconcile(samsung()) ? "no" : "yes") << "\n\n";
+  const auto settled =
+    runner::reconcile_against(recovery.open_, {listed_order()}, sent_at() + std::chrono::minutes(10), ledger, journal);
+  std::cout
+    << "   Ten minutes later, the order is listed: " << runner::match_verdict_name(settled.matches_.front().verdict_)
+    << " as " << settled.matches_.front().order_id_ << "\n";
+  std::cout
+    << "   May it trade " << samsung().symbol_ << " now? " << (ledger.requires_reconcile(samsung()) ? "no" : "yes")
+    << "\n\n";
 
   std::cout << "4. The resolution is written back, so a second restart finds nothing owed.\n\n";
   std::cout << "   What the file holds now:\n";
@@ -182,9 +185,9 @@ int main() {
 
   runner::IndeterminacyLedger later;
   const auto again = runner::recover_into(runner::read_journal_file(path), later);
-  std::cout << "\n   A third process recovers: instructions owed: " << again.open_.size()
-    << ", may it trade " << samsung().symbol_ << "? "
-    << (later.requires_reconcile(samsung()) ? "no" : "yes") << "\n\n";
+  std::cout
+    << "\n   A third process recovers: instructions owed: " << again.open_.size() << ", may it trade "
+    << samsung().symbol_ << "? " << (later.requires_reconcile(samsung()) ? "no" : "yes") << "\n\n";
 
   std::cout
     << "Had the listing stayed empty past the window, the verdict would have been `not_placed`:\n"

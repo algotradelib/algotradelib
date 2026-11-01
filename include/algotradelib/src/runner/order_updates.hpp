@@ -37,9 +37,7 @@ inline bool same_number(const Decimal64& lhs, const Decimal64& rhs) {
 }
 
 /** Returns whether two optional decimals are both absent, or both the same number. */
-inline bool same_number(
-  const std::optional<Decimal64>& lhs, const std::optional<Decimal64>& rhs
-) {
+inline bool same_number(const std::optional<Decimal64>& lhs, const std::optional<Decimal64>& rhs) {
   if (lhs.has_value() != rhs.has_value()) {
     return false;
   }
@@ -54,12 +52,9 @@ inline bool same_number(
  * excluded, so a change to them alone produces no update.
  */
 inline bool same_observable_state(const OrderSnapshot& lhs, const OrderSnapshot& rhs) {
-  return lhs.status_ == rhs.status_ &&
-    same_number(lhs.execution_.filled_quantity_, rhs.execution_.filled_quantity_) &&
-    same_number(lhs.price_, rhs.price_) &&
-    same_number(lhs.trigger_price_, rhs.trigger_price_) &&
-    same_number(lhs.quantity_, rhs.quantity_) &&
-    same_number(lhs.order_amount_, rhs.order_amount_) &&
+  return lhs.status_ == rhs.status_ && same_number(lhs.execution_.filled_quantity_, rhs.execution_.filled_quantity_) &&
+    same_number(lhs.price_, rhs.price_) && same_number(lhs.trigger_price_, rhs.trigger_price_) &&
+    same_number(lhs.quantity_, rhs.quantity_) && same_number(lhs.order_amount_, rhs.order_amount_) &&
     lhs.canceled_at_ == rhs.canceled_at_;
 }
 
@@ -124,21 +119,27 @@ public:
    * @brief Returns how many rows had an empty reference, and so were never reported.
    * @return The count of such rows over the watch's life (per sighting).
    */
-  std::size_t untracked_rows() const noexcept { return untracked_; }
+  std::size_t untracked_rows() const noexcept {
+    return untracked_;
+  }
 
   /**
    * @brief Returns how many orders the watch is tracking.
    * @return The number of orders kept from the last listing (not counting reserved rows, rows with
    *   an empty reference, or orders the listing contradicted).
    */
-  std::size_t tracked_orders() const noexcept { return tracked_.size(); }
+  std::size_t tracked_orders() const noexcept {
+    return tracked_.size();
+  }
 
   /**
    * @brief Returns how many times a listing stated one order twice with disagreeing readings (and
    *   so it was not reported).
    * @return The count over the watch's life.
    */
-  std::size_t contradicted_rows() const noexcept { return contradicted_; }
+  std::size_t contradicted_rows() const noexcept {
+    return contradicted_;
+  }
 
 private:
   // One order's last observed state, against which the next listing is compared.
@@ -155,9 +156,7 @@ private:
   // listing to one entry per reference; only then does the second decide what changed, so a
   // contradiction found on the listing's last row still suppresses a report the first row would
   // otherwise have earned.
-  std::vector<OrderSnapshot> observe(
-    const std::vector<WorkingOrder<Broker>>& rows, bool report
-  ) {
+  std::vector<OrderSnapshot> observe(const std::vector<WorkingOrder<Broker>>& rows, bool report) {
     // The listing's first `same` rows are the first `same` tracked orders again (see `unchanged_prefix`).
     const std::size_t same = unchanged_prefix(rows);
     if (same == rows.size() && same == tracked_.size()) {
@@ -219,8 +218,7 @@ private:
       }
       const auto found = held_at.find(entry.ref_);
       const Tracked* held = found == held_at.end() ? nullptr : &tracked_[found->second];
-      const bool differs =
-        held == nullptr || !order_update_detail::same_observable_state(held->last_, entry.last_);
+      const bool differs = held == nullptr || !order_update_detail::same_observable_state(held->last_, entry.last_);
       if (report && differs) {
         updates.push_back(entry.last_);
       }
@@ -230,9 +228,10 @@ private:
     // settle on. The next listing that states it once reports it afresh.
     next.erase(
       std::remove_if(
-        next.begin(),
-        next.end(),
-        [](const Tracked& entry) { return entry.contradicted_; }
+        next.begin(), next.end(),
+        [](const Tracked& entry) {
+          return entry.contradicted_;
+        }
       ),
       next.end()
     );
@@ -247,8 +246,10 @@ private:
   std::size_t unchanged_prefix(const std::vector<WorkingOrder<Broker>>& rows) const {
     const std::size_t limit = std::min(rows.size(), tracked_.size());
     std::size_t at = 0;
-    while (at < limit && !rows[at].reserved_ && rows[at].ref_ == tracked_[at].ref_ &&
-           order_update_detail::same_observable_state(tracked_[at].last_, rows[at].order_)) {
+    while (
+      at < limit && !rows[at].reserved_ && rows[at].ref_ == tracked_[at].ref_ &&
+      order_update_detail::same_observable_state(tracked_[at].last_, rows[at].order_)
+    ) {
       ++at;
     }
     return at;

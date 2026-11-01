@@ -91,7 +91,12 @@ inline constexpr bool market_phase_session_ended(MarketPhase phase) noexcept {
 }
 
 static_assert(
-  lists_every_value(all_market_phases, [](MarketPhase phase) { return !market_phase_name(phase).empty(); }),
+  lists_every_value(
+    all_market_phases,
+    [](MarketPhase phase) {
+      return !market_phase_name(phase).empty();
+    }
+  ),
   "all_market_phases must list every MarketPhase"
 );
 
@@ -118,7 +123,9 @@ struct SessionWindow {
    * @brief Returns the KRX regular session, 09:00-15:30 KST.
    * @return The default window.
    */
-  static SessionWindow krx() { return SessionWindow{}; }
+  static SessionWindow krx() {
+    return SessionWindow{};
+  }
 
   /**
    * @brief Returns the market phase at an instant.
@@ -129,10 +136,7 @@ struct SessionWindow {
    * @return `UNKNOWN` if `trading_day` is empty, `CLOSED` if it is `false`, and otherwise
    *   `PRE_OPEN`, `OPEN` or `POST_CLOSE` by local time. The open is inclusive, the close exclusive.
    */
-  MarketPhase phase(
-    std::chrono::system_clock::time_point now,
-    std::optional<bool> trading_day
-  ) const {
+  MarketPhase phase(std::chrono::system_clock::time_point now, std::optional<bool> trading_day) const {
     if (!trading_day) {
       return MarketPhase::UNKNOWN;
     }
@@ -140,8 +144,7 @@ struct SessionWindow {
       return MarketPhase::CLOSED;
     }
     const auto local = now + utc_offset_;
-    const auto since_midnight =
-      std::chrono::duration_cast<std::chrono::minutes>(local - local_midnight(now));
+    const auto since_midnight = std::chrono::duration_cast<std::chrono::minutes>(local - local_midnight(now));
     if (since_midnight < open_) {
       return MarketPhase::PRE_OPEN;
     }
@@ -162,9 +165,7 @@ struct SessionWindow {
    */
   Date local_date(std::chrono::system_clock::time_point now) const {
     using Days = std::chrono::duration<std::int64_t, std::ratio<86400>>;
-    return date_from_epoch_days(
-      std::chrono::duration_cast<Days>(local_midnight(now).time_since_epoch()).count()
-    );
+    return date_from_epoch_days(std::chrono::duration_cast<Days>(local_midnight(now).time_since_epoch()).count());
   }
 
   /**
@@ -173,9 +174,7 @@ struct SessionWindow {
    * @param now Any instant on the date in question.
    * @return The open of `local_date(now)`, whether or not that date trades.
    */
-  std::chrono::system_clock::time_point opens_at(
-    std::chrono::system_clock::time_point now
-  ) const {
+  std::chrono::system_clock::time_point opens_at(std::chrono::system_clock::time_point now) const {
     return local_midnight(now) - utc_offset_ + open_;
   }
 
@@ -187,9 +186,7 @@ private:
     std::chrono::system_clock::time_point now
   ) const {
     using Days = std::chrono::duration<std::int64_t, std::ratio<86400>>;
-    return std::chrono::time_point_cast<std::chrono::seconds>(
-      std::chrono::floor<Days>(now + utc_offset_)
-    );
+    return std::chrono::time_point_cast<std::chrono::seconds>(std::chrono::floor<Days>(now + utc_offset_));
   }
 };
 
@@ -230,11 +227,7 @@ struct BarEvent {
  *   result is an upper bound, not the exact end. So is an intraday bar cut short by the session's
  *   close (KRX's 15:00 hourly bar ends at 15:30, not 16:00): late, never early.
  */
-inline std::chrono::system_clock::time_point bar_period_end(
-  const Bar& bar,
-  BarInterval interval,
-  BarStamp stamp
-) {
+inline std::chrono::system_clock::time_point bar_period_end(const Bar& bar, BarInterval interval, BarStamp stamp) {
   if (stamp == BarStamp::CLOSE) {
     return bar.timestamp_;
   }
@@ -271,12 +264,7 @@ inline std::chrono::system_clock::time_point bar_period_end(
  * @param bar The bar.
  * @return The event.
  */
-inline BarEvent make_bar_event(
-  InstrumentId instrument,
-  BarInterval interval,
-  BarStamp stamp,
-  Bar bar
-) {
+inline BarEvent make_bar_event(InstrumentId instrument, BarInterval interval, BarStamp stamp, Bar bar) {
   BarEvent event;
   event.instrument_ = std::move(instrument);
   event.interval_ = interval;
@@ -377,7 +365,9 @@ struct BarSlice {
   // The instrument at a position of `bars_`, for the table.
   struct Ids {
     const std::vector<BarEvent>* bars_;
-    const InstrumentId& operator()(std::size_t at) const noexcept { return (*bars_)[at].instrument_; }
+    const InstrumentId& operator()(std::size_t at) const noexcept {
+      return (*bars_)[at].instrument_;
+    }
   };
   /// \endcond
 };
@@ -393,9 +383,13 @@ class Bucket {
   // The id at a position of a slice, for its table.
   struct SliceIds {
     const BarSlice* slice_;
-    const InstrumentId& operator()(std::size_t at) const noexcept { return slice_->bars_[at].instrument_; }
+    const InstrumentId& operator()(std::size_t at) const noexcept {
+      return slice_->bars_[at].instrument_;
+    }
   };
-  static SliceIds ids_of(const BarSlice& slice) noexcept { return SliceIds{&slice}; }
+  static SliceIds ids_of(const BarSlice& slice) noexcept {
+    return SliceIds{&slice};
+  }
 
 public:
   Bucket() = default;
@@ -413,10 +407,14 @@ public:
   }
 
   /** Whether the bucket holds no bar. */
-  bool empty() const noexcept { return slices_.empty(); }
+  bool empty() const noexcept {
+    return slices_.empty();
+  }
 
   /** The period end of the bars held; meaningless when empty. */
-  std::chrono::system_clock::time_point period_end() const noexcept { return period_end_; }
+  std::chrono::system_clock::time_point period_end() const noexcept {
+    return period_end_;
+  }
 
   /** Whether `event` would be the second bar of its instrument and interval here. */
   bool holds(const BarEvent& event) const noexcept {
@@ -508,7 +506,9 @@ public:
   }
 
   /** Drops every bar held. */
-  void clear() noexcept { slices_.clear(); }
+  void clear() noexcept {
+    slices_.clear();
+  }
 
 private:
   // An interval's table, which describes that interval's slice only while the slice holds more than

@@ -67,8 +67,9 @@ std::string_view status_name(atl::OrderStatus status) {
 /** @brief Prints one normalized order and its aggregate fill state. */
 void print_order(const atl::OrderSnapshot& order) {
   std::cout << order.order_id_ << "  " << order.instrument_.symbol_ << "  " << order.name_ << '\n';
-  std::cout << "  " << (order.side_ == atl::OrderSide::BUY ? "BUY" : "SELL") << "  "
-    << status_name(order.status_) << "  quantity " << order.quantity_.str();
+  std::cout
+    << "  " << (order.side_ == atl::OrderSide::BUY ? "BUY" : "SELL") << "  " << status_name(order.status_)
+    << "  quantity " << order.quantity_.str();
   if (order.price_) {
     std::cout << " @ " << order.price_->str();
   }
@@ -122,12 +123,14 @@ int main(int argc, char* argv[]) {
         print_error("modifiable-order inquiry", open_result.error());
         return 1;
       }
-      std::cout << "open orders" << (demo ? " (from today's history)" : "") << ": "
-                << open_result.value().orders_.size() << '\n';
+      std::cout
+        << "open orders" << (demo ? " (from today's history)" : "") << ": " << open_result.value().orders_.size()
+        << '\n';
       for (const auto& open_order : open_result.value().orders_) {
         print_order(open_order.order_);
-        std::cout << "  amendable quantity: " << open_order.amendable_quantity_.str()
-          << "  branch " << open_order.order_ref_.branch_number_ << '\n';
+        std::cout
+          << "  amendable quantity: " << open_order.amendable_quantity_.str() << "  branch "
+          << open_order.order_ref_.branch_number_ << '\n';
       }
     }
 

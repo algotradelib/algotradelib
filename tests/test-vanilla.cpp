@@ -27,7 +27,9 @@ namespace {
  */
 void state_sellable(strategy::Portfolio<runner::DryTag>& portfolio) {
   portfolio.sellable_basis_ = SellableBasis{
-    SellableBasis::Coverage::WHOLE_HOLDING, SellableBasis::RestingTreatment::DEDUCT, false,
+    SellableBasis::Coverage::WHOLE_HOLDING,
+    SellableBasis::RestingTreatment::DEDUCT,
+    false,
   };
   // The instrument's whole holding on each of its rows: rows of one instrument are never summed.
   for (auto& position : portfolio.positions_) {
@@ -37,8 +39,12 @@ void state_sellable(strategy::Portfolio<runner::DryTag>& portfolio) {
   }
 }
 
-InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
-InstrumentId hynix() { return InstrumentId{Country::KR, Venue::COMBINED, "000660"}; }
+InstrumentId samsung() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+}
+InstrumentId hynix() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "000660"};
+}
 
 Instrument reference_for(const InstrumentId& id) {
   Instrument reference;
@@ -53,8 +59,8 @@ Instrument reference_for(const InstrumentId& id) {
 /** A bar `index` days along, closing at `close`. */
 strategy::BarEvent bar(std::size_t index, const char* close, const InstrumentId& id = samsung()) {
   Bar value;
-  value.timestamp_ = std::chrono::system_clock::time_point{} +
-    std::chrono::hours(500000 + 24 * static_cast<int>(index));
+  value.timestamp_ =
+    std::chrono::system_clock::time_point{} + std::chrono::hours(500000 + 24 * static_cast<int>(index));
   value.high_ = Decimal64::parse(close);
   value.low_ = Decimal64::parse(close);
   value.close_ = Decimal64::parse(close);
@@ -222,8 +228,9 @@ TEST_CASE("the three-span switch counts observed closes, not rows") {
   }
   const math::Index last = closes.size() - 1;
   REQUIRE(vanilla::exponential_line(closes, 50)[last] == Catch::Approx(119.87802735708622).epsilon(1e-12));
-  REQUIRE(analytics::ema(closes, analytics::alpha_from_span(50), 50)[last] ==
-          Catch::Approx(117.2940162004476).epsilon(1e-12));
+  REQUIRE(
+    analytics::ema(closes, analytics::alpha_from_span(50), 50)[last] == Catch::Approx(117.2940162004476).epsilon(1e-12)
+  );
 }
 
 TEST_CASE("a crossover whose fast window is not faster refuses to act") {
@@ -354,7 +361,7 @@ TEST_CASE("a weight is held, not bought again at every rebalance", "[weights]") 
   // diffs against the position; it used to order 714 again on every rebalance.
   vanilla::EqualWeightRebalance weighted;
   weighted.params_.universe_ = {samsung(), hynix()};
-  weighted.params_.weight_scale_ = 1;  // 0.5 each
+  weighted.params_.weight_scale_ = 1; // 0.5 each
 
   const auto placed_against = [&](const char* held) {
     runner::DryRunner<vanilla::EqualWeightRebalance> dry(weighted);
@@ -402,8 +409,7 @@ TEST_CASE("a weight with its buy already working places nothing more", "[weights
   CHECK(report.would_cancel_.empty());
 }
 
-TEST_CASE("a weight on an instrument with a resting stop is refused, and the stop stays",
-          "[weights]") {
+TEST_CASE("a weight on an instrument with a resting stop is refused, and the stop stays", "[weights]") {
   // Target reconciliation withdraws a resting stop when a trade is needed; a weight intent cannot
   // wait for that stop's history the way a target does, so it is refused and nothing is withdrawn.
   vanilla::EqualWeightRebalance weighted;
@@ -429,8 +435,8 @@ TEST_CASE("a weight on an instrument with a resting stop is refused, and the sto
   CHECK(report.would_cancel_.empty());
   bool refused = false;
   for (const auto& rejection : report.rejected_) {
-    refused = refused || (rejection.instrument_ == samsung() &&
-                          rejection.reason_ == strategy::RejectReason::STOP_ORDER_RESTING);
+    refused = refused ||
+      (rejection.instrument_ == samsung() && rejection.reason_ == strategy::RejectReason::STOP_ORDER_RESTING);
   }
   CHECK(refused);
   // The other name is unaffected.
@@ -497,16 +503,16 @@ TEST_CASE("a replay sizes a weight against its own equity", "[weights]") {
   config.calendar_.country_ = Country::KR;
   const auto day0 = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 20000);
   for (int day = -1; day < 5; ++day) {
-    config.calendar_.days_.push_back(TradingDay{
-      strategy::SessionWindow::krx().local_date(day0 + std::chrono::hours(24 * day)), true});
+    config.calendar_.days_.push_back(
+      TradingDay{strategy::SessionWindow::krx().local_date(day0 + std::chrono::hours(24 * day)), true}
+    );
   }
   backtest::Backtester<vanilla::EqualWeightRebalance> engine(weighted, config);
 
   // Two close-stamped bars a session, 08:00 and 10:00 KST (23:00 the day before and 01:00 UTC), so
   // the clock passes from PRE_OPEN to OPEN every day and on_phase fires once a day with both priced.
   // A post-close bar the evening before the first day gives both instruments a price.
-  std::vector<std::chrono::system_clock::time_point> stamps{
-    day0 - std::chrono::hours(24) + std::chrono::hours(8)};
+  std::vector<std::chrono::system_clock::time_point> stamps{day0 - std::chrono::hours(24) + std::chrono::hours(8)};
   for (int day = 0; day < 3; ++day) {
     stamps.push_back(day0 + std::chrono::hours(24 * day) - std::chrono::hours(1));
     stamps.push_back(day0 + std::chrono::hours(24 * day + 1));
@@ -551,9 +557,7 @@ std::chrono::system_clock::time_point at_hour(int hours) {
  * absent.
  */
 strategy::Portfolio<runner::DryTag> stop_listing(
-  std::optional<OrderStatus> stop_status,
-  int holdings_at = 0,
-  const char* held = "10"
+  std::optional<OrderStatus> stop_status, int holdings_at = 0, const char* held = "10"
 ) {
   strategy::Portfolio<runner::DryTag> portfolio;
   // A listing that was read: a plan that withdraws something is withheld against an account nobody

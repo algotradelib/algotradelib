@@ -80,37 +80,49 @@ public:
    * @brief Returns the number of rows.
    * @return The number of instants.
    */
-  std::size_t rows() const noexcept { return index_.size(); }
+  std::size_t rows() const noexcept {
+    return index_.size();
+  }
 
   /**
    * @brief Returns the number of columns.
    * @return The number of instruments.
    */
-  std::size_t columns() const noexcept { return instruments_.size(); }
+  std::size_t columns() const noexcept {
+    return instruments_.size();
+  }
 
   /**
    * @brief Returns the instants of the rows.
    * @return The panel's time index.
    */
-  const TimeIndex& time() const noexcept { return index_; }
+  const TimeIndex& time() const noexcept {
+    return index_;
+  }
 
   /**
    * @brief Returns the instruments of the columns.
    * @return The instruments, in column order.
    */
-  const std::vector<InstrumentId>& instruments() const noexcept { return instruments_; }
+  const std::vector<InstrumentId>& instruments() const noexcept {
+    return instruments_;
+  }
 
   /**
    * @brief Returns the bar field the panel holds.
    * @return The field passed to `from_bars`.
    */
-  BarField field() const noexcept { return field_; }
+  BarField field() const noexcept {
+    return field_;
+  }
 
   /**
    * @brief Returns how the panel lined up its instruments.
    * @return The alignment passed to `from_bars`.
    */
-  Alignment alignment() const noexcept { return alignment_; }
+  Alignment alignment() const noexcept {
+    return alignment_;
+  }
 
   /**
    * @brief Finds an instrument's column.
@@ -157,7 +169,9 @@ public:
    * @brief Returns all values.
    * @return A view of the rows-by-instruments storage.
    */
-  math::MatrixView values() const { return values_; }
+  math::MatrixView values() const {
+    return values_;
+  }
 
   /**
    * @brief Builds a panel of one bar field from several bar series.
@@ -168,11 +182,7 @@ public:
    * @return The panel; empty (with `field` and `alignment` recorded) if `series` is empty.
    * @throws std::invalid_argument if any series is not strictly ascending in time.
    */
-  static Panel from_bars(
-    const std::vector<BarSeries>& series,
-    BarField field,
-    Alignment alignment
-  ) {
+  static Panel from_bars(const std::vector<BarSeries>& series, BarField field, Alignment alignment) {
     Panel panel;
     panel.field_ = field;
     panel.alignment_ = alignment;
@@ -187,15 +197,11 @@ public:
       panel.instruments_.push_back(one.instrument_);
     }
 
-    auto stamps = alignment == Alignment::INTERSECTION ?
-      shared_instants(frames) :
-      combined_instants(frames);
+    auto stamps = alignment == Alignment::INTERSECTION ? shared_instants(frames) : combined_instants(frames);
     panel.index_ = TimeIndex(std::move(stamps));
 
     panel.values_ = math::Matrix::Constant(
-      static_cast<math::Index>(panel.index_.size()),
-      static_cast<math::Index>(frames.size()),
-      missing()
+      static_cast<math::Index>(panel.index_.size()), static_cast<math::Index>(frames.size()), missing()
     );
 
     for (std::size_t column = 0; column < frames.size(); ++column) {
@@ -230,9 +236,7 @@ private:
     for (std::size_t position = 1; position < frames.size(); ++position) {
       const auto& other = frames[position].time().stamps();
       narrowed.clear();
-      std::set_intersection(
-        shared.begin(), shared.end(), other.begin(), other.end(), std::back_inserter(narrowed)
-      );
+      std::set_intersection(shared.begin(), shared.end(), other.begin(), other.end(), std::back_inserter(narrowed));
       shared.swap(narrowed);
     }
     return shared;
@@ -241,11 +245,7 @@ private:
   // Writes one instrument's column under the chosen alignment, walking both ascending indices
   // together in one pass.
   static void fill_column(
-    Panel& panel,
-    std::size_t column,
-    const SeriesFrame& frame,
-    BarField field,
-    Alignment alignment
+    Panel& panel, std::size_t column, const SeriesFrame& frame, BarField field, Alignment alignment
   ) {
     const auto& target = panel.index_.stamps();
     const auto& source = frame.time().stamps();

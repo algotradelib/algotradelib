@@ -23,7 +23,7 @@
  * @endcode
  */
 
-#include "src/brokers/mock/clock.hpp"
 #include "src/brokers/mock/client.hpp"
+#include "src/brokers/mock/clock.hpp"
 #include "src/brokers/mock/market.hpp"
 #include "src/brokers/mock/traits.hpp"

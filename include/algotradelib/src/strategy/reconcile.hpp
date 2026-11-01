@@ -246,8 +246,7 @@ struct TradeTolerance {
    * @return `true` if at least one floor is present.
    */
   bool stated() const noexcept {
-    return minimum_quantity_.has_value() || minimum_notional_.has_value() ||
-      minimum_fraction_of_working_.has_value();
+    return minimum_quantity_.has_value() || minimum_notional_.has_value() || minimum_fraction_of_working_.has_value();
   }
 };
 
@@ -308,17 +307,23 @@ public:
 
   class iterator {
   public:
-    const WorkingOrder<Broker>& operator*() const { return (*owner_->working_)[at_]; }
+    const WorkingOrder<Broker>& operator*() const {
+      return (*owner_->working_)[at_];
+    }
     iterator& operator++() {
       ++step_;
       settle();
       return *this;
     }
-    friend bool operator!=(const iterator& lhs, const iterator& rhs) { return lhs.step_ != rhs.step_; }
+    friend bool operator!=(const iterator& lhs, const iterator& rhs) {
+      return lhs.step_ != rhs.step_;
+    }
 
   private:
     friend class WorkingRowsOf;
-    iterator(const WorkingRowsOf* owner, std::size_t step) : owner_(owner), step_(step) { settle(); }
+    iterator(const WorkingRowsOf* owner, std::size_t step) : owner_(owner), step_(step) {
+      settle();
+    }
     // Points `at_` at the row for `step_`: the step-th indexed place, or the next row of the instrument.
     void settle() {
       if (owner_->places_ != nullptr) {
@@ -327,8 +332,9 @@ public:
         }
         return;
       }
-      while (step_ < owner_->working_->size() &&
-             !((*owner_->working_)[step_].order_.instrument_ == *owner_->instrument_)) {
+      while (
+        step_ < owner_->working_->size() && !((*owner_->working_)[step_].order_.instrument_ == *owner_->instrument_)
+      ) {
         ++step_;
       }
       at_ = step_;
@@ -338,8 +344,12 @@ public:
     std::size_t at_{0};
   };
 
-  iterator begin() const { return iterator(this, 0); }
-  iterator end() const { return iterator(this, places_ != nullptr ? places_->size() : working_->size()); }
+  iterator begin() const {
+    return iterator(this, 0);
+  }
+  iterator end() const {
+    return iterator(this, places_ != nullptr ? places_->size() : working_->size());
+  }
 
   // What the rows still have to fill on `side`, as `Portfolio::working_quantity` sums it.
   Decimal64 working_quantity(OrderSide side) const {
@@ -360,9 +370,7 @@ private:
 // An instrument's net quantity, as `Portfolio::net_quantity_of` sums it, from the pass's index when there is one.
 template <typename Broker>
 std::optional<Decimal64> net_quantity(
-  const Portfolio<Broker>& portfolio,
-  const PortfolioRows* rows,
-  const InstrumentId& instrument
+  const Portfolio<Broker>& portfolio, const PortfolioRows* rows, const InstrumentId& instrument
 ) {
   if (rows == nullptr) {
     return portfolio.net_quantity_of(instrument);
@@ -402,9 +410,7 @@ inline std::optional<Decimal64> lot_of(const Instrument& instrument) {
  * lot size there is, so refusing all trading for want of a lot would forbid orders that are fine.
  */
 inline std::optional<Decimal64> round_to_lot(
-  const Decimal64& quantity,
-  const std::optional<Decimal64>& lot,
-  bool& adjusted
+  const Decimal64& quantity, const std::optional<Decimal64>& lot, bool& adjusted
 ) {
   adjusted = false;
   if (!lot) {
@@ -430,10 +436,7 @@ inline std::optional<Decimal64> round_to_lot(
  * strategy never expressed.
  */
 inline std::optional<Decimal64> clamp_to_limits(
-  const Decimal64& price,
-  OrderSide side,
-  const std::optional<PriceLimits>& limits,
-  bool& adjusted
+  const Decimal64& price, OrderSide side, const std::optional<PriceLimits>& limits, bool& adjusted
 ) {
   adjusted = false;
   if (!limits) {
@@ -459,12 +462,8 @@ inline std::optional<Decimal64> clamp_to_limits(
  * `rounded_out_of_band` finds that case.
  */
 inline std::optional<Decimal64> prepare_price(
-  const Decimal64& wanted,
-  OrderSide side,
-  const PriceRule& rule,
-  const std::optional<PriceLimits>& limits,
-  bool& clamped,
-  bool& rounded
+  const Decimal64& wanted, OrderSide side, const PriceRule& rule, const std::optional<PriceLimits>& limits,
+  bool& clamped, bool& rounded
 ) {
   const auto within = clamp_to_limits(wanted, side, limits, clamped);
   if (!within) {
@@ -486,10 +485,7 @@ inline std::optional<Decimal64> prepare_price(
  * price, `wanted`, was not already beyond that bound.
  */
 inline bool rounded_out_of_band(
-  const Decimal64& wanted,
-  const Decimal64& priced,
-  OrderSide side,
-  const std::optional<PriceLimits>& limits
+  const Decimal64& wanted, const Decimal64& priced, OrderSide side, const std::optional<PriceLimits>& limits
 ) {
   if (!limits) {
     return false;
@@ -507,11 +503,7 @@ inline bool rounded_out_of_band(
  * A floor that cannot be evaluated -- a notional one with no price -- does not suppress: failing to
  * trade leaves an invisible shortfall, which is the worse of the two errors here.
  */
-inline bool below_tolerance(
-  const Decimal64& drift,
-  const Decimal64& already_working,
-  const ReconcileInputs& inputs
-) {
+inline bool below_tolerance(const Decimal64& drift, const Decimal64& already_working, const ReconcileInputs& inputs) {
   const auto& tolerance = inputs.tolerance_;
 
   if (tolerance.minimum_quantity_ && decimal_less(drift, *tolerance.minimum_quantity_)) {
@@ -579,9 +571,7 @@ inline bool is_stop_order(const OrderSnapshot& order) {
  */
 template <typename Broker>
 Plan<Broker> reconcile(
-  const TargetPosition& target,
-  const Portfolio<Broker>& portfolio,
-  const ReconcileInputs& inputs
+  const TargetPosition& target, const Portfolio<Broker>& portfolio, const ReconcileInputs& inputs
 ) {
   Plan<Broker> plan;
   const auto reject = [&](RejectReason reason) {
@@ -617,19 +607,22 @@ Plan<Broker> reconcile(
   // **Stops first; see `RejectReason::STOP_ORDER_RESTING`.** A row is a stop when its basis says so
   // or it carries a trigger -- an adapter records a positive trigger even on a row whose basis reads
   // otherwise, and that row may be a released stop.
-  const auto is_stop = [](const OrderSnapshot& order) { return is_stop_order(order); };
+  const auto is_stop = [](const OrderSnapshot& order) {
+    return is_stop_order(order);
+  };
   bool stop_resting = false;
   for (const auto& working : rows) {
-    if (working.order_.instrument_ == target.instrument_ &&
-        order_is_open(working.order_.status_) && is_stop(working.order_)) {
+    if (
+      working.order_.instrument_ == target.instrument_ && order_is_open(working.order_.status_) &&
+      is_stop(working.order_)
+    ) {
       stop_resting = true;
     }
   }
   if (stop_resting) {
     const bool met = !buying && !selling;
     for (const auto& working : rows) {
-      if (!(working.order_.instrument_ == target.instrument_) ||
-          !order_is_open(working.order_.status_)) {
+      if (!(working.order_.instrument_ == target.instrument_) || !order_is_open(working.order_.status_)) {
         continue;
       }
       if (is_stop(working.order_)) {
@@ -644,9 +637,7 @@ Plan<Broker> reconcile(
       }
     }
     if (!met) {
-      plan.rejected_.push_back(
-        Rejection{RejectReason::STOP_ORDER_RESTING, target.instrument_, target.tag_}
-      );
+      plan.rejected_.push_back(Rejection{RejectReason::STOP_ORDER_RESTING, target.instrument_, target.tag_});
     }
     return plan;
   }
@@ -657,8 +648,7 @@ Plan<Broker> reconcile(
   // filled or been cancelled, and asking a broker to cancel one of those is a request that can
   // only fail -- noise on a path where a real cancellation failure has to be noticed.
   for (const auto& working : rows) {
-    if (!(working.order_.instrument_ == target.instrument_) ||
-        !order_is_open(working.order_.status_)) {
+    if (!(working.order_.instrument_ == target.instrument_) || !order_is_open(working.order_.status_)) {
       continue;
     }
     const bool opposes = (buying && working.order_.side_ == OrderSide::SELL) ||
@@ -694,9 +684,8 @@ Plan<Broker> reconcile(
   // than the accumulated one matters for the same reason: withdrawing a working order and then
   // declining to replace it would leave the position further from the target than doing nothing.
   if (inputs.tolerance_.stated() && plan.cancel_.empty()) {
-    const auto drift = decimal_less(*remaining, zero) ?
-      decimal_subtract(zero, *remaining) :
-      std::optional<Decimal64>(*remaining);
+    const auto drift =
+      decimal_less(*remaining, zero) ? decimal_subtract(zero, *remaining) : std::optional<Decimal64>(*remaining);
     if (drift && reconcile_detail::below_tolerance(*drift, already, inputs)) {
       return Plan<Broker>{};
     }
@@ -710,8 +699,10 @@ Plan<Broker> reconcile(
   if (decimal_less(*remaining, zero)) {
     Decimal64 reserved = zero;
     for (const auto& working : rows) {
-      if (working.order_.instrument_ == target.instrument_ &&
-          working.order_.side_ == side && order_is_open(working.order_.status_)) {
+      if (
+        working.order_.instrument_ == target.instrument_ && working.order_.side_ == side &&
+        order_is_open(working.order_.status_)
+      ) {
         plan.cancel_.push_back(working.ref_);
         if (inputs.reserved_rows_are_unconfirmed_ && working.reserved_) {
           // A sum that will not compute refuses: undercounted, it would size the replacement larger.
@@ -761,11 +752,7 @@ Plan<Broker> reconcile(
 
   if (target.limit_) {
     const auto priced = reconcile_detail::prepare_price(
-      target.limit_->value(),
-      side,
-      inputs.instrument_->price_rule_,
-      inputs.limits_,
-      order.price_clamped_,
+      target.limit_->value(), side, inputs.instrument_->price_rule_, inputs.limits_, order.price_clamped_,
       order.price_rounded_
     );
     if (!priced) {
@@ -801,11 +788,7 @@ Plan<Broker> reconcile(
  * @return A plan with one placement, or one `Rejection`.
  */
 template <typename Broker>
-Plan<Broker> reconcile(
-  const OrderIntent& intent,
-  const Portfolio<Broker>& portfolio,
-  const ReconcileInputs& inputs
-) {
+Plan<Broker> reconcile(const OrderIntent& intent, const Portfolio<Broker>& portfolio, const ReconcileInputs& inputs) {
   (void)portfolio;
   Plan<Broker> plan;
   const auto reject = [&](RejectReason reason) {
@@ -819,9 +802,8 @@ Plan<Broker> reconcile(
   }
 
   // A price to size against: the limit if there is one, otherwise whatever the runner supplied.
-  const auto sizing_price = intent.limit() ?
-    std::optional<Decimal64>(intent.limit()->value()) :
-    inputs.reference_price_;
+  const auto sizing_price =
+    intent.limit() ? std::optional<Decimal64>(intent.limit()->value()) : inputs.reference_price_;
 
   Decimal64 wanted;
   switch (intent.size().kind()) {
@@ -839,8 +821,7 @@ Plan<Broker> reconcile(
       if (!sizing_price || sizing_price->coefficient() <= 0) {
         return reject(RejectReason::NO_PRICE_AVAILABLE);
       }
-      const auto shares =
-        decimal_divide(intent.size().as_notional().amount_, *sizing_price, 0);
+      const auto shares = decimal_divide(intent.size().as_notional().amount_, *sizing_price, 0);
       if (!shares) {
         return reject(RejectReason::NOT_REPRESENTABLE);
       }
@@ -859,9 +840,7 @@ Plan<Broker> reconcile(
       if (!sizing_price || sizing_price->coefficient() <= 0) {
         return reject(RejectReason::NO_PRICE_AVAILABLE);
       }
-      const auto allocation = decimal_multiply(
-        inputs.portfolio_value_.value(), intent.size().as_target_weight()
-      );
+      const auto allocation = decimal_multiply(inputs.portfolio_value_.value(), intent.size().as_target_weight());
       if (!allocation) {
         return reject(RejectReason::NOT_REPRESENTABLE);
       }
@@ -893,11 +872,7 @@ Plan<Broker> reconcile(
 
   if (intent.limit()) {
     const auto priced = reconcile_detail::prepare_price(
-      intent.limit()->value(),
-      intent.side(),
-      inputs.instrument_->price_rule_,
-      inputs.limits_,
-      order.price_clamped_,
+      intent.limit()->value(), intent.side(), inputs.instrument_->price_rule_, inputs.limits_, order.price_clamped_,
       order.price_rounded_
     );
     if (!priced) {
@@ -960,8 +935,10 @@ inline WeightTarget weight_target(const OrderIntent& intent, const ReconcileInpu
     return out;
   };
   const auto& weight = intent.size().as_target_weight();
-  if (intent.side() != OrderSide::BUY || decimal_less(weight, Decimal64::parse("0")) ||
-      intent.trigger() || intent.time_in_force() != TimeInForce::DAY || intent.client_order_id()) {
+  if (
+    intent.side() != OrderSide::BUY || decimal_less(weight, Decimal64::parse("0")) || intent.trigger() ||
+    intent.time_in_force() != TimeInForce::DAY || intent.client_order_id()
+  ) {
     return refuse(RejectReason::UNSUPPORTED_WEIGHT);
   }
   if (inputs.instrument_ == nullptr) {
@@ -970,14 +947,13 @@ inline WeightTarget weight_target(const OrderIntent& intent, const ReconcileInpu
   // A value of zero or less is not one a holding can be a fraction of: sized against it, a weight
   // would become a liquidation (zero) or a short (negative) -- an account whose read failed and came
   // back empty, or a replay that borrowed below zero equity, must not sell on that.
-  if (!inputs.portfolio_value_ || inputs.portfolio_value_->coefficient() <= 0 ||
-      (inputs.portfolio_value_currency_ &&
-       !(*inputs.portfolio_value_currency_ == inputs.instrument_->currency_))) {
+  if (
+    !inputs.portfolio_value_ || inputs.portfolio_value_->coefficient() <= 0 ||
+    (inputs.portfolio_value_currency_ && !(*inputs.portfolio_value_currency_ == inputs.instrument_->currency_))
+  ) {
     return refuse(RejectReason::NO_PORTFOLIO_VALUE);
   }
-  const auto price = intent.limit() ?
-    std::optional<Decimal64>(intent.limit()->value()) :
-    inputs.reference_price_;
+  const auto price = intent.limit() ? std::optional<Decimal64>(intent.limit()->value()) : inputs.reference_price_;
   if (!price || price->coefficient() <= 0) {
     return refuse(RejectReason::NO_PRICE_AVAILABLE);
   }

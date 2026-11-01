@@ -226,9 +226,7 @@ struct Normalizers {
    * @param raw The client's result.
    * @return The working orders, or the error.
    */
-  static Result<WorkingOrders<kiwoom::Broker>> normalize_working_orders(
-    Result<KiwoomOpenOrderPage> raw
-  ) {
+  static Result<WorkingOrders<kiwoom::Broker>> normalize_working_orders(Result<KiwoomOpenOrderPage> raw) {
     if (!raw) {
       return Result<WorkingOrders<kiwoom::Broker>>(std::move(raw.error()));
     }
@@ -260,11 +258,7 @@ struct Normalizers {
    * @param cancel Whether it is a cancellation.
    * @return Kiwoom's amendment, or an `INVALID_ARGUMENT` error.
    */
-  static Result<KiwoomAmendment> to_amendment(
-    const Ref& ref,
-    const AmendInstruction& instruction,
-    bool cancel
-  ) {
+  static Result<KiwoomAmendment> to_amendment(const Ref& ref, const AmendInstruction& instruction, bool cancel) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
     error.reached_broker_ = false;
@@ -285,8 +279,7 @@ struct Normalizers {
     amendment.venue_ = instruction.venue_;
     // Kiwoom's own "everything still resting", which it evaluates when it processes the
     // instruction rather than when the caller read the listing.
-    amendment.quantity_ =
-      instruction.all_remaining_ ? Decimal64() : *instruction.quantity_;
+    amendment.quantity_ = instruction.all_remaining_ ? Decimal64() : *instruction.quantity_;
     if (!cancel) {
       // The basis is known here and nowhere after: `kt10002` carries no `trde_tp`, so this is the
       // last point that can tell a trigger the order wants from one it would silently lose.
@@ -315,10 +308,7 @@ struct Normalizers {
    * @param cancel Whether it is a cancellation.
    * @return An `INVALID_ARGUMENT` error, or `std::nullopt`.
    */
-  static std::optional<BrokerError> refuse_shape_change(
-    const AmendInstruction& instruction,
-    bool cancel
-  ) {
+  static std::optional<BrokerError> refuse_shape_change(const AmendInstruction& instruction, bool cancel) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
     error.reached_broker_ = false;
@@ -326,11 +316,16 @@ struct Normalizers {
 
     const auto refuse = [&error, cancel](const char* what) {
       error.message_ = cancel ?
-        std::string("Kiwoom's cancellation carries a quantity and nothing else, so it cannot "
-                    "change an order's ") + what + " on the way out" :
-        std::string("Kiwoom's amendment endpoints carry a quantity and a price only, so they "
-                    "cannot change an order's ") + what +
-          "; cancel the order and place a new one instead";
+        std::string(
+          "Kiwoom's cancellation carries a quantity and nothing else, so it cannot "
+          "change an order's "
+        ) +
+          what + " on the way out" :
+        std::string(
+          "Kiwoom's amendment endpoints carry a quantity and a price only, so they "
+          "cannot change an order's "
+        ) +
+          what + "; cancel the order and place a new one instead";
       return error;
     };
 
@@ -352,8 +347,7 @@ struct Normalizers {
       // `cancel_all()` and `cancel_quantity()` copy the resting order's whole shape into both
       // `shape_` and `resting_`, so every comparison below sees a restatement and the ordinary
       // withdrawal path is unaffected.
-      const bool restates_price = instruction.resting_ &&
-        instruction.resting_->price_ == instruction.shape_.price_;
+      const bool restates_price = instruction.resting_ && instruction.resting_->price_ == instruction.shape_.price_;
       if (instruction.shape_.price_ && !restates_price) {
         error.broker_code_ = "price_on_cancellation";
         error.message_ =
@@ -363,8 +357,8 @@ struct Normalizers {
       }
       // The same rule as the price: a restatement of the resting trigger -- which is what
       // `cancel_all` writes -- is the ordinary withdrawal, and only a stated *change* is refused.
-      const bool restates_trigger = instruction.resting_ &&
-        instruction.resting_->trigger_price_ == instruction.shape_.trigger_price_;
+      const bool restates_trigger =
+        instruction.resting_ && instruction.resting_->trigger_price_ == instruction.shape_.trigger_price_;
       if (instruction.shape_.trigger_price_ && !restates_trigger) {
         error.broker_code_ = "trigger_on_cancellation";
         error.message_ =
@@ -388,12 +382,9 @@ struct Normalizers {
       return error;
     }
 
-    const auto resting_condition = instruction.resting_ ?
-      instruction.resting_->time_in_force_ :
-      std::optional<TimeInForce>();
-    const auto resting_session = instruction.resting_ ?
-      instruction.resting_->session_ :
-      std::optional<OrderSession>();
+    const auto resting_condition =
+      instruction.resting_ ? instruction.resting_->time_in_force_ : std::optional<TimeInForce>();
+    const auto resting_session = instruction.resting_ ? instruction.resting_->session_ : std::optional<OrderSession>();
     if (differs(instruction.shape_.time_in_force_, resting_condition)) {
       return refuse("validity condition");
     }
@@ -423,10 +414,7 @@ struct Normalizers {
    * @param instruction The amendment or cancellation.
    * @return The result, or an error.
    */
-  static Result<KiwoomAmendment> to_replacement(
-    const Ref& ref,
-    const AmendInstruction& instruction
-  ) {
+  static Result<KiwoomAmendment> to_replacement(const Ref& ref, const AmendInstruction& instruction) {
     return to_amendment(ref, instruction, false);
   }
 
@@ -436,10 +424,7 @@ struct Normalizers {
    * @param instruction The amendment or cancellation.
    * @return The result, or an error.
    */
-  static Result<KiwoomAmendment> to_cancellation(
-    const Ref& ref,
-    const AmendInstruction& instruction
-  ) {
+  static Result<KiwoomAmendment> to_cancellation(const Ref& ref, const AmendInstruction& instruction) {
     return to_amendment(ref, instruction, true);
   }
 
@@ -453,10 +438,7 @@ struct Normalizers {
    * @param query The query.
    * @return The inquiry, or an `INVALID_ARGUMENT` error.
    */
-  static Result<KiwoomHistoryQuery> to_history_query(
-    const KiwoomAccount&,
-    const OrderHistoryQuery& query
-  ) {
+  static Result<KiwoomHistoryQuery> to_history_query(const KiwoomAccount&, const OrderHistoryQuery& query) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
     error.reached_broker_ = false;
@@ -465,9 +447,11 @@ struct Normalizers {
       error.message_ = "Kiwoom's order-history inquiry lists one calendar date, which must be given";
       return Result<KiwoomHistoryQuery>(std::move(error));
     }
-    if (query.to_ && !(query.to_->year_ == query.from_->year_ &&
-                       query.to_->month_ == query.from_->month_ &&
-                       query.to_->day_ == query.from_->day_)) {
+    if (
+      query.to_ &&
+      !(query.to_->year_ == query.from_->year_ && query.to_->month_ == query.from_->month_ &&
+        query.to_->day_ == query.from_->day_)
+    ) {
       error.broker_code_ = "single_date_only";
       error.message_ =
         "Kiwoom's order-history inquiry lists one calendar date; ask for each date separately "
@@ -495,7 +479,9 @@ struct Normalizers {
    *   account; see `KiwoomAccount`). The argument is not used.
    * @return An empty selector.
    */
-  static KiwoomAccount selector_of(const KiwoomAccountInfo&) { return KiwoomAccount{}; }
+  static KiwoomAccount selector_of(const KiwoomAccountInfo&) {
+    return KiwoomAccount{};
+  }
 
   /**
    * @brief Returns the account number as Kiwoom displays it.
@@ -510,7 +496,9 @@ struct Normalizers {
    * @brief Returns the account type, which Kiwoom does not publish (the argument is not used).
    * @return An empty string.
    */
-  static std::string type_of(const KiwoomAccountInfo&) { return {}; }
+  static std::string type_of(const KiwoomAccountInfo&) {
+    return {};
+  }
 };
 
 /** @brief The order-related capabilities shared by Kiwoom's asynchronous and blocking traits. */
@@ -570,18 +558,21 @@ struct Capabilities {
  * @param asked The order's venue.
  * @return `asked`.
  */
-inline constexpr Venue kiwoom_route(Venue asked) noexcept { return kiwoom::kiwoom_effective_route(asked); }
+inline constexpr Venue kiwoom_route(Venue asked) noexcept {
+  return kiwoom::kiwoom_effective_route(asked);
+}
 
 /** @brief The `BrokerSession` adapter for `kiwoom::KiwoomClient`. */
 template <>
-struct BrokerTraits<kiwoom::KiwoomClient>
-: kiwoom::traits_detail::Normalizers, kiwoom::traits_detail::Capabilities {
+struct BrokerTraits<kiwoom::KiwoomClient> : kiwoom::traits_detail::Normalizers, kiwoom::traits_detail::Capabilities {
   /**
    * @brief Returns the venue an order reaches; see `kiwoom_route`.
    * @param asked The order's venue.
    * @return The venue.
    */
-  static constexpr Venue effective_route(Venue asked) noexcept { return kiwoom_route(asked); }
+  static constexpr Venue effective_route(Venue asked) noexcept {
+    return kiwoom_route(asked);
+  }
 
   /** @brief The client type. */
   using Client = kiwoom::KiwoomClient;
@@ -726,12 +717,7 @@ struct BrokerTraits<kiwoom::KiwoomClient>
    * @return Whatever the completion token returns.
    */
   template <typename Token>
-  static auto buying_power(
-    Client& client,
-    const Account& account,
-    Currency currency,
-    Token&& token
-  ) {
+  static auto buying_power(Client& client, const Account& account, Currency currency, Token&& token) {
     return client.async_buying_power(currency, account, std::forward<Token>(token));
   }
 
@@ -753,17 +739,12 @@ struct BrokerTraits<kiwoom::KiwoomClient>
       static_cast<void>(account);
       return net::async_initiate<Token, void(Result<HoldingsSnapshot>)>(
         [strand = client.get_executor()](auto&& handler) mutable {
-          auto work = net::prefer(
-            net::get_associated_executor(handler), net::execution::outstanding_work.tracked
-          );
-          net::post(
-            strand,
-            [handler = std::forward<decltype(handler)>(handler), work = std::move(work)]() mutable {
-              net::dispatch(work, [handler = std::move(handler)]() mutable {
-                std::move(handler)(refuse_holdings());
-              });
-            }
-          );
+          auto work = net::prefer(net::get_associated_executor(handler), net::execution::outstanding_work.tracked);
+          net::post(strand, [handler = std::forward<decltype(handler)>(handler), work = std::move(work)]() mutable {
+            net::dispatch(work, [handler = std::move(handler)]() mutable {
+              std::move(handler)(refuse_holdings());
+            });
+          });
         },
         token
       );
@@ -781,12 +762,7 @@ struct BrokerTraits<kiwoom::KiwoomClient>
    * @return Whatever the completion token returns.
    */
   template <typename Token>
-  static auto place_order(
-    Client& client,
-    const Account& account,
-    OrderRequest order,
-    Token&& token
-  ) {
+  static auto place_order(Client& client, const Account& account, OrderRequest order, Token&& token) {
     return client.async_place_order(account, std::move(order), std::forward<Token>(token));
   }
 
@@ -800,12 +776,7 @@ struct BrokerTraits<kiwoom::KiwoomClient>
    * @return Whatever the completion token returns.
    */
   template <typename Token>
-  static auto replace_order(
-    Client& client,
-    const Account& account,
-    Amendment amendment,
-    Token&& token
-  ) {
+  static auto replace_order(Client& client, const Account& account, Amendment amendment, Token&& token) {
     return client.async_replace_order(account, std::move(amendment), std::forward<Token>(token));
   }
 
@@ -819,12 +790,7 @@ struct BrokerTraits<kiwoom::KiwoomClient>
    * @return Whatever the completion token returns.
    */
   template <typename Token>
-  static auto cancel_order(
-    Client& client,
-    const Account& account,
-    Amendment amendment,
-    Token&& token
-  ) {
+  static auto cancel_order(Client& client, const Account& account, Amendment amendment, Token&& token) {
     return client.async_cancel_order(account, std::move(amendment), std::forward<Token>(token));
   }
 
@@ -851,12 +817,7 @@ struct BrokerTraits<kiwoom::KiwoomClient>
    * @return Whatever the completion token returns.
    */
   template <typename Token>
-  static auto order_history(
-    Client& client,
-    const Account& account,
-    HistoryQuery query,
-    Token&& token
-  ) {
+  static auto order_history(Client& client, const Account& account, HistoryQuery query, Token&& token) {
     return client.async_order_history(account, std::move(query), std::forward<Token>(token));
   }
 };
@@ -870,7 +831,9 @@ struct BrokerTraits<kiwoom::KiwoomBlockingClient>
    * @param asked The order's venue.
    * @return The venue.
    */
-  static constexpr Venue effective_route(Venue asked) noexcept { return kiwoom_route(asked); }
+  static constexpr Venue effective_route(Venue asked) noexcept {
+    return kiwoom_route(asked);
+  }
 
   /** @brief The client type. */
   using Client = kiwoom::KiwoomBlockingClient;
@@ -941,11 +904,7 @@ struct BrokerTraits<kiwoom::KiwoomBlockingClient>
    * @param count The most trades to return.
    * @return The result, or an error.
    */
-  static Result<std::vector<TradePrint>> trades(
-    Client& client,
-    InstrumentId instrument,
-    int count
-  ) {
+  static Result<std::vector<TradePrint>> trades(Client& client, InstrumentId instrument, int count) {
     return client.trades(std::move(instrument), count);
   }
 
@@ -1009,11 +968,7 @@ struct BrokerTraits<kiwoom::KiwoomBlockingClient>
    * @param currency The currency (only KRW is answered).
    * @return The result, or an error.
    */
-  static Result<BuyingPower> buying_power(
-    Client& client,
-    const Account& account,
-    Currency currency
-  ) {
+  static Result<BuyingPower> buying_power(Client& client, const Account& account, Currency currency) {
     return client.buying_power(currency, account);
   }
 
@@ -1035,11 +990,7 @@ struct BrokerTraits<kiwoom::KiwoomBlockingClient>
    * @param amendment The amendment.
    * @return The result, or an error.
    */
-  static Result<PlaceAck> replace_order(
-    Client& client,
-    const Account& account,
-    Amendment amendment
-  ) {
+  static Result<PlaceAck> replace_order(Client& client, const Account& account, Amendment amendment) {
     return client.replace_order(account, std::move(amendment));
   }
 
@@ -1050,11 +1001,7 @@ struct BrokerTraits<kiwoom::KiwoomBlockingClient>
    * @param amendment The amendment.
    * @return The result, or an error.
    */
-  static Result<PlaceAck> cancel_order(
-    Client& client,
-    const Account& account,
-    Amendment amendment
-  ) {
+  static Result<PlaceAck> cancel_order(Client& client, const Account& account, Amendment amendment) {
     return client.cancel_order(account, std::move(amendment));
   }
 
@@ -1075,11 +1022,7 @@ struct BrokerTraits<kiwoom::KiwoomBlockingClient>
    * @param query The query.
    * @return The result, or an error.
    */
-  static Result<OrderPage> order_history(
-    Client& client,
-    const Account& account,
-    HistoryQuery query
-  ) {
+  static Result<OrderPage> order_history(Client& client, const Account& account, HistoryQuery query) {
     return client.order_history(account, std::move(query));
   }
 };

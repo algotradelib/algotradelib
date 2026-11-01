@@ -36,8 +36,7 @@ std::string mask_account_number(std::string_view account_number) {
   if (account_number.size() <= 4) {
     return std::string(account_number.size(), '*');
   }
-  return std::string(account_number.size() - 4, '*') +
-    std::string(account_number.substr(account_number.size() - 4));
+  return std::string(account_number.size() - 4, '*') + std::string(account_number.substr(account_number.size() - 4));
 }
 
 void print_holdings(const algotradelib::HoldingsSnapshot& snapshot) {
@@ -45,19 +44,21 @@ void print_holdings(const algotradelib::HoldingsSnapshot& snapshot) {
   for (const auto& position : snapshot.positions_) {
     std::cout << position.instrument_.symbol_ << "  " << position.name_ << '\n';
     std::cout << "  quantity: " << position.quantity_.str() << '\n';
-    std::cout << "  last price: " << position.last_price_.str() << ' '
-      << position.market_value_.currency_.str() << '\n';
-    std::cout << "  market value: " << position.market_value_.amount_.str() << ' '
-      << position.market_value_.currency_.str() << '\n';
-    std::cout << "  unrealized P/L: " << position.unrealized_profit_loss_.amount_.str() << ' '
+    std::cout
+      << "  last price: " << position.last_price_.str() << ' ' << position.market_value_.currency_.str() << '\n';
+    std::cout
+      << "  market value: " << position.market_value_.amount_.str() << ' ' << position.market_value_.currency_.str()
+      << '\n';
+    std::cout
+      << "  unrealized P/L: " << position.unrealized_profit_loss_.amount_.str() << ' '
       << position.unrealized_profit_loss_.currency_.str() << '\n';
   }
 
   std::cout << "totals: " << snapshot.totals_.size() << '\n';
   for (const auto& total : snapshot.totals_) {
-    std::cout << total.currency_.str() << "  purchase=" << total.purchase_value_.str()
-      << "  market=" << total.market_value_.str()
-      << "  unrealized=" << total.unrealized_profit_loss_.str() << '\n';
+    std::cout
+      << total.currency_.str() << "  purchase=" << total.purchase_value_.str()
+      << "  market=" << total.market_value_.str() << "  unrealized=" << total.unrealized_profit_loss_.str() << '\n';
   }
 }
 
@@ -92,19 +93,17 @@ int main(int argc, char* argv[]) {
     const auto& accounts = accounts_result.value();
     std::cout << "accounts: " << accounts.size() << '\n';
     for (const auto& account : accounts) {
-      std::cout << account.sequence_ << "  " << mask_account_number(account.account_number_)
-        << "  " << account.account_type_ << '\n';
+      std::cout
+        << account.sequence_ << "  " << mask_account_number(account.account_number_) << "  " << account.account_type_
+        << '\n';
     }
     if (accounts.empty()) {
       return 0;
     }
 
-    const std::int64_t selected_sequence =
-      argc > 1 ? parse_account_sequence(argv[1]) : accounts.front().sequence_;
+    const std::int64_t selected_sequence = argc > 1 ? parse_account_sequence(argv[1]) : accounts.front().sequence_;
     const auto selected = std::find_if(
-      accounts.begin(),
-      accounts.end(),
-      [selected_sequence](const algotradelib::tossinvest::TossAccount& account) {
+      accounts.begin(), accounts.end(), [selected_sequence](const algotradelib::tossinvest::TossAccount& account) {
         return account.sequence_ == selected_sequence;
       }
     );

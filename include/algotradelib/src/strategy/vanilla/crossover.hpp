@@ -68,7 +68,9 @@ struct MovingAverageCrossover {
    * @brief Returns how many bars to load before the first live bar.
    * @return `slow_ + 1`; the strategy acts only once that many closes are cached.
    */
-  std::size_t warmup_bars() const { return params_.slow_ + 1; }
+  std::size_t warmup_bars() const {
+    return params_.slow_ + 1;
+  }
 
   /**
    * @brief States the target position for the instrument on each of its bars.
@@ -104,9 +106,7 @@ struct MovingAverageCrossover {
 
     TargetPosition target;
     target.instrument_ = params_.instrument_;
-    target.target_quantity_ = slow_pair->current_ < fast_pair->current_ ?
-      params_.quantity_ :
-      Decimal64::parse("0");
+    target.target_quantity_ = slow_pair->current_ < fast_pair->current_ ? params_.quantity_ : Decimal64::parse("0");
     target.tag_ = params_.tag_;
     ctx.submit(target);
   }
@@ -138,7 +138,9 @@ struct SmaCrossover {
   }
 
   /** @copydoc MovingAverageCrossover::warmup_bars() */
-  std::size_t warmup_bars() const { return inner_.warmup_bars(); }
+  std::size_t warmup_bars() const {
+    return inner_.warmup_bars();
+  }
 
   /**
    * @brief Calls the general crossover's `on_bar`.
@@ -167,7 +169,9 @@ struct EmaCrossover {
   }
 
   /** @copydoc MovingAverageCrossover::warmup_bars() */
-  std::size_t warmup_bars() const { return inner_.warmup_bars(); }
+  std::size_t warmup_bars() const {
+    return inner_.warmup_bars();
+  }
 
   /**
    * @brief Calls the general crossover's `on_bar`.

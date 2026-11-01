@@ -136,14 +136,13 @@ protected:
    * @param port The port.
    * @param options The options.
    */
-  WebSocketSessionBase(
-    net::io_context& ioc,
-    std::string host,
-    std::string port,
-    WebSocketSessionOptions options
-  )
-  : strand_(net::make_strand(ioc)), resolver_(strand_), reconnect_timer_(strand_),
-    host_(std::move(host)), port_(std::move(port)), options_(std::move(options)),
+  WebSocketSessionBase(net::io_context& ioc, std::string host, std::string port, WebSocketSessionOptions options)
+  : strand_(net::make_strand(ioc)),
+    resolver_(strand_),
+    reconnect_timer_(strand_),
+    host_(std::move(host)),
+    port_(std::move(port)),
+    options_(std::move(options)),
     reconnect_rng_(std::random_device{}()) {}
 
   /** @brief Destroys the session. */
@@ -236,9 +235,7 @@ protected:
       }
     }));
     ws_->async_handshake(
-      host_header_,
-      options_.target_,
-      beast::bind_front_handler(&WebSocketSessionBase::on_handshake, shared_derived())
+      host_header_, options_.target_, beast::bind_front_handler(&WebSocketSessionBase::on_handshake, shared_derived())
     );
   }
 
@@ -327,8 +324,7 @@ private:
   void do_write() {
     writing_ = true;
     ws_->async_write(
-      net::buffer(write_queue_.front()),
-      beast::bind_front_handler(&WebSocketSessionBase::on_write, shared_derived())
+      net::buffer(write_queue_.front()), beast::bind_front_handler(&WebSocketSessionBase::on_write, shared_derived())
     );
   }
 
@@ -348,9 +344,7 @@ private:
   }
 
   void do_read() {
-    ws_->async_read(
-      buffer_, beast::bind_front_handler(&WebSocketSessionBase::on_read, shared_derived())
-    );
+    ws_->async_read(buffer_, beast::bind_front_handler(&WebSocketSessionBase::on_read, shared_derived()));
   }
 
   void on_read(beast::error_code error, std::size_t bytes_transferred) {
@@ -375,8 +369,7 @@ private:
 
   void do_close() {
     ws_->async_close(
-      websocket::close_code::normal,
-      beast::bind_front_handler(&WebSocketSessionBase::on_close, shared_derived())
+      websocket::close_code::normal, beast::bind_front_handler(&WebSocketSessionBase::on_close, shared_derived())
     );
   }
 
@@ -405,9 +398,7 @@ private:
     const auto jitter_window = base_delay / 5;
     const auto jitter = jitter_window.count() <= 0 ?
       std::chrono::milliseconds(0) :
-      std::chrono::milliseconds(
-        std::uniform_int_distribution<std::int64_t>(0, jitter_window.count())(reconnect_rng_)
-      );
+      std::chrono::milliseconds(std::uniform_int_distribution<std::int64_t>(0, jitter_window.count())(reconnect_rng_));
     reconnect_timer_.expires_after(base_delay + jitter);
     reconnect_timer_.async_wait([self = shared_derived()](beast::error_code error) {
       if (!error) {

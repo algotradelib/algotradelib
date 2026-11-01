@@ -34,14 +34,9 @@ public:
    * @param options The options.
    */
   WssSession(
-    net::io_context& ioc,
-    ssl::context& context,
-    std::string host,
-    std::string port,
-    WssSessionOptions options = {}
+    net::io_context& ioc, ssl::context& context, std::string host, std::string port, WssSessionOptions options = {}
   )
-  : WebSocketSessionBase(ioc, std::move(host), std::move(port), std::move(options)),
-    context_(context) {}
+  : WebSocketSessionBase(ioc, std::move(host), std::move(port), std::move(options)), context_(context) {}
 
   /**
    * @brief Constructs a session with default options except the target and headers.
@@ -54,19 +49,11 @@ public:
    * @param headers Extra headers sent with the upgrade request.
    */
   WssSession(
-    net::io_context& ioc,
-    ssl::context& context,
-    std::string host,
-    std::string port,
-    std::string target,
+    net::io_context& ioc, ssl::context& context, std::string host, std::string port, std::string target,
     std::map<std::string, std::string> headers = {}
   )
   : WssSession(
-      ioc,
-      context,
-      std::move(host),
-      std::move(port),
-      WssSessionOptions{std::move(target), std::move(headers)}
+      ioc, context, std::move(host), std::move(port), WssSessionOptions{std::move(target), std::move(headers)}
     ) {}
 
 private:
@@ -84,10 +71,7 @@ private:
     ws_ = std::make_unique<Stream>(strand_, context_);
     buffer_.consume(buffer_.size());
     if (!SSL_set_tlsext_host_name(ws_->next_layer().native_handle(), host_.c_str())) {
-      fail(
-        "sni",
-        beast::error_code(static_cast<int>(::ERR_get_error()), net::error::get_ssl_category())
-      );
+      fail("sni", beast::error_code(static_cast<int>(::ERR_get_error()), net::error::get_ssl_category()));
       return;
     }
     ws_->next_layer().set_verify_callback(ssl::host_name_verification(host_));
@@ -105,8 +89,7 @@ private:
     host_header_ = host_ + ":" + std::to_string(endpoint.port());
     beast::get_lowest_layer(*ws_).expires_after(options_.operation_timeout_);
     ws_->next_layer().async_handshake(
-      ssl::stream_base::client,
-      beast::bind_front_handler(&WssSession::on_ssl_handshake, shared_derived())
+      ssl::stream_base::client, beast::bind_front_handler(&WssSession::on_ssl_handshake, shared_derived())
     );
   }
 

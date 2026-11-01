@@ -47,12 +47,24 @@ void* allocate(std::size_t size) {
 
 } // namespace
 
-void* operator new(std::size_t size) { return allocate(size); }
-void* operator new[](std::size_t size) { return allocate(size); }
-void operator delete(void* memory) noexcept { std::free(memory); }
-void operator delete[](void* memory) noexcept { std::free(memory); }
-void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
-void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
+void* operator new(std::size_t size) {
+  return allocate(size);
+}
+void* operator new[](std::size_t size) {
+  return allocate(size);
+}
+void operator delete(void* memory) noexcept {
+  std::free(memory);
+}
+void operator delete[](void* memory) noexcept {
+  std::free(memory);
+}
+void operator delete(void* memory, std::size_t) noexcept {
+  std::free(memory);
+}
+void operator delete[](void* memory, std::size_t) noexcept {
+  std::free(memory);
+}
 
 using namespace algotradelib;
 
@@ -92,9 +104,13 @@ int fail_each_allocation(Operation operation, Check check) {
   }
 }
 
-InstrumentId named(const std::string& symbol) { return InstrumentId{Country::KR, Venue::COMBINED, symbol}; }
+InstrumentId named(const std::string& symbol) {
+  return InstrumentId{Country::KR, Venue::COMBINED, symbol};
+}
 
-Currency krw() { return Currency{"KRW"}; }
+Currency krw() {
+  return Currency{"KRW"};
+}
 
 backtest::Execution bought(const InstrumentId& id, const char* quantity) {
   backtest::Execution execution;
@@ -108,9 +124,7 @@ backtest::Execution bought(const InstrumentId& id, const char* quantity) {
 }
 
 backtest::ReplayLedger holding(
-  const std::string& prefix,
-  int lots,
-  backtest::ExecutionHistory history = backtest::ExecutionHistory::KEEP
+  const std::string& prefix, int lots, backtest::ExecutionHistory history = backtest::ExecutionHistory::KEEP
 ) {
   backtest::ReplayLedger ledger(Decimal64::parse("9000000000000000"), krw(), history);
   for (int k = 0; k < lots; ++k) {
@@ -196,7 +210,9 @@ struct BuysTen {
   template <class Ctx>
   void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
     ctx.submit(
-      strategy::OrderIntent::market(bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")))
+      strategy::OrderIntent::market(
+        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
+      )
     );
   }
 };
@@ -219,7 +235,8 @@ static_assert(std::is_nothrow_move_constructible<strategy::slice_detail::Bucket>
 static_assert(
   std::is_nothrow_move_constructible<backtest::QueueingExecutor<backtest::BacktestTag>>::value ==
   std::is_nothrow_move_constructible<
-    std::unordered_map<InstrumentId, std::vector<std::uint64_t>, id_detail::InstrumentIdHash>>::value
+    std::unordered_map<InstrumentId, std::vector<std::uint64_t>, id_detail::InstrumentIdHash>
+  >::value
 );
 
 TEST_CASE("a ledger opening a lot finds every lot it lists after a failed allocation") {
@@ -228,30 +245,33 @@ TEST_CASE("a ledger opening a lot finds every lot it lists after a failed alloca
   // no room to spare, and 8 fills the first growth); at 16, 17, 20 and 32: the last scan, the index being built,
   // the index extended, and the index growing its storage.
   // Both with the execution history and without it (a replay's ledger), which reserves nothing for it.
-  for (const auto history : {backtest::ExecutionHistory::KEEP, backtest::ExecutionHistory::NONE})
-  for (const int lots : {0, 1, 8, 16, 17, 20, 32}) {
-    INFO(lots << " lots before the fill; history kept: " << (history == backtest::ExecutionHistory::KEEP));
-    const auto opened = named("NEW");
-    const auto before = holding("S", lots, history);
-    auto ledger = before;
-    const auto fill = bought(opened, "3");
-    bool applied = false;
-    const int failures = fail_each_allocation(
-      [&] { applied = ledger.apply(fill, krw()); },
-      [&] {
-        require_lookups_match_positions(ledger);
-        require_equity_as_scanned(ledger);
-        require_unchanged(ledger, before);
-        CHECK_FALSE(lists(ledger, opened));
-        ledger = before;
-      }
-    );
-    CHECK(failures > 0);
-    CHECK(applied);
-    require_lookups_match_positions(ledger);
-    CHECK(ledger.quantity_of(opened) == std::optional<Decimal64>(Decimal64::parse("3")));
-    CHECK(ledger.positions().size() == static_cast<std::size_t>(lots + 1));
-    require_equity_as_scanned(ledger);
+  for (const auto history : {backtest::ExecutionHistory::KEEP, backtest::ExecutionHistory::NONE}) {
+    for (const int lots : {0, 1, 8, 16, 17, 20, 32}) {
+      INFO(lots << " lots before the fill; history kept: " << (history == backtest::ExecutionHistory::KEEP));
+      const auto opened = named("NEW");
+      const auto before = holding("S", lots, history);
+      auto ledger = before;
+      const auto fill = bought(opened, "3");
+      bool applied = false;
+      const int failures = fail_each_allocation(
+        [&] {
+          applied = ledger.apply(fill, krw());
+        },
+        [&] {
+          require_lookups_match_positions(ledger);
+          require_equity_as_scanned(ledger);
+          require_unchanged(ledger, before);
+          CHECK_FALSE(lists(ledger, opened));
+          ledger = before;
+        }
+      );
+      CHECK(failures > 0);
+      CHECK(applied);
+      require_lookups_match_positions(ledger);
+      CHECK(ledger.quantity_of(opened) == std::optional<Decimal64>(Decimal64::parse("3")));
+      CHECK(ledger.positions().size() == static_cast<std::size_t>(lots + 1));
+      require_equity_as_scanned(ledger);
+    }
   }
 }
 
@@ -276,7 +296,9 @@ TEST_CASE("a reopened lot that cannot be recorded leaves equity as a scan of the
     const auto reopened = bought(named("S50"), "2");
     bool applied = false;
     const int failures = fail_each_allocation(
-      [&] { applied = ledger.apply(reopened, krw()); },
+      [&] {
+        applied = ledger.apply(reopened, krw());
+      },
       [&] {
         require_lookups_match_positions(ledger);
         // Every allocation is made before the lot changes, so a failure leaves it, and the running equity, as
@@ -364,8 +386,10 @@ TEST_CASE("a replay queue copy that fails leaves the destination as it was") {
   using Queue = backtest::QueueingExecutor<backtest::BacktestTag>;
   Queue source;
   for (int k = 0; k < 6; ++k) {
-    REQUIRE(source.place(order_in("SOURCE-INSTRUMENT-WITH-A-LONG-NAME-" + std::to_string(k % 3))) ==
-      runner::SendOutcome::ACCEPTED);
+    REQUIRE(
+      source.place(order_in("SOURCE-INSTRUMENT-WITH-A-LONG-NAME-" + std::to_string(k % 3))) ==
+      runner::SendOutcome::ACCEPTED
+    );
   }
   Queue destination;
   REQUIRE(destination.place(order_in("DESTINATION-INSTRUMENT-WITH-A-LONG-NAME")) == runner::SendOutcome::ACCEPTED);
@@ -375,14 +399,18 @@ TEST_CASE("a replay queue copy that fails leaves the destination as it was") {
     for (const auto& entry : queue.queued()) {
       refs.push_back(entry.ref_);
       std::size_t found = 0;
-      queue.for_each_queued_in(entry.order_.instrument_, [&](const auto& mine) { found += mine.ref_ == entry.ref_; });
+      queue.for_each_queued_in(entry.order_.instrument_, [&](const auto& mine) {
+        found += mine.ref_ == entry.ref_;
+      });
       REQUIRE(found == 1);
     }
     REQUIRE(refs.size() == expected);
     return refs;
   };
   const int failures = fail_each_allocation(
-    [&] { destination = source; },
+    [&] {
+      destination = source;
+    },
     [&] {
       auto copy = destination;
       const auto refs = require_consistent(copy, 1);
@@ -408,7 +436,9 @@ TEST_CASE("a risk guard copy that fails leaves the destination counting as it wa
   limits.max_orders_per_window_ = 1;
   limits.rate_window_ = std::chrono::seconds(60);
   const auto start = std::chrono::system_clock::time_point{} + std::chrono::hours(24);
-  const auto at = [&](int seconds) { return start + std::chrono::seconds(seconds); };
+  const auto at = [&](int seconds) {
+    return start + std::chrono::seconds(seconds);
+  };
   strategy::RiskGuard destination(limits);
   destination.note_sent(at(0));
   destination.note_sent(at(10));
@@ -418,7 +448,9 @@ TEST_CASE("a risk guard copy that fails leaves the destination counting as it wa
     source.note_sent(at(0));
   }
   const int failures = fail_each_allocation(
-    [&] { destination = source; },
+    [&] {
+      destination = source;
+    },
     [&] {
       REQUIRE(destination.recent_orders(at(30)) == 2);
       REQUIRE(destination.recent_orders(at(65)) == 1);
@@ -442,12 +474,19 @@ TEST_CASE("a replay queue move that fails leaves the source as it was") {
   order.quantity_ = Decimal64::parse("1");
   REQUIRE(source.place(order) == runner::SendOutcome::ACCEPTED);
   std::optional<Queue> moved;
-  fail_each_allocation([&] { moved.emplace(std::move(source)); }, [&] {
-    REQUIRE(source.queued().size() == 1);
-    std::size_t found = 0;
-    source.for_each_queued_in(order.instrument_, [&](const auto&) { ++found; });
-    REQUIRE(found == 1);
-  });
+  fail_each_allocation(
+    [&] {
+      moved.emplace(std::move(source));
+    },
+    [&] {
+      REQUIRE(source.queued().size() == 1);
+      std::size_t found = 0;
+      source.for_each_queued_in(order.instrument_, [&](const auto&) {
+        ++found;
+      });
+      REQUIRE(found == 1);
+    }
+  );
   REQUIRE(moved->queued().size() == 1);
   CHECK(source.queued().empty());
 }
@@ -457,7 +496,9 @@ TEST_CASE("a ledger copy that fails leaves the destination as it was") {
   const auto original = holding("S", 20);
   auto ledger = original;
   const int failures = fail_each_allocation(
-    [&] { ledger = source; },
+    [&] {
+      ledger = source;
+    },
     [&] {
       REQUIRE(ledger.positions().size() == 20);
       require_lookups_match_positions(ledger);
@@ -485,7 +526,9 @@ TEST_CASE("a period bucket adding a bar keeps its slice and its ids together aft
     auto bucket = before;
     const auto added = bar_of("NEW", BarInterval::ONE_DAY);
     const int failures = fail_each_allocation(
-      [&] { bucket.add(added); },
+      [&] {
+        bucket.add(added);
+      },
       [&] {
         // The bar was not added, so it is not held.
         CHECK_FALSE(bucket.holds(added));
@@ -514,7 +557,9 @@ TEST_CASE("a period bucket copy that fails leaves the destination as it was") {
     bucket.add(bar_of("S" + std::to_string(k), BarInterval::ONE_DAY));
   }
   const int failures = fail_each_allocation(
-    [&] { bucket = source; },
+    [&] {
+      bucket = source;
+    },
     [&] {
       CHECK(bucket.holds(bar_of("S19", BarInterval::ONE_DAY)));
       CHECK_FALSE(bucket.holds(bar_of("T0", BarInterval::ONE_DAY)));
@@ -589,7 +634,9 @@ TEST_CASE("a wide slice taken first leaves a narrow one answering by its own bar
 }
 
 TEST_CASE("a wide bucket moved away leaves its source empty and usable") {
-  const auto daily = [](const std::string& symbol) { return bar_of(symbol, BarInterval::ONE_DAY); };
+  const auto daily = [](const std::string& symbol) {
+    return bar_of(symbol, BarInterval::ONE_DAY);
+  };
   const auto twenty = [&daily](const std::string& prefix) {
     strategy::slice_detail::Bucket bucket;
     for (int k = 0; k < 20; ++k) {
@@ -672,7 +719,9 @@ TEST_CASE("a journal refused for another writer's lock closes its descriptor aft
         runner::FileJournal second(path, "test:account");
         rejection = second.rejection();
       },
-      [&] { CHECK(open_descriptors() == before); }
+      [&] {
+        CHECK(open_descriptors() == before);
+      }
     );
     if (failures == 0) {
       // macOS's sanitizer runtime interposes the allocator the standard library's compiled strings call.

@@ -19,7 +19,9 @@ using namespace algotradelib;
 
 namespace {
 
-InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
+InstrumentId samsung() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+}
 
 const vendor::MockAccount kAccount{"cust", 1};
 
@@ -32,7 +34,9 @@ struct AsyncDriver {
   std::shared_ptr<vendor::MockClient> client_ = std::make_shared<vendor::MockClient>(ioc_.get_executor());
   BrokerSession<vendor::MockClient> session_{client_, kAccount};
 
-  vendor::MockClient& mock() { return *client_; }
+  vendor::MockClient& mock() {
+    return *client_;
+  }
 
   template <typename Future>
   auto finish(Future future) {
@@ -40,7 +44,9 @@ struct AsyncDriver {
     ioc_.run();
     return future.get();
   }
-  Result<Placed> place(OrderRequest order) { return finish(session_.async_place(std::move(order), net::use_future)); }
+  Result<Placed> place(OrderRequest order) {
+    return finish(session_.async_place(std::move(order), net::use_future));
+  }
   Result<Placed> replace(const Ref& ref, AmendInstruction instruction) {
     return finish(session_.async_replace(ref, std::move(instruction), net::use_future));
   }
@@ -57,12 +63,22 @@ struct BlockingDriver {
   std::shared_ptr<vendor::MockBlockingClient> client_ = std::make_shared<vendor::MockBlockingClient>();
   BlockingSession<vendor::MockBlockingClient> session_{client_, kAccount};
 
-  vendor::MockClient& mock() { return client_->mock(); }
+  vendor::MockClient& mock() {
+    return client_->mock();
+  }
 
-  Result<Placed> place(OrderRequest order) { return session_.place(std::move(order)); }
-  Result<Placed> replace(const Ref& ref, AmendInstruction instruction) { return session_.replace(ref, instruction); }
-  Result<Placed> cancel(const Ref& ref, AmendInstruction instruction) { return session_.cancel(ref, instruction); }
-  Result<OrderPage> order_history(OrderHistoryQuery query) { return session_.order_history(query); }
+  Result<Placed> place(OrderRequest order) {
+    return session_.place(std::move(order));
+  }
+  Result<Placed> replace(const Ref& ref, AmendInstruction instruction) {
+    return session_.replace(ref, instruction);
+  }
+  Result<Placed> cancel(const Ref& ref, AmendInstruction instruction) {
+    return session_.cancel(ref, instruction);
+  }
+  Result<OrderPage> order_history(OrderHistoryQuery query) {
+    return session_.order_history(query);
+  }
 };
 
 /** A resting stop-limit order, as a working-order listing would report it. */
@@ -97,8 +113,9 @@ void accept_orders(Driver& driver) {
 
 } // namespace
 
-TEMPLATE_TEST_CASE("both sessions refuse a modification that would carry a trigger", "[port][parity]",
-                   AsyncDriver, BlockingDriver) {
+TEMPLATE_TEST_CASE(
+  "both sessions refuse a modification that would carry a trigger", "[port][parity]", AsyncDriver, BlockingDriver
+) {
   TestType driver;
   accept_orders(driver);
   const auto stop = resting_stop();
@@ -119,8 +136,7 @@ TEMPLATE_TEST_CASE("both sessions refuse a modification that would carry a trigg
   CHECK(mock_port::Normalizers::to_replacement_calls_ == 0);
 }
 
-TEMPLATE_TEST_CASE("both sessions send a valid modification once", "[port][parity]",
-                   AsyncDriver, BlockingDriver) {
+TEMPLATE_TEST_CASE("both sessions send a valid modification once", "[port][parity]", AsyncDriver, BlockingDriver) {
   TestType driver;
   accept_orders(driver);
   const auto limit = resting_limit();

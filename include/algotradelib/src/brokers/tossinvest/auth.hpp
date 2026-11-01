@@ -23,8 +23,7 @@ public:
    * @param ctx The TLS context; borrowed, and must outlive the wrapper.
    * @param config The credentials (copied).
    */
-  TossAuth(net::io_context& ioc, ssl::context& ctx, const TossConfig& config)
-  : ioc_(ioc), ctx_(ctx), req_(config) {}
+  TossAuth(net::io_context& ioc, ssl::context& ctx, const TossConfig& config) : ioc_(ioc), ctx_(ctx), req_(config) {}
 
   /** @brief Destroys the wrapper. */
   virtual ~TossAuth() = default;
@@ -56,9 +55,7 @@ private:
     TossHttpClient rest(ioc_, ctx_, "openapi.tossinvest.com", "443");
     auto response = rest.post("/oauth2/token", formbody, {{"Content-Type", "application/x-www-form-urlencoded"}});
     if (response.result_int() < 200 || response.result_int() >= 300) {
-      throw std::runtime_error(
-        "Token authentication failed with HTTP status " + std::to_string(response.result_int())
-      );
+      throw std::runtime_error("Token authentication failed with HTTP status " + std::to_string(response.result_int()));
     }
     const std::string resp = std::move(response.body());
     boost::system::error_code ec;

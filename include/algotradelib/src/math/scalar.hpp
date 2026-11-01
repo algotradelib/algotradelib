@@ -25,7 +25,9 @@ using Scalar = double;
  *
  * @return A quiet `NaN`.
  */
-inline Scalar missing() { return std::numeric_limits<Scalar>::quiet_NaN(); }
+inline Scalar missing() {
+  return std::numeric_limits<Scalar>::quiet_NaN();
+}
 
 /**
  * @brief Tests whether a value is an observation.
@@ -33,7 +35,9 @@ inline Scalar missing() { return std::numeric_limits<Scalar>::quiet_NaN(); }
  * @param value The value to test.
  * @return `false` for `missing()`, `undefined()` or any other `NaN`; `true` otherwise.
  */
-inline bool observed(Scalar value) { return !std::isnan(value); }
+inline bool observed(Scalar value) {
+  return !std::isnan(value);
+}
 
 /**
  * @brief Returns the value that stands for "the data was there, but the statistic does not exist".

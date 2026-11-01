@@ -9,11 +9,13 @@ using namespace algotradelib;
 
 #if ATL_PROBE_VARIANT == 1
 class Hidden {
-  template <class Ctx> void on_bars(Ctx&, const strategy::BarSlice&) {}
+  template <class Ctx>
+  void on_bars(Ctx&, const strategy::BarSlice&) {}
 };
 #elif ATL_PROBE_VARIANT == 2
 struct Base {
-  template <class Ctx> void on_bars(Ctx&, const strategy::BarSlice&) {}
+  template <class Ctx>
+  void on_bars(Ctx&, const strategy::BarSlice&) {}
 };
 struct Hidden : private Base {};
 #endif

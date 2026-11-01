@@ -7,8 +7,8 @@
 #include <array>
 #include <chrono>
 #include <string>
-#include <type_traits>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -94,7 +94,12 @@ inline constexpr std::string_view send_outcome_name(SendOutcome outcome) noexcep
 }
 
 static_assert(
-  lists_every_value(all_send_outcomes, [](SendOutcome outcome) { return !send_outcome_name(outcome).empty(); }),
+  lists_every_value(
+    all_send_outcomes,
+    [](SendOutcome outcome) {
+      return !send_outcome_name(outcome).empty();
+    }
+  ),
   "all_send_outcomes must list every SendOutcome"
 );
 
@@ -255,7 +260,7 @@ struct sends_to_a_broker : std::true_type {};
 
 template <typename Executor>
 struct sends_to_a_broker<Executor, std::void_t<decltype(Executor::reaches_a_broker)>>
-  : std::bool_constant<Executor::reaches_a_broker> {};
+: std::bool_constant<Executor::reaches_a_broker> {};
 
 } // namespace runner_detail
 
@@ -590,7 +595,9 @@ public:
    * @brief Tests whether nothing is unresolved.
    * @return `true` if the ledger is empty.
    */
-  bool empty() const noexcept { return pending_.empty(); }
+  bool empty() const noexcept {
+    return pending_.empty();
+  }
 
 private:
   struct Entry {
@@ -611,7 +618,6 @@ private:
 template <typename BrokerTag>
 class RecordingExecutor {
 public:
-
   /** @brief `false`: a dry run reaches no broker, so the runner does not require a read account. */
   static constexpr bool reaches_a_broker = false;
   /**
@@ -638,13 +644,17 @@ public:
    * @brief Returns every placement recorded.
    * @return The orders, in order.
    */
-  const std::vector<strategy::PlannedOrder>& placed() const noexcept { return placed_; }
+  const std::vector<strategy::PlannedOrder>& placed() const noexcept {
+    return placed_;
+  }
 
   /**
    * @brief Returns every cancellation recorded.
    * @return The references, in order.
    */
-  const std::vector<OrderRef<BrokerTag>>& canceled() const noexcept { return canceled_; }
+  const std::vector<OrderRef<BrokerTag>>& canceled() const noexcept {
+    return canceled_;
+  }
 
 private:
   std::vector<strategy::PlannedOrder> placed_;

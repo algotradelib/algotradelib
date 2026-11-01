@@ -1,13 +1,13 @@
 #pragma once
 
-#include "../../network/oauth.hpp"
-#include <ctime>
 #include <boost/json.hpp>
 #include <cstdlib>
+#include <ctime>
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
 #include <string_view>
+#include "../../network/oauth.hpp"
 
 namespace algotradelib {
 namespace tossinvest {
@@ -53,15 +53,11 @@ struct TossConfig : public network::ClientCredentials<TossConfig> {
     if (!ifs.is_open()) {
       throw std::runtime_error("Cannot open Toss Invest credential file: " + filename);
     }
-    const std::string content(
-      std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>{}
-    );
+    const std::string content(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>{});
     boost::system::error_code ec;
     const auto jv = json::parse(content, ec);
     if (ec) {
-      throw std::runtime_error(
-        "Failed to parse Toss Invest credentials file: " + filename + " — " + ec.message()
-      );
+      throw std::runtime_error("Failed to parse Toss Invest credentials file: " + filename + " — " + ec.message());
     }
     const auto& doc = jv.as_object();
     if (!doc.contains("client_id") || !doc.contains("client_secret")) {
@@ -75,13 +71,17 @@ struct TossConfig : public network::ClientCredentials<TossConfig> {
    * @brief Returns the token request's field for the client id.
    * @return `"client_id"`.
    */
-  static constexpr std::string_view key_field() noexcept { return "client_id"; }
+  static constexpr std::string_view key_field() noexcept {
+    return "client_id";
+  }
 
   /**
    * @brief Returns the token request's field for the client secret.
    * @return `"client_secret"`.
    */
-  static constexpr std::string_view secret_field() noexcept { return "client_secret"; }
+  static constexpr std::string_view secret_field() noexcept {
+    return "client_secret";
+  }
 };
 
 /** @brief A Toss REST access token and its expiry. */
@@ -90,7 +90,9 @@ struct TossRest : public network::AuthBody<TossRest> {
    * @brief Returns the token response's field for the token.
    * @return `"access_token"`.
    */
-  static constexpr std::string_view token_field() noexcept { return "access_token"; }
+  static constexpr std::string_view token_field() noexcept {
+    return "access_token";
+  }
 
   /** @brief Reads nothing more from a token response (the argument is unused; Toss states `expires_in`); called by `from_json`. */
   void from_json_impl(const json::object&) {}

@@ -125,10 +125,8 @@ inline algotradelib::network::HttpClientOptions paced_options() {
  *   missing, invalid, or contradict the demo setting.
  */
 inline void load(
-  const std::optional<std::filesystem::path>& directory,
-  const std::optional<std::string>& label,
-  algotradelib::kiwoom::KiwoomConfig& config,
-  std::ostream& out
+  const std::optional<std::filesystem::path>& directory, const std::optional<std::string>& label,
+  algotradelib::kiwoom::KiwoomConfig& config, std::ostream& out
 ) {
   if (!directory) {
     if (label) {
@@ -152,8 +150,7 @@ inline void load(
   config.from_json(path.string());
   if (config.is_demo_ != demo) {
     throw std::runtime_error(
-      path.string() + " says \"demo\": " + (config.is_demo_ ? "true" : "false") +
-      ", which contradicts its name"
+      path.string() + " says \"demo\": " + (config.is_demo_ ? "true" : "false") + ", which contradicts its name"
     );
   }
   out << "credentials: " << path.string() << '\n';
@@ -162,4 +159,4 @@ inline void load(
   }
 }
 
-}  // namespace kiwoom_credentials
+} // namespace kiwoom_credentials

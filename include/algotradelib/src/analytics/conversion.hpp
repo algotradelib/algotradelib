@@ -97,10 +97,7 @@ inline std::optional<Decimal64> to_decimal(Scalar value, std::uint8_t scale) {
  *   (`PriceRule::Kind::UNKNOWN`).
  */
 inline std::optional<Decimal64> round_scalar_to_tick(
-  Scalar value,
-  const PriceRule& rule,
-  OrderSide side,
-  std::uint8_t scale = 0
+  Scalar value, const PriceRule& rule, OrderSide side, std::uint8_t scale = 0
 ) {
   const auto nearest = to_decimal(value, scale);
   if (!nearest) {
@@ -115,10 +112,8 @@ inline std::optional<Decimal64> round_scalar_to_tick(
   // Each of the `scale` multiplications here can add half a unit in the last place, and a value that
   // came through `to_scalar` within its bounds carries one more half unit from its division. The
   // tolerance is wider than that sum: it also absorbs values computed from such inputs.
-  const Scalar noise = std::max(
-    Scalar(1e-9),
-    std::abs(scaled) * Scalar(2 * scale + 4) * std::numeric_limits<Scalar>::epsilon()
-  );
+  const Scalar noise =
+    std::max(Scalar(1e-9), std::abs(scaled) * Scalar(2 * scale + 4) * std::numeric_limits<Scalar>::epsilon());
   const auto coefficient = nearest->coefficient();
   const Scalar crossed = static_cast<Scalar>(coefficient) - scaled;
   auto exact = *nearest;

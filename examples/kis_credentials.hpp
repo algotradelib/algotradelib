@@ -54,8 +54,7 @@ inline std::optional<std::filesystem::path> take_directory(int& argc, char** arg
   int kept = 1;
   for (int i = 1; i < argc; ++i) {
     if (std::string_view(argv[i]) == "--credentials") {
-      if (i + 1 >= argc || std::string_view(argv[i + 1]).empty() ||
-          std::string_view(argv[i + 1]).rfind("--", 0) == 0) {
+      if (i + 1 >= argc || std::string_view(argv[i + 1]).empty() || std::string_view(argv[i + 1]).rfind("--", 0) == 0) {
         throw std::runtime_error("--credentials needs a directory");
       }
       directory = argv[++i];
@@ -111,8 +110,7 @@ inline void load_config(algotradelib::kis::KisConfig& config, const std::filesys
   config.from_json(path.string());
   if (config.is_demo_ != demo) {
     throw std::runtime_error(
-      path.string() + " says \"demo\": " + (config.is_demo_ ? "true" : "false") +
-      ", which contradicts its name"
+      path.string() + " says \"demo\": " + (config.is_demo_ ? "true" : "false") + ", which contradicts its name"
     );
   }
 }
@@ -127,10 +125,8 @@ inline void load_config(algotradelib::kis::KisConfig& config, const std::filesys
  * @throws std::runtime_error if the file or variables are missing or invalid.
  */
 inline void load(
-  const std::optional<std::filesystem::path>& directory,
-  algotradelib::kis::KisConfig& config,
-  algotradelib::kis::KisAccount* account,
-  std::ostream& out
+  const std::optional<std::filesystem::path>& directory, algotradelib::kis::KisConfig& config,
+  algotradelib::kis::KisAccount* account, std::ostream& out
 ) {
   if (!directory) {
     config.from_env();

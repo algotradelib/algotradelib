@@ -43,13 +43,17 @@ public:
    * @brief Returns the number of instants.
    * @return The number of rows the index covers.
    */
-  std::size_t size() const noexcept { return stamps_.size(); }
+  std::size_t size() const noexcept {
+    return stamps_.size();
+  }
 
   /**
    * @brief Tests whether the index is empty.
    * @return `true` if it holds no instants.
    */
-  bool empty() const noexcept { return stamps_.empty(); }
+  bool empty() const noexcept {
+    return stamps_.empty();
+  }
 
   /**
    * @brief Returns the instant of one row.
@@ -69,7 +73,9 @@ public:
    * @brief Returns all instants.
    * @return The instants, ascending.
    */
-  const std::vector<Instant>& stamps() const noexcept { return stamps_; }
+  const std::vector<Instant>& stamps() const noexcept {
+    return stamps_;
+  }
 
   /**
    * @brief Finds the row of an exact instant.
@@ -118,7 +124,9 @@ public:
    * @param rhs The second index.
    * @return `true` if they differ in any instant.
    */
-  friend bool operator!=(const TimeIndex& lhs, const TimeIndex& rhs) { return !(lhs == rhs); }
+  friend bool operator!=(const TimeIndex& lhs, const TimeIndex& rhs) {
+    return !(lhs == rhs);
+  }
 
 private:
   std::vector<Instant> stamps_;

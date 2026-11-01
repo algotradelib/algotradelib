@@ -145,8 +145,7 @@ bool load_reference_data(Session& session, Runner& bound, const Settings& settin
   for (const auto& instrument : settings.universe_) {
     auto reference = session.instrument(instrument);
     if (!reference) {
-      out << "could not read reference data for " << instrument.symbol_ << ": "
-          << reference.error().message_ << '\n';
+      out << "could not read reference data for " << instrument.symbol_ << ": " << reference.error().message_ << '\n';
       return false;
     }
     bound.context().set_instrument(std::move(reference.value()));
@@ -191,21 +190,24 @@ inline void print_recovery(const runner::RecoveryReport& recovery, std::ostream&
  * @param out Where to print.
  */
 inline void print_how_to_stop(const Settings& settings, std::ostream& out) {
-  out << "to stop: Ctrl-C or SIGTERM (quiesce), or\n"
-      << "  echo quiesce  > " << settings.control_file_ << "   # stop placing, leave orders resting\n"
-      << "  echo withdraw > " << settings.control_file_ << "   # cancel the account's working orders\n"
-      << "  echo flatten  > " << settings.control_file_ << "   # withdraw, then close the account's positions\n"
-      << "the file is not deleted: a word left in it is carried out at the next start; remove it\n"
-      << "before trading again\n";
+  out
+    << "to stop: Ctrl-C or SIGTERM (quiesce), or\n"
+    << "  echo quiesce  > " << settings.control_file_ << "   # stop placing, leave orders resting\n"
+    << "  echo withdraw > " << settings.control_file_ << "   # cancel the account's working orders\n"
+    << "  echo flatten  > " << settings.control_file_ << "   # withdraw, then close the account's positions\n"
+    << "the file is not deleted: a word left in it is carried out at the next start; remove it\n"
+    << "before trading again\n";
   if (settings.closing_wait_ > std::chrono::nanoseconds::zero()) {
-    out << "a withdraw or a flatten may first wait up to "
-        << std::chrono::duration_cast<std::chrono::seconds>(settings.closing_wait_).count()
-        << " s for the order list and holdings to account for this\n"
-        << "program's own orders. ";
+    out
+      << "a withdraw or a flatten may first wait up to "
+      << std::chrono::duration_cast<std::chrono::seconds>(settings.closing_wait_).count()
+      << " s for the order list and holdings to account for this\n"
+      << "program's own orders. ";
   }
-  out << "A supervisor's grace period must cover that stop: the wait, the calls in\n"
-      << "flight (a paginated read, a paced request) and the closing orders themselves, with margin; a\n"
-      << "SIGTERM does not turn a pending flatten into a quiesce\n";
+  out
+    << "A supervisor's grace period must cover that stop: the wait, the calls in\n"
+    << "flight (a paginated read, a paced request) and the closing orders themselves, with margin; a\n"
+    << "SIGTERM does not turn a pending flatten into a quiesce\n";
 }
 
 /**
@@ -214,40 +216,42 @@ inline void print_how_to_stop(const Settings& settings, std::ostream& out) {
  * @param out Where to print.
  */
 inline void print_loop(const runner::LoopReport& report, std::ostream& out) {
-  out << "\niterations      : " << report.iterations_ << '\n'
-      << "order list read : " << (report.order_list_read_ ? "yes" : "no") << '\n'
-      << "polls failed    : bars " << report.failed(runner::PollKind::BARS) << '/'
-      << report.attempted(runner::PollKind::BARS) << ", holdings "
-      << report.failed(runner::PollKind::HOLDINGS) << '/' << report.attempted(runner::PollKind::HOLDINGS)
-      << ", orders " << report.failed(runner::PollKind::WORKING_ORDERS) << '/'
-      << report.attempted(runner::PollKind::WORKING_ORDERS) << '\n'
-      << "blocked         : " << report.blocked_ << " iteration(s)\n"
-      << "stopped by      : "
-      << (report.stopped_by_ ? runner::stop_intent_name(*report.stopped_by_) : std::string_view("nothing"))
-      << '\n'
-      << "final gate      : "
-      << (report.final_gate_ ? strategy::halt_reason_name(*report.final_gate_) : std::string_view("none"))
-      << '\n'
-      << "market phase    : " << strategy::market_phase_name(report.final_phase_) << '\n'
-      // Every way an order the strategy wanted did not go out, each with its own count, so an empty
-      // placement count explains itself.
-      << "plans withheld  : " << report.plans_withheld_ << " (account unread, too old or older than the order listing, or a hold while it would cancel)\n"
-      << "not buildable   : " << report.orders_unbuildable_ << '\n'
-      << "withheld        : " << report.orders_reconcile_withheld_ << " (unresolved earlier orders)\n"
-      << "refused by guard: " << report.orders_guard_refused_ << '\n'
-      << "refused locally : " << report.orders_binding_refused_ << " (by the adapter, before sending)\n"
-      << "refused by broker: " << report.orders_broker_refused_ << '\n'
-      << "unknown outcome : " << report.orders_indeterminate_ << " (read the broker's order list)\n"
-      // Cancellations that did not go through, which no line above counts. Accepted ones are not here.
-      << "cancels         : " << report.cancels_rejected_ << " rejected (by the broker or the adapter), "
-      << report.cancels_indeterminate_ << " of unknown outcome, " << report.cancels_refused_
-      << " refused by a hold, " << report.cancels_unresolved_ << " for an order not in the picture\n"
-      << "unconfirmed     : " << report.orders_unconfirmed_timed_out_
-      << " (sent, and not confirmed in time: its instrument waits for holdings or its history, or for you if it was never named or the runner overlaps orders)\n";
+  out
+    << "\niterations      : " << report.iterations_ << '\n'
+    << "order list read : " << (report.order_list_read_ ? "yes" : "no") << '\n'
+    << "polls failed    : bars " << report.failed(runner::PollKind::BARS) << '/'
+    << report.attempted(runner::PollKind::BARS) << ", holdings " << report.failed(runner::PollKind::HOLDINGS) << '/'
+    << report.attempted(runner::PollKind::HOLDINGS) << ", orders " << report.failed(runner::PollKind::WORKING_ORDERS)
+    << '/' << report.attempted(runner::PollKind::WORKING_ORDERS) << '\n'
+    << "blocked         : " << report.blocked_ << " iteration(s)\n"
+    << "stopped by      : "
+    << (report.stopped_by_ ? runner::stop_intent_name(*report.stopped_by_) : std::string_view("nothing")) << '\n'
+    << "final gate      : "
+    << (report.final_gate_ ? strategy::halt_reason_name(*report.final_gate_) : std::string_view("none")) << '\n'
+    << "market phase    : " << strategy::market_phase_name(report.final_phase_)
+    << '\n'
+    // Every way an order the strategy wanted did not go out, each with its own count, so an empty
+    // placement count explains itself.
+    << "plans withheld  : " << report.plans_withheld_
+    << " (account unread, too old or older than the order listing, or a hold while it would cancel)\n"
+    << "not buildable   : " << report.orders_unbuildable_ << '\n'
+    << "withheld        : " << report.orders_reconcile_withheld_ << " (unresolved earlier orders)\n"
+    << "refused by guard: " << report.orders_guard_refused_ << '\n'
+    << "refused locally : " << report.orders_binding_refused_ << " (by the adapter, before sending)\n"
+    << "refused by broker: " << report.orders_broker_refused_ << '\n'
+    << "unknown outcome : " << report.orders_indeterminate_
+    << " (read the broker's order list)\n"
+    // Cancellations that did not go through, which no line above counts. Accepted ones are not here.
+    << "cancels         : " << report.cancels_rejected_ << " rejected (by the broker or the adapter), "
+    << report.cancels_indeterminate_ << " of unknown outcome, " << report.cancels_refused_ << " refused by a hold, "
+    << report.cancels_unresolved_ << " for an order not in the picture\n"
+    << "unconfirmed     : " << report.orders_unconfirmed_timed_out_
+    << " (sent, and not confirmed in time: its instrument waits for holdings or its history, or for you if it was never named or the runner overlaps orders)\n";
   if (report.last_unbuildable_) {
-    out << "last unbuildable: " << strategy::reject_reason_name(report.last_unbuildable_->reason_) << " for "
-        << report.last_unbuildable_->instrument_.symbol_
-        << (report.last_unbuildable_->tag_.empty() ? "" : " (" + report.last_unbuildable_->tag_ + ")") << '\n';
+    out
+      << "last unbuildable: " << strategy::reject_reason_name(report.last_unbuildable_->reason_) << " for "
+      << report.last_unbuildable_->instrument_.symbol_
+      << (report.last_unbuildable_->tag_.empty() ? "" : " (" + report.last_unbuildable_->tag_ + ")") << '\n';
   }
   if (report.last_broker_refusal_) {
     const auto& refusal = *report.last_broker_refusal_;
@@ -269,9 +273,10 @@ inline void print_loop(const runner::LoopReport& report, std::ostream& out) {
  */
 inline void print_report(const runner::LoopReport& report, std::ostream& out) {
   print_loop(report, out);
-  out << "closing complete: " << (report.closing_complete() ? "yes" : "NO")
-      << " -- whether every closing instruction was taken, not whether the account is flat;\n"
-      << "                  read the broker's order list and holdings to learn that\n";
+  out
+    << "closing complete: " << (report.closing_complete() ? "yes" : "NO")
+    << " -- whether every closing instruction was taken, not whether the account is flat;\n"
+    << "                  read the broker's order list and holdings to learn that\n";
 }
 
 /**
@@ -321,13 +326,8 @@ void configure(Loop& loop, const Settings& settings) {
  */
 template <typename Strategy, typename Session, typename MarketData, typename Clock = runner::SteadyClock>
 Exit trade(
-  Session& session,
-  MarketData& market_data,
-  Strategy strategy_instance,
-  const Settings& settings,
-  runner::StopSource& stop,
-  std::ostream& out,
-  Clock clock = {}
+  Session& session, MarketData& market_data, Strategy strategy_instance, const Settings& settings,
+  runner::StopSource& stop, std::ostream& out, Clock clock = {}
 ) {
   runner::FileJournal journal(settings.journal_path_, settings.journal_scope_);
   if (!journal.open()) {
@@ -350,23 +350,24 @@ Exit trade(
     // Damage that names no single instrument halts everything, and restarting will find the same
     // line. There is deliberately no flag to trade past it: a flag that is needed on every restart
     // ends up in a unit file. The way out is by hand, and it keeps the evidence.
-    out << "HALTED: " << *failure << '\n'
-        << "nothing was started. This program's only way on gives up the whole journal. That is safe\n"
-        << "only once no order the journal may track can execute any more:\n"
-        << "  1. read the broker's order list, order history and holdings for this account yourself.\n"
-        << "     A damaged journal may not name every order it tracks: take every order sent on this\n"
-        << "     account since the journal began, on every day and every page of the order history, and\n"
-        << "     every order still working;\n"
-        << "  2. each must have ended: filled in full, or cancelled with its history row saying so. A\n"
-        << "     cancellation only requested, an order list that no longer shows it, and the close of the\n"
-        << "     session do not show that an order has ended;\n"
-        << "  3. holdings must show the final fills of each;\n"
-        << "  4. only then move the journal aside, keeping it:  mv " << settings.journal_path_ << ' '
-        << settings.journal_path_ << ".damaged-$(date +%Y%m%d)\n"
-        << "the next start then begins a new journal and sizes from the holdings and working orders the\n"
-        << "broker reports. If steps 2 and 3 cannot be shown for every order, leave the journal where it\n"
-        << "is. Do NOT move it aside while an order it may track is left working: a new journal does not\n"
-        << "know the order, and when it fills before holdings show it, the order is sent again.\n";
+    out
+      << "HALTED: " << *failure << '\n'
+      << "nothing was started. This program's only way on gives up the whole journal. That is safe\n"
+      << "only once no order the journal may track can execute any more:\n"
+      << "  1. read the broker's order list, order history and holdings for this account yourself.\n"
+      << "     A damaged journal may not name every order it tracks: take every order sent on this\n"
+      << "     account since the journal began, on every day and every page of the order history, and\n"
+      << "     every order still working;\n"
+      << "  2. each must have ended: filled in full, or cancelled with its history row saying so. A\n"
+      << "     cancellation only requested, an order list that no longer shows it, and the close of the\n"
+      << "     session do not show that an order has ended;\n"
+      << "  3. holdings must show the final fills of each;\n"
+      << "  4. only then move the journal aside, keeping it:  mv " << settings.journal_path_ << ' '
+      << settings.journal_path_ << ".damaged-$(date +%Y%m%d)\n"
+      << "the next start then begins a new journal and sizes from the holdings and working orders the\n"
+      << "broker reports. If steps 2 and 3 cannot be shown for every order, leave the journal where it\n"
+      << "is. Do NOT move it aside while an order it may track is left working: a new journal does not\n"
+      << "know the order, and when it fills before holdings show it, the order is sent again.\n";
     return Exit::RECOVERY_HALTED;
   }
 
@@ -379,9 +380,7 @@ Exit trade(
     out << "      does there (a protective stop, say) will not happen. See writing-a-strategy.md.\n";
   }
 
-  live::SessionSource<Session, runner::FileJournal, MarketData> source(
-    session, market_data, settings.universe_
-  );
+  live::SessionSource<Session, runner::FileJournal, MarketData> source(session, market_data, settings.universe_);
   source.set_journal(journal);
   source.set_bar_query(settings.bar_interval_, settings.bar_count_);
 
@@ -409,31 +408,35 @@ Exit trade(
     return Exit::CLOSING_INCOMPLETE;
   }
   if (report.owed_stop_) {
-    out << "OWED ORDER      : the run stopped placing by itself (see the note above). A supervisor must not\n"
-        << "                  restart it: the order is restored from the journal and the run stops again.\n"
-        << "this journal still owes:\n";
+    out
+      << "OWED ORDER      : the run stopped placing by itself (see the note above). A supervisor must not\n"
+      << "                  restart it: the order is restored from the journal and the run stops again.\n"
+      << "this journal still owes:\n";
     for (const auto& owed : bound.obligations()) {
-      const auto state = owed.state_ == runner::ObligationState::OPERATOR ? "held for an operator" :
-        owed.state_ == runner::ObligationState::UNNAMED ? "no order found" :
+      const auto state = owed.state_ == runner::ObligationState::OPERATOR ?
+        "held for an operator" :
+        owed.state_ == runner::ObligationState::UNNAMED ?
+        "no order found" :
         "order " + owed.order_id_ + ", not yet in holdings";
       const auto side = owed.side_ == atl::OrderSide::BUY ? "buy " : "sell ";
       out << "  " << owed.instrument_.symbol_ << ' ' << side << owed.quantity_.str();
       out << ", sent " << atl::format_iso8601_utc(owed.sent_at_) << ", " << state << '\n';
     }
-    out << "this program has no command to release one order, and its only way on gives up the whole\n"
-        << "journal. That is safe only once none of the orders above can execute any more:\n"
-        << "  1. read the broker's order list, order history and holdings for every order above;\n"
-        << "  2. each must have ended: filled in full, or cancelled with its history row saying so. A\n"
-        << "     cancellation only requested, an order list that no longer shows it, and the close of the\n"
-        << "     session do not show that an order has ended;\n"
-        << "  3. holdings must show the final fills of each;\n"
-        << "  4. only then move the journal aside, keeping it:  mv " << settings.journal_path_ << ' '
-        << settings.journal_path_ << ".owed-$(date +%Y%m%d)\n"
-        << "the next start then begins a new journal and sizes from the account as it is.\n"
-        << "Do NOT move the journal aside while an order it tracks is left working: a new journal does not\n"
-        << "know the order, and when it fills before holdings show it, the order is sent again. A program\n"
-        << "of your own releases that instrument's obligations instead (Runner::release_obligations; see\n"
-        << "set_owed_order_limit) and keeps the rest of the journal.\n";
+    out
+      << "this program has no command to release one order, and its only way on gives up the whole\n"
+      << "journal. That is safe only once none of the orders above can execute any more:\n"
+      << "  1. read the broker's order list, order history and holdings for every order above;\n"
+      << "  2. each must have ended: filled in full, or cancelled with its history row saying so. A\n"
+      << "     cancellation only requested, an order list that no longer shows it, and the close of the\n"
+      << "     session do not show that an order has ended;\n"
+      << "  3. holdings must show the final fills of each;\n"
+      << "  4. only then move the journal aside, keeping it:  mv " << settings.journal_path_ << ' '
+      << settings.journal_path_ << ".owed-$(date +%Y%m%d)\n"
+      << "the next start then begins a new journal and sizes from the account as it is.\n"
+      << "Do NOT move the journal aside while an order it tracks is left working: a new journal does not\n"
+      << "know the order, and when it fills before holdings show it, the order is sent again. A program\n"
+      << "of your own releases that instrument's obligations instead (Runner::release_obligations; see\n"
+      << "set_owed_order_limit) and keeps the rest of the journal.\n";
     return Exit::OWED_ORDER;
   }
   return Exit::CLEAN;
@@ -458,11 +461,7 @@ Exit trade(
  */
 template <typename Strategy, typename Session, typename Clock = runner::SteadyClock>
 Exit trade(
-  Session& session,
-  Strategy strategy_instance,
-  const Settings& settings,
-  runner::StopSource& stop,
-  std::ostream& out,
+  Session& session, Strategy strategy_instance, const Settings& settings, runner::StopSource& stop, std::ostream& out,
   Clock clock = {}
 ) {
   return trade(session, session, std::move(strategy_instance), settings, stop, out, std::move(clock));
@@ -491,22 +490,15 @@ Exit trade(
  */
 template <typename Strategy, typename Session, typename MarketData, typename Clock = runner::SteadyClock>
 Exit observe(
-  Session& session,
-  MarketData& market_data,
-  Strategy strategy_instance,
-  const Settings& settings,
-  runner::StopSource& stop,
-  std::ostream& out,
-  Clock clock = {}
+  Session& session, MarketData& market_data, Strategy strategy_instance, const Settings& settings,
+  runner::StopSource& stop, std::ostream& out, Clock clock = {}
 ) {
   auto bound = live::bind_observer(session, std::move(strategy_instance), settings.limits_);
   if (!load_reference_data(market_data, bound, settings, out)) {
     return Exit::REFERENCE_UNREADABLE;
   }
 
-  live::SessionSource<Session, runner::MemoryJournal, MarketData> source(
-    session, market_data, settings.universe_
-  );
+  live::SessionSource<Session, runner::MemoryJournal, MarketData> source(session, market_data, settings.universe_);
   source.set_bar_query(settings.bar_interval_, settings.bar_count_);
   runner::PollingLoop<decltype(bound), decltype(source), Clock> loop(
     bound, source, settings.schedule_, std::move(clock)
@@ -540,11 +532,7 @@ Exit observe(
  */
 template <typename Strategy, typename Session, typename Clock = runner::SteadyClock>
 Exit observe(
-  Session& session,
-  Strategy strategy_instance,
-  const Settings& settings,
-  runner::StopSource& stop,
-  std::ostream& out,
+  Session& session, Strategy strategy_instance, const Settings& settings, runner::StopSource& stop, std::ostream& out,
   Clock clock = {}
 ) {
   return observe(session, session, std::move(strategy_instance), settings, stop, out, std::move(clock));

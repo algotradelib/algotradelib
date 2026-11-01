@@ -74,8 +74,7 @@ public:
    * @param limit_price Which price a filled limit order is credited.
    */
   explicit NextBarFillModel(
-    CommissionModel commission = CommissionModel::none(),
-    SlippageModel slippage = SlippageModel::none(),
+    CommissionModel commission = CommissionModel::none(), SlippageModel slippage = SlippageModel::none(),
     LimitFillPrice limit_price = LimitFillPrice::AT_LIMIT
   )
   : commission_(CommissionPolicy::stated(std::move(commission))),
@@ -89,31 +88,34 @@ public:
    * @param limit_price Which price a filled limit order is credited.
    */
   explicit NextBarFillModel(
-    CommissionPolicy commission,
-    SlippageModel slippage = SlippageModel::none(),
+    CommissionPolicy commission, SlippageModel slippage = SlippageModel::none(),
     LimitFillPrice limit_price = LimitFillPrice::AT_LIMIT
   )
-  : commission_(std::move(commission)),
-    slippage_(std::move(slippage)),
-    limit_price_(limit_price) {}
+  : commission_(std::move(commission)), slippage_(std::move(slippage)), limit_price_(limit_price) {}
 
   /**
    * @brief Returns the commission policy.
    * @return The policy in force.
    */
-  const CommissionPolicy& commission() const noexcept { return commission_; }
+  const CommissionPolicy& commission() const noexcept {
+    return commission_;
+  }
 
   /**
    * @brief Returns the slippage model.
    * @return The model in force.
    */
-  const SlippageModel& slippage() const noexcept { return slippage_; }
+  const SlippageModel& slippage() const noexcept {
+    return slippage_;
+  }
 
   /**
    * @brief Returns which price a filled limit order is credited.
    * @return The choice.
    */
-  LimitFillPrice limit_price() const noexcept { return limit_price_; }
+  LimitFillPrice limit_price() const noexcept {
+    return limit_price_;
+  }
 
   /**
    * @brief Returns a copy of this model that charges a tax on sales.
@@ -140,7 +142,9 @@ public:
    * @brief Returns the tax on sales.
    * @return The tax, or `std::nullopt` if none is modelled.
    */
-  const std::optional<SellTax>& sell_tax() const noexcept { return sell_tax_; }
+  const std::optional<SellTax>& sell_tax() const noexcept {
+    return sell_tax_;
+  }
 
   /**
    * @brief Tests whether the model prices an order type against its limit (a limit order, and a stop-limit
@@ -218,12 +222,8 @@ public:
    *   price neither trades nor rests (a released stop must still have its limit price).
    */
   FillDecision decide(
-    const strategy::PlannedOrder& order,
-    const strategy::BarEvent& next,
-    const PriceRule& rule,
-    const Date& date,
-    const std::optional<Date>& open_date = std::nullopt,
-    bool released = false
+    const strategy::PlannedOrder& order, const strategy::BarEvent& next, const PriceRule& rule, const Date& date,
+    const std::optional<Date>& open_date = std::nullopt, bool released = false
   ) const {
     FillDecision decision;
     bool at_open = false;
@@ -302,9 +302,8 @@ public:
     if (slipped && bound) {
       // Negative slippage cannot carry a fill past the bar's opposite extreme either.
       const auto& ceiling = order.side_ == OrderSide::SELL ? next.bar_.high_ : next.bar_.low_;
-      const bool past = order.side_ == OrderSide::SELL ?
-        decimal_less(ceiling, slipped->first) :
-        decimal_less(slipped->first, ceiling);
+      const bool past =
+        order.side_ == OrderSide::SELL ? decimal_less(ceiling, slipped->first) : decimal_less(slipped->first, ceiling);
       if (past) {
         const auto moved = order.side_ == OrderSide::SELL ?
           decimal_subtract(*reference, ceiling) :
@@ -319,13 +318,11 @@ public:
       }
     }
     if (slipped && bound) {
-      const bool beyond = order.side_ == OrderSide::SELL ?
-        decimal_less(slipped->first, *bound) :
-        decimal_less(*bound, slipped->first);
+      const bool beyond =
+        order.side_ == OrderSide::SELL ? decimal_less(slipped->first, *bound) : decimal_less(*bound, slipped->first);
       if (beyond) {
-        const auto moved = order.side_ == OrderSide::SELL ?
-          decimal_subtract(*reference, *bound) :
-          decimal_subtract(*bound, *reference);
+        const auto moved =
+          order.side_ == OrderSide::SELL ? decimal_subtract(*reference, *bound) : decimal_subtract(*bound, *reference);
         if (!moved) {
           slipped.reset();
         } else {
@@ -340,8 +337,7 @@ public:
       return decision;
     }
     const auto& charged_on = at_open && open_date ? *open_date : date;
-    auto charged =
-      commission_.charge(order.quantity_, slipped->first, charged_on, order.instrument_.country_);
+    auto charged = commission_.charge(order.quantity_, slipped->first, charged_on, order.instrument_.country_);
     if (!charged) {
       // A cost that cannot be resolved halts the engine; it is neither a non-fill nor silent.
       decision.costing_error_ = std::move(charged.error());
@@ -406,9 +402,7 @@ private:
   static Release release_of(const strategy::PlannedOrder& order, const strategy::BarEvent& next) {
     const auto& trigger = *order.trigger_price_;
     const bool sell = order.side_ == OrderSide::SELL;
-    const bool reached = sell ?
-      !decimal_less(trigger, next.bar_.low_) :
-      !decimal_less(next.bar_.high_, trigger);
+    const bool reached = sell ? !decimal_less(trigger, next.bar_.low_) : !decimal_less(next.bar_.high_, trigger);
     if (!reached) {
       return Release::NONE;
     }
@@ -443,8 +437,7 @@ private:
   //   to the limit after the release. The close proves that when it is at or through the limit; then it
   //   is credited the limit. Otherwise the bar's other extreme may have come first, and nothing is.
   static std::optional<Decimal64> intrabar_release_price(
-    const strategy::PlannedOrder& order,
-    const strategy::BarEvent& next
+    const strategy::PlannedOrder& order, const strategy::BarEvent& next
   ) {
     const auto& trigger = *order.trigger_price_;
     const auto& limit = *order.price_;
@@ -471,9 +464,7 @@ private:
   // `AT_OPEN_IF_BETTER` whose open was better -- which is what lets `decide` date the charge from the
   // open's day. False for a bar with no open, whose close stands in for it.
   std::optional<Decimal64> reference_price(
-    const strategy::PlannedOrder& order,
-    const strategy::BarEvent& next,
-    bool& at_open
+    const strategy::PlannedOrder& order, const strategy::BarEvent& next, bool& at_open
   ) const {
     at_open = false;
     // A bar with no open prices a market order at its close, which is not the open's moment.

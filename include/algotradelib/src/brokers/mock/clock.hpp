@@ -25,7 +25,9 @@ public:
    * @brief Returns the market's time.
    * @return `Market::now()`.
    */
-  std::chrono::system_clock::time_point now() const noexcept { return market_->now(); }
+  std::chrono::system_clock::time_point now() const noexcept {
+    return market_->now();
+  }
 
   /**
    * @brief Returns a reading that moves with the market's time and never backwards.

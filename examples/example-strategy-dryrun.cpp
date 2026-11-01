@@ -17,8 +17,8 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
-#include <utility>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -41,7 +41,9 @@ using algotradelib::PriceRule;
 using algotradelib::SecurityType;
 using algotradelib::Venue;
 
-InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
+InstrumentId samsung() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+}
 
 /** @brief Reference data as a broker would report it: the KRX ladder and a lot of one share. */
 Instrument samsung_reference() {
@@ -63,9 +65,36 @@ Instrument samsung_reference() {
  */
 const std::vector<const char*>& closes() {
   static const std::vector<const char*> series = {
-    "60000", "60500", "61200", "61000", "62000", "63000", "64500", "65000", "66200", "67000",
-    "68500", "69000", "70200", "71000", "72500", "73000", "72800", "72000", "71000", "69500",
-    "68000", "66500", "65000", "63500", "62000", "61000", "60000", "59000", "58500", "58000",
+    "60000",
+    "60500",
+    "61200",
+    "61000",
+    "62000",
+    "63000",
+    "64500",
+    "65000",
+    "66200",
+    "67000",
+    "68500",
+    "69000",
+    "70200",
+    "71000",
+    "72500",
+    "73000",
+    "72800",
+    "72000",
+    "71000",
+    "69500",
+    "68000",
+    "66500",
+    "65000",
+    "63500",
+    "62000",
+    "61000",
+    "60000",
+    "59000",
+    "58500",
+    "58000",
   };
   return series;
 }
@@ -73,8 +102,8 @@ const std::vector<const char*>& closes() {
 /** @brief Builds the bar for day `index`, stamped at its close. */
 strategy::BarEvent bar(std::size_t index) {
   Bar value;
-  value.timestamp_ = std::chrono::system_clock::time_point{} +
-    std::chrono::hours(24 * (20000 + static_cast<int>(index)));
+  value.timestamp_ =
+    std::chrono::system_clock::time_point{} + std::chrono::hours(24 * (20000 + static_cast<int>(index)));
   value.open_ = Decimal64::parse(closes()[index]);
   value.high_ = Decimal64::parse(closes()[index]);
   value.low_ = Decimal64::parse(closes()[index]);
@@ -87,9 +116,9 @@ strategy::BarEvent bar(std::size_t index) {
 template <typename Report>
 void print(std::size_t day, const Report& report) {
   for (const auto& order : report.would_place_) {
-    std::cout << "  day " << std::setw(2) << day << "  "
-              << (order.side_ == OrderSide::BUY ? "BUY " : "SELL") << ' ' << std::setw(4)
-              << order.quantity_.str() << " shares";
+    std::cout
+      << "  day " << std::setw(2) << day << "  " << (order.side_ == OrderSide::BUY ? "BUY " : "SELL") << ' '
+      << std::setw(4) << order.quantity_.str() << " shares";
     if (order.price_) {
       std::cout << " at " << order.price_->str();
     } else {
@@ -98,8 +127,8 @@ void print(std::size_t day, const Report& report) {
     std::cout << "   [" << order.tag_ << "]\n";
   }
   for (const auto& rejection : report.rejected_) {
-    std::cout << "  day " << std::setw(2) << day << "  rejected: "
-              << strategy::reject_reason_name(rejection.reason_) << '\n';
+    std::cout
+      << "  day " << std::setw(2) << day << "  rejected: " << strategy::reject_reason_name(rejection.reason_) << '\n';
   }
 }
 
@@ -175,8 +204,9 @@ void run(const char* title, Strategy instance, const strategy::RiskLimits& limit
     }
   }
   for (const auto& entry : refusals) {
-    std::cout << "  day " << std::setw(2) << entry.second.first << "  refused: " << entry.first
-              << "  (and on " << entry.second.second - 1 << " later bars)\n";
+    std::cout
+      << "  day " << std::setw(2) << entry.second.first << "  refused: " << entry.first << "  (and on "
+      << entry.second.second - 1 << " later bars)\n";
   }
   std::cout << "  ending position: " << held.str() << " shares\n\n";
 }
@@ -184,8 +214,7 @@ void run(const char* title, Strategy instance, const strategy::RiskLimits& limit
 } // namespace
 
 int main() {
-  std::cout << "005930, " << closes().size()
-            << " daily bars built in code -- no credentials, no network\n\n";
+  std::cout << "005930, " << closes().size() << " daily bars built in code -- no credentials, no network\n\n";
 
   vanilla::BuyAndHold holding;
   holding.params_.instrument_ = samsung();
@@ -198,10 +227,7 @@ int main() {
   crossing.fast_ = 3;
   crossing.slow_ = 8;
   crossing.quantity_ = Decimal64::parse("100");
-  run(
-    "SmaCrossover(3, 8): long while the fast average leads, flat while it lags",
-    vanilla::SmaCrossover{crossing}
-  );
+  run("SmaCrossover(3, 8): long while the fast average leads, flat while it lags", vanilla::SmaCrossover{crossing});
 
   vanilla::DonchianBreakout breaking;
   breaking.params_.instrument_ = samsung();
@@ -229,11 +255,7 @@ int main() {
   vanilla::BuyAndHold oversized;
   oversized.params_.instrument_ = samsung();
   oversized.params_.quantity_ = Decimal64::parse("100");
-  run(
-    "BuyAndHold with a 1,000,000 KRW per-order ceiling: refused, never resized",
-    oversized,
-    tight
-  );
+  run("BuyAndHold with a 1,000,000 KRW per-order ceiling: refused, never resized", oversized, tight);
 
   return 0;
 }

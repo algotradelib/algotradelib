@@ -18,13 +18,13 @@
 
 using namespace algotradelib;
 namespace math = algotradelib::math;
-using analytics::Scalar;
+using analytics::bar_field_index;
 using analytics::missing;
 using analytics::observed;
 using analytics::round_scalar_to_tick;
+using analytics::Scalar;
 using analytics::to_decimal;
 using analytics::to_scalar;
-using analytics::bar_field_index;
 
 TEST_CASE("a value too large for an exact decimal is refused, not wrapped") {
   const Scalar huge = 1e30;
@@ -54,15 +54,20 @@ TEST_CASE("a decimal converts to the nearest double, as its text parses") {
   // Python's float and strtod give the nearest double; analytics on the same prices must start from
   // the same doubles. 16896.7559 is a split-adjusted close that four successive divisions put an ulp
   // low.
-  for (const char* text : {"0.07", "0.29", "185.71", "16896.7559", "98765.43219", "1234567.891234",
-                           "-0.1", "70000.5", "70000", "0.000001", "9007199254740.991"}) {
+  for (
+    const char* text :
+    {"0.07", "0.29", "185.71", "16896.7559", "98765.43219", "1234567.891234", "-0.1", "70000.5", "70000", "0.000001",
+      "9007199254740.991"}
+  ) {
     REQUIRE(to_scalar(Decimal64::parse(text)) == std::strtod(text, nullptr));
   }
   // The edges of the promise: 53 bits of coefficient, either sign, and 22 places.
   const std::int64_t widest = (std::int64_t{1} << 53) - 1;
-  for (const auto& value : {Decimal64(1, 22), Decimal64(-1, 22), Decimal64(widest, 22),
-                            Decimal64(-widest, 22), Decimal64(7612685828371001, 15), Decimal64(widest, 0),
-                            Decimal64(std::numeric_limits<std::int64_t>::min(), 0)}) {
+  for (
+    const auto& value :
+    {Decimal64(1, 22), Decimal64(-1, 22), Decimal64(widest, 22), Decimal64(-widest, 22),
+      Decimal64(7612685828371001, 15), Decimal64(widest, 0), Decimal64(std::numeric_limits<std::int64_t>::min(), 0)}
+  ) {
     REQUIRE(to_scalar(value) == std::strtod(value.str().c_str(), nullptr));
   }
 }
@@ -217,8 +222,8 @@ TEST_CASE("panel alignment must be stated, and each choice answers differently")
     REQUIRE(panel.alignment() == Alignment::UNION_UNOBSERVED);
 
     REQUIRE(panel.at(1, 0) == 110.0);
-    REQUIRE_FALSE(observed(panel.at(1, 1)));  // second instrument did not trade
-    REQUIRE_FALSE(observed(panel.at(3, 0)));  // first instrument did not trade
+    REQUIRE_FALSE(observed(panel.at(1, 1))); // second instrument did not trade
+    REQUIRE_FALSE(observed(panel.at(3, 0))); // first instrument did not trade
     REQUIRE(panel.at(3, 1) == 230.0);
   }
 
@@ -406,18 +411,12 @@ TEST_CASE("a series buffer refuses an observation that would break its ordering"
 
   // Out of order, and repeated, both make a trailing computation over the buffer
   // meaningless, so neither is accepted.
-  REQUIRE_THROWS_AS(
-    buffer.push(day_of(4), std::vector<math::Scalar>{2.0}), std::invalid_argument
-  );
-  REQUIRE_THROWS_AS(
-    buffer.push(day_of(5), std::vector<math::Scalar>{2.0}), std::invalid_argument
-  );
+  REQUIRE_THROWS_AS(buffer.push(day_of(4), std::vector<math::Scalar>{2.0}), std::invalid_argument);
+  REQUIRE_THROWS_AS(buffer.push(day_of(5), std::vector<math::Scalar>{2.0}), std::invalid_argument);
   REQUIRE_NOTHROW(buffer.push(day_of(6), std::vector<math::Scalar>{2.0}));
 
   // A row that does not carry every field is refused rather than padded.
-  REQUIRE_THROWS_AS(
-    buffer.push(day_of(7), std::vector<math::Scalar>{1.0, 2.0}), std::invalid_argument
-  );
+  REQUIRE_THROWS_AS(buffer.push(day_of(7), std::vector<math::Scalar>{1.0, 2.0}), std::invalid_argument);
 
   REQUIRE_THROWS_AS(analytics::SeriesBuffer(0, 1), std::invalid_argument);
   REQUIRE_THROWS_AS(analytics::SeriesBuffer(4, 0), std::invalid_argument);
@@ -516,8 +515,7 @@ template <typename Smoothing, typename = void>
 struct ema_accepts : std::false_type {};
 template <typename Smoothing>
 struct ema_accepts<
-  Smoothing,
-  std::void_t<decltype(analytics::ema(std::declval<math::SeriesView>(), std::declval<Smoothing>()))>
+  Smoothing, std::void_t<decltype(analytics::ema(std::declval<math::SeriesView>(), std::declval<Smoothing>()))>
 > : std::true_type {};
 
 } // namespace
@@ -551,14 +549,31 @@ TEST_CASE("the exponential average keeps its arithmetic, digit for digit") {
 // Named indicators
 // ---------------------------------------------------------------------------
 
-
 TEST_CASE("the relative strength index matches Wilder's published series") {
   // Wilder's own fixture, as reproduced in every reference table for the indicator. The
   // point of testing against a published series rather than a second implementation of
   // our own is that it catches a wrong *convention*, not just a wrong loop.
   const math::Vector closes = series({
-    44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.42, 45.84, 46.08,
-    45.89, 46.03, 45.61, 46.28, 46.28, 46.00, 46.03, 46.41, 46.22, 45.64,
+    44.34,
+    44.09,
+    44.15,
+    43.61,
+    44.33,
+    44.83,
+    45.10,
+    45.42,
+    45.84,
+    46.08,
+    45.89,
+    46.03,
+    45.61,
+    46.28,
+    46.28,
+    46.00,
+    46.03,
+    46.41,
+    46.22,
+    45.64,
   });
   const math::Vector strength = analytics::rsi(closes, 14);
 
@@ -649,8 +664,8 @@ TEST_CASE("a statistic that cannot exist says so, distinctly from having no data
   const math::Vector flat = series({5.0, 5.0, 5.0, 5.0});
   const math::Vector score = analytics::zscore(flat, 3);
   REQUIRE_FALSE(observed(score[0]));
-  REQUIRE_FALSE(math::is_undefined(score[0]));   // warm-up: simply absent
-  REQUIRE(math::is_undefined(score[2]));         // computed, and undefined
+  REQUIRE_FALSE(math::is_undefined(score[0])); // warm-up: simply absent
+  REQUIRE(math::is_undefined(score[2])); // computed, and undefined
 
   // Returns that never varied have no risk-adjusted return; too few returns have no answer yet.
   REQUIRE(math::is_undefined(analytics::sharpe(series({0.01, 0.01, 0.01}))));
@@ -668,13 +683,13 @@ TEST_CASE("equal values that are not binary fractions are still a constant windo
   // not zero. A test for zero alone read it as dispersion: a z-score near -0.8, a Sharpe near 1e15.
   // (`rolling_stdev` reports that tiny deviation as it is; nothing divides by it there.)
   const math::Vector tenth = series({0.1, 0.1, 0.1});
-  REQUIRE(analytics::rolling_mean(tenth, 3)[2] != 0.1);  // the premise
+  REQUIRE(analytics::rolling_mean(tenth, 3)[2] != 0.1); // the premise
   CHECK(math::is_undefined(analytics::zscore(tenth, 3)[2]));
   CHECK(math::is_undefined(analytics::sharpe(tenth)));
 
   // A decimal price level, with a gap in the window: the gap's row must not count as a value.
   const math::Vector level = series({12.34, missing(), 12.34, 12.34});
-  REQUIRE(analytics::rolling_mean(level, 4, 2)[3] != 12.34);  // the premise
+  REQUIRE(analytics::rolling_mean(level, 4, 2)[3] != 12.34); // the premise
   CHECK(math::is_undefined(analytics::zscore(level, 4, 2)[3]));
 }
 

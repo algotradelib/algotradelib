@@ -24,7 +24,6 @@ namespace live {
 template <typename Session>
 class SessionExecutor {
 public:
-
   /**
    * @brief `true`: a runner built on this executor requires holdings to have been read before it
    *   places, however the runner was assembled (see `Runner::allow_absent_portfolio`).
@@ -70,7 +69,9 @@ public:
    *
    * @return The default route.
    */
-  Venue default_route() const noexcept { return default_route_; }
+  Venue default_route() const noexcept {
+    return default_route_;
+  }
 
   /**
    * @brief Returns the venue this executor requests for an order.
@@ -111,8 +112,7 @@ public:
         last_error_ = BrokerError{};
         last_error_->category_ = ErrorCategory::INVALID_ARGUMENT;
         last_error_->reached_broker_ = false;
-        last_error_->message_ =
-          "this broker accepts no idempotency key; the intent asked for one";
+        last_error_->message_ = "this broker accepts no idempotency key; the intent asked for one";
         // Refused here, not by the broker: nothing was sent, so nothing may be counted against the
         // rate limit. Reporting this as a broker rejection spent budget for a request nobody made.
         return runner::SendOutcome::REFUSED_LOCALLY;
@@ -173,8 +173,7 @@ public:
       last_error_ = BrokerError{};
       last_error_->category_ = ErrorCategory::INVALID_ARGUMENT;
       last_error_->reached_broker_ = false;
-      last_error_->message_ =
-        "no broker reference for this order; it cannot be withdrawn until a listing supplies one";
+      last_error_->message_ = "no broker reference for this order; it cannot be withdrawn until a listing supplies one";
       return runner::SendOutcome::REFUSED_LOCALLY;
     }
     auto result = session_->cancel(working.ref_, cancel_all(working));
@@ -228,25 +227,30 @@ public:
    * @brief Returns the reference the broker issued for the last accepted order.
    * @return The reference, or empty if no order was accepted yet.
    */
-  const std::optional<OrderRef<BrokerTag>>& last_ref() const noexcept { return last_ref_; }
+  const std::optional<OrderRef<BrokerTag>>& last_ref() const noexcept {
+    return last_ref_;
+  }
 
   /**
    * @brief Returns why the last instruction failed.
    * @return The error, or empty if the last instruction succeeded.
    */
-  const std::optional<BrokerError>& last_error() const noexcept { return last_error_; }
+  const std::optional<BrokerError>& last_error() const noexcept {
+    return last_error_;
+  }
 
 private:
   // Asks the session's traits where `requested` goes, where they say.
   template <typename S>
-  static constexpr auto traits_route(Venue requested, int) noexcept
-    -> decltype(S::Traits::effective_route(requested)) {
+  static constexpr auto traits_route(Venue requested, int) noexcept -> decltype(S::Traits::effective_route(requested)) {
     return S::Traits::effective_route(requested);
   }
 
   // The fallback, for traits that do not say: the requested route is the most that is known.
   template <typename S>
-  static constexpr Venue traits_route(Venue requested, long) noexcept { return requested; }
+  static constexpr Venue traits_route(Venue requested, long) noexcept {
+    return requested;
+  }
 
   Session* session_;
   Venue default_route_;

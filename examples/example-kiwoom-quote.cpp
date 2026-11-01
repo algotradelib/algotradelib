@@ -31,17 +31,14 @@ int main(int argc, char* argv[]) {
     std::cout << "environment: " << (config.is_demo_ ? "demo" : "live") << '\n';
     std::cout << "symbol: " << symbol << '\n';
     // One setting for every market-data verb; the consolidated book by default.
-    std::cout << "tape suffix: '" << algotradelib::kiwoom::tape_suffix(config.market_tape_)
-      << "'\n";
+    std::cout << "tape suffix: '" << algotradelib::kiwoom::tape_suffix(config.market_tape_) << "'\n";
 
     net::io_context ioc;
     ssl::context tls(ssl::context::tls_client);
     tls.set_default_verify_paths();
     tls.set_verify_mode(ssl::verify_peer);
 
-    auto client = std::make_shared<algotradelib::kiwoom::KiwoomClient>(
-      ioc.get_executor(), tls, std::move(config)
-    );
+    auto client = std::make_shared<algotradelib::kiwoom::KiwoomClient>(ioc.get_executor(), tls, std::move(config));
     int exit_code = 1;
     client->async_quote(
       {algotradelib::Country::KR, algotradelib::Venue::COMBINED, symbol},
@@ -63,16 +60,18 @@ int main(int argc, char* argv[]) {
         }
 
         const auto& quote = result.value();
-        std::cout << quote.instrument_.symbol_ << ' ' << quote.last_price_.str() << ' '
-          << quote.currency_.str() << '\n';
+        std::cout
+          << quote.instrument_.symbol_ << ' ' << quote.last_price_.str() << ' ' << quote.currency_.str() << '\n';
         if (quote.volume_) {
           std::cout << "volume: " << quote.volume_->str() << '\n';
         }
         if (quote.top_of_book_) {
           const auto& top = *quote.top_of_book_;
-          std::cout << "bid: " << (top.bid_price_ ? top.bid_price_->str() : "-") << " x "
+          std::cout
+            << "bid: " << (top.bid_price_ ? top.bid_price_->str() : "-") << " x "
             << (top.bid_quantity_ ? top.bid_quantity_->str() : "-") << '\n';
-          std::cout << "ask: " << (top.ask_price_ ? top.ask_price_->str() : "-") << " x "
+          std::cout
+            << "ask: " << (top.ask_price_ ? top.ask_price_->str() : "-") << " x "
             << (top.ask_quantity_ ? top.ask_quantity_->str() : "-") << '\n';
         }
         exit_code = 0;

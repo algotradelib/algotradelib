@@ -67,9 +67,8 @@ template <typename Executor, typename = void>
 struct postable : std::false_type {};
 
 template <typename Executor>
-struct postable<
-  Executor, std::void_t<decltype(net::post(std::declval<const Executor&>(), std::declval<void (*)()>()))>
-> : std::true_type {};
+struct postable<Executor, std::void_t<decltype(net::post(std::declval<const Executor&>(), std::declval<void (*)()>()))>>
+: std::true_type {};
 
 } // namespace detail
 /// \endcond
@@ -204,7 +203,9 @@ struct DataOnlyTraits {
    * @brief Refuses every order before it is built.
    * @return `data_only::refusal()`.
    */
-  static std::optional<BrokerError> validate_place(const OrderRequest&) { return data_only::refusal(); }
+  static std::optional<BrokerError> validate_place(const OrderRequest&) {
+    return data_only::refusal();
+  }
 
   /**
    * @brief Passes the refusal through (an acknowledgement is refused too).

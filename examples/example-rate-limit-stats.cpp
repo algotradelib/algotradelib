@@ -17,9 +17,9 @@
 
 namespace {
 
+using algotradelib::network::rate_limit_group_name;
 using algotradelib::network::RateLimitBudget;
 using algotradelib::network::RateLimitGroup;
-using algotradelib::network::rate_limit_group_name;
 using algotradelib::network::usable_burst;
 
 /** @brief Clock this example advances by hand, so the output is identical every run. */
@@ -30,7 +30,9 @@ struct WalkClock {
   using time_point = std::chrono::time_point<WalkClock, duration>;
 
   /** @brief Returns the epoch; the example supplies instants explicitly. */
-  static time_point now() { return time_point{}; }
+  static time_point now() {
+    return time_point{};
+  }
 };
 
 using Bucket = algotradelib::network::BasicRateLimitBucket<WalkClock>;
@@ -56,18 +58,22 @@ int argument(int argc, char** argv, int index, int fallback) {
 
 /** @brief Prints how much of the burst each traffic class may spend. */
 void print_allowances(const RateLimitBudget& budget) {
-  std::cout << "budget: burst=" << budget.burst_ << " per_second=" << budget.per_second_
+  std::cout
+    << "budget: burst=" << budget.burst_ << " per_second=" << budget.per_second_
     << " trading_reserve=" << budget.trading_reserve_ << '\n';
   std::cout << "  interval between admissions: " << as_ms(Bucket(budget).interval()) << "ms\n";
-  for (const auto group : {
-    RateLimitGroup::AUTH,
-    RateLimitGroup::TRADING,
-    RateLimitGroup::ACCOUNT,
-    RateLimitGroup::MARKET_DATA,
-    RateLimitGroup::REFERENCE,
-  }) {
-    std::cout << "  " << std::left << std::setw(12) << rate_limit_group_name(group)
-      << " burst allowance " << usable_burst(budget, group) << '\n';
+  for (
+    const auto group : {
+      RateLimitGroup::AUTH,
+      RateLimitGroup::TRADING,
+      RateLimitGroup::ACCOUNT,
+      RateLimitGroup::MARKET_DATA,
+      RateLimitGroup::REFERENCE,
+    }
+  ) {
+    std::cout
+      << "  " << std::left << std::setw(12) << rate_limit_group_name(group) << " burst allowance "
+      << usable_burst(budget, group) << '\n';
   }
 }
 
@@ -95,16 +101,15 @@ void print_corrections(const RateLimitBudget& budget) {
 
   algotradelib::network::RateLimitController shared(budget);
   shared.hold(std::chrono::seconds(1));
-  std::cout << "  shared cap reached: allowance unchanged at " << shared.budget().per_second_
-    << "/s, admission held\n";
+  std::cout << "  shared cap reached: allowance unchanged at " << shared.budget().per_second_ << "/s, admission held\n";
 
   algotradelib::network::RateLimitController reported(budget);
   reported.shrink(2, 2, std::chrono::seconds(1));
-  std::cout << "  broker reported its allowance: adopted " << reported.budget().per_second_
-    << "/s\n";
+  std::cout << "  broker reported its allowance: adopted " << reported.budget().per_second_ << "/s\n";
 
   std::cout << "  broker reported no allowance: allowance unchanged, admission held\n";
-  std::cout << "    (KIS states none, so its budget stays as configured and its"
+  std::cout
+    << "    (KIS states none, so its budget stays as configured and its"
     << " refusals are counted)\n";
 }
 

@@ -53,8 +53,8 @@ int main(int argc, char* argv[]) {
         }
 
         const auto& quote = result.value();
-        std::cout << quote.instrument_.symbol_ << ' ' << quote.last_price_.str() << ' '
-          << quote.currency_.str() << '\n';
+        std::cout
+          << quote.instrument_.symbol_ << ' ' << quote.last_price_.str() << ' ' << quote.currency_.str() << '\n';
         exit_code = 0;
       }
     );

@@ -66,12 +66,7 @@ struct Dispersion {
  * The second pass is still one vectorized expression. Subtracting `mean * present_` leaves an
  * absent row contributing exactly zero, because both its value and its mask entry are zero.
  */
-inline Dispersion dispersion(
-  const math::Observed& parts,
-  math::Index first,
-  math::Index length,
-  std::size_t needed
-) {
+inline Dispersion dispersion(const math::Observed& parts, math::Index first, math::Index length, std::size_t needed) {
   Dispersion result;
   const auto reduced = reduce(parts, first, length);
   result.count_ = reduced.count_;
@@ -79,8 +74,8 @@ inline Dispersion dispersion(
     return result;
   }
   result.mean_ = reduced.sum_ / static_cast<Scalar>(reduced.count_);
-  const Scalar squared = (parts.values_.segment(first, length) -
-    result.mean_ * parts.present_.segment(first, length)).squaredNorm();
+  const Scalar squared =
+    (parts.values_.segment(first, length) - result.mean_ * parts.present_.segment(first, length)).squaredNorm();
   result.deviation_ = std::sqrt(squared / static_cast<Scalar>(reduced.count_ - 1));
   result.reported_ = true;
   return result;
@@ -102,8 +97,8 @@ inline void check(std::size_t window, std::size_t min_observed) {
   }
   if (min_observed > window) {
     throw std::invalid_argument(
-      "rolling window of " + std::to_string(window) + " rows cannot hold " +
-      std::to_string(min_observed) + " observations"
+      "rolling window of " + std::to_string(window) + " rows cannot hold " + std::to_string(min_observed) +
+      " observations"
     );
   }
 }
@@ -127,11 +122,7 @@ inline math::Index window_start(math::Index row, std::size_t window) {
  * @return The means, one per row; `missing()` where fewer than `min_observed` rows are observed.
  * @throws std::invalid_argument if `window` or `min_observed` is zero, or `min_observed > window`.
  */
-inline math::Vector rolling_mean(
-  math::SeriesView values,
-  std::size_t window,
-  std::size_t min_observed
-) {
+inline math::Vector rolling_mean(math::SeriesView values, std::size_t window, std::size_t min_observed) {
   rolling_detail::check(window, min_observed);
   const auto parts = math::observed_parts(values);
   math::Vector result = math::unobserved(static_cast<std::size_t>(values.size()));
@@ -169,18 +160,13 @@ inline math::Vector rolling_mean(math::SeriesView values, std::size_t window) {
  *   are observed.
  * @throws std::invalid_argument if `window` or `min_observed` is zero, or `min_observed > window`.
  */
-inline math::Vector rolling_stdev(
-  math::SeriesView values,
-  std::size_t window,
-  std::size_t min_observed
-) {
+inline math::Vector rolling_stdev(math::SeriesView values, std::size_t window, std::size_t min_observed) {
   rolling_detail::check(window, min_observed);
   const auto parts = math::observed_parts(values);
   math::Vector result = math::unobserved(static_cast<std::size_t>(values.size()));
   for (math::Index row = 0; row < values.size(); ++row) {
     const math::Index first = rolling_detail::window_start(row, window);
-    const auto spread =
-      rolling_detail::dispersion(parts, first, row - first + 1, min_observed);
+    const auto spread = rolling_detail::dispersion(parts, first, row - first + 1, min_observed);
     if (spread.reported_) {
       result[row] = spread.deviation_;
     }
@@ -210,17 +196,12 @@ inline math::Vector rolling_stdev(math::SeriesView values, std::size_t window) {
  * @return The minima, one per row; `missing()` where fewer than `min_observed` rows are observed.
  * @throws std::invalid_argument if `window` or `min_observed` is zero, or `min_observed > window`.
  */
-inline math::Vector rolling_min(
-  math::SeriesView values,
-  std::size_t window,
-  std::size_t min_observed
-) {
+inline math::Vector rolling_min(math::SeriesView values, std::size_t window, std::size_t min_observed) {
   rolling_detail::check(window, min_observed);
   const auto parts = math::observed_parts(values);
   // Absent rows become `+inf` so they lose every comparison without needing a mask inside the
   // window. A window with no observation at all is rejected by the count, never read from here.
-  const math::Vector ceiling =
-    math::observed_or(values, std::numeric_limits<Scalar>::infinity());
+  const math::Vector ceiling = math::observed_or(values, std::numeric_limits<Scalar>::infinity());
   math::Vector result = math::unobserved(static_cast<std::size_t>(values.size()));
   for (math::Index row = 0; row < values.size(); ++row) {
     const math::Index first = rolling_detail::window_start(row, window);
@@ -253,15 +234,10 @@ inline math::Vector rolling_min(math::SeriesView values, std::size_t window) {
  * @return The maxima, one per row; `missing()` where fewer than `min_observed` rows are observed.
  * @throws std::invalid_argument if `window` or `min_observed` is zero, or `min_observed > window`.
  */
-inline math::Vector rolling_max(
-  math::SeriesView values,
-  std::size_t window,
-  std::size_t min_observed
-) {
+inline math::Vector rolling_max(math::SeriesView values, std::size_t window, std::size_t min_observed) {
   rolling_detail::check(window, min_observed);
   const auto parts = math::observed_parts(values);
-  const math::Vector floor =
-    math::observed_or(values, -std::numeric_limits<Scalar>::infinity());
+  const math::Vector floor = math::observed_or(values, -std::numeric_limits<Scalar>::infinity());
   math::Vector result = math::unobserved(static_cast<std::size_t>(values.size()));
   for (math::Index row = 0; row < values.size(); ++row) {
     const math::Index first = rolling_detail::window_start(row, window);

@@ -199,7 +199,7 @@ struct Portfolio {
     return total;
   }
 
- public:
+public:
   /** @brief A sellable quantity together with what it covers, read from the same row. */
   struct SellableReading {
     /** @brief The figure, or `std::nullopt` if no row of the instrument reported one. */
@@ -226,8 +226,7 @@ struct Portfolio {
       if (!(position.instrument_ == instrument)) {
         continue;
       }
-      const SellableBasis basis =
-        position.sellable_basis_ ? *position.sellable_basis_ : sellable_basis_;
+      const SellableBasis basis = position.sellable_basis_ ? *position.sellable_basis_ : sellable_basis_;
       if (!seen) {
         reading.quantity_ = position.sellable_quantity_;
         reading.basis_ = basis;
@@ -237,16 +236,17 @@ struct Portfolio {
       // A second row of the same instrument. Figures are never summed, and a disagreement makes even
       // the first row's figure uninterpretable, since nothing says which lot a sale draws from.
       // First, a basis that disagrees.
-      if (basis.coverage_ != reading.basis_.coverage_ ||
-          basis.resting_ != reading.basis_.resting_) {
+      if (basis.coverage_ != reading.basis_.coverage_ || basis.resting_ != reading.basis_.resting_) {
         return SellableReading{reading.quantity_, SellableBasis{}};
       }
       // Then figures that disagree under one basis: two rows claiming the limit for the same shares
       // with different numbers contradict each other. (KIS pages can repeat a `pdno`.)
       // Compared as numbers: `operator==` also compares the scale, and "70" beside "70.0" is one figure.
-      if (reading.quantity_ && position.sellable_quantity_ &&
-          (decimal_less(*position.sellable_quantity_, *reading.quantity_) ||
-           decimal_less(*reading.quantity_, *position.sellable_quantity_))) {
+      if (
+        reading.quantity_ && position.sellable_quantity_ &&
+        (decimal_less(*position.sellable_quantity_, *reading.quantity_) ||
+          decimal_less(*reading.quantity_, *position.sellable_quantity_))
+      ) {
         return SellableReading{reading.quantity_, SellableBasis{}};
       }
       // A later row's figure where the first had none is the only figure stated.
@@ -322,7 +322,6 @@ struct Portfolio {
     }
     return nullptr;
   }
-
 };
 
 /**

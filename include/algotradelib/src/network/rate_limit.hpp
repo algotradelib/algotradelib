@@ -95,7 +95,12 @@ inline constexpr std::string_view rate_limit_group_name(RateLimitGroup group) no
 }
 
 static_assert(
-  lists_every_value(all_rate_limit_groups, [](RateLimitGroup group) { return !rate_limit_group_name(group).empty(); }),
+  lists_every_value(
+    all_rate_limit_groups,
+    [](RateLimitGroup group) {
+      return !rate_limit_group_name(group).empty();
+    }
+  ),
   "all_rate_limit_groups must list every RateLimitGroup"
 );
 
@@ -181,7 +186,9 @@ public:
    * @param per_second The sustained rate.
    * @throws std::invalid_argument if either is below 1.
    */
-  BasicRateLimitBucket(int burst, int per_second) { resize(burst, per_second); }
+  BasicRateLimitBucket(int burst, int per_second) {
+    resize(burst, per_second);
+  }
 
   /**
    * @brief Constructs a bucket from a budget's burst and rate.
@@ -312,19 +319,25 @@ public:
    * @brief Returns the burst.
    * @return The burst.
    */
-  int burst() const noexcept { return burst_; }
+  int burst() const noexcept {
+    return burst_;
+  }
 
   /**
    * @brief Returns the sustained rate.
    * @return Requests per second.
    */
-  int per_second() const noexcept { return per_second_; }
+  int per_second() const noexcept {
+    return per_second_;
+  }
 
   /**
    * @brief Returns the spacing of the sustained rate.
    * @return One second divided by the rate.
    */
-  Duration interval() const noexcept { return interval_; }
+  Duration interval() const noexcept {
+    return interval_;
+  }
 
 private:
   // Returns how far ahead of now the schedule may run for `allowance`.
@@ -407,8 +420,7 @@ public:
    * @param budget The budget.
    * @throws std::invalid_argument if its burst or rate is below 1.
    */
-  explicit RateLimitController(RateLimitBudget budget = {})
-  : budget_(budget), bucket_(budget) {
+  explicit RateLimitController(RateLimitBudget budget = {}) : budget_(budget), bucket_(budget) {
     stats_.burst_ = budget.burst_;
     stats_.per_second_ = budget.per_second_;
   }
@@ -452,7 +464,9 @@ public:
    * @brief Records that a request was refused unsent.
    * @param group The class.
    */
-  void record_shed(RateLimitGroup group) { ++stats_.group(group).shed_; }
+  void record_shed(RateLimitGroup group) {
+    ++stats_.group(group).shed_;
+  }
 
   /**
    * @brief Counts a broker refusal and holds every request for a duration, keeping the budget.
@@ -488,13 +502,17 @@ public:
    * @brief Returns the budget in force.
    * @return The budget.
    */
-  const RateLimitBudget& budget() const noexcept { return budget_; }
+  const RateLimitBudget& budget() const noexcept {
+    return budget_;
+  }
 
   /**
    * @brief Returns the counters.
    * @return The statistics.
    */
-  const RateLimitStats& stats() const noexcept { return stats_; }
+  const RateLimitStats& stats() const noexcept {
+    return stats_;
+  }
 
 private:
   // Records a new allowance, keeping the reserve smaller than the burst.

@@ -29,13 +29,17 @@ Clock::time_point utc(int year, int month, int day, int hour, int minute, int se
   const long long a = (month <= 2) ? year - 1 : year;
   const long long m = (month <= 2) ? month + 12 : month;
   const long long era_days = 365 * a + a / 4 - a / 100 + a / 400 + (153 * (m - 3) + 2) / 5 + day - 1;
-  return Clock::time_point{} + std::chrono::hours((era_days - 719468) * 24 + hour) +
-    std::chrono::minutes(minute) + std::chrono::seconds(second);
+  return Clock::time_point{} + std::chrono::hours((era_days - 719468) * 24 + hour) + std::chrono::minutes(minute) +
+    std::chrono::seconds(second);
 }
 
-InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
+InstrumentId samsung() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+}
 
-Decimal64 dec(const char* text) { return Decimal64::parse(text); }
+Decimal64 dec(const char* text) {
+  return Decimal64::parse(text);
+}
 
 /** One bar; `open` empty when nothing traded at the open. */
 Bar bar(Clock::time_point at, const char* open, const char* high, const char* low, const char* close) {
@@ -95,7 +99,9 @@ OrderRequest market_order(OrderSide side, const char* quantity) {
   return order;
 }
 
-std::string code_of(const BrokerError& error) { return error.broker_code_; }
+std::string code_of(const BrokerError& error) {
+  return error.broker_code_;
+}
 
 const OrderSnapshot& only_order(const mock::Market& market) {
   static OrderPage page;
@@ -217,8 +223,8 @@ TEST_CASE("a mock market order fills at the open of the next bar", "[mock]") {
 
 TEST_CASE("a mock limit fills only when its bar reaches it and a day order expires after its session", "[mock]") {
   mock::Market market({three_days()}, cash("1000000", utc(2026, 3, 2, 6, 30)));
-  REQUIRE(market.place(limit_buy("1", "104")));  // day 2's low is 105
-  REQUIRE(market.place(limit_buy("1", "108")));  // reached: filled at the limit
+  REQUIRE(market.place(limit_buy("1", "104"))); // day 2's low is 105
+  REQUIRE(market.place(limit_buy("1", "108"))); // reached: filled at the limit
   market.advance_to(utc(2026, 3, 3, 6, 30));
   const auto page = market.order_history({});
   REQUIRE(page.orders_.size() == 2);
@@ -257,7 +263,9 @@ BarSeries minutes(std::vector<std::pair<int, int>> ends, Clock::time_point (*day
 }
 
 /** A KST time on 2026-03-02, or with an hour of 24 or more, on the next day. */
-Clock::time_point kst(int hour, int minute) { return utc(2026, 3, 2, 0, 0) + std::chrono::hours(hour - 9) + std::chrono::minutes(minute); }
+Clock::time_point kst(int hour, int minute) {
+  return utc(2026, 3, 2, 0, 0) + std::chrono::hours(hour - 9) + std::chrono::minutes(minute);
+}
 
 } // namespace
 
@@ -267,7 +275,7 @@ TEST_CASE("a mock order never fills against a bar that began before it was accep
   market.advance_to(kst(9, 1) + std::chrono::seconds(1));
   REQUIRE(market.place(market_order(OrderSide::BUY, "1")));
   market.advance_to(kst(9, 2));
-  CHECK(only_order(market).status_ == OrderStatus::PENDING);  // the 09:01-09:02 bar began before it
+  CHECK(only_order(market).status_ == OrderStatus::PENDING); // the 09:01-09:02 bar began before it
   market.advance_to(kst(9, 3));
   CHECK(only_order(market).execution_.average_filled_price_ == dec("102"));
 }
@@ -294,13 +302,14 @@ TEST_CASE("a mock intraday day order expires at the close or before a later date
 
 TEST_CASE("the mock market charges the fill model's commission and tax", "[mock]") {
   auto settings = cash("1000000", utc(2026, 3, 2, 6, 30));
-  settings.fills_ = backtest::NextBarFillModel(backtest::CommissionModel::of(dec("0.01")))
-    .with_sell_tax(backtest::SellTax{dec("0.002"), Country::KR});
+  settings.fills_ =
+    backtest::NextBarFillModel(backtest::CommissionModel::of(dec("0.01")))
+      .with_sell_tax(backtest::SellTax{dec("0.002"), Country::KR});
   mock::Market market({three_days()}, settings);
   REQUIRE(market.place(market_order(OrderSide::BUY, "10")));
-  market.advance_to(utc(2026, 3, 3, 6, 30));  // 10 at 106: 1,060 and 10 commission
+  market.advance_to(utc(2026, 3, 3, 6, 30)); // 10 at 106: 1,060 and 10 commission
   REQUIRE(market.place(market_order(OrderSide::SELL, "10")));
-  market.advance_to(utc(2026, 3, 4, 6, 30));  // 10 at 100: 1,000, 10 commission and 2 tax
+  market.advance_to(utc(2026, 3, 4, 6, 30)); // 10 at 100: 1,000, 10 commission and 2 tax
   const auto page = market.order_history({});
   REQUIRE(page.orders_.size() == 2);
   CHECK(page.orders_[0].execution_.commission_->amount_ == dec("10"));
@@ -503,7 +512,7 @@ TEST_CASE("a mock order fills against an open-stamped daily bar that begins afte
   REQUIRE(market.place(market_order(OrderSide::BUY, "1")));
   market.advance_to(utc(2026, 3, 3, 14, 59));
   CHECK(only_order(market).status_ == OrderStatus::PENDING);
-  market.advance_to(utc(2026, 3, 3, 15, 0));  // the period ends 24 hours after its stamp
+  market.advance_to(utc(2026, 3, 3, 15, 0)); // the period ends 24 hours after its stamp
   CHECK(only_order(market).execution_.average_filled_price_ == dec("104"));
 }
 
@@ -682,7 +691,8 @@ namespace {
 struct Flips {
   template <class Ctx>
   void on_bar(Ctx& ctx, const strategy::BarEvent& event) {
-    const auto day = std::chrono::duration_cast<std::chrono::hours>(event.bar_.timestamp_.time_since_epoch()).count() / 24;
+    const auto day =
+      std::chrono::duration_cast<std::chrono::hours>(event.bar_.timestamp_.time_since_epoch()).count() / 24;
     const bool hold = (day / 3) % 2 == 0;
     // A target of 10 can only buy, a target of 0 only sell.
     const auto factor = Decimal64::parse(hold ? "1.02" : "0.98");
@@ -722,7 +732,9 @@ struct ScratchFile {
   explicit ScratchFile(const char* name) : path_((std::filesystem::temp_directory_path() / name).string()) {
     std::remove(path_.c_str());
   }
-  ~ScratchFile() { std::remove(path_.c_str()); }
+  ~ScratchFile() {
+    std::remove(path_.c_str());
+  }
   std::string path_;
 };
 
@@ -776,9 +788,8 @@ TEST_CASE("a live run on the mock trades as a backtest of the same bars", "[mock
   settings.max_iterations_ = static_cast<std::size_t>(span / std::chrono::minutes(15)) + 2;
   runner::StopSource stop;
   std::ostringstream out;
-  const auto exit = live_program::trade(
-    bound.session_, bound.session_, Flips{}, settings, stop, out, mock::MarketClock(market)
-  );
+  const auto exit =
+    live_program::trade(bound.session_, bound.session_, Flips{}, settings, stop, out, mock::MarketClock(market));
   INFO(out.str());
   REQUIRE(exit == live_program::Exit::CLEAN);
 

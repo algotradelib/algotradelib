@@ -46,7 +46,9 @@ struct ZScoreReversion {
    * @brief Returns how many bars to load before the first live bar.
    * @return `window_ + 1`.
    */
-  std::size_t warmup_bars() const { return params_.window_ + 1; }
+  std::size_t warmup_bars() const {
+    return params_.window_ + 1;
+  }
 
   /**
    * @brief States a target position for the instrument when its signal enters or exits.
@@ -59,8 +61,7 @@ struct ZScoreReversion {
     if (!(bar.instrument_ == params_.instrument_)) {
       return;
     }
-    if (params_.window_ < 2 || !(params_.entry_ > 0) || !(params_.exit_ > 0) ||
-        !(params_.exit_ < params_.entry_)) {
+    if (params_.window_ < 2 || !(params_.entry_ > 0) || !(params_.exit_ > 0) || !(params_.exit_ < params_.entry_)) {
       // An entry that is not below the mean, an exit that is not, or an exit at or beyond the entry
       // is contradictory; do nothing.
       return;
@@ -143,7 +144,9 @@ struct RsiThreshold {
    * @brief Returns how many bars to load before the first live bar.
    * @return `period_ + 1`, the first row at which the index exists.
    */
-  std::size_t warmup_bars() const { return params_.period_ + 1; }
+  std::size_t warmup_bars() const {
+    return params_.period_ + 1;
+  }
 
   /**
    * @brief States a target position for the instrument when its signal enters or exits.
@@ -223,7 +226,9 @@ struct DonchianBreakout {
    * @brief Returns how many bars to load before the first live bar.
    * @return `lookback_ + 1`.
    */
-  std::size_t warmup_bars() const { return params_.lookback_ + 1; }
+  std::size_t warmup_bars() const {
+    return params_.lookback_ + 1;
+  }
 
   /**
    * @brief States a target position for the instrument when its signal enters or exits.

@@ -74,11 +74,7 @@ inline math::Vector wilder(math::SeriesView values, std::size_t period) {
  *   observation in the window is equal (no dispersion; common for a halted instrument).
  * @throws std::invalid_argument if `window` or `min_observed` is zero, or `min_observed > window`.
  */
-inline math::Vector zscore(
-  math::SeriesView values,
-  std::size_t window,
-  std::size_t min_observed
-) {
+inline math::Vector zscore(math::SeriesView values, std::size_t window, std::size_t min_observed) {
   rolling_detail::check(window, min_observed);
   const auto parts = math::observed_parts(values);
   math::Vector result = math::unobserved(static_cast<std::size_t>(values.size()));
@@ -91,10 +87,12 @@ inline math::Vector zscore(
     if (!spread.reported_) {
       continue;
     }
-    if (spread.deviation_ == Scalar{0} ||
-        constant_detail::rounded_constant(
-          spread.deviation_, spread.mean_, spread.count_, parts.values_, parts.present_, first, row - first + 1
-        )) {
+    if (
+      spread.deviation_ == Scalar{0} ||
+      constant_detail::rounded_constant(
+        spread.deviation_, spread.mean_, spread.count_, parts.values_, parts.present_, first, row - first + 1
+      )
+    ) {
       // The data was there and the statistic does not exist for it, which is a different
       // answer from "no data yet" and now says so. Equal values that are not binary fractions
       // leave a deviation of a few ulps rather than zero; dividing by it would not be a z-score.

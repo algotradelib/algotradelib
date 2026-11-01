@@ -12,8 +12,8 @@
 #include <algotradelib/core>
 
 #include <boost/asio/any_completion_handler.hpp>
-#include <boost/asio/async_result.hpp>
 #include <boost/asio/associated_executor.hpp>
+#include <boost/asio/async_result.hpp>
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
@@ -129,9 +129,7 @@ struct HttpClientOptions {
  */
 inline BrokerError transport_error(std::string stage, beast::error_code ec) {
   BrokerError error;
-  error.category_ = ec == net::error::operation_aborted ?
-    ErrorCategory::CANCELLED :
-    ErrorCategory::TRANSPORT;
+  error.category_ = ec == net::error::operation_aborted ? ErrorCategory::CANCELLED : ErrorCategory::TRANSPORT;
   error.broker_code_ = std::move(stage);
   error.message_ = ec.message();
   return error;
@@ -195,14 +193,9 @@ public:
    * @param options The options; `rate_limit_` and `queue_limit_` are not used.
    */
   HttpClient(
-    net::io_context& ioc,
-    ssl::context& context,
-    std::string host,
-    std::string port,
-    HttpClientOptions options = {}
+    net::io_context& ioc, ssl::context& context, std::string host, std::string port, HttpClientOptions options = {}
   )
-  : resolver_(ioc), context_(context), host_(std::move(host)), port_(std::move(port)),
-    options_(options) {}
+  : resolver_(ioc), context_(context), host_(std::move(host)), port_(std::move(port)), options_(options) {}
 
   /**
    * @brief Sends a GET request and waits for the response.
@@ -211,10 +204,7 @@ public:
    * @return The response, whatever its status.
    * @throws boost::system::system_error on a transport failure (after one retry).
    */
-  HttpResponse get(
-    const std::string& target,
-    const std::map<std::string, std::string>& headers = {}
-  ) {
+  HttpResponse get(const std::string& target, const std::map<std::string, std::string>& headers = {}) {
     return request(http::verb::get, target, "", headers);
   }
 
@@ -227,9 +217,7 @@ public:
    * @throws boost::system::system_error on a transport failure.
    */
   HttpResponse post(
-    const std::string& target,
-    const std::string& body,
-    const std::map<std::string, std::string>& headers = {}
+    const std::string& target, const std::string& body, const std::map<std::string, std::string>& headers = {}
   ) {
     return request(http::verb::post, target, body, headers);
   }
@@ -244,17 +232,17 @@ public:
    * @throws boost::system::system_error on a transport failure.
    */
   HttpResponse request(
-    http::verb method,
-    const std::string& target,
-    const std::string& body = {},
+    http::verb method, const std::string& target, const std::string& body = {},
     const std::map<std::string, std::string>& headers = {}
   ) {
     for (int attempt = 0;; ++attempt) {
       beast::error_code error;
       // Never replayed, so never written into a connection the server may have closed while it was
       // idle; see `HttpClientOptions::unreplayed_idle_limit_`.
-      if (method != http::verb::get && idle_since_ &&
-          std::chrono::steady_clock::now() - *idle_since_ > options_.unreplayed_idle_limit_) {
+      if (
+        method != http::verb::get && idle_since_ &&
+        std::chrono::steady_clock::now() - *idle_since_ > options_.unreplayed_idle_limit_
+      ) {
         // Dropped without waiting for the peer's close notification: a synchronous TLS shutdown is not
         // bounded by the stream's deadline, and a live server may never answer one.
         close_ssl_stream(*stream_);
@@ -304,7 +292,9 @@ public:
   }
 
   /** @brief Closes the connection; the next request opens a new one. */
-  void close() { disconnect(); }
+  void close() {
+    disconnect();
+  }
 
 private:
   tcp::resolver resolver_;
@@ -323,9 +313,7 @@ private:
     }
     stream_ = std::make_unique<beast::ssl_stream<beast::tcp_stream>>(resolver_.get_executor(), context_);
     if (!SSL_set_tlsext_host_name(stream_->native_handle(), host_.c_str())) {
-      error = beast::error_code(
-        static_cast<int>(::ERR_get_error()), net::error::get_ssl_category()
-      );
+      error = beast::error_code(static_cast<int>(::ERR_get_error()), net::error::get_ssl_category());
       return;
     }
     stream_->set_verify_callback(ssl::host_name_verification(host_));
@@ -342,7 +330,9 @@ private:
     stream_->handshake(ssl::stream_base::client, error);
   }
 
-  std::string host_header() const { return make_host_header(host_, port_); }
+  std::string host_header() const {
+    return make_host_header(host_, port_);
+  }
 
   void disconnect() noexcept {
     if (!stream_) {
@@ -397,15 +387,18 @@ public:
    * @throws std::invalid_argument if `options.rate_limit_` has a burst or rate below 1.
    */
   AsyncHttpClient(
-    net::any_io_executor executor,
-    ssl::context& context,
-    std::string host,
-    std::string port,
+    net::any_io_executor executor, ssl::context& context, std::string host, std::string port,
     HttpClientOptions options = {}
   )
-  : strand_(net::make_strand(std::move(executor))), resolver_(strand_), resolve_timer_(strand_),
-    admission_timer_(strand_), context_(context), host_(std::move(host)),
-    port_(std::move(port)), options_(options), fresh_orders_(options.fresh_connection_for_orders_.value_or(false)) {
+  : strand_(net::make_strand(std::move(executor))),
+    resolver_(strand_),
+    resolve_timer_(strand_),
+    admission_timer_(strand_),
+    context_(context),
+    host_(std::move(host)),
+    port_(std::move(port)),
+    options_(options),
+    fresh_orders_(options.fresh_connection_for_orders_.value_or(false)) {
     if (options_.rate_limit_) {
       limiter_.emplace(*options_.rate_limit_);
     }
@@ -443,7 +436,9 @@ public:
    *
    * @return The count.
    */
-  std::uint64_t admission_waits() const noexcept { return admission_timer_.arms(); }
+  std::uint64_t admission_waits() const noexcept {
+    return admission_timer_.arms();
+  }
 
   /**
    * @brief Queues a request; completes with the response (any status) or an error.
@@ -461,11 +456,8 @@ public:
   template <typename CompletionToken>
   auto async_request(HttpRequest request_value, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<HttpResponse>)>(
-      [self = shared_from_this(),
-       request_value = std::move(request_value)](auto&& handler) mutable {
-        Pending pending(
-          std::move(request_value), CompletionHandler(std::forward<decltype(handler)>(handler))
-        );
+      [self = shared_from_this(), request_value = std::move(request_value)](auto&& handler) mutable {
+        Pending pending(std::move(request_value), CompletionHandler(std::forward<decltype(handler)>(handler)));
         net::post(self->strand_, [self, pending = std::move(pending)]() mutable {
           self->enqueue(std::move(pending));
         });
@@ -580,10 +572,14 @@ private:
     }
 
     // Cancels any outstanding wait. Not counted: a cancellation is not an admission wait.
-    std::size_t cancel() { return timer_.cancel(); }
+    std::size_t cancel() {
+      return timer_.cancel();
+    }
 
     // Returns how many times this timer has been armed.
-    std::uint64_t arms() const noexcept { return arms_; }
+    std::uint64_t arms() const noexcept {
+      return arms_;
+    }
 
   private:
     net::steady_timer timer_;
@@ -656,8 +652,7 @@ private:
       ++position;
     }
     const int priority = rate_limit_priority(group);
-    while (position != queue_.end() &&
-           rate_limit_priority(position->request_.group_) >= priority) {
+    while (position != queue_.end() && rate_limit_priority(position->request_.group_) >= priority) {
       ++position;
     }
     return position;
@@ -694,9 +689,11 @@ private:
     // while it sat idle; see `HttpClientOptions::unreplayed_idle_limit_`. Before admission, so the
     // reconnect spends no rate-limit slot of its own.
     // With `fresh_orders_` on, an order has its own rule, applied just before it is written (`refresh_for_order`).
-    if (!(fresh_orders_ && queue_.front().request_.group_ == RateLimitGroup::TRADING) &&
-        queue_.front().request_.method_ != http::verb::get && !queue_.front().refreshed_ && idle_since_ &&
-        std::chrono::steady_clock::now() - *idle_since_ > options_.unreplayed_idle_limit_) {
+    if (
+      !(fresh_orders_ && queue_.front().request_.group_ == RateLimitGroup::TRADING) &&
+      queue_.front().request_.method_ != http::verb::get && !queue_.front().refreshed_ && idle_since_ &&
+      std::chrono::steady_clock::now() - *idle_since_ > options_.unreplayed_idle_limit_
+    ) {
       queue_.front().refreshed_ = true;
       disconnect();
       // The handshake is not admission delay; the wait, if any, is measured again from here.
@@ -757,9 +754,7 @@ private:
     if (auto& waiting_since = queue_.front().waiting_since_) {
       limiter_->record_delay(
         group,
-        std::chrono::duration_cast<RateLimitController::Duration>(
-          std::chrono::steady_clock::now() - *waiting_since
-        )
+        std::chrono::duration_cast<RateLimitController::Duration>(std::chrono::steady_clock::now() - *waiting_since)
       );
       waiting_since.reset();
     }
@@ -782,8 +777,7 @@ private:
     if (front.request_.group_ != RateLimitGroup::TRADING) {
       return false;
     }
-    const bool aged = idle_since_ &&
-      std::chrono::steady_clock::now() - *idle_since_ > options_.unreplayed_idle_limit_;
+    const bool aged = idle_since_ && std::chrono::steady_clock::now() - *idle_since_ > options_.unreplayed_idle_limit_;
     if (!connection_used_ && (!aged || front.refreshed_)) {
       return false;
     }
@@ -805,9 +799,7 @@ private:
       }
     });
     resolver_.async_resolve(
-      host_,
-      port_,
-      [self = shared_from_this()](beast::error_code ec, tcp::resolver::results_type endpoints) {
+      host_, port_, [self = shared_from_this()](beast::error_code ec, tcp::resolver::results_type endpoints) {
         self->resolve_timer_.cancel();
         // `close()` completes every queued request and releases the stream, so a
         // continuation that arrives afterwards has nothing left to advance.
@@ -824,51 +816,43 @@ private:
         self->state_ = State::CONNECTING;
         beast::get_lowest_layer(*self->stream_).expires_after(self->options_.timeout_);
         beast::get_lowest_layer(*self->stream_)
-          .async_connect(
-            endpoints,
-            [self](beast::error_code connect_ec, tcp::resolver::results_type::endpoint_type) {
-              if (self->stopped_ || !self->stream_) {
-                return;
-              }
-              if (connect_ec) {
-                self->fail("connect", connect_ec);
-                return;
-              }
-              self->start_handshake();
+          .async_connect(endpoints, [self](beast::error_code connect_ec, tcp::resolver::results_type::endpoint_type) {
+            if (self->stopped_ || !self->stream_) {
+              return;
             }
-          );
+            if (connect_ec) {
+              self->fail("connect", connect_ec);
+              return;
+            }
+            self->start_handshake();
+          });
       }
     );
   }
 
   void start_handshake() {
     if (!SSL_set_tlsext_host_name(stream_->native_handle(), host_.c_str())) {
-      fail(
-        "sni",
-        beast::error_code(static_cast<int>(::ERR_get_error()), net::error::get_ssl_category())
-      );
+      fail("sni", beast::error_code(static_cast<int>(::ERR_get_error()), net::error::get_ssl_category()));
       return;
     }
     stream_->set_verify_callback(ssl::host_name_verification(host_));
     state_ = State::HANDSHAKING;
     beast::get_lowest_layer(*stream_).expires_after(options_.timeout_);
-    stream_->async_handshake(
-      ssl::stream_base::client, [self = shared_from_this()](beast::error_code ec) {
-        if (self->stopped_ || !self->stream_) {
-          return;
-        }
-        if (ec) {
-          self->fail("tls_handshake", ec);
-          return;
-        }
-        self->state_ = State::READY;
-        // The idle clock starts here too: a request can wait for admission on a connection that has
-        // carried nothing yet, and the server's idle timeout runs all the same.
-        self->idle_since_ = std::chrono::steady_clock::now();
-        self->connection_used_ = false;
-        self->pump();
+    stream_->async_handshake(ssl::stream_base::client, [self = shared_from_this()](beast::error_code ec) {
+      if (self->stopped_ || !self->stream_) {
+        return;
       }
-    );
+      if (ec) {
+        self->fail("tls_handshake", ec);
+        return;
+      }
+      self->state_ = State::READY;
+      // The idle clock starts here too: a request can wait for admission on a connection that has
+      // carried nothing yet, and the server's idle timeout runs all the same.
+      self->idle_since_ = std::chrono::steady_clock::now();
+      self->connection_used_ = false;
+      self->pump();
+    });
   }
 
   void start_write() {
@@ -891,18 +875,16 @@ private:
 
     state_ = State::WRITING;
     beast::get_lowest_layer(*stream_).expires_after(options_.timeout_);
-    http::async_write(
-      *stream_, *active_request_, [self = shared_from_this()](beast::error_code ec, std::size_t) {
-        if (self->stopped_ || self->queue_.empty()) {
-          return;
-        }
-        if (ec) {
-          self->fail("write", ec);
-          return;
-        }
-        self->start_read();
+    http::async_write(*stream_, *active_request_, [self = shared_from_this()](beast::error_code ec, std::size_t) {
+      if (self->stopped_ || self->queue_.empty()) {
+        return;
       }
-    );
+      if (ec) {
+        self->fail("write", ec);
+        return;
+      }
+      self->start_read();
+    });
   }
 
   void start_read() {
@@ -910,31 +892,29 @@ private:
     parser_->body_limit(options_.body_limit_);
     state_ = State::READING;
     beast::get_lowest_layer(*stream_).expires_after(options_.timeout_);
-    http::async_read(
-      *stream_, buffer_, *parser_, [self = shared_from_this()](beast::error_code ec, std::size_t) {
-        if (self->stopped_ || self->queue_.empty()) {
-          return;
-        }
-        if (ec) {
-          self->fail("read", ec);
-          return;
-        }
-        auto response = self->parser_->release();
-        const bool keep_alive = response.keep_alive() && !response.need_eof();
-        self->parser_.reset();
-        self->active_request_.reset();
-        auto pending = std::move(self->queue_.front());
-        self->queue_.pop_front();
-        if (keep_alive) {
-          self->state_ = State::READY;
-          self->idle_since_ = std::chrono::steady_clock::now();
-        } else {
-          self->disconnect();
-        }
-        self->complete(std::move(pending.handler_), Result<HttpResponse>(std::move(response)));
-        self->pump();
+    http::async_read(*stream_, buffer_, *parser_, [self = shared_from_this()](beast::error_code ec, std::size_t) {
+      if (self->stopped_ || self->queue_.empty()) {
+        return;
       }
-    );
+      if (ec) {
+        self->fail("read", ec);
+        return;
+      }
+      auto response = self->parser_->release();
+      const bool keep_alive = response.keep_alive() && !response.need_eof();
+      self->parser_.reset();
+      self->active_request_.reset();
+      auto pending = std::move(self->queue_.front());
+      self->queue_.pop_front();
+      if (keep_alive) {
+        self->state_ = State::READY;
+        self->idle_since_ = std::chrono::steady_clock::now();
+      } else {
+        self->disconnect();
+      }
+      self->complete(std::move(pending.handler_), Result<HttpResponse>(std::move(response)));
+      self->pump();
+    });
   }
 
   void fail(const char* stage, beast::error_code ec) {
@@ -950,10 +930,7 @@ private:
       return;
     }
     auto& pending = queue_.front();
-    if (
-      pending.request_.method_ == http::verb::get && !pending.retried_ &&
-      ec != net::error::operation_aborted
-    ) {
+    if (pending.request_.method_ == http::verb::get && !pending.retried_ && ec != net::error::operation_aborted) {
       pending.retried_ = true;
       pump();
       return;
@@ -980,7 +957,9 @@ private:
     connection_used_ = false;
   }
 
-  std::string host_header() const { return make_host_header(host_, port_); }
+  std::string host_header() const {
+    return make_host_header(host_, port_);
+  }
 
   void complete(CompletionHandler handler, Result<HttpResponse> result) {
     auto executor = net::get_associated_executor(handler, strand_);

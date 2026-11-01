@@ -158,13 +158,17 @@ public:
    * @brief Returns the market's clock.
    * @return The instant the market has reached.
    */
-  std::chrono::system_clock::time_point now() const noexcept { return now_; }
+  std::chrono::system_clock::time_point now() const noexcept {
+    return now_;
+  }
 
   /**
    * @brief Returns why the market halted, if it did.
    * @return The reason, or `std::nullopt` while it trades.
    */
-  const std::optional<std::string>& halted() const noexcept { return halted_; }
+  const std::optional<std::string>& halted() const noexcept {
+    return halted_;
+  }
 
   /**
    * @brief Moves the clock to an instant, applying every bar whose period end it reaches, in order of
@@ -187,8 +191,7 @@ public:
         if (listing.next_ >= listing.series_.bars_.size()) {
           continue;
         }
-        if (earliest == nullptr ||
-            period_end(listing, listing.next_) < period_end(*earliest, earliest->next_)) {
+        if (earliest == nullptr || period_end(listing, listing.next_) < period_end(*earliest, earliest->next_)) {
           earliest = &listing;
         }
       }
@@ -248,7 +251,9 @@ public:
     }
     const auto count = static_cast<std::size_t>(query.count_);
     const std::size_t begin = end > count ? end - count : 0;
-    answer.bars_.assign(all.begin() + static_cast<std::ptrdiff_t>(begin), all.begin() + static_cast<std::ptrdiff_t>(end));
+    answer.bars_.assign(
+      all.begin() + static_cast<std::ptrdiff_t>(begin), all.begin() + static_cast<std::ptrdiff_t>(end)
+    );
     return Result<BarSeries>(std::move(answer));
   }
 
@@ -399,7 +404,9 @@ public:
       return refused<PlacedOrder<Broker>>("unknown_instrument", "the mock market has no bars of this instrument");
     }
     if (order.type_ != OrderType::MARKET && order.type_ != OrderType::LIMIT) {
-      return refused<PlacedOrder<Broker>>("unsupported_order_type", "the mock market takes market and limit orders only");
+      return refused<PlacedOrder<Broker>>(
+        "unsupported_order_type", "the mock market takes market and limit orders only"
+      );
     }
     switch (order.time_in_force_) {
       case TimeInForce::DAY:
@@ -414,9 +421,10 @@ public:
       return refused<PlacedOrder<Broker>>("invalid_quantity", "an order's quantity is a positive whole number");
     }
     const bool limit = order.type_ == OrderType::LIMIT;
-    if (limit != order.price_.has_value() ||
-        (order.price_ && order.price_->coefficient() <= 0)) {
-      return refused<PlacedOrder<Broker>>("invalid_price", "a limit order has a positive price and a market order none");
+    if (limit != order.price_.has_value() || (order.price_ && order.price_->coefficient() <= 0)) {
+      return refused<PlacedOrder<Broker>>(
+        "invalid_price", "a limit order has a positive price and a market order none"
+      );
     }
     const auto currency = listing->series_.currency_;
     std::optional<Decimal64> reserve_price = order.price_;
@@ -439,7 +447,9 @@ public:
       const auto held = ledger_.quantity_of(order.instrument_).value_or(Decimal64(0, 0));
       const auto free = decimal_subtract(held, open_sells_of(order.instrument_));
       if (!free || decimal_less(*free, quantity)) {
-        return refused<PlacedOrder<Broker>>("insufficient_holdings", "the sell is more than the shares held and not already offered");
+        return refused<PlacedOrder<Broker>>(
+          "insufficient_holdings", "the sell is more than the shares held and not already offered"
+        );
       }
     }
     MarketOrder accepted;
@@ -631,8 +641,10 @@ private:
   Decimal64 open_sells_of(const InstrumentId& instrument) const {
     Decimal64 total(0, 0);
     for (const auto& order : orders_) {
-      if (order.snapshot_.status_ == OrderStatus::PENDING && order.snapshot_.side_ == OrderSide::SELL &&
-          order.snapshot_.instrument_ == instrument) {
+      if (
+        order.snapshot_.status_ == OrderStatus::PENDING && order.snapshot_.side_ == OrderSide::SELL &&
+        order.snapshot_.instrument_ == instrument
+      ) {
         total = decimal_add(total, order.snapshot_.quantity_).value_or(total);
       }
     }
@@ -646,8 +658,10 @@ private:
       if (!left) {
         break;
       }
-      if (order.snapshot_.status_ != OrderStatus::PENDING || order.snapshot_.side_ != OrderSide::BUY ||
-          !(order.snapshot_.currency_ == currency) || !order.reserve_price_) {
+      if (
+        order.snapshot_.status_ != OrderStatus::PENDING || order.snapshot_.side_ != OrderSide::BUY ||
+        !(order.snapshot_.currency_ == currency) || !order.reserve_price_
+      ) {
         continue;
       }
       const auto reserved = decimal_multiply(order.snapshot_.quantity_, *order.reserve_price_);
@@ -658,13 +672,12 @@ private:
 
   /** Adds a holding's figures to its currency's totals; `false`, changing nothing, if a sum does not fit. */
   static bool add_to_totals(
-    std::vector<HoldingsTotals>& totals,
-    const Decimal64& market_value,
-    const Decimal64& cost,
-    const Decimal64& gain,
+    std::vector<HoldingsTotals>& totals, const Decimal64& market_value, const Decimal64& cost, const Decimal64& gain,
     const Currency& currency
   ) {
-    auto found = std::find_if(totals.begin(), totals.end(), [&](const HoldingsTotals& t) { return t.currency_ == currency; });
+    auto found = std::find_if(totals.begin(), totals.end(), [&](const HoldingsTotals& t) {
+      return t.currency_ == currency;
+    });
     const auto zero = Decimal64(0, 0);
     const auto purchase = decimal_add(found == totals.end() ? zero : found->purchase_value_, cost);
     const auto market = decimal_add(found == totals.end() ? zero : found->market_value_, market_value);
@@ -691,11 +704,15 @@ private:
   }
 
   /** Expires a listing's `DAY` orders whose session ended: of an earlier date, or of `date` when `ends`. */
-  void expire_day_orders(const Listing& listing, const Date& date, bool ends, std::chrono::system_clock::time_point at) {
+  void expire_day_orders(
+    const Listing& listing, const Date& date, bool ends, std::chrono::system_clock::time_point at
+  ) {
     for (auto& order : orders_) {
-      if (order.snapshot_.status_ != OrderStatus::PENDING || !order.session_ ||
-          order.snapshot_.time_in_force_ != TimeInForce::DAY ||
-          !(order.snapshot_.instrument_ == listing.series_.instrument_)) {
+      if (
+        order.snapshot_.status_ != OrderStatus::PENDING || !order.session_ ||
+        order.snapshot_.time_in_force_ != TimeInForce::DAY ||
+        !(order.snapshot_.instrument_ == listing.series_.instrument_)
+      ) {
         continue;
       }
       if (*order.session_ < date || (ends && *order.session_ == date)) {
@@ -724,8 +741,10 @@ private:
     expire_day_orders(listing, date, false, event.period_end_);
     for (auto& order : orders_) {
       auto& snapshot = order.snapshot_;
-      if (snapshot.status_ != OrderStatus::PENDING || !(snapshot.instrument_ == series.instrument_) ||
-          start < *snapshot.ordered_at_) {
+      if (
+        snapshot.status_ != OrderStatus::PENDING || !(snapshot.instrument_ == series.instrument_) ||
+        start < *snapshot.ordered_at_
+      ) {
         continue;
       }
       if (!order.session_) {
@@ -738,7 +757,8 @@ private:
       planned.time_in_force_ = snapshot.time_in_force_;
       planned.quantity_ = snapshot.quantity_;
       planned.price_ = snapshot.price_;
-      const auto decision = settings_.fills_.decide(planned, event, listing.reference_.price_rule_, fill_date, open_date);
+      const auto decision =
+        settings_.fills_.decide(planned, event, listing.reference_.price_rule_, fill_date, open_date);
       if (decision.costing_error_) {
         halted_ = "the mock market halted: order " + snapshot.order_id_ + "'s fill could not be costed (" +
           decision.costing_error_->message_ + ")";
@@ -768,9 +788,7 @@ private:
 
   /** Records a whole fill on an order's snapshot. */
   static void record_fill(
-    OrderSnapshot& snapshot,
-    const backtest::Execution& execution,
-    std::chrono::system_clock::time_point at
+    OrderSnapshot& snapshot, const backtest::Execution& execution, std::chrono::system_clock::time_point at
   ) {
     const auto& fill = execution.fill_;
     snapshot.status_ = OrderStatus::FILLED;

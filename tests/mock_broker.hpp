@@ -4,8 +4,8 @@
 
 #include <boost/asio/any_completion_handler.hpp>
 #include <boost/asio/any_io_executor.hpp>
-#include <boost/asio/async_result.hpp>
 #include <boost/asio/associated_executor.hpp>
+#include <boost/asio/async_result.hpp>
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/post.hpp>
@@ -37,6 +37,9 @@
 namespace vendor {
 
 namespace net = boost::asio;
+using algotradelib::BarInterval;
+using algotradelib::BarQuery;
+using algotradelib::BarSeries;
 using algotradelib::BrokerError;
 using algotradelib::Decimal64;
 using algotradelib::ErrorCategory;
@@ -44,9 +47,6 @@ using algotradelib::HoldingsSnapshot;
 using algotradelib::InstrumentId;
 using algotradelib::OrderPage;
 using algotradelib::OrderRequest;
-using algotradelib::BarInterval;
-using algotradelib::BarQuery;
-using algotradelib::BarSeries;
 using algotradelib::OrderSnapshot;
 using algotradelib::QuoteSnapshot;
 using algotradelib::Result;
@@ -105,8 +105,7 @@ struct MockHistorySelector {
 class MockClient : public std::enable_shared_from_this<MockClient> {
 public:
   /** Constructs a client whose work is serialized on a strand over `executor`. */
-  explicit MockClient(net::any_io_executor executor)
-  : strand_(net::make_strand(std::move(executor))) {}
+  explicit MockClient(net::any_io_executor executor) : strand_(net::make_strand(std::move(executor))) {}
 
   /** Scripted quote answer. */
   std::optional<QuoteSnapshot> quote_;
@@ -149,39 +148,30 @@ public:
   template <typename Token>
   auto async_quote(InstrumentId instrument, Token&& token) {
     static_cast<void>(instrument);
-    return start<QuoteSnapshot>(
-      token,
-      [](MockClient& client) {
-        ++client.quote_calls_;
-        return client.answer<QuoteSnapshot>(client.quote_, "no quote scripted");
-      }
-    );
+    return start<QuoteSnapshot>(token, [](MockClient& client) {
+      ++client.quote_calls_;
+      return client.answer<QuoteSnapshot>(client.quote_, "no quote scripted");
+    });
   }
 
   /** Answers a bar request. */
   template <typename Token>
   auto async_bars(BarQuery query, Token&& token) {
-    return start<BarSeries>(
-      token,
-      [query = std::move(query)](MockClient& client) mutable {
-        ++client.bar_calls_;
-        client.last_bar_query_ = std::move(query);
-        return client.answer<BarSeries>(client.bars_, "no bars scripted");
-      }
-    );
+    return start<BarSeries>(token, [query = std::move(query)](MockClient& client) mutable {
+      ++client.bar_calls_;
+      client.last_bar_query_ = std::move(query);
+      return client.answer<BarSeries>(client.bars_, "no bars scripted");
+    });
   }
 
   /** Answers a holdings request. */
   template <typename Token>
   auto async_holdings(MockAccount account, Token&& token) {
     static_cast<void>(account);
-    return start<HoldingsSnapshot>(
-      token,
-      [](MockClient& client) {
-        ++client.holdings_calls_;
-        return client.answer<HoldingsSnapshot>(client.holdings_, "no holdings scripted");
-      }
-    );
+    return start<HoldingsSnapshot>(token, [](MockClient& client) {
+      ++client.holdings_calls_;
+      return client.answer<HoldingsSnapshot>(client.holdings_, "no holdings scripted");
+    });
   }
 
   /** Answers an order submission. */
@@ -189,71 +179,58 @@ public:
   auto async_place(MockAccount account, OrderRequest order, Token&& token) {
     static_cast<void>(account);
     static_cast<void>(order);
-    return start<MockAck>(
-      token,
-      [](MockClient& client) {
-        ++client.place_calls_;
-        return client.answer<MockAck>(client.ack_, "no acknowledgement scripted");
-      }
-    );
+    return start<MockAck>(token, [](MockClient& client) {
+      ++client.place_calls_;
+      return client.answer<MockAck>(client.ack_, "no acknowledgement scripted");
+    });
   }
 
   /** Answers an order modification. */
   template <typename Token>
   auto async_replace(MockAccount account, MockAmendment amendment, Token&& token) {
     static_cast<void>(account);
-    return start<MockAck>(
-      token,
-      [amendment = std::move(amendment)](MockClient& client) mutable {
-        ++client.replace_calls_;
-        client.last_amendment_ = std::move(amendment);
-        return client.answer<MockAck>(client.ack_, "no acknowledgement scripted");
-      }
-    );
+    return start<MockAck>(token, [amendment = std::move(amendment)](MockClient& client) mutable {
+      ++client.replace_calls_;
+      client.last_amendment_ = std::move(amendment);
+      return client.answer<MockAck>(client.ack_, "no acknowledgement scripted");
+    });
   }
 
   /** Answers an order cancellation. */
   template <typename Token>
   auto async_cancel(MockAccount account, MockAmendment amendment, Token&& token) {
     static_cast<void>(account);
-    return start<MockAck>(
-      token,
-      [amendment = std::move(amendment)](MockClient& client) mutable {
-        ++client.cancel_calls_;
-        client.last_amendment_ = std::move(amendment);
-        return client.answer<MockAck>(client.ack_, "no acknowledgement scripted");
-      }
-    );
+    return start<MockAck>(token, [amendment = std::move(amendment)](MockClient& client) mutable {
+      ++client.cancel_calls_;
+      client.last_amendment_ = std::move(amendment);
+      return client.answer<MockAck>(client.ack_, "no acknowledgement scripted");
+    });
   }
 
   /** Answers an amendable-order inquiry. */
   template <typename Token>
   auto async_live_orders(MockAccount account, Token&& token) {
     static_cast<void>(account);
-    return start<MockLiveOrders>(
-      token,
-      [](MockClient& client) {
-        ++client.live_order_calls_;
-        return client.answer<MockLiveOrders>(client.live_orders_, "no live orders scripted");
-      }
-    );
+    return start<MockLiveOrders>(token, [](MockClient& client) {
+      ++client.live_order_calls_;
+      return client.answer<MockLiveOrders>(client.live_orders_, "no live orders scripted");
+    });
   }
 
   /** Answers an order-history inquiry. */
   template <typename Token>
   auto async_history(MockHistorySelector selector, Token&& token) {
-    return start<OrderPage>(
-      token,
-      [selector = std::move(selector)](MockClient& client) mutable {
-        ++client.history_calls_;
-        client.last_selector_ = std::move(selector);
-        return client.answer<OrderPage>(client.history_, "no history scripted");
-      }
-    );
+    return start<OrderPage>(token, [selector = std::move(selector)](MockClient& client) mutable {
+      ++client.history_calls_;
+      client.last_selector_ = std::move(selector);
+      return client.answer<OrderPage>(client.history_, "no history scripted");
+    });
   }
 
   /** Releases nothing; present so the port's `close()` has a target. */
-  void close() { ++close_calls_; }
+  void close() {
+    ++close_calls_;
+  }
 
   /** Count of `close()` calls, so the port's forwarding can be asserted. */
   int close_calls_{0};
@@ -282,21 +259,14 @@ private:
   auto start(Token& token, Produce produce) {
     return net::async_initiate<Token, void(Result<T>)>(
       [self = shared_from_this(), produce = std::move(produce)](auto&& handler) mutable {
-        auto completion =
-          net::any_completion_handler<void(Result<T>)>(std::forward<decltype(handler)>(handler));
-        net::post(
-          self->strand_,
-          [self, produce = std::move(produce), completion = std::move(completion)]() mutable {
-            auto result = produce(*self);
-            auto executor = net::get_associated_executor(completion, self->strand_);
-            net::dispatch(
-              executor,
-              [completion = std::move(completion), result = std::move(result)]() mutable {
-                std::move(completion)(std::move(result));
-              }
-            );
-          }
-        );
+        auto completion = net::any_completion_handler<void(Result<T>)>(std::forward<decltype(handler)>(handler));
+        net::post(self->strand_, [self, produce = std::move(produce), completion = std::move(completion)]() mutable {
+          auto result = produce(*self);
+          auto executor = net::get_associated_executor(completion, self->strand_);
+          net::dispatch(executor, [completion = std::move(completion), result = std::move(result)]() mutable {
+            std::move(completion)(std::move(result));
+          });
+        });
       },
       token
     );
@@ -428,7 +398,6 @@ struct Normalizers {
     return error;
   }
 
-
   /** Returns an opaque reference carrying the broker's ticket. */
   static OrderRef<vendor::Broker> make_ref(std::string ticket) {
     OrderRef<vendor::Broker> ref;
@@ -470,9 +439,7 @@ struct Normalizers {
   }
 
   /** Normalizes the broker's amendable-order rows. */
-  static Result<WorkingOrders<vendor::Broker>> normalize_working_orders(
-    Result<WorkingOrdersResult> raw
-  ) {
+  static Result<WorkingOrders<vendor::Broker>> normalize_working_orders(Result<WorkingOrdersResult> raw) {
     if (!raw) {
       return Result<WorkingOrders<vendor::Broker>>(std::move(raw.error()));
     }
@@ -490,10 +457,7 @@ struct Normalizers {
   }
 
   /** Converts a normalized modification, refusing a stated quantity of zero. */
-  static Result<Amendment> to_replacement(
-    const OrderRef<vendor::Broker>& ref,
-    const AmendInstruction& instruction
-  ) {
+  static Result<Amendment> to_replacement(const OrderRef<vendor::Broker>& ref, const AmendInstruction& instruction) {
     ++to_replacement_calls_;
     if (instruction.quantity_ && *instruction.quantity_ == Decimal64::parse("0")) {
       BrokerError error;
@@ -512,18 +476,12 @@ struct Normalizers {
   }
 
   /** Converts a normalized cancellation. */
-  static Result<Amendment> to_cancellation(
-    const OrderRef<vendor::Broker>& ref,
-    const AmendInstruction& instruction
-  ) {
+  static Result<Amendment> to_cancellation(const OrderRef<vendor::Broker>& ref, const AmendInstruction& instruction) {
     return to_replacement(ref, instruction);
   }
 
   /** Converts a normalized history query. */
-  static Result<HistoryQuery> to_history_query(
-    const Account& account,
-    const OrderHistoryQuery& query
-  ) {
+  static Result<HistoryQuery> to_history_query(const Account& account, const OrderHistoryQuery& query) {
     if (query.symbol_) {
       BrokerError error;
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
@@ -536,7 +494,6 @@ struct Normalizers {
     selector.cursor_ = query.cursor_;
     return Result<HistoryQuery>(std::move(selector));
   }
-
 };
 
 /**
@@ -553,7 +510,9 @@ struct Members : Normalizers {
   static constexpr bool blocking = false;
 
   /** The in-memory broker issues no network requests and is never paced. */
-  static const network::RateLimitStats* rate_limit_stats(const Client&) { return nullptr; }
+  static const network::RateLimitStats* rate_limit_stats(const Client&) {
+    return nullptr;
+  }
 
   /** Forwards a bar request. */
   template <typename Token>
@@ -642,39 +601,57 @@ public:
   MockBlockingClient() : client_(std::make_shared<MockClient>(ioc_.get_executor())) {}
 
   /** The in-memory client underneath: its scripted answers and call counters. */
-  MockClient& mock() noexcept { return *client_; }
+  MockClient& mock() noexcept {
+    return *client_;
+  }
 
   /** Answers a quote request. */
   Result<QuoteSnapshot> quote(InstrumentId instrument) {
-    return run<QuoteSnapshot>([&](auto handler) { client_->async_quote(std::move(instrument), std::move(handler)); });
+    return run<QuoteSnapshot>([&](auto handler) {
+      client_->async_quote(std::move(instrument), std::move(handler));
+    });
   }
   /** Answers a bar request. */
   Result<BarSeries> bars(BarQuery query) {
-    return run<BarSeries>([&](auto handler) { client_->async_bars(std::move(query), std::move(handler)); });
+    return run<BarSeries>([&](auto handler) {
+      client_->async_bars(std::move(query), std::move(handler));
+    });
   }
   /** Answers a holdings request. */
   Result<HoldingsSnapshot> holdings(const MockAccount& account) {
-    return run<HoldingsSnapshot>([&](auto handler) { client_->async_holdings(account, std::move(handler)); });
+    return run<HoldingsSnapshot>([&](auto handler) {
+      client_->async_holdings(account, std::move(handler));
+    });
   }
   /** Answers an order submission. */
   Result<MockAck> place(const MockAccount& account, OrderRequest order) {
-    return run<MockAck>([&](auto handler) { client_->async_place(account, std::move(order), std::move(handler)); });
+    return run<MockAck>([&](auto handler) {
+      client_->async_place(account, std::move(order), std::move(handler));
+    });
   }
   /** Answers an order modification. */
   Result<MockAck> replace(const MockAccount& account, MockAmendment amendment) {
-    return run<MockAck>([&](auto handler) { client_->async_replace(account, std::move(amendment), std::move(handler)); });
+    return run<MockAck>([&](auto handler) {
+      client_->async_replace(account, std::move(amendment), std::move(handler));
+    });
   }
   /** Answers an order cancellation. */
   Result<MockAck> cancel(const MockAccount& account, MockAmendment amendment) {
-    return run<MockAck>([&](auto handler) { client_->async_cancel(account, std::move(amendment), std::move(handler)); });
+    return run<MockAck>([&](auto handler) {
+      client_->async_cancel(account, std::move(amendment), std::move(handler));
+    });
   }
   /** Answers an amendable-order inquiry. */
   Result<MockLiveOrders> live_orders(const MockAccount& account) {
-    return run<MockLiveOrders>([&](auto handler) { client_->async_live_orders(account, std::move(handler)); });
+    return run<MockLiveOrders>([&](auto handler) {
+      client_->async_live_orders(account, std::move(handler));
+    });
   }
   /** Answers an order-history inquiry. */
   Result<OrderPage> history(MockHistorySelector selector) {
-    return run<OrderPage>([&](auto handler) { client_->async_history(std::move(selector), std::move(handler)); });
+    return run<OrderPage>([&](auto handler) {
+      client_->async_history(std::move(selector), std::move(handler));
+    });
   }
 
 private:
@@ -683,7 +660,9 @@ private:
   Result<T> run(Start start) {
     std::optional<Result<T>> result;
     ioc_.restart();
-    start([&result](Result<T> value) { result.emplace(std::move(value)); });
+    start([&result](Result<T> value) {
+      result.emplace(std::move(value));
+    });
     ioc_.run();
     if (!result) {
       BrokerError error;
@@ -716,13 +695,21 @@ struct BrokerTraits<vendor::MockBlockingClient> : mock_port::Normalizers, mock_p
   static constexpr bool working_orders_state_terminal = true;
 
   /** Never paced. */
-  static const network::RateLimitStats* rate_limit_stats(const Client&) { return nullptr; }
+  static const network::RateLimitStats* rate_limit_stats(const Client&) {
+    return nullptr;
+  }
   /** Forwards a quote request. */
-  static Result<QuoteSnapshot> quote(Client& client, InstrumentId instrument) { return client.quote(std::move(instrument)); }
+  static Result<QuoteSnapshot> quote(Client& client, InstrumentId instrument) {
+    return client.quote(std::move(instrument));
+  }
   /** Forwards a bar request. */
-  static Result<BarSeries> bars(Client& client, BarQuery query) { return client.bars(std::move(query)); }
+  static Result<BarSeries> bars(Client& client, BarQuery query) {
+    return client.bars(std::move(query));
+  }
   /** Forwards a holdings request. */
-  static Result<HoldingsSnapshot> holdings(Client& client, const Account& account) { return client.holdings(account); }
+  static Result<HoldingsSnapshot> holdings(Client& client, const Account& account) {
+    return client.holdings(account);
+  }
   /** Forwards an order submission. */
   static Result<PlaceAck> place_order(Client& client, const Account& account, OrderRequest order) {
     return client.place(account, std::move(order));

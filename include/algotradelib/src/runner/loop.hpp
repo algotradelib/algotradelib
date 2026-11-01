@@ -100,7 +100,12 @@ inline constexpr PollKind all_poll_kinds[] = {
 };
 
 static_assert(
-  lists_every_value(all_poll_kinds, [](PollKind kind) { return !poll_kind_name(kind).empty(); }),
+  lists_every_value(
+    all_poll_kinds,
+    [](PollKind kind) {
+      return !poll_kind_name(kind).empty();
+    }
+  ),
   "every PollKind must appear in all_poll_kinds once: a kind left out is never polled, and the loop "
   "would silently answer with whatever the previous poll left behind"
 );
@@ -153,7 +158,12 @@ inline constexpr std::string_view poll_outcome_name(PollOutcome outcome) noexcep
 }
 
 static_assert(
-  lists_every_value(all_poll_outcomes, [](PollOutcome outcome) { return !poll_outcome_name(outcome).empty(); }),
+  lists_every_value(
+    all_poll_outcomes,
+    [](PollOutcome outcome) {
+      return !poll_outcome_name(outcome).empty();
+    }
+  ),
   "all_poll_outcomes must list every PollOutcome"
 );
 
@@ -246,9 +256,8 @@ template <typename Source, typename = void>
 struct source_provides_working_orders : std::false_type {};
 
 template <typename Source>
-struct source_provides_working_orders<
-  Source, std::void_t<decltype(Source::provides_working_orders)>
-> : std::bool_constant<Source::provides_working_orders> {};
+struct source_provides_working_orders<Source, std::void_t<decltype(Source::provides_working_orders)>>
+: std::bool_constant<Source::provides_working_orders> {};
 
 /**
  * @brief Detects `Runner::keeps_sent_orders_until_listed`.
@@ -264,9 +273,8 @@ template <typename Runner, typename = void>
 struct runner_keeps_sent_orders : std::true_type {};
 
 template <typename Runner>
-struct runner_keeps_sent_orders<
-  Runner, std::void_t<decltype(Runner::keeps_sent_orders_until_listed)>
-> : std::bool_constant<Runner::keeps_sent_orders_until_listed> {};
+struct runner_keeps_sent_orders<Runner, std::void_t<decltype(Runner::keeps_sent_orders_until_listed)>>
+: std::bool_constant<Runner::keeps_sent_orders_until_listed> {};
 
 /**
  * @brief Detects whether a runner reports `kept_intents_dropped()`.
@@ -276,9 +284,8 @@ template <typename Runner, typename = void>
 struct runner_counts_kept_drops : std::false_type {};
 
 template <typename Runner>
-struct runner_counts_kept_drops<
-  Runner, std::void_t<decltype(std::declval<const Runner&>().kept_intents_dropped())>
-> : std::true_type {};
+struct runner_counts_kept_drops<Runner, std::void_t<decltype(std::declval<const Runner&>().kept_intents_dropped())>>
+: std::true_type {};
 
 /**
  * @brief Detects whether a runner reports `warmup_instructions_discarded()`.
@@ -406,10 +413,7 @@ struct ChargedCosts {
    * @param currency The currency.
    * @return The figure, or `std::nullopt` if none.
    */
-  static std::optional<Decimal64> figure_in(
-    const std::vector<StatedTotal>& totals,
-    const Currency& currency
-  ) {
+  static std::optional<Decimal64> figure_in(const std::vector<StatedTotal>& totals, const Currency& currency) {
     for (const auto& held : totals) {
       if (held.amount_.currency_ == currency) {
         return held.amount_.amount_;
@@ -424,10 +428,7 @@ struct ChargedCosts {
    * @param currency The currency.
    * @return The count; zero if none.
    */
-  static std::size_t statements_in(
-    const std::vector<StatedTotal>& totals,
-    const Currency& currency
-  ) {
+  static std::size_t statements_in(const std::vector<StatedTotal>& totals, const Currency& currency) {
     for (const auto& held : totals) {
       if (held.amount_.currency_ == currency) {
         return held.statements_;
@@ -448,10 +449,7 @@ struct ChargedCosts {
   ChargedCosts since(const ChargedCosts& before) const {
     ChargedCosts delta;
     std::size_t refused = 0;
-    const auto difference = [&refused](
-      const std::vector<StatedTotal>& now,
-      const std::vector<StatedTotal>& then
-    ) {
+    const auto difference = [&refused](const std::vector<StatedTotal>& now, const std::vector<StatedTotal>& then) {
       std::vector<StatedTotal> out;
       for (const auto& held : now) {
         auto earlier = Decimal64::parse("0");
@@ -473,9 +471,7 @@ struct ChargedCosts {
           ++refused;
           continue;
         }
-        out.push_back(
-          StatedTotal{Money{*moved, held.amount_.currency_}, held.statements_ - before_statements}
-        );
+        out.push_back(StatedTotal{Money{*moved, held.amount_.currency_}, held.statements_ - before_statements});
       }
       return out;
     };
@@ -483,11 +479,9 @@ struct ChargedCosts {
     delta.tax_ = difference(tax_, before.tax_);
     delta.orders_stating_cost_ = orders_stating_cost_ - before.orders_stating_cost_;
     delta.orders_stating_none_ = orders_stating_none_ - before.orders_stating_none_;
-    delta.working_list_disappearances_ =
-      working_list_disappearances_ - before.working_list_disappearances_;
+    delta.working_list_disappearances_ = working_list_disappearances_ - before.working_list_disappearances_;
     delta.conflicting_restatements_ = conflicting_restatements_ - before.conflicting_restatements_;
-    delta.unrepresentable_sums_ =
-      (unrepresentable_sums_ - before.unrepresentable_sums_) + refused;
+    delta.unrepresentable_sums_ = (unrepresentable_sums_ - before.unrepresentable_sums_) + refused;
     return delta;
   }
 };
@@ -501,9 +495,8 @@ template <typename Source, typename = void>
 struct source_states_charged_costs : std::false_type {};
 
 template <typename Source>
-struct source_states_charged_costs<
-  Source, std::void_t<decltype(std::declval<const Source&>().charged_costs())>
-> : std::true_type {};
+struct source_states_charged_costs<Source, std::void_t<decltype(std::declval<const Source&>().charged_costs())>>
+: std::true_type {};
 
 /**
  * @brief Detects whether a source provides `const std::vector<Currency>& buying_power_currencies()
@@ -759,10 +752,9 @@ struct LoopReport {
    *   unverified, or an order nothing explained was still owed.
    */
   bool closing_complete() const noexcept {
-    return closing_rejected_ == 0 && closing_refused_ == 0 && closing_withheld_ == 0 &&
-      closing_indeterminate_ == 0 && closing_unavailable_ == 0 && closing_unresolved_ == 0 &&
-      closing_contended_ == 0 && closing_unsizable_ == 0 && !closing_source_unverified_ &&
-      closing_unconfirmed_ == 0 && !closing_interrupted_;
+    return closing_rejected_ == 0 && closing_refused_ == 0 && closing_withheld_ == 0 && closing_indeterminate_ == 0 &&
+      closing_unavailable_ == 0 && closing_unresolved_ == 0 && closing_contended_ == 0 && closing_unsizable_ == 0 &&
+      !closing_source_unverified_ && closing_unconfirmed_ == 0 && !closing_interrupted_;
   }
   /** @brief Instructions the strategy's `on_stop` asked for during a stop, refused as intended (the operator's orders go instead). */
   std::size_t stop_handler_refused_{0};
@@ -786,7 +778,9 @@ struct LoopReport {
    * @param kind The kind.
    * @return The count.
    */
-  std::size_t failed(PollKind kind) const noexcept { return failed_[static_cast<int>(kind)]; }
+  std::size_t failed(PollKind kind) const noexcept {
+    return failed_[static_cast<int>(kind)];
+  }
 };
 
 /**
@@ -825,7 +819,9 @@ public:
    * @brief Sets the outcome of the order-list read (`UPDATED` by default).
    * @param outcome The outcome.
    */
-  void set_order_list(PollOutcome outcome) { order_list_ = outcome; }
+  void set_order_list(PollOutcome outcome) {
+    order_list_ = outcome;
+  }
 
   /**
    * @brief Sets the buying-power currencies the source claims to ask about.
@@ -849,20 +845,26 @@ public:
    * @brief Returns the buying-power currencies.
    * @return The currencies.
    */
-  const std::vector<Currency>& buying_power_currencies() const noexcept { return currencies_; }
+  const std::vector<Currency>& buying_power_currencies() const noexcept {
+    return currencies_;
+  }
 
   /**
    * @brief Returns how many times the order list was read.
    * @return The count.
    */
-  std::size_t order_list_reads() const noexcept { return order_list_reads_; }
+  std::size_t order_list_reads() const noexcept {
+    return order_list_reads_;
+  }
 
   /**
    * @brief Returns how many times a kind was polled.
    * @param kind The kind.
    * @return The count.
    */
-  std::size_t polls(PollKind kind) const noexcept { return polls_[static_cast<int>(kind)]; }
+  std::size_t polls(PollKind kind) const noexcept {
+    return polls_[static_cast<int>(kind)];
+  }
 
   /**
    * @brief Adds a band a successful price-limits poll installs, and makes that poll default to
@@ -989,18 +991,24 @@ public:
    * @brief Returns the clock.
    * @return The clock.
    */
-  const Clock& clock() const noexcept { return clock_; }
+  const Clock& clock() const noexcept {
+    return clock_;
+  }
   /**
    * @brief Returns the clock, for a test to advance.
    * @return The clock.
    */
-  Clock& clock() noexcept { return clock_; }
+  Clock& clock() noexcept {
+    return clock_;
+  }
 
   /**
    * @brief Returns the schedule.
    * @return The schedule.
    */
-  const PollSchedule& schedule() const noexcept { return schedule_; }
+  const PollSchedule& schedule() const noexcept {
+    return schedule_;
+  }
 
 private:
   // Every monotone instruction-outcome figure the runner holds, read at one instant.
@@ -1045,9 +1053,7 @@ private:
 
   // Writes the difference between two snapshots onto `report`.
   static void note_instruction_outcomes(
-    LoopReport& report,
-    const InstructionOutcomes& before,
-    const InstructionOutcomes& after
+    LoopReport& report, const InstructionOutcomes& before, const InstructionOutcomes& after
   ) {
     report.orders_unbuildable_ = after.unbuildable_ - before.unbuildable_;
     report.orders_unconfirmed_timed_out_ = after.unconfirmed_timed_out_ - before.unconfirmed_timed_out_;
@@ -1065,7 +1071,6 @@ private:
   }
 
 public:
-
   /**
    * @brief Sets how old the holdings (and, for a runner that sends to a broker, the working-order
    *   listing) may be before placements are held (`PORTFOLIO_STALE`).
@@ -1115,7 +1120,9 @@ public:
    *
    * @param limit The longest wait.
    */
-  void set_closing_wait(std::chrono::nanoseconds limit) { closing_wait_ = limit; }
+  void set_closing_wait(std::chrono::nanoseconds limit) {
+    closing_wait_ = limit;
+  }
 
   /**
    * @brief Sets how long a serialized runner's order may stay owed with nobody able to account for it
@@ -1167,7 +1174,9 @@ public:
    *
    * @param limit The longest such an order may be owed; zero or negative never holds or stops for one.
    */
-  void set_owed_order_limit(std::chrono::nanoseconds limit) { owed_order_limit_ = limit; }
+  void set_owed_order_limit(std::chrono::nanoseconds limit) {
+    owed_order_limit_ = limit;
+  }
 
   /**
    * @brief Accepts holdings of any age, instead of stating a maximum.
@@ -1226,19 +1235,25 @@ public:
    * @brief Returns the session window.
    * @return The window.
    */
-  const strategy::SessionWindow& session_window() const noexcept { return session_window_; }
+  const strategy::SessionWindow& session_window() const noexcept {
+    return session_window_;
+  }
 
   /**
    * @brief Sets how many consecutive failures of one poll kind stop the loop.
    * @param policy The policy.
    */
-  void set_failure_policy(FailurePolicy policy) { failure_policy_ = std::move(policy); }
+  void set_failure_policy(FailurePolicy policy) {
+    failure_policy_ = std::move(policy);
+  }
 
   /**
    * @brief Sets the control file an operator writes a stop intent into.
    * @param channel The channel.
    */
-  void set_control_file(FileStopChannel channel) { control_ = std::move(channel); }
+  void set_control_file(FileStopChannel channel) {
+    control_ = std::move(channel);
+  }
 
   /**
    * @brief Runs until a stop is requested, a poll kind exhausts its failure budget, or
@@ -1363,13 +1378,10 @@ public:
     //
     // A healthy run that simply exhausted `max_iterations` never halted anything, so there is
     // nothing to leave behind in that case.
-    report.sends_outside_permitted_phase_ =
-      runner_->sends_outside_permitted_phase() - outside_phase_before;
+    report.sends_outside_permitted_phase_ = runner_->sends_outside_permitted_phase() - outside_phase_before;
     report.price_bands_withheld_ = runner_->price_bands_withheld() - bands_withheld_before;
-    report.unclamped_orders_rejected_ =
-      runner_->unclamped_orders_rejected() - unclamped_rejected_before;
-    report.unclamped_orders_refused_ =
-      runner_->unclamped_orders_refused() - unclamped_refused_before;
+    report.unclamped_orders_rejected_ = runner_->unclamped_orders_rejected() - unclamped_rejected_before;
+    report.unclamped_orders_refused_ = runner_->unclamped_orders_refused() - unclamped_refused_before;
     // Taken at the loop's exit for a run nothing stopped, and at the stop for one something did.
     if (!report.stopped_by_ && !report.abandoned_) {
       outcomes_after = instruction_outcomes();
@@ -1398,8 +1410,7 @@ public:
     // would have read as "nobody stated one", and a withdrawal made directly on the runner would
     // have been suppressed by this loop's memory of its own wrapper being called. One policy, one
     // place that answers for it.
-    if (report.price_bands_withheld_ > 0 && !runner_->price_limits_age_policy_stated() &&
-        !said_no_band_age_policy_) {
+    if (report.price_bands_withheld_ > 0 && !runner_->price_limits_age_policy_stated() && !said_no_band_age_policy_) {
       said_no_band_age_policy_ = true;
       report.notes_.emplace_back(
         "no price band age policy: call set_maximum_price_limits_age or "
@@ -1422,7 +1433,9 @@ public:
    * @brief Returns what the last iteration did.
    * @return The iteration report.
    */
-  const IterationReport& last() const noexcept { return last_; }
+  const IterationReport& last() const noexcept {
+    return last_;
+  }
 
 private:
   // Puts the sellable-convention probe's verdict in the report, when it reached one.
@@ -1440,8 +1453,7 @@ private:
       return;
     }
     report.notes_.push_back(
-      "broker's sellable figure appears " +
-      std::string(strategy::sellable_convention_name(evidence.verdict())) + " (" +
+      "broker's sellable figure appears " + std::string(strategy::sellable_convention_name(evidence.verdict())) + " (" +
       std::to_string(evidence.net_) + " net, " + std::to_string(evidence.gross_) + " gross)"
     );
   }
@@ -1467,7 +1479,8 @@ private:
       return;
     }
     report.notes_.push_back(
-      std::to_string(discarded) + " instruction(s) decided on bars fed as history were not sent: "
+      std::to_string(discarded) +
+      " instruction(s) decided on bars fed as history were not sent: "
       "only the newest bar of each instrument's read may send (poll bars no slower than their interval)"
     );
   }
@@ -1478,7 +1491,8 @@ private:
       const auto dropped = runner_->kept_intents_dropped() - kept_dropped_at_start_;
       if (dropped != 0) {
         report.notes_.push_back(
-          std::to_string(dropped) + " order intent(s) kept for the market phase were not sent at the "
+          std::to_string(dropped) +
+          " order intent(s) kept for the market phase were not sent at the "
           "open: the instrument's holding had changed since they were decided, or a stop now rested"
         );
       }
@@ -1611,8 +1625,7 @@ private:
       // `UNCHANGED` counts, because a listing that is identical to the last one is still a listing
       // -- but only on a source that publishes them at all, which `note_working_orders_read`
       // enforces: a broker without the inquiry answers `UNCHANGED` without asking anybody.
-      if (kind == PollKind::WORKING_ORDERS &&
-          (outcome == PollOutcome::UPDATED || outcome == PollOutcome::UNCHANGED)) {
+      if (kind == PollKind::WORKING_ORDERS && (outcome == PollOutcome::UPDATED || outcome == PollOutcome::UNCHANGED)) {
         note_working_orders_read(iteration.at_, placements_before_poll);
       }
       ++report.attempted_[static_cast<int>(kind)];
@@ -1739,9 +1752,11 @@ private:
       // `Runner::send_cancel` never consults the phase at all. Both still break the writer contract and
       // are worth reporting, so the note states the facts and names the check rather than the verdict.
       report.notes_.push_back(
-        "the " + what + " changed the market phase and sent a request in the same call; check whether "
+        "the " + what +
+        " changed the market phase and sent a request in the same call; check whether "
         "that request used the earlier phase. Only the calendar poll may write the trading calendar, "
-        "and it must not send");
+        "and it must not send"
+      );
     }
   }
 
@@ -1798,8 +1813,8 @@ private:
     if (unreadable == 0) {
       return {};
     }
-    return "; the broker sent " + std::to_string(unreadable) + " calendar row" +
-      (unreadable == 1 ? "" : "s") + " whose date could not be read";
+    return "; the broker sent " + std::to_string(unreadable) + " calendar row" + (unreadable == 1 ? "" : "s") +
+      " whose date could not be read";
   }
 
   // Says so when a run never established the phase, and names which of the three reasons applies.
@@ -1847,16 +1862,17 @@ private:
       // Named, not merely called uncovered. "The calendar does not cover today" sends a reader to
       // check a span they cannot see; the date is the one thing that turns this note into an action.
       const auto date = session_window_.local_date(last_.at_);
-      reason = "the calendar does not cover " + std::to_string(date.year_) + "-" +
-        std::to_string(date.month_) + "-" + std::to_string(date.day_);
+      reason = "the calendar does not cover " + std::to_string(date.year_) + "-" + std::to_string(date.month_) + "-" +
+        std::to_string(date.day_);
       reason += unreadable_calendar_rows();
     }
     report.notes_.push_back(
-      std::string(ever_known ?
-        "the market phase stopped being established (" :
-        "the market phase was never established (") +
+      std::string(
+        ever_known ? "the market phase stopped being established (" : "the market phase was never established ("
+      ) +
       reason + "); a guard permitting only known phases refused every placement opening a position" +
-      (ever_known ? " after that" : ""));
+      (ever_known ? " after that" : "")
+    );
   }
 
   // Attempts the startup order-list read once, and returns whether it succeeded.
@@ -1903,10 +1919,7 @@ private:
   // after them so the report is current. `may_read` is false on the second call so the order-list
   // read is attempted at most once per iteration.
   std::optional<strategy::HaltReason> gate_for(
-    StopSource& stop,
-    std::chrono::system_clock::time_point at,
-    LoopReport& report,
-    bool may_read
+    StopSource& stop, std::chrono::system_clock::time_point at, LoopReport& report, bool may_read
   ) {
     if (stop.requested()) {
       // **A withdraw or a flatten reads the broker's order list first, if it never has.** Each builds
@@ -1925,8 +1938,10 @@ private:
       // Once a stop is waiting, on the wait's own floor: a read that failed is not asked again at
       // every tick. The iteration that takes the stop up reads as any other.
       const bool on_the_floor = !closing_ || !asked_within_floor(PollKind::WORKING_ORDERS);
-      if (intent && stop_intent_closes(*intent) && !order_list_read_ && may_read && on_the_floor &&
-          !runner_->guard().halted(strategy::HaltReason::LOCAL_FAILURE)) {
+      if (
+        intent && stop_intent_closes(*intent) && !order_list_read_ && may_read && on_the_floor &&
+        !runner_->guard().halted(strategy::HaltReason::LOCAL_FAILURE)
+      ) {
         hold(strategy::HaltReason::STOPPING);
         read_order_list_once(at, report);
       }
@@ -2019,8 +2034,9 @@ private:
       }
       return strategy::HaltReason::PORTFOLIO_STALE;
     }
-    if (maximum_portfolio_age_ && as_of != std::chrono::system_clock::time_point{} &&
-        at - as_of > *maximum_portfolio_age_) {
+    if (
+      maximum_portfolio_age_ && as_of != std::chrono::system_clock::time_point{} && at - as_of > *maximum_portfolio_age_
+    ) {
       return strategy::HaltReason::PORTFOLIO_STALE;
     }
     // **A runner that keeps its orders until the broker accounts for them needs the listing.** A holdings
@@ -2059,15 +2075,12 @@ private:
   //
   // A source that names none falls back to "any reading at all", which is the most the loop can
   // check without knowing what was asked for.
-  std::optional<strategy::HaltReason> buying_power_unread(
-    std::chrono::system_clock::time_point at
-  ) const {
+  std::optional<strategy::HaltReason> buying_power_unread(std::chrono::system_clock::time_point at) const {
     const auto& readings = runner_->context().portfolio().buying_power_;
     // Aged against the reading's own stamp, for the same reason the portfolio is: a figure that
     // arrived an hour ago is an hour old however recently the poll succeeded.
     const auto usable = [&](const BuyingPower& reading) {
-      return !maximum_buying_power_age_ ||
-        at - reading.received_at_ <= *maximum_buying_power_age_;
+      return !maximum_buying_power_age_ || at - reading.received_at_ <= *maximum_buying_power_age_;
     };
     if constexpr (source_names_buying_power_currencies<Source>::value) {
       const auto& wanted = source_->buying_power_currencies();
@@ -2128,8 +2141,7 @@ private:
     if (!control_.unrecognized().empty()) {
       // Reported rather than guessed at, because picking the nearest intent would decide how much of
       // an operator's position to close on their behalf.
-      report.notes_.push_back(
-        "control file names no intent: '" + control_.unrecognized() + "'");
+      report.notes_.push_back("control file names no intent: '" + control_.unrecognized() + "'");
     }
   }
 
@@ -2143,7 +2155,8 @@ private:
         report.abandoned_ = true;
         report.abandoned_kind_ = kind;
         report.notes_.push_back(
-          std::string("gave up after repeated failures polling ") + std::string(poll_kind_name(kind)));
+          std::string("gave up after repeated failures polling ") + std::string(poll_kind_name(kind))
+        );
         hold(strategy::HaltReason::POLL_FAILING);
       }
       return;
@@ -2169,8 +2182,10 @@ private:
   void begin_stop(LoopReport& report) {
     closing_ = ClosingWait{};
     closing_->began_ = clock_.monotonic_now();
-    closing_->deadline_ = closing_->began_ + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-      closing_wait_ > std::chrono::nanoseconds::zero() ? closing_wait_ : std::chrono::nanoseconds::zero());
+    closing_->deadline_ = closing_->began_ +
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        closing_wait_ > std::chrono::nanoseconds::zero() ? closing_wait_ : std::chrono::nanoseconds::zero()
+      );
     hold(strategy::HaltReason::STOPPING);
     // Whenever the stop was requested -- before the iteration or during one of its polls -- nothing
     // retained before it is to be replayed after it, by this run or a resumed one. A target waiting on
@@ -2200,9 +2215,8 @@ private:
     // handler may state a target, `STOPPING` is held by then, and a plan that would have cancelled
     // something is withheld whole. Left out of this total, the loop would report that a parting
     // instruction met no resistance while the instruction never went anywhere.
-    report.stop_handler_refused_ = parting.refused_.size() + parting.refused_cancel_.size() +
-      parting.rejected_.size() + parting.withheld_.size() + parting.withheld_plans_.size() +
-      parting.unavailable_.size();
+    report.stop_handler_refused_ = parting.refused_.size() + parting.refused_cancel_.size() + parting.rejected_.size() +
+      parting.withheld_.size() + parting.withheld_plans_.size() + parting.unavailable_.size();
     report.stop_handler_sent_ = parting.would_place_.size() + parting.would_cancel_.size();
   }
 
@@ -2216,22 +2230,23 @@ private:
     runner_->clear_deferred_targets();
     report.stopped_by_ = intent;
     if (closing_) {
-      report.closing_waited_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        clock_.monotonic_now() - closing_->began_);
+      report.closing_waited_ =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(clock_.monotonic_now() - closing_->began_);
     }
     if (stop_intent_closes(intent)) {
       report.closing_interrupted_ = true;
       report.notes_.push_back(
         std::string("the run was abandoned for failing polls with a ") + std::string(stop_intent_name(intent)) +
         " pending: its closing pass did not run, nothing was withdrawn or closed by it, and the runner is"
-        " left unable to send; read the broker's order list and holdings");
+        " left unable to send; read the broker's order list and holdings"
+      );
     }
   }
 
   // Carries out `intent`, which is where the three stops actually differ.
   void finish_stop(StopIntent intent, LoopReport& report) {
-    report.closing_waited_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
-      clock_.monotonic_now() - closing_->began_);
+    report.closing_waited_ =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(clock_.monotonic_now() - closing_->began_);
     closing_->reads_wanted_ = false;
     if (!stop_intent_closes(intent)) {
       return;
@@ -2241,8 +2256,8 @@ private:
     // them. Settled here, under the hold, it is refused like the rest of what a strategy asks during a stop.
     {
       const auto stale = runner_->settle_closing();
-      report.stop_handler_refused_ += stale.refused_.size() + stale.refused_cancel_.size() +
-        stale.rejected_.size() + stale.withheld_.size() + stale.withheld_plans_.size() + stale.unavailable_.size();
+      report.stop_handler_refused_ += stale.refused_.size() + stale.refused_cancel_.size() + stale.rejected_.size() +
+        stale.withheld_.size() + stale.withheld_plans_.size() + stale.unavailable_.size();
       report.stop_handler_sent_ += stale.would_place_.size() + stale.would_cancel_.size();
     }
     // Nothing decided under the hold is kept, so this clears nothing today. It stands so that a change
@@ -2354,9 +2369,7 @@ private:
           continue;
         }
         const bool held_long = decimal_less(Decimal64{}, *net);
-        const auto magnitude = held_long ?
-          std::optional<Decimal64>(*net) :
-          decimal_subtract(Decimal64{}, *net);
+        const auto magnitude = held_long ? std::optional<Decimal64>(*net) : decimal_subtract(Decimal64{}, *net);
         if (!magnitude) {
           // **A representable net can have no representable magnitude**: two rows summing to the
           // most negative `Decimal64` have no positive counterpart, so the size of the buy that
@@ -2390,11 +2403,8 @@ private:
           continue;
         }
         runner_->context().submit(
-          strategy::OrderIntent::market(
-            position.instrument_,
-            closing_side,
-            strategy::SizeSpec::quantity(*sendable)
-          ).with_tag("stop-flatten")
+          strategy::OrderIntent::market(position.instrument_, closing_side, strategy::SizeSpec::quantity(*sendable))
+            .with_tag("stop-flatten")
         );
         ++report.flattened_;
       }
@@ -2438,8 +2448,7 @@ private:
     report.closing_refused_ = closing.refused_.size() + closing.refused_cancel_.size();
     // Whole plans too: a serialized runner withholds a closing order's plan while the instrument owes one.
     report.closing_withheld_ = closing.withheld_.size() + closing.withheld_plans_.size();
-    report.closing_indeterminate_ =
-      closing.indeterminate_.size() + closing.indeterminate_cancel_.size();
+    report.closing_indeterminate_ = closing.indeterminate_.size() + closing.indeterminate_cancel_.size();
     report.closing_unavailable_ = closing.unavailable_.size() + closing.unavailable_cancel_.size();
     report.closing_unresolved_ = closing.unresolved_cancel_.size();
 
@@ -2448,7 +2457,8 @@ private:
     if (!closing.refused_.empty() || !closing.refused_cancel_.empty()) {
       report.notes_.push_back(
         "a guard refused " + std::to_string(report.closing_refused_) +
-        " closing instruction(s); the position is still held");
+        " closing instruction(s); the position is still held"
+      );
     }
     if (!closing.rejected_.empty()) {
       // Deliberately does not name who decided. The bucket holds three things -- reconciliation
@@ -2457,25 +2467,28 @@ private:
       // three. The report's own entries carry which it was, on `RejectReason` for a placement and
       // on `by_broker_` for a cancellation.
       report.notes_.push_back(
-        std::to_string(closing.rejected_.size()) +
-        " closing instruction(s) were not placed; the position is still held");
+        std::to_string(closing.rejected_.size()) + " closing instruction(s) were not placed; the position is still held"
+      );
     }
     if (!closing.rejected_cancel_.empty()) {
       report.notes_.push_back(
         std::to_string(closing.rejected_cancel_.size()) +
-        " closing cancellation(s) were refused; read the broker's order list for their state");
+        " closing cancellation(s) were refused; read the broker's order list for their state"
+      );
     }
     if (report.closing_withheld_ != 0) {
       report.notes_.push_back(
         "withheld " + std::to_string(report.closing_withheld_) +
         " closing instruction(s) pending reconciliation, or until an earlier order is accounted for;"
-        " read the broker's order list");
+        " read the broker's order list"
+      );
     }
     if (report.closing_unconfirmed_ != 0) {
       report.notes_.push_back(
         std::to_string(report.closing_unconfirmed_) +
         " order(s) this runner sent were not yet accounted for by holdings or a listing, so the closing pass"
-        " could not withdraw or size around them; read the broker's order list and holdings");
+        " could not withdraw or size around them; read the broker's order list and holdings"
+      );
     }
     if (report.closing_wait_expired_) {
       report.notes_.push_back(
@@ -2483,23 +2496,27 @@ private:
         std::to_string(std::chrono::duration_cast<std::chrono::seconds>(report.closing_waited_).count()) +
         " s for holdings and the order list to account for this runner's orders, or for a marked"
         " instrument to be resolved, and that did not happen; the closing pass was built from what was in"
-        " hand (set_closing_wait)");
+        " hand (set_closing_wait)"
+      );
     }
     if (report.closing_indeterminate_ != 0) {
       report.notes_.push_back(
         std::to_string(report.closing_indeterminate_) +
-        " closing instruction(s) have an unknown outcome; read the broker's order list");
+        " closing instruction(s) have an unknown outcome; read the broker's order list"
+      );
     }
     if (report.closing_unavailable_ != 0) {
       report.notes_.push_back(
         "local machinery could not send " + std::to_string(report.closing_unavailable_) +
-        " closing instruction(s); no broker was asked and the position is still held");
+        " closing instruction(s); no broker was asked and the position is still held"
+      );
     }
     if (report.stop_handler_refused_ != 0) {
       report.notes_.push_back(
         "the strategy's on_stop asked for " + std::to_string(report.stop_handler_refused_) +
         " instruction(s) during the stop; none were sent, because an operator's stop is not a"
-        " moment for a strategy to trade");
+        " moment for a strategy to trade"
+      );
     }
     if (report.closing_contended_ != 0) {
       report.notes_.push_back(
@@ -2509,7 +2526,8 @@ private:
             " still held and the withdrawals above are all that went" :
           std::to_string(report.closing_contended_) +
             " position(s) were closed only for the part no working order was already selling or"
-            " buying; if those withdrawals succeed, part of the position is still held");
+            " buying; if those withdrawals succeed, part of the position is still held"
+      );
     }
     if (report.closing_unsizable_ != 0) {
       // **Names both inputs, because the three causes do not share one.** Two of them are the
@@ -2524,18 +2542,21 @@ private:
         "no closing order could be sized for " + std::to_string(report.closing_unsizable_) +
         " position(s): the holdings quantities would not add up or fit, or could not be combined"
         " with what is already working on the closing side; nothing was sent for them and they are"
-        " still held");
+        " still held"
+      );
     }
     if (report.closing_source_unverified_) {
       report.notes_.push_back(
         std::string("the stop could not verify what was outstanding: ") + unverified_source_reason() +
-        "; orders or positions a previous process left may remain");
+        "; orders or positions a previous process left may remain"
+      );
     }
     if (report.closing_unresolved_ != 0) {
       report.notes_.push_back(
         std::to_string(report.closing_unresolved_) +
         " closing cancellation(s) named an order the portfolio does not hold; read the broker's"
-        " order list");
+        " order list"
+      );
     }
   }
 
@@ -2567,31 +2588,37 @@ private:
 
   // Says what is missing for a runner that keeps its sent orders until the broker accounts for them, as a
   // note bit and the note, or nothing when the listing is in hand.
-  std::optional<std::pair<unsigned, std::string>> listing_missing(
-    std::chrono::system_clock::time_point at
-  ) const {
+  std::optional<std::pair<unsigned, std::string>> listing_missing(std::chrono::system_clock::time_point at) const {
     if constexpr (!source_provides_working_orders<Source>::value) {
       (void)at;
-      return std::make_pair(1u, std::string(
-        "this runner keeps the orders it sends until a working-order listing or holdings account for "
-        "them, and the source publishes no listing: placing holds (declare provides_working_orders and "
-        "poll the listing)"
-      ));
+      return std::make_pair(
+        1u,
+        std::string(
+          "this runner keeps the orders it sends until a working-order listing or holdings account for "
+          "them, and the source publishes no listing: placing holds (declare provides_working_orders and "
+          "poll the listing)"
+        )
+      );
     } else {
       if (!schedule_.working_orders_) {
-        return std::make_pair(2u, std::string(
-          "no working-order cadence: this runner keeps the orders it sends until a working-order "
-          "listing or holdings account for them, so placing holds until PollSchedule::working_orders_ "
-          "is set"
-        ));
+        return std::make_pair(
+          2u,
+          std::string(
+            "no working-order cadence: this runner keeps the orders it sends until a working-order "
+            "listing or holdings account for them, so placing holds until PollSchedule::working_orders_ "
+            "is set"
+          )
+        );
       }
-      if (maximum_portfolio_age_ && working_orders_at_ &&
-          at - *working_orders_at_ > *maximum_portfolio_age_) {
-        return std::make_pair(4u, std::string(
-          "working-order listing older than the portfolio age policy: poll working orders "
-          "(PollSchedule::working_orders_) more often than that age, by at least a tick; placing "
-          "holds until it is read"
-        ));
+      if (maximum_portfolio_age_ && working_orders_at_ && at - *working_orders_at_ > *maximum_portfolio_age_) {
+        return std::make_pair(
+          4u,
+          std::string(
+            "working-order listing older than the portfolio age policy: poll working orders "
+            "(PollSchedule::working_orders_) more often than that age, by at least a tick; placing "
+            "holds until it is read"
+          )
+        );
       }
       return std::nullopt;
     }
@@ -2658,8 +2685,10 @@ private:
       return false;
     }
     // Under a person's hold or the runner's own, the pass can send nothing whatever the reads show.
-    if (runner_->guard().halted(strategy::HaltReason::OPERATOR) ||
-        runner_->guard().halted(strategy::HaltReason::LOCAL_FAILURE)) {
+    if (
+      runner_->guard().halted(strategy::HaltReason::OPERATOR) ||
+      runner_->guard().halted(strategy::HaltReason::LOCAL_FAILURE)
+    ) {
       return false;
     }
     const auto monotonic = clock_.monotonic_now();
@@ -2689,8 +2718,10 @@ private:
     const auto& portfolio = runner_->context().portfolio();
     for (const auto& position : portfolio.positions_) {
       const auto net = portfolio.net_quantity_of(position.instrument_);
-      if ((!net || net->coefficient() != 0) && runner_->ledger().requires_reconcile(position.instrument_) &&
-          !obligation_needs_operator(runner_->obligation_state(position.instrument_))) {
+      if (
+        (!net || net->coefficient() != 0) && runner_->ledger().requires_reconcile(position.instrument_) &&
+        !obligation_needs_operator(runner_->obligation_state(position.instrument_))
+      ) {
         return true;
       }
     }
@@ -2784,9 +2815,7 @@ private:
   // Does nothing when the source does not publish working orders, so a stop on such a broker stays
   // unverified rather than being told a history read or a no-op poll refreshed a listing it never
   // built.
-  void note_working_orders_read(
-    std::chrono::system_clock::time_point at, std::size_t placements_before_poll
-  ) {
+  void note_working_orders_read(std::chrono::system_clock::time_point at, std::size_t placements_before_poll) {
     if constexpr (source_provides_working_orders<Source>::value) {
       working_orders_at_ = at;
       order_list_at_ = at;
@@ -2817,8 +2846,7 @@ private:
     if (runner_->context().portfolio().listing_newer_than_holdings()) {
       return "the holdings were read before the working orders, so a fill between them is in neither";
     }
-    if (maximum_portfolio_age_ &&
-        clock_.now() - *working_orders_at_ > *maximum_portfolio_age_) {
+    if (maximum_portfolio_age_ && clock_.now() - *working_orders_at_ > *maximum_portfolio_age_) {
       return "the working orders were read longer ago than the configured maximum";
     }
     return "the holdings snapshot is older than the configured maximum";
@@ -2829,8 +2857,7 @@ private:
     // A waiting stop reads the two closing kinds on its own floor, whatever their cadence (a disabled
     // one included), and nothing reads them faster than that meanwhile. The iteration that takes the
     // stop up is not waiting yet: it reads as any other.
-    if (closing_ && closing_->reads_wanted_ &&
-        (kind == PollKind::WORKING_ORDERS || kind == PollKind::HOLDINGS)) {
+    if (closing_ && closing_->reads_wanted_ && (kind == PollKind::WORKING_ORDERS || kind == PollKind::HOLDINGS)) {
       return closing_read_due(kind);
     }
     const auto interval = schedule_.interval_for(kind);
@@ -2847,8 +2874,7 @@ private:
     if (!interval) {
       return;
     }
-    next_due_[static_cast<int>(kind)] =
-      at + std::chrono::duration_cast<std::chrono::system_clock::duration>(*interval);
+    next_due_[static_cast<int>(kind)] = at + std::chrono::duration_cast<std::chrono::system_clock::duration>(*interval);
   }
 
   // Returns how long to wait before the next iteration.
@@ -2863,8 +2889,7 @@ private:
       if (!due) {
         continue;
       }
-      const auto remaining =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(*due - at);
+      const auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(*due - at);
       if (remaining < wait) {
         wait = remaining;
       }

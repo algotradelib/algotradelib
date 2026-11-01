@@ -42,8 +42,8 @@ using algotradelib::Venue;
 namespace analytics = algotradelib::analytics;
 namespace math = algotradelib::math;
 
-using analytics::Scalar;
 using analytics::observed;
+using analytics::Scalar;
 
 /** @brief Prints a scalar, or a dash where there is no observation. */
 std::string cell(Scalar value) {
@@ -66,19 +66,70 @@ BarSeries fixture() {
   // Written as the strings a broker actually sends, so the conversion boundary is
   // exercised on real decimal text rather than on doubles dressed up as decimals.
   static constexpr const char* closes[] = {
-    "70000", "70800", "70200", "71500", "72300", "71900", "73100", "74000", "73400",
-    "72600", "71800", "72500", "73900", "75200", "74800", "76100", "77000", "76200",
-    "75400", "74100",
+    "70000",
+    "70800",
+    "70200",
+    "71500",
+    "72300",
+    "71900",
+    "73100",
+    "74000",
+    "73400",
+    "72600",
+    "71800",
+    "72500",
+    "73900",
+    "75200",
+    "74800",
+    "76100",
+    "77000",
+    "76200",
+    "75400",
+    "74100",
   };
   static constexpr const char* highs[] = {
-    "70500", "71300", "70700", "72000", "72800", "72400", "73600", "74500", "73900",
-    "73100", "72300", "73000", "74400", "75700", "75300", "76600", "77500", "76700",
-    "75900", "74600",
+    "70500",
+    "71300",
+    "70700",
+    "72000",
+    "72800",
+    "72400",
+    "73600",
+    "74500",
+    "73900",
+    "73100",
+    "72300",
+    "73000",
+    "74400",
+    "75700",
+    "75300",
+    "76600",
+    "77500",
+    "76700",
+    "75900",
+    "74600",
   };
   static constexpr const char* lows[] = {
-    "69400", "70200", "69600", "70900", "71700", "71300", "72500", "73400", "72800",
-    "72000", "71200", "71900", "73300", "74600", "74200", "75500", "76400", "75600",
-    "74800", "73500",
+    "69400",
+    "70200",
+    "69600",
+    "70900",
+    "71700",
+    "71300",
+    "72500",
+    "73400",
+    "72800",
+    "72000",
+    "71200",
+    "71900",
+    "73300",
+    "74600",
+    "74200",
+    "75500",
+    "76400",
+    "75600",
+    "74800",
+    "73500",
   };
 
   BarSeries series;
@@ -125,46 +176,41 @@ int main() {
   const math::Vector spread = analytics::rolling_stdev(close, 5);
   const math::Vector period_returns = analytics::returns(close);
 
-  std::cout << bars.instrument_.symbol_ << ", " << bars.bars_.size()
-            << " daily bars, no network\n\n";
+  std::cout << bars.instrument_.symbol_ << ", " << bars.bars_.size() << " daily bars, no network\n\n";
   std::cout << "row   close     open     sma5     ema5     rsi5    zscore   stdev5   return\n";
   for (math::Index row = 0; row < close.size(); ++row) {
-    std::cout << std::setw(3) << row << " " << cell(close[row]) << " "
-              << cell(open[row]) << " " << cell(average[row]) << " "
-              << cell(smoothed[row]) << " " << cell(strength[row]) << " "
-              << cell(score[row]) << " " << cell(spread[row]) << " "
-              << cell(period_returns[row] * 100.0) << "\n";
+    std::cout
+      << std::setw(3) << row << " " << cell(close[row]) << " " << cell(open[row]) << " " << cell(average[row]) << " "
+      << cell(smoothed[row]) << " " << cell(strength[row]) << " " << cell(score[row]) << " " << cell(spread[row]) << " "
+      << cell(period_returns[row] * 100.0) << "\n";
   }
 
   // Row 3 has no open. Notice it is a dash above rather than a zero, and that the
   // indicators over the close column are unaffected by it.
-  std::cout << "\nThe dashes are the point. A window reports nothing until it holds "
-            << "enough\nobservations, and row 3 has no open at all.\n";
+  std::cout
+    << "\nThe dashes are the point. A window reports nothing until it holds "
+    << "enough\nobservations, and row 3 has no open at all.\n";
 
   // A window as long as the series is the whole series. Row 0 has no return, so one fewer
   // observation is demanded than there are rows.
   const auto rows = static_cast<std::size_t>(close.size());
   const auto last = close.size() - 1;
-  std::cout << "\nOver the whole series:\n"
-            << "  mean daily return     " << std::fixed << std::setprecision(4)
-            << analytics::rolling_mean(period_returns, rows, rows - 1)[last] * 100.0 << " %\n"
-            << "  daily volatility      "
-            << analytics::rolling_stdev(period_returns, rows, rows - 1)[last] * 100.0 << " %\n"
-            << "  per-period Sharpe     " << analytics::sharpe(period_returns) << "\n"
-            << "  annualized Sharpe     "
-            << analytics::annualize_ratio(analytics::sharpe(period_returns), 245.0) << "\n"
-            << "  worst drawdown        "
-            << analytics::max_drawdown(close).magnitude_ * 100.0 << " %\n";
+  std::cout
+    << "\nOver the whole series:\n"
+    << "  mean daily return     " << std::fixed << std::setprecision(4)
+    << analytics::rolling_mean(period_returns, rows, rows - 1)[last] * 100.0 << " %\n"
+    << "  daily volatility      " << analytics::rolling_stdev(period_returns, rows, rows - 1)[last] * 100.0 << " %\n"
+    << "  per-period Sharpe     " << analytics::sharpe(period_returns) << "\n"
+    << "  annualized Sharpe     " << analytics::annualize_ratio(analytics::sharpe(period_returns), 245.0) << "\n"
+    << "  worst drawdown        " << analytics::max_drawdown(close).magnitude_ * 100.0 << " %\n";
 
   // The one sanctioned route back to something a broker will accept. Two deviations above the
   // average is a computed scalar; an order needs an exact decimal on the instrument's own tick grid.
-  const auto rule =
-    algotradelib::price_rule_for(bars.instrument_.country_, SecurityType::STOCK);
-  const auto limit = analytics::round_scalar_to_tick(
-    average[last] + 2.0 * spread[last], rule, OrderSide::SELL
-  );
-  std::cout << "\nA sell limit two deviations above the average, rounded onto the KRX tick grid: "
-            << (limit ? limit->str() : std::string("refused")) << "\n";
+  const auto rule = algotradelib::price_rule_for(bars.instrument_.country_, SecurityType::STOCK);
+  const auto limit = analytics::round_scalar_to_tick(average[last] + 2.0 * spread[last], rule, OrderSide::SELL);
+  std::cout
+    << "\nA sell limit two deviations above the average, rounded onto the KRX tick grid: "
+    << (limit ? limit->str() : std::string("refused")) << "\n";
 
   return 0;
 }

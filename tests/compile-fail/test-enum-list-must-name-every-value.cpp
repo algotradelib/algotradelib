@@ -33,7 +33,12 @@ constexpr std::string_view probe_name(Probe value) noexcept {
 inline constexpr std::array<Probe, 2> probe_values{Probe::FIRST, Probe::SECOND};
 
 static_assert(
-  algotradelib::lists_every_value(probe_values, [](Probe value) { return !probe_name(value).empty(); }),
+  algotradelib::lists_every_value(
+    probe_values,
+    [](Probe value) {
+      return !probe_name(value).empty();
+    }
+  ),
   "probe_values must list every Probe"
 );
 

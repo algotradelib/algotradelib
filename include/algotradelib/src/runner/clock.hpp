@@ -69,19 +69,25 @@ public:
    * @brief Returns the referenced clock's wall-clock time.
    * @return Its `now()`.
    */
-  std::chrono::system_clock::time_point now() const { return clock_->now(); }
+  std::chrono::system_clock::time_point now() const {
+    return clock_->now();
+  }
 
   /**
    * @brief Returns the referenced clock's monotonic reading.
    * @return Its `monotonic_now()`.
    */
-  std::chrono::steady_clock::time_point monotonic_now() const { return clock_->monotonic_now(); }
+  std::chrono::steady_clock::time_point monotonic_now() const {
+    return clock_->monotonic_now();
+  }
 
   /**
    * @brief Waits on the referenced clock.
    * @param duration How long.
    */
-  void wait_for(std::chrono::nanoseconds duration) { clock_->wait_for(duration); }
+  void wait_for(std::chrono::nanoseconds duration) {
+    clock_->wait_for(duration);
+  }
 
 private:
   Clock* clock_;
@@ -105,13 +111,17 @@ public:
    * @brief Returns the current time.
    * @return The time the clock has been advanced to.
    */
-  std::chrono::system_clock::time_point now() const noexcept { return now_; }
+  std::chrono::system_clock::time_point now() const noexcept {
+    return now_;
+  }
 
   /**
    * @brief Returns the monotonic reading: how far `wait_for` and `advance` have moved the clock.
    * @return The reading; `jump` does not move it.
    */
-  std::chrono::steady_clock::time_point monotonic_now() const noexcept { return monotonic_; }
+  std::chrono::steady_clock::time_point monotonic_now() const noexcept {
+    return monotonic_;
+  }
 
   /**
    * @brief Advances the clock by a duration instead of waiting, and counts the wait.
@@ -149,13 +159,17 @@ public:
    * @brief Returns how many times `wait_for` was called.
    * @return The count.
    */
-  std::size_t waits() const noexcept { return waits_; }
+  std::size_t waits() const noexcept {
+    return waits_;
+  }
 
   /**
    * @brief Returns the total positive duration passed to `wait_for`.
    * @return The sum.
    */
-  std::chrono::nanoseconds waited() const noexcept { return waited_; }
+  std::chrono::nanoseconds waited() const noexcept {
+    return waited_;
+  }
 
 private:
   std::chrono::system_clock::time_point now_;

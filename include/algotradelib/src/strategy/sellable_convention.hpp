@@ -82,7 +82,9 @@ struct SellableEvidence {
    * @brief Returns the number of observations.
    * @return `net_ + gross_`.
    */
-  std::size_t total() const noexcept { return net_ + gross_; }
+  std::size_t total() const noexcept {
+    return net_ + gross_;
+  }
 };
 
 /**
@@ -187,7 +189,9 @@ public:
    * @brief Returns the broker's convention as observed so far.
    * @return `overall().verdict()`.
    */
-  SellableConvention verdict() const { return overall().verdict(); }
+  SellableConvention verdict() const {
+    return overall().verdict();
+  }
 
   /**
    * @brief Returns the evidence per instrument.
@@ -205,22 +209,16 @@ private:
   // them here would be circular: the resting quantity would rise with no change in the broker's
   // sellable figure, and the probe would record `GROSS_OF_RESTING` on evidence it manufactured
   // itself -- every time, for any broker, whenever the sellable check happened to be enabled.
-  static Decimal64 reported_resting(
-    const Portfolio<Broker>& portfolio,
-    const InstrumentId& instrument
-  ) {
+  static Decimal64 reported_resting(const Portfolio<Broker>& portfolio, const InstrumentId& instrument) {
     Decimal64 total = Decimal64::parse("0");
     for (const auto& order : portfolio.working_) {
-      if (order.reserved_ || !(order.order_.instrument_ == instrument) ||
-          order.order_.side_ != OrderSide::SELL) {
+      if (order.reserved_ || !(order.order_.instrument_ == instrument) || order.order_.side_ != OrderSide::SELL) {
         continue;
       }
       if (!order_is_open(order.order_.status_)) {
         continue;
       }
-      const auto remaining = decimal_subtract(
-        order.order_.quantity_, order.order_.execution_.filled_quantity_
-      );
+      const auto remaining = decimal_subtract(order.order_.quantity_, order.order_.execution_.filled_quantity_);
       if (!remaining || decimal_less(*remaining, Decimal64::parse("0"))) {
         continue;
       }
@@ -281,8 +279,7 @@ private:
 
   // Returns the entry for `instrument`, or null.
   template <typename Entries>
-  static auto find(Entries& entries, const InstrumentId& instrument)
-    -> decltype(&entries.front().second) {
+  static auto find(Entries& entries, const InstrumentId& instrument) -> decltype(&entries.front().second) {
     for (auto& entry : entries) {
       if (entry.first == instrument) {
         return &entry.second;

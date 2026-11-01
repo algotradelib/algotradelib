@@ -72,21 +72,19 @@ namespace strategy_detail {
  * **A `final` class cannot be derived from**, and a non-class type has no members, so neither can be
  * looked into; `dispatch` and `StrategyConformance` refuse both rather than read them as declaring nothing.
  */
-#define ATL_DETECT_DECLARED(NAME)                                                        \
-  struct NAME##_fallback {                                                               \
-    int NAME;                                                                            \
-  };                                                                                     \
-  template <typename S>                                                                  \
-  struct NAME##_probe : S, NAME##_fallback {};                                           \
-  template <typename S, typename = void>                                                 \
-  struct NAME##_is_ambiguous : std::true_type {};                                        \
-  template <typename S>                                                                  \
-  struct NAME##_is_ambiguous<S, std::void_t<decltype(&NAME##_probe<S>::NAME)>>           \
-  : std::false_type {};                                                                  \
-  template <typename S>                                                                  \
-  constexpr bool declares_##NAME = std::conjunction_v<                                   \
-    std::is_class<S>, std::negation<std::is_final<S>>, NAME##_is_ambiguous<S>            \
-  >
+#define ATL_DETECT_DECLARED(NAME) \
+  struct NAME##_fallback { \
+    int NAME; \
+  }; \
+  template <typename S> \
+  struct NAME##_probe : S, NAME##_fallback {}; \
+  template <typename S, typename = void> \
+  struct NAME##_is_ambiguous : std::true_type {}; \
+  template <typename S> \
+  struct NAME##_is_ambiguous<S, std::void_t<decltype(&NAME##_probe<S>::NAME)>> : std::false_type {}; \
+  template <typename S> \
+  constexpr bool declares_##NAME = \
+    std::conjunction_v<std::is_class<S>, std::negation<std::is_final<S>>, NAME##_is_ambiguous<S>>
 
 ATL_DETECT_DECLARED(on_start);
 ATL_DETECT_DECLARED(on_stop);
@@ -109,9 +107,9 @@ struct names_static_bool_reads_bar_history<
   S, std::void_t<decltype(S::reads_bar_history), decltype(&S::reads_bar_history)>
 >
 : std::bool_constant<
-  std::is_same_v<decltype(S::reads_bar_history), const bool> &&
-  std::is_same_v<decltype(&S::reads_bar_history), const bool*>
-> {};
+    std::is_same_v<decltype(S::reads_bar_history), const bool> &&
+    std::is_same_v<decltype(&S::reads_bar_history), const bool*>
+  > {};
 
 template <typename S, bool Declared = declares_reads_bar_history<S>>
 struct bar_history_policy {
@@ -138,8 +136,8 @@ constexpr bool reads_bar_history = bar_history_policy<S>::value;
 /** Whether `S` declares any handler at all. */
 template <typename S>
 constexpr bool declares_any_handler =
-  declares_on_start<S> || declares_on_stop<S> || declares_on_bar<S> || declares_on_bars<S> ||
-  declares_on_quote<S> || declares_on_fill<S> || declares_on_order_update<S> || declares_on_phase<S>;
+  declares_on_start<S> || declares_on_stop<S> || declares_on_bar<S> || declares_on_bars<S> || declares_on_quote<S> ||
+  declares_on_fill<S> || declares_on_order_update<S> || declares_on_phase<S>;
 
 /** Whether `S`'s handler names can be looked up: a class, and not `final`. */
 template <typename S>
@@ -362,8 +360,8 @@ namespace strategy_detail {
 /** Makes every call a runner makes to `S` with context `Ctx`. Compiled by `StrategyConformance`, never run. */
 template <typename S, typename Ctx>
 void call_every_handler(
-  S& strategy, Ctx& context, const BarEvent& bar, const BarSlice& slice, const QuoteEvent& quote,
-  const Fill& fill, const OrderSnapshot& order, const MarketPhase& phase
+  S& strategy, Ctx& context, const BarEvent& bar, const BarSlice& slice, const QuoteEvent& quote, const Fill& fill,
+  const OrderSnapshot& order, const MarketPhase& phase
 ) {
   dispatch::start(strategy, context);
   dispatch::stop(strategy, context);
@@ -459,7 +457,9 @@ struct NoCaps {
    * @brief Tests whether the broker serves bars of an interval (the unnamed argument).
    * @return `false` for every interval.
    */
-  static constexpr bool supports_interval(BarInterval) { return false; }
+  static constexpr bool supports_interval(BarInterval) {
+    return false;
+  }
 };
 
 /** @brief A capability set in which the broker implements everything optional. */
@@ -526,7 +526,9 @@ struct AllCaps {
    * @brief Tests whether the broker serves bars of an interval (the unnamed argument).
    * @return `true` for every interval.
    */
-  static constexpr bool supports_interval(BarInterval) { return true; }
+  static constexpr bool supports_interval(BarInterval) {
+    return true;
+  }
 };
 
 /** @brief The broker tag of a probe context; nothing it issues reaches a market. */
@@ -580,12 +582,16 @@ public:
      * @brief Records one line.
      * @param message The line.
      */
-    void note(std::string_view message) { lines_.emplace_back(message); }
+    void note(std::string_view message) {
+      lines_.emplace_back(message);
+    }
     /**
      * @brief Returns the recorded lines.
      * @return The lines, in order.
      */
-    const std::vector<std::string>& lines() const noexcept { return lines_; }
+    const std::vector<std::string>& lines() const noexcept {
+      return lines_;
+    }
 
   private:
     std::vector<std::string> lines_;
@@ -595,25 +601,33 @@ public:
    * @brief Returns the current instant.
    * @return `now_`.
    */
-  std::chrono::system_clock::time_point now() const noexcept { return now_; }
+  std::chrono::system_clock::time_point now() const noexcept {
+    return now_;
+  }
 
   /**
    * @brief Returns the market phase.
    * @return `phase_`.
    */
-  MarketPhase phase() const noexcept { return phase_; }
+  MarketPhase phase() const noexcept {
+    return phase_;
+  }
 
   /**
    * @brief Returns the trading calendar.
    * @return `calendar_`.
    */
-  const TradingCalendar& calendar() const noexcept { return calendar_; }
+  const TradingCalendar& calendar() const noexcept {
+    return calendar_;
+  }
 
   /**
    * @brief Returns the portfolio.
    * @return `portfolio_`.
    */
-  const Portfolio<ProbeBroker>& portfolio() const noexcept { return portfolio_; }
+  const Portfolio<ProbeBroker>& portfolio() const noexcept {
+    return portfolio_;
+  }
 
   /**
    * @brief Looks up an instrument's reference data in `instruments_`.
@@ -634,13 +648,17 @@ public:
    * @brief Records an order intent.
    * @param intent The intent, appended to `submitted()`.
    */
-  void submit(OrderIntent intent) { submitted_.push_back(std::move(intent)); }
+  void submit(OrderIntent intent) {
+    submitted_.push_back(std::move(intent));
+  }
 
   /**
    * @brief Records a target position.
    * @param target The target, appended to `targets()`.
    */
-  void submit(TargetPosition target) { targets_.push_back(std::move(target)); }
+  void submit(TargetPosition target) {
+    targets_.push_back(std::move(target));
+  }
 
   /**
    * @brief Records a cancellation.
@@ -654,23 +672,31 @@ public:
    * @brief Returns the log.
    * @return The recording log.
    */
-  Log& log() noexcept { return log_; }
+  Log& log() noexcept {
+    return log_;
+  }
 
   /**
    * @brief Returns the order intents submitted.
    * @return The intents, in order.
    */
-  const std::vector<OrderIntent>& submitted() const noexcept { return submitted_; }
+  const std::vector<OrderIntent>& submitted() const noexcept {
+    return submitted_;
+  }
   /**
    * @brief Returns the target positions submitted.
    * @return The targets, in order.
    */
-  const std::vector<TargetPosition>& targets() const noexcept { return targets_; }
+  const std::vector<TargetPosition>& targets() const noexcept {
+    return targets_;
+  }
   /**
    * @brief Returns the cancellations requested.
    * @return The cancellations, in order.
    */
-  const std::vector<CancelIntent<ProbeBroker>>& canceled() const noexcept { return canceled_; }
+  const std::vector<CancelIntent<ProbeBroker>>& canceled() const noexcept {
+    return canceled_;
+  }
 
   /** @brief The instant `now()` returns. */
   std::chrono::system_clock::time_point now_{};
@@ -755,9 +781,9 @@ struct StrategyConformance {
  * @param Ctx The context type.
  * @note Not detected: a handler that takes by value a copyable base class of the context.
  */
-#define ATL_ASSERT_STRATEGY(S, Ctx)                                                      \
-  static_assert(                                                                         \
-    ::algotradelib::strategy::StrategyConformance<S, Ctx>::value,                         \
+#define ATL_ASSERT_STRATEGY(S, Ctx) \
+  static_assert( \
+    ::algotradelib::strategy::StrategyConformance<S, Ctx>::value, \
     "Strategy does not satisfy the algotradelib strategy surface; see the messages above" \
   )
 

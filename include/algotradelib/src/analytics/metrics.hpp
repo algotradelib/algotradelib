@@ -129,8 +129,7 @@ inline Scalar sharpe(math::SeriesView period_returns, Scalar risk_free = Scalar{
   if (summary.count_ < 2) {
     return missing();
   }
-  const Scalar deviation =
-    std::sqrt(summary.squared_ / static_cast<Scalar>(summary.count_ - 1));
+  const Scalar deviation = std::sqrt(summary.squared_ / static_cast<Scalar>(summary.count_ - 1));
   if (deviation == Scalar{0} || summary.constant_) {
     // Returns were present and never varied. `undefined()` rather than `missing()`, because a
     // caller ranking strategies should be able to tell this from "not enough history".

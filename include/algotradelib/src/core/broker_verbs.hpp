@@ -66,7 +66,9 @@ struct MoveOnlyCallback {
  * @brief Returns the placeholder instrument the checks call operations with.
  * @return An arbitrary instrument; nothing runs.
  */
-inline InstrumentId probe_instrument() { return InstrumentId{Country::KR, Venue::COMBINED, "000000"}; }
+inline InstrumentId probe_instrument() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "000000"};
+}
 
 /**
  * @brief Calls every operation an asynchronous session's capabilities claim; compiled, never run.
@@ -76,9 +78,7 @@ inline InstrumentId probe_instrument() { return InstrumentId{Country::KR, Venue:
  * @param ref An order reference.
  */
 template <typename Client, typename Token>
-void call_claimed_async_verbs(
-  BrokerSession<Client>& session, const typename BrokerSession<Client>::Ref& ref
-) {
+void call_claimed_async_verbs(BrokerSession<Client>& session, const typename BrokerSession<Client>::Ref& ref) {
   using Caps = BrokerCaps<Client>;
   session.async_quote(probe_instrument(), Token{});
   session.async_holdings(Token{});
@@ -132,9 +132,7 @@ void call_claimed_async_verbs(
  * @param ref An order reference.
  */
 template <typename Client>
-void call_claimed_blocking_verbs(
-  BlockingSession<Client>& session, const typename BlockingSession<Client>::Ref& ref
-) {
+void call_claimed_blocking_verbs(BlockingSession<Client>& session, const typename BlockingSession<Client>::Ref& ref) {
   using Caps = BrokerCaps<Client>;
   static_cast<void>(session.quote(probe_instrument()));
   static_cast<void>(session.holdings());
@@ -210,12 +208,12 @@ constexpr bool claimed_verbs_compile() {
  *
  * @param Client The broker client type.
  */
-#define ATL_ASSERT_BROKER(Client)                                                        \
-  static_assert(                                                                         \
-    ::algotradelib::conformance::claimed_verbs_compile<Client>() &&                      \
-      ::algotradelib::answers_every_capability<Client>(),                                \
+#define ATL_ASSERT_BROKER(Client) \
+  static_assert( \
+    ::algotradelib::conformance::claimed_verbs_compile<Client>() && \
+      ::algotradelib::answers_every_capability<Client>(), \
     "every port verb this client's capabilities claim must compile, and every capability " \
-    "must be answered"                                                                   \
+    "must be answered" \
   )
 
 } // namespace algotradelib

@@ -11,8 +11,8 @@
 #include <boost/asio/ssl/context.hpp>
 
 #include <exception>
-#include <memory>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -27,8 +27,7 @@ std::string mask_account_number(std::string_view account_number) {
   if (account_number.size() <= 4) {
     return std::string(account_number.size(), '*');
   }
-  return std::string(account_number.size() - 4, '*') +
-    std::string(account_number.substr(account_number.size() - 4));
+  return std::string(account_number.size() - 4, '*') + std::string(account_number.substr(account_number.size() - 4));
 }
 
 } // namespace
@@ -65,8 +64,7 @@ int main(int argc, char** argv) {
     );
 
     static_assert(
-      BrokerCaps<KiwoomBlockingClient>::has_account_discovery,
-      "Kiwoom publishes the account its credential drives"
+      BrokerCaps<KiwoomBlockingClient>::has_account_discovery, "Kiwoom publishes the account its credential drives"
     );
     const auto accounts = session.accounts();
     if (!accounts) {
@@ -95,8 +93,7 @@ int main(int argc, char** argv) {
     }
     std::cout << "holdings as Kiwoom reported them for one venue:\n";
     for (const auto& position : holdings.value().positions_) {
-      std::cout << position.instrument_.symbol_ << ' ' << position.name_ << ' '
-        << position.quantity_.str();
+      std::cout << position.instrument_.symbol_ << ' ' << position.name_ << ' ' << position.quantity_.str();
       if (position.sellable_quantity_) {
         std::cout << " (sellable " << position.sellable_quantity_->str() << ')';
       }
@@ -110,8 +107,8 @@ int main(int argc, char** argv) {
     }
     // The credit-free figure. Kiwoom's 주문가능금액 is larger and includes what margin and 대용금
     // allow, which is why it is not what this reports; read it from `client().deposit()`.
-    std::cout << "spendable: " << budget.value().cash_.amount_.str() << ' '
-      << budget.value().cash_.currency_.str() << '\n';
+    std::cout
+      << "spendable: " << budget.value().cash_.amount_.str() << ' ' << budget.value().cash_.currency_.str() << '\n';
     return 0;
   } catch (const std::exception& exception) {
     std::cerr << "example failed: " << exception.what() << '\n';

@@ -36,33 +36,23 @@ struct KiwoomClientTestAccess {
   }
 
   static Result<QuoteSnapshot> quote(InstrumentId instrument, network::HttpResponse response) {
-    return KiwoomClient::parse_quote(
-      std::move(instrument), Result<network::HttpResponse>(std::move(response))
-    );
+    return KiwoomClient::parse_quote(std::move(instrument), Result<network::HttpResponse>(std::move(response)));
   }
 
   static Result<PriceLimits> price_limits(network::HttpResponse response) {
-    return KiwoomClient::parse_price_limits(
-      InstrumentId{}, Result<network::HttpResponse>(std::move(response))
-    );
+    return KiwoomClient::parse_price_limits(InstrumentId{}, Result<network::HttpResponse>(std::move(response)));
   }
 
   static Result<DepthSnapshot> depth(InstrumentId instrument, network::HttpResponse response) {
-    return KiwoomClient::parse_depth(
-      std::move(instrument), Result<network::HttpResponse>(std::move(response))
-    );
+    return KiwoomClient::parse_depth(std::move(instrument), Result<network::HttpResponse>(std::move(response)));
   }
 
   static Result<std::vector<TradePrint>> trades(network::HttpResponse response, int count) {
-    return KiwoomClient::parse_trades(
-      Result<network::HttpResponse>(std::move(response)), count
-    );
+    return KiwoomClient::parse_trades(Result<network::HttpResponse>(std::move(response)), count);
   }
 
   static Result<Instrument> instrument(InstrumentId subject, network::HttpResponse response) {
-    return KiwoomClient::parse_instrument(
-      std::move(subject), Result<network::HttpResponse>(std::move(response))
-    );
+    return KiwoomClient::parse_instrument(std::move(subject), Result<network::HttpResponse>(std::move(response)));
   }
 
   static Result<KiwoomDeposit> deposit(network::HttpResponse response) {
@@ -70,32 +60,19 @@ struct KiwoomClientTestAccess {
   }
 
   static Result<KiwoomOrderableAmount> orderable(network::HttpResponse response) {
-    return KiwoomClient::parse_orderable_amount(
-      Result<network::HttpResponse>(std::move(response))
-    );
+    return KiwoomClient::parse_orderable_amount(Result<network::HttpResponse>(std::move(response)));
   }
 
   static Result<std::vector<KiwoomAccountInfo>> accounts(network::HttpResponse response) {
     return KiwoomClient::parse_accounts(Result<network::HttpResponse>(std::move(response)));
   }
 
-  static Result<KiwoomOrderAck> order_ack(
-    const std::string& symbol,
-    network::HttpResponse response
-  ) {
-    return KiwoomClient::parse_order_ack(
-      symbol, Result<network::HttpResponse>(std::move(response))
-    );
+  static Result<KiwoomOrderAck> order_ack(const std::string& symbol, network::HttpResponse response) {
+    return KiwoomClient::parse_order_ack(symbol, Result<network::HttpResponse>(std::move(response)));
   }
 
-  static Result<KiwoomOrderAck> order_ack(
-    network::HttpResponse response,
-    KiwoomOrderOperation operation,
-    bool demo
-  ) {
-    return KiwoomClient::parse_order_ack(
-      "005930", Result<network::HttpResponse>(std::move(response)), operation, demo
-    );
+  static Result<KiwoomOrderAck> order_ack(network::HttpResponse response, KiwoomOrderOperation operation, bool demo) {
+    return KiwoomClient::parse_order_ack("005930", Result<network::HttpResponse>(std::move(response)), operation, demo);
   }
 
   static KiwoomOpenOrder open_order(const json::object& row) {
@@ -136,31 +113,20 @@ struct KiwoomClientTestAccess {
   }
 
   static std::optional<BrokerError> validate_order(
-    const OrderRequest& order,
-    std::string& code,
-    KiwoomPositionScope scope = KiwoomPositionScope::UNSPECIFIED
+    const OrderRequest& order, std::string& code, KiwoomPositionScope scope = KiwoomPositionScope::UNSPECIFIED
   ) {
     return KiwoomClient::validate_order(scope, order, code);
   }
 
   static std::optional<BrokerError> validate_amendment(
-    const KiwoomAmendment& amendment,
-    bool cancel,
-    KiwoomPositionScope scope = KiwoomPositionScope::UNSPECIFIED
+    const KiwoomAmendment& amendment, bool cancel, KiwoomPositionScope scope = KiwoomPositionScope::UNSPECIFIED
   ) {
     return KiwoomClient::validate_amendment(scope, amendment, cancel);
   }
 
   /** Drives the real paging decision the three account listings share. */
-  static int page_step(
-    std::string& key,
-    int& pages,
-    bool grew,
-    std::optional<std::string> next_key
-  ) {
-    return static_cast<int>(
-      KiwoomClient::advance_page(key, pages, grew, std::move(next_key))
-    );
+  static int page_step(std::string& key, int& pages, bool grew, std::optional<std::string> next_key) {
+    return static_cast<int>(KiwoomClient::advance_page(key, pages, grew, std::move(next_key)));
   }
 
   static BrokerError incomplete(std::string_view what, int pages) {
@@ -177,19 +143,13 @@ struct KiwoomClientTestAccess {
 
   /** Builds a placement request through the same function the submission path uses. */
   static network::HttpRequest place_request(
-    const KiwoomClient& client,
-    const OrderRequest& order,
-    std::string_view division
+    const KiwoomClient& client, const OrderRequest& order, std::string_view division
   ) {
     return KiwoomClient::place_order_request(client, order, division);
   }
 
   /** Builds an amendment request through the same function the submission path uses. */
-  static network::HttpRequest amend_request(
-    const KiwoomClient& client,
-    const KiwoomAmendment& amendment,
-    bool cancel
-  ) {
+  static network::HttpRequest amend_request(const KiwoomClient& client, const KiwoomAmendment& amendment, bool cancel) {
     return KiwoomClient::amend_order_request(client, amendment, cancel);
   }
 
@@ -197,7 +157,9 @@ struct KiwoomClientTestAccess {
     return client.symbol_body(instrument);
   }
 
-  static std::string holdings_body(const KiwoomClient& client) { return client.holdings_body(); }
+  static std::string holdings_body(const KiwoomClient& client) {
+    return client.holdings_body();
+  }
 
   static std::optional<BrokerError> holdings_venue(const KiwoomClient& client) {
     return client.validate_holdings_venue();
@@ -213,10 +175,7 @@ struct KiwoomClientTestAccess {
    * stops when `advance_bars` says so, and `compose_bars` produces the series -- both the functions
    * the asynchronous walk itself calls. Only the HTTP round trip is left out.
    */
-  static Result<BarSeries> walk(
-    BarQuery query,
-    const std::vector<std::pair<int, std::optional<std::string>>>& pages
-  ) {
+  static Result<BarSeries> walk(BarQuery query, const std::vector<std::pair<int, std::optional<std::string>>>& pages) {
     KiwoomClient::BarOperation operation(std::move(query), KiwoomClient::BarsHandler());
     for (const auto& page : pages) {
       const std::size_t before = operation.descending_.size();
@@ -247,7 +206,9 @@ struct KiwoomClientTestAccess {
 namespace {
 
 /** Returns the instrument used throughout these tests. */
-InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
+InstrumentId samsung() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+}
 
 /** Wraps a JSON body as a successful HTTP response. */
 network::HttpResponse ok_body(std::string body) {
@@ -268,9 +229,7 @@ struct ClientFixture {
   std::shared_ptr<kiwoom::KiwoomClient> client_;
 
   explicit ClientFixture(kiwoom::KiwoomConfig config = {})
-  : client_(
-      std::make_shared<kiwoom::KiwoomClient>(ioc_.get_executor(), tls_, std::move(config))
-    ) {}
+  : client_(std::make_shared<kiwoom::KiwoomClient>(ioc_.get_executor(), tls_, std::move(config))) {}
 };
 
 } // namespace
@@ -285,7 +244,8 @@ TEST_CASE("a token response is read under the field its own broker names", "[cor
   kiwoom_token.from_json(
     json::parse(
       R"({"expires_dt":"20991107083713","token_type":"bearer","token":"WQJCwyqInphKnR3bSRtB9NE1lv","return_code":0})"
-    ).as_object()
+    )
+      .as_object()
   );
   CHECK(kiwoom_token.access_token_ == "WQJCwyqInphKnR3bSRtB9NE1lv");
   CHECK(kiwoom_token.token_type_ == "bearer");
@@ -294,9 +254,7 @@ TEST_CASE("a token response is read under the field its own broker names", "[cor
   // The same body read by a broker that spells the field `access_token` finds nothing, which is
   // the whole reason the field is declared per broker rather than defaulted.
   tossinvest::TossRest toss_token;
-  CHECK_THROWS(
-    toss_token.from_json(json::parse(R"({"token":"x","expires_in":86400})").as_object())
-  );
+  CHECK_THROWS(toss_token.from_json(json::parse(R"({"token":"x","expires_in":86400})").as_object()));
 
   toss_token.from_json(json::parse(R"({"access_token":"x","expires_in":86400})").as_object());
   CHECK(toss_token.access_token_ == "x");
@@ -304,9 +262,8 @@ TEST_CASE("a token response is read under the field its own broker names", "[cor
 
   kis::KisRest kis_token;
   kis_token.from_json(
-    json::parse(
-      R"({"access_token":"y","expires_in":86400,"access_token_token_expired":"2099-08-30 08:10:10"})"
-    ).as_object()
+    json::parse(R"({"access_token":"y","expires_in":86400,"access_token_token_expired":"2099-08-30 08:10:10"})")
+      .as_object()
   );
   CHECK(kis_token.access_token_ == "y");
   CHECK(kis_token.valid());
@@ -323,16 +280,12 @@ TEST_CASE("a token whose lifetime nobody stated is refused, not given one", "[co
   // A malformed relative expiry reaches the same refusal rather than throwing out of `stoll` with
   // a message naming neither the broker nor the field.
   tossinvest::TossRest malformed;
-  CHECK_THROWS(
-    malformed.from_json(json::parse(R"({"access_token":"x","expires_in":"soon"})").as_object())
-  );
+  CHECK_THROWS(malformed.from_json(json::parse(R"({"access_token":"x","expires_in":"soon"})").as_object()));
   CHECK_FALSE(malformed.valid());
 
   // Kiwoom's own absolute expiry, malformed the same way.
   kiwoom::KiwoomRest bad_date;
-  CHECK_THROWS(
-    bad_date.from_json(json::parse(R"({"token":"x","expires_dt":"2099-11-07"})").as_object())
-  );
+  CHECK_THROWS(bad_date.from_json(json::parse(R"({"token":"x","expires_dt":"2099-11-07"})").as_object()));
   CHECK_FALSE(bad_date.valid());
 }
 
@@ -343,8 +296,7 @@ TEST_CASE("a token whose lifetime nobody stated is refused, not given one", "[co
 TEST_CASE("every requestable shape maps to the code Kiwoom publishes", "[kiwoom][orders]") {
   for (const auto& row : kiwoom::kOrderShapes) {
     std::string code;
-    const auto refusal =
-      kiwoom::order_division(row.type_, row.time_in_force_, row.session_, code);
+    const auto refusal = kiwoom::order_division(row.type_, row.time_in_force_, row.session_, code);
     if (row.requestable_) {
       INFO("row " << row.name_);
       REQUIRE_FALSE(refusal);
@@ -362,11 +314,13 @@ TEST_CASE("every requestable shape maps to the code Kiwoom publishes", "[kiwoom]
 TEST_CASE("an unrecognized label leaves the shape unknown and preserves it", "[kiwoom][orders]") {
   CHECK(kiwoom::shape_by_name("장중대량") == nullptr);
 
-  auto row = json::parse(
-    R"({"ord_no":"0000069","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
+  auto row =
+    json::parse(
+      R"({"ord_no":"0000069","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
         "ord_qty":"1","ord_pric":"0","oso_qty":"1","orig_ord_no":"0000000",
         "io_tp_nm":"+매수","trde_tp":"장중대량","tm":"154113","cntr_qty":"0","stex_tp":"1"})"
-  ).as_object();
+    )
+      .as_object();
   const auto open_order = kiwoom::KiwoomClientTestAccess::open_order(row);
 
   CHECK(open_order.order_.type_ == OrderType::UNKNOWN);
@@ -391,12 +345,14 @@ TEST_CASE("a working-order row flagged sor_yn Y reads as SOR whatever stex_tp sa
   CHECK(kiwoom::listed_venue("1", "y") == Venue::KRX);
   CHECK(kiwoom::listed_venue("", "") == Venue::UNSPECIFIED);
 
-  auto row = json::parse(
-    R"({"ord_no":"0000071","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
+  auto row =
+    json::parse(
+      R"({"ord_no":"0000071","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
         "ord_qty":"1","ord_pric":"70000","oso_qty":"1","orig_ord_no":"0000000",
         "io_tp_nm":"+매수","trde_tp":"보통","tm":"154113","cntr_qty":"0",
         "stex_tp":"1","stex_tp_txt":"KRX","sor_yn":"Y"})"
-  ).as_object();
+    )
+      .as_object();
   const auto sor = kiwoom::KiwoomClientTestAccess::open_order(row);
   CHECK(sor.order_.venue_ == Venue::COMBINED);
 
@@ -420,9 +376,7 @@ TEST_CASE("a working-order row flagged sor_yn Y reads as SOR whatever stex_tp sa
 TEST_CASE("a combination Kiwoom has no code for is refused before any I/O", "[kiwoom][orders]") {
   std::string code;
   // Kiwoom publishes no market order in the closing auction.
-  const auto refusal = kiwoom::order_division(
-    OrderType::MARKET, TimeInForce::DAY, OrderSession::CLOSING_AUCTION, code
-  );
+  const auto refusal = kiwoom::order_division(OrderType::MARKET, TimeInForce::DAY, OrderSession::CLOSING_AUCTION, code);
   REQUIRE(refusal);
   CHECK(refusal->category_ == ErrorCategory::INVALID_ARGUMENT);
   CHECK_FALSE(refusal->reached_broker_);
@@ -441,24 +395,42 @@ TEST_CASE("every documented return_code lands in the right category", "[kiwoom][
     ErrorCategory category_;
   };
   static constexpr Row kCodes[] = {
-    {"1501", ErrorCategory::INVALID_ARGUMENT}, {"1504", ErrorCategory::INVALID_ARGUMENT},
-    {"1505", ErrorCategory::INVALID_ARGUMENT}, {"1511", ErrorCategory::INVALID_ARGUMENT},
-    {"1512", ErrorCategory::AUTHENTICATION},   {"1513", ErrorCategory::AUTHENTICATION},
-    {"1514", ErrorCategory::AUTHENTICATION},   {"1515", ErrorCategory::AUTHENTICATION},
-    {"1516", ErrorCategory::AUTHENTICATION},   {"1517", ErrorCategory::INVALID_ARGUMENT},
-    {"1687", ErrorCategory::RATE_LIMIT},       {"1700", ErrorCategory::RATE_LIMIT},
-    {"1701", ErrorCategory::RATE_LIMIT},       {"1702", ErrorCategory::RATE_LIMIT},
-    {"1901", ErrorCategory::INVALID_ARGUMENT}, {"1902", ErrorCategory::INVALID_ARGUMENT},
-    {"1903", ErrorCategory::INVALID_ARGUMENT}, {"1999", ErrorCategory::PROTOCOL},
-    {"8001", ErrorCategory::AUTHENTICATION},   {"8002", ErrorCategory::AUTHENTICATION},
-    {"8003", ErrorCategory::AUTHENTICATION},   {"8005", ErrorCategory::AUTHENTICATION},
-    {"8006", ErrorCategory::AUTHENTICATION},   {"8009", ErrorCategory::AUTHENTICATION},
-    {"8010", ErrorCategory::AUTHENTICATION},   {"8011", ErrorCategory::AUTHENTICATION},
-    {"8012", ErrorCategory::AUTHENTICATION},   {"8015", ErrorCategory::AUTHENTICATION},
-    {"8016", ErrorCategory::AUTHENTICATION},   {"8020", ErrorCategory::AUTHENTICATION},
-    {"8030", ErrorCategory::AUTHENTICATION},   {"8031", ErrorCategory::AUTHENTICATION},
-    {"8040", ErrorCategory::AUTHENTICATION},   {"8050", ErrorCategory::AUTHENTICATION},
-    {"8103", ErrorCategory::AUTHENTICATION},   {"8104", ErrorCategory::INVALID_ARGUMENT},
+    {"1501", ErrorCategory::INVALID_ARGUMENT},
+    {"1504", ErrorCategory::INVALID_ARGUMENT},
+    {"1505", ErrorCategory::INVALID_ARGUMENT},
+    {"1511", ErrorCategory::INVALID_ARGUMENT},
+    {"1512", ErrorCategory::AUTHENTICATION},
+    {"1513", ErrorCategory::AUTHENTICATION},
+    {"1514", ErrorCategory::AUTHENTICATION},
+    {"1515", ErrorCategory::AUTHENTICATION},
+    {"1516", ErrorCategory::AUTHENTICATION},
+    {"1517", ErrorCategory::INVALID_ARGUMENT},
+    {"1687", ErrorCategory::RATE_LIMIT},
+    {"1700", ErrorCategory::RATE_LIMIT},
+    {"1701", ErrorCategory::RATE_LIMIT},
+    {"1702", ErrorCategory::RATE_LIMIT},
+    {"1901", ErrorCategory::INVALID_ARGUMENT},
+    {"1902", ErrorCategory::INVALID_ARGUMENT},
+    {"1903", ErrorCategory::INVALID_ARGUMENT},
+    {"1999", ErrorCategory::PROTOCOL},
+    {"8001", ErrorCategory::AUTHENTICATION},
+    {"8002", ErrorCategory::AUTHENTICATION},
+    {"8003", ErrorCategory::AUTHENTICATION},
+    {"8005", ErrorCategory::AUTHENTICATION},
+    {"8006", ErrorCategory::AUTHENTICATION},
+    {"8009", ErrorCategory::AUTHENTICATION},
+    {"8010", ErrorCategory::AUTHENTICATION},
+    {"8011", ErrorCategory::AUTHENTICATION},
+    {"8012", ErrorCategory::AUTHENTICATION},
+    {"8015", ErrorCategory::AUTHENTICATION},
+    {"8016", ErrorCategory::AUTHENTICATION},
+    {"8020", ErrorCategory::AUTHENTICATION},
+    {"8030", ErrorCategory::AUTHENTICATION},
+    {"8031", ErrorCategory::AUTHENTICATION},
+    {"8040", ErrorCategory::AUTHENTICATION},
+    {"8050", ErrorCategory::AUTHENTICATION},
+    {"8103", ErrorCategory::AUTHENTICATION},
+    {"8104", ErrorCategory::INVALID_ARGUMENT},
     {"8200", ErrorCategory::INVALID_ARGUMENT},
   };
   // The specification's list has thirty-seven entries and every one is named above.
@@ -489,8 +461,7 @@ TEST_CASE("a refused token on an ordinary endpoint is an authentication failure"
   );
   REQUIRE_FALSE(throttled);
   CHECK(throttled.error().category_ == ErrorCategory::RATE_LIMIT);
-  CHECK(kiwoom::kiwoom_rate_limit_layer(throttled.error().broker_code_) ==
-        kiwoom::KiwoomRateLimitLayer::ENDPOINT);
+  CHECK(kiwoom::kiwoom_rate_limit_layer(throttled.error().broker_code_) == kiwoom::KiwoomRateLimitLayer::ENDPOINT);
 
   // A demo key calling an endpoint 모의투자 does not serve is availability, not authentication.
   auto unavailable = kiwoom::KiwoomClientTestAccess::quote(
@@ -769,9 +740,7 @@ TEST_CASE("a holdings venue must be stated, and COMBINED cannot be", "[kiwoom][h
   krx.holdings_venue_ = Venue::KRX;
   ClientFixture right(krx);
   CHECK_FALSE(kiwoom::KiwoomClientTestAccess::holdings_venue(*right.client_));
-  const auto body = json::parse(
-    kiwoom::KiwoomClientTestAccess::holdings_body(*right.client_)
-  ).as_object();
+  const auto body = json::parse(kiwoom::KiwoomClientTestAccess::holdings_body(*right.client_)).as_object();
   CHECK(body.at("dmst_stex_tp").as_string() == "KRX");
   CHECK(body.at("qry_tp").as_string() == "1");
 }
@@ -783,11 +752,11 @@ TEST_CASE("a holdings listing that comes back split is refused", "[kiwoom][holdi
   // shares where Kiwoom said 11 -- and which 3 would depend on row order.
   HoldingsSnapshot snapshot;
   bool totals_seen = false;
-  CHECK_THROWS(kiwoom::KiwoomClientTestAccess::holdings_page(
-    snapshot,
-    totals_seen,
-    json::parse(
-      R"({"tot_pur_amt":"000000017598258","tot_evlt_amt":"000000025789890",
+  CHECK_THROWS(
+    kiwoom::KiwoomClientTestAccess::holdings_page(
+      snapshot, totals_seen,
+      json::parse(
+        R"({"tot_pur_amt":"000000017598258","tot_evlt_amt":"000000025789890",
           "tot_evlt_pl":"000000008138825",
           "acnt_evlt_remn_indv_tot":[
             {"stk_cd":"A005930","stk_nm":"삼성전자","rmnd_qty":"000000000000003",
@@ -798,24 +767,28 @@ TEST_CASE("a holdings listing that comes back split is refused", "[kiwoom][holdi
              "trde_able_qty":"000000000000008","pur_pric":"000000000209178",
              "cur_prc":"000000085000","evltv_prft":"-00000000995004","prft_rt":"-59.46",
              "pur_amt":"000000001673430","evlt_amt":"000000000680000"}]})"
-    ).as_object()
-  ));
+      )
+        .as_object()
+    )
+  );
 
   // Two *different* instruments on one page are ordinary and are not refused.
   HoldingsSnapshot two;
   bool seen = false;
-  CHECK_NOTHROW(kiwoom::KiwoomClientTestAccess::holdings_page(
-    two,
-    seen,
-    json::parse(
-      R"({"tot_pur_amt":"0","tot_evlt_amt":"0","tot_evlt_pl":"0",
+  CHECK_NOTHROW(
+    kiwoom::KiwoomClientTestAccess::holdings_page(
+      two, seen,
+      json::parse(
+        R"({"tot_pur_amt":"0","tot_evlt_amt":"0","tot_evlt_pl":"0",
           "acnt_evlt_remn_indv_tot":[
             {"stk_cd":"A005930","rmnd_qty":"3","trde_able_qty":"3","pur_pric":"124500",
              "cur_prc":"59000","pur_amt":"373500","evlt_amt":"177000","evltv_prft":"-196888"},
             {"stk_cd":"A000660","rmnd_qty":"8","trde_able_qty":"8","pur_pric":"209178",
              "cur_prc":"85000","pur_amt":"1673430","evlt_amt":"680000","evltv_prft":"-995004"}]})"
-    ).as_object()
-  ));
+      )
+        .as_object()
+    )
+  );
   CHECK(two.positions_.size() == 2);
 }
 
@@ -858,9 +831,8 @@ TEST_CASE("price bounds come off the quote response", "[kiwoom][market-data]") {
   CHECK(limits.value().lower_ == Decimal64(63900, 0));
 
   // A blank or zero bound is absent, not a bound of nothing.
-  auto blank = kiwoom::KiwoomClientTestAccess::price_limits(
-    ok_body(R"({"return_code":0,"upl_pric":"","lst_pric":"0"})")
-  );
+  auto blank =
+    kiwoom::KiwoomClientTestAccess::price_limits(ok_body(R"({"return_code":0,"upl_pric":"","lst_pric":"0"})"));
   REQUIRE(blank);
   CHECK_FALSE(blank.value().upper_);
   CHECK_FALSE(blank.value().lower_);
@@ -970,9 +942,7 @@ TEST_CASE("a Kiwoom HTTP error keeps the return_code from its whole body", "[kiw
 
   // A code after a long message is past the excerpt the message keeps, and still read.
   const std::string long_message(900, 'x');
-  const auto late = failed(
-    http::status::bad_gateway, R"({"return_msg":")" + long_message + R"(","return_code":8005})"
-  );
+  const auto late = failed(http::status::bad_gateway, R"({"return_msg":")" + long_message + R"(","return_code":8005})");
   REQUIRE_FALSE(late);
   CHECK(late.error().broker_code_ == "8005");
   CHECK(late.error().message_.find("8005") == std::string::npos);
@@ -1010,13 +980,11 @@ TEST_CASE("buying power is the credit-free figure, not the orderable one", "[kiw
   // Kiwoom's own kt00001 example. 주문가능금액 is 85,341 against a 100%종목주문가능금액 of 12,550,
   // on an account holding 3,915,500 of 대용금 -- collateral, not cash. Reporting the larger figure
   // as spendable cash is how a strategy discovers leverage by accident.
-  auto deposit = kiwoom::KiwoomClientTestAccess::deposit(
-    ok_body(
-      R"({"return_code":0,"entr":"000000000017534","repl_amt":"000000003915500",
+  auto deposit = kiwoom::KiwoomClientTestAccess::deposit(ok_body(
+    R"({"return_code":0,"entr":"000000000017534","repl_amt":"000000003915500",
           "pymn_alow_amt":"000000000085341","ord_alow_amt":"000000000085341",
           "100stk_ord_alow_amt":"000000000012550","d2_entra":"000000000012550"})"
-    )
-  );
+  ));
   REQUIRE(deposit);
   CHECK(deposit.value().spendable_ == Decimal64(12550, 0));
   CHECK(deposit.value().orderable_ == Decimal64(85341, 0));
@@ -1028,9 +996,8 @@ TEST_CASE("buying power is the credit-free figure, not the orderable one", "[kiw
 TEST_CASE("Kiwoom publishes an affordable quantity per margin tier", "[kiwoom][account]") {
   // This is what `has_buying_power_quantity` claims, so it is asserted rather than assumed.
   STATIC_REQUIRE(BrokerCaps<kiwoom::KiwoomClient>::has_buying_power_quantity);
-  auto orderable = kiwoom::KiwoomClientTestAccess::orderable(
-    ok_body(
-      R"({"return_code":0,"profa_20ord_alow_amt":"000000012550","profa_20ord_alowq":"0000000012",
+  auto orderable = kiwoom::KiwoomClientTestAccess::orderable(ok_body(
+    R"({"return_code":0,"profa_20ord_alow_amt":"000000012550","profa_20ord_alowq":"0000000012",
           "profa_30ord_alow_amt":"000000012550","profa_30ord_alowq":"0000000008",
           "profa_40ord_alow_amt":"000000012550","profa_40ord_alowq":"0000000006",
           "profa_50ord_alow_amt":"000000012550","profa_50ord_alowq":"0000000005",
@@ -1039,8 +1006,7 @@ TEST_CASE("Kiwoom publishes an affordable quantity per margin tier", "[kiwoom][a
           "profa_100ord_alow_amt":"000000012550","profa_100ord_alowq":"0000000002",
           "ord_alowa":"000000085341","wthd_alowa":"000000085341","d2entra":"000000012550",
           "profa_rdex_aplc_tp":"0"})"
-    )
-  );
+  ));
   REQUIRE(orderable);
   REQUIRE(orderable.value().tiers_.size() == 7);
   CHECK(orderable.value().tiers_.front().margin_percent_ == 20);
@@ -1052,9 +1018,7 @@ TEST_CASE("Kiwoom publishes an affordable quantity per margin tier", "[kiwoom][a
 }
 
 TEST_CASE("the account listing names the one account the credential drives", "[kiwoom][account]") {
-  auto accounts = kiwoom::KiwoomClientTestAccess::accounts(
-    ok_body(R"({"acctNo":"0123456789","return_code":0})")
-  );
+  auto accounts = kiwoom::KiwoomClientTestAccess::accounts(ok_body(R"({"acctNo":"0123456789","return_code":0})"));
   REQUIRE(accounts);
   REQUIRE(accounts.value().size() == 1);
   CHECK(accounts.value().front().account_number_ == "0123456789");
@@ -1083,8 +1047,7 @@ TEST_CASE("an order acknowledgement carries the symbol from the request", "[kiwo
   CHECK(round_trip.symbol_ == placed.value().order_.symbol_);
 
   auto amended = kiwoom::KiwoomClientTestAccess::order_ack(
-    "005930",
-    ok_body(R"({"ord_no":"00025","base_orig_ord_no":"00024","mdfy_qty":"3","return_code":0})")
+    "005930", ok_body(R"({"ord_no":"00025","base_orig_ord_no":"00024","mdfy_qty":"3","return_code":0})")
   );
   REQUIRE(amended);
   CHECK(amended.value().base_order_number_ == "00024");
@@ -1116,8 +1079,8 @@ network::HttpResponse body_with_status(std::string body, int status) {
 
 /** Whether an order reply is read as the recognized refusal `code`. */
 bool kiwoom_recognized(const Result<kiwoom::KiwoomOrderAck>& result, const std::string& code) {
-  return !result && result.error().category_ == ErrorCategory::INVALID_ARGUMENT &&
-    result.error().reached_broker_ && result.error().broker_code_ == code;
+  return !result && result.error().category_ == ErrorCategory::INVALID_ARGUMENT && result.error().reached_broker_ &&
+    result.error().broker_code_ == code;
 }
 
 /** Whether an order reply keeps the unknown-outcome reading of outer code 20. */
@@ -1134,27 +1097,29 @@ TEST_CASE("the code inside a Kiwoom order refusal is read from the whole message
   CHECK(kiwoom::kiwoom_refusal_code("[2000](A:b)") == "A");
   CHECK(kiwoom::kiwoom_refusal_code("[2000](RC4033:a:b (c))") == "RC4033");
 
-  for (const char* message : {
-         "",
-         "[2000]",
-         "[2000](",
-         "[2000]()",
-         "[2000](:text)",
-         "[2000](RC4033)",
-         "[2000](RC4033:)",
-         "[2000](RC4033:text",
-         "[2000](RC4033:text) ",
-         " [2000](RC4033:text)",
-         "[2001](RC4033:text)",
-         "[2000] (RC4033:text)",
-         "(RC4033:text)",
-         "[2000](rc4033:text)",
-         "[2000](RC 4033:text)",
-         "[2000](RC-4033:text)",
-         "주문이 거부되었습니다 [2000](RC4033:text)",
-         "RC4033",
-         "모의투자 정정/취소할 수량이 없습니다. RC4033",
-       }) {
+  for (
+    const char* message : {
+      "",
+      "[2000]",
+      "[2000](",
+      "[2000]()",
+      "[2000](:text)",
+      "[2000](RC4033)",
+      "[2000](RC4033:)",
+      "[2000](RC4033:text",
+      "[2000](RC4033:text) ",
+      " [2000](RC4033:text)",
+      "[2001](RC4033:text)",
+      "[2000] (RC4033:text)",
+      "(RC4033:text)",
+      "[2000](rc4033:text)",
+      "[2000](RC 4033:text)",
+      "[2000](RC-4033:text)",
+      "주문이 거부되었습니다 [2000](RC4033:text)",
+      "RC4033",
+      "모의투자 정정/취소할 수량이 없습니다. RC4033",
+    }
+  ) {
     CAPTURE(message);
     CHECK(kiwoom::kiwoom_refusal_code(message).empty());
   }
@@ -1189,8 +1154,7 @@ TEST_CASE("a Kiwoom demo cash order refusal the client recognizes is a rejection
     CHECK(result.error().broker_code_ == "800033");
     CHECK(
       result.error().message_ ==
-      std::string(KIWOOM_NOTHING_TO_SELL) +
-        " (return_code 20; recognized refusal: Kiwoom demo, cash placement, 800033)"
+      std::string(KIWOOM_NOTHING_TO_SELL) + " (return_code 20; recognized refusal: Kiwoom demo, cash placement, 800033)"
     );
     CHECK(runner::outcome_of(result.error()) == runner::SendOutcome::REJECTED);
   }
@@ -1206,8 +1170,7 @@ TEST_CASE("a Kiwoom demo cash order refusal the client recognizes is a rejection
     CHECK(result.error().broker_code_ == "RC4058");
     CHECK(
       result.error().message_ ==
-      std::string(KIWOOM_MARKET_CLOSED) +
-        " (return_code 20; recognized refusal: Kiwoom demo, cash placement, RC4058)"
+      std::string(KIWOOM_MARKET_CLOSED) + " (return_code 20; recognized refusal: Kiwoom demo, cash placement, RC4058)"
     );
     CHECK(runner::outcome_of(result.error()) == runner::SendOutcome::REJECTED);
   }
@@ -1223,8 +1186,7 @@ TEST_CASE("a Kiwoom demo cash order refusal the client recognizes is a rejection
     CHECK(result.error().broker_code_ == "RC4057");
     CHECK(
       result.error().message_ ==
-      std::string(KIWOOM_MARKET_NOT_OPEN) +
-        " (return_code 20; recognized refusal: Kiwoom demo, cash placement, RC4057)"
+      std::string(KIWOOM_MARKET_NOT_OPEN) + " (return_code 20; recognized refusal: Kiwoom demo, cash placement, RC4057)"
     );
     CHECK(runner::outcome_of(result.error()) == runner::SendOutcome::REJECTED);
 
@@ -1234,37 +1196,45 @@ TEST_CASE("a Kiwoom demo cash order refusal the client recognizes is a rejection
     CHECK(kiwoom_unknown(Access::order_ack(ok_body(body), KiwoomOrderOperation::CANCEL, true)));
     CHECK(kiwoom_unknown(Access::order_ack(ok_body(body), KiwoomOrderOperation::AMEND, true)));
     CHECK(kiwoom_unknown(Access::order_ack(ok_body(body), KiwoomOrderOperation::UNCLASSIFIED, true)));
-    for (const char* message : {
-           "[2000](RC4056:모의투자 장시작전)",
-           "[2000](RC40570:모의투자 장시작전)",
-           "[2000](XRC4057:모의투자 장시작전)",
-           "[2001](RC4057:모의투자 장시작전)",
-           "[2000](RC4057:모의투자 장시작전) ",
-         }) {
+    for (
+      const char* message : {
+        "[2000](RC4056:모의투자 장시작전)",
+        "[2000](RC40570:모의투자 장시작전)",
+        "[2000](XRC4057:모의투자 장시작전)",
+        "[2001](RC4057:모의투자 장시작전)",
+        "[2000](RC4057:모의투자 장시작전) ",
+      }
+    ) {
       CAPTURE(message);
-      CHECK(kiwoom_unknown(Access::order_ack(ok_body(kiwoom_refusal_body(message)), KiwoomOrderOperation::PLACE, true)));
+      CHECK(
+        kiwoom_unknown(Access::order_ack(ok_body(kiwoom_refusal_body(message)), KiwoomOrderOperation::PLACE, true))
+      );
     }
-    CHECK(kiwoom_unknown(Access::order_ack(
-      ok_body(kiwoom_refusal_body(KIWOOM_MARKET_NOT_OPEN, R"(,"ord_no":"0036038")")), KiwoomOrderOperation::PLACE, true
-    )));
+    CHECK(kiwoom_unknown(
+      Access::order_ack(
+        ok_body(kiwoom_refusal_body(KIWOOM_MARKET_NOT_OPEN, R"(,"ord_no":"0036038")")), KiwoomOrderOperation::PLACE,
+        true
+      )
+    ));
   }
 
   SECTION("the outer code as the string 20, empty acknowledgement fields, or the original order echoed") {
     CHECK(kiwoom_recognized(
       kiwoom::KiwoomClientTestAccess::order_ack(
         ok_body(std::string(R"({"return_code":"20","return_msg":")") + KIWOOM_NOTHING_TO_CANCEL + "\"}"),
-        KiwoomOrderOperation::CANCEL,
-        true
+        KiwoomOrderOperation::CANCEL, true
       ),
       "RC4033"
     ));
-    for (const char* extra : {
-           R"(,"ord_no":"")",
-           R"(,"ord_no":"","cncl_qty":"","mdfy_qty":"")",
-           R"(,"cncl_qty":"000000000000")",
-           R"(,"base_orig_ord_no":"0036037")",
-           R"(,"dmst_stex_tp":"KRX")",
-         }) {
+    for (
+      const char* extra : {
+        R"(,"ord_no":"")",
+        R"(,"ord_no":"","cncl_qty":"","mdfy_qty":"")",
+        R"(,"cncl_qty":"000000000000")",
+        R"(,"base_orig_ord_no":"0036037")",
+        R"(,"dmst_stex_tp":"KRX")",
+      }
+    ) {
       CAPTURE(extra);
       CHECK(kiwoom_recognized(
         kiwoom::KiwoomClientTestAccess::order_ack(
@@ -1322,8 +1292,7 @@ TEST_CASE("a Kiwoom order refusal outside the recognized replies stays an unknow
       CAPTURE(code);
       const auto result = Access::order_ack(
         ok_body(std::string(R"({"return_code":)") + code + R"(,"return_msg":")" + KIWOOM_NOTHING_TO_CANCEL + "\"}"),
-        KiwoomOrderOperation::CANCEL,
-        true
+        KiwoomOrderOperation::CANCEL, true
       );
       REQUIRE_FALSE(result);
       CHECK(result.error().category_ != ErrorCategory::INVALID_ARGUMENT);
@@ -1332,71 +1301,78 @@ TEST_CASE("a Kiwoom order refusal outside the recognized replies stays an unknow
     // A code this client already classifies keeps its class.
     const auto limited = Access::order_ack(
       ok_body(std::string(R"({"return_code":1700,"return_msg":")") + KIWOOM_NOTHING_TO_CANCEL + "\"}"),
-      KiwoomOrderOperation::CANCEL,
-      true
+      KiwoomOrderOperation::CANCEL, true
     );
     REQUIRE_FALSE(limited);
     CHECK(limited.error().category_ == ErrorCategory::RATE_LIMIT);
   }
 
   SECTION("another inner code, a message of another shape, or none") {
-    for (const char* message : {
-           "[2000](RC4034:모의투자 정정/취소할 수량이 없습니다.)",
-           "[2000](800033:모의투자 매도가능수량이 부족합니다.)",
-           "[2000](RC40330:text)",
-           "[2000](XRC4033:text)",
-           "[2001](RC4033:text)",
-           "RC4033",
-           "[2000](RC4033:text) ",
-           "the order was refused: [2000](RC4033:text)",
-           "모의투자 정정/취소할 수량이 없습니다.",
-           "",
-         }) {
+    for (
+      const char* message : {
+        "[2000](RC4034:모의투자 정정/취소할 수량이 없습니다.)",
+        "[2000](800033:모의투자 매도가능수량이 부족합니다.)",
+        "[2000](RC40330:text)",
+        "[2000](XRC4033:text)",
+        "[2001](RC4033:text)",
+        "RC4033",
+        "[2000](RC4033:text) ",
+        "the order was refused: [2000](RC4033:text)",
+        "모의투자 정정/취소할 수량이 없습니다.",
+        "",
+      }
+    ) {
       CAPTURE(message);
-      CHECK(kiwoom_unknown(
-        Access::order_ack(ok_body(kiwoom_refusal_body(message)), KiwoomOrderOperation::CANCEL, true)
-      ));
+      CHECK(
+        kiwoom_unknown(Access::order_ack(ok_body(kiwoom_refusal_body(message)), KiwoomOrderOperation::CANCEL, true))
+      );
     }
-    for (const char* message : {
-           "[2000](RC4059:모의투자 장종료)",
-           "[2000](RC40580:모의투자 장종료)",
-           "[2000](XRC4058:모의투자 장종료)",
-           "[2000](RC4033:모의투자 장종료)",
-           "[2001](RC4058:모의투자 장종료)",
-           "[2000](RC4058:모의투자 장종료) ",
-           "RC4058",
-           "모의투자 장종료",
-         }) {
+    for (
+      const char* message : {
+        "[2000](RC4059:모의투자 장종료)",
+        "[2000](RC40580:모의투자 장종료)",
+        "[2000](XRC4058:모의투자 장종료)",
+        "[2000](RC4033:모의투자 장종료)",
+        "[2001](RC4058:모의투자 장종료)",
+        "[2000](RC4058:모의투자 장종료) ",
+        "RC4058",
+        "모의투자 장종료",
+      }
+    ) {
       CAPTURE(message);
-      CHECK(kiwoom_unknown(
-        Access::order_ack(ok_body(kiwoom_refusal_body(message)), KiwoomOrderOperation::PLACE, true)
-      ));
+      CHECK(
+        kiwoom_unknown(Access::order_ack(ok_body(kiwoom_refusal_body(message)), KiwoomOrderOperation::PLACE, true))
+      );
     }
-    for (const char* body : {
-           R"({"return_code":20})",
-           R"({"return_code":20,"return_msg":null})",
-           R"x({"return_code":20,"return_msg":["[2000](RC4033:text)"]})x",
-         }) {
+    for (
+      const char* body : {
+        R"({"return_code":20})",
+        R"({"return_code":20,"return_msg":null})",
+        R"x({"return_code":20,"return_msg":["[2000](RC4033:text)"]})x",
+      }
+    ) {
       CAPTURE(body);
       CHECK(kiwoom_unknown(Access::order_ack(ok_body(body), KiwoomOrderOperation::CANCEL, true)));
     }
   }
 
   SECTION("anything an acknowledgement carries") {
-    for (const char* extra : {
-           R"(,"ord_no":"0036038")",
-           R"(,"ord_no":36038)",
-           R"(,"ord_no":0)",
-           R"(,"ord_no":null)",
-           R"(,"ord_no":" ")",
-           R"(,"cncl_qty":"1")",
-           R"(,"cncl_qty":"000000000001")",
-           R"(,"cncl_qty":1)",
-           R"(,"cncl_qty":0)",
-           R"(,"cncl_qty":"+0")",
-           R"(,"mdfy_qty":"3")",
-           R"(,"mdfy_qty":null)",
-         }) {
+    for (
+      const char* extra : {
+        R"(,"ord_no":"0036038")",
+        R"(,"ord_no":36038)",
+        R"(,"ord_no":0)",
+        R"(,"ord_no":null)",
+        R"(,"ord_no":" ")",
+        R"(,"cncl_qty":"1")",
+        R"(,"cncl_qty":"000000000001")",
+        R"(,"cncl_qty":1)",
+        R"(,"cncl_qty":0)",
+        R"(,"cncl_qty":"+0")",
+        R"(,"mdfy_qty":"3")",
+        R"(,"mdfy_qty":null)",
+      }
+    ) {
       CAPTURE(extra);
       CHECK(kiwoom_unknown(
         Access::order_ack(
@@ -1409,9 +1385,7 @@ TEST_CASE("a Kiwoom order refusal outside the recognized replies stays an unknow
         )
       ));
       CHECK(kiwoom_unknown(
-        Access::order_ack(
-          ok_body(kiwoom_refusal_body(KIWOOM_MARKET_CLOSED, extra)), KiwoomOrderOperation::PLACE, true
-        )
+        Access::order_ack(ok_body(kiwoom_refusal_body(KIWOOM_MARKET_CLOSED, extra)), KiwoomOrderOperation::PLACE, true)
       ));
     }
   }
@@ -1431,8 +1405,7 @@ TEST_CASE("a Kiwoom order refusal outside the recognized replies stays an unknow
   SECTION("an accepted order is read as before") {
     const auto accepted = Access::order_ack(
       ok_body(R"x({"ord_no":"00024","return_code":0,"return_msg":"[2000](RC4033:text)"})x"),
-      KiwoomOrderOperation::CANCEL,
-      true
+      KiwoomOrderOperation::CANCEL, true
     );
     REQUIRE(accepted);
     CHECK(accepted.value().order_.order_number_ == "00024");
@@ -1459,8 +1432,7 @@ Result<kiwoom::KiwoomOrderAck> kiwoom_call(
   ssl::context context(ssl::context::tls_client);
   test::trustLocalhostCertificate(context);
   server.script(
-    "/oauth2/token",
-    200,
+    "/oauth2/token", 200,
     R"({"expires_dt":"20991231235959","token_type":"bearer","token":"test-token","return_code":0,"return_msg":"ok"})"
   );
   server.script(KIWOOM_ORDER, 200, reply);
@@ -1505,17 +1477,23 @@ Result<kiwoom::KiwoomOrderAck> kiwoom_call(
 /** The `api-id` each call sends. */
 const char* kiwoom_api_id(KiwoomCall call) {
   switch (call) {
-    case KiwoomCall::PLACE_BUY: return "kt10000";
-    case KiwoomCall::PLACE_SELL: return "kt10001";
-    case KiwoomCall::AMEND: return "kt10002";
-    case KiwoomCall::CANCEL: return "kt10003";
+    case KiwoomCall::PLACE_BUY:
+      return "kt10000";
+    case KiwoomCall::PLACE_SELL:
+      return "kt10001";
+    case KiwoomCall::AMEND:
+      return "kt10002";
+    case KiwoomCall::CANCEL:
+      return "kt10003";
   }
   return "";
 }
 
 } // namespace
 
-TEST_CASE("a Kiwoom order reply is read with the operation and environment of the call that sent it", "[kiwoom][orders]") {
+TEST_CASE(
+  "a Kiwoom order reply is read with the operation and environment of the call that sent it", "[kiwoom][orders]"
+) {
   test::LocalHttpsServer server;
   const std::string no_balance = kiwoom_refusal_body(KIWOOM_REAL_NO_BALANCE);
   const std::string real_nothing_to_cancel = kiwoom_refusal_body(KIWOOM_REAL_NOTHING_TO_CANCEL);
@@ -1576,7 +1554,9 @@ TEST_CASE("a Kiwoom order reply is read with the operation and environment of th
     CHECK(sell.error().message_.find("recognized refusal: Kiwoom demo, cash placement, 800033)") != std::string::npos);
     const auto cancel = kiwoom_call(true, KiwoomCall::CANCEL, demo_nothing_to_cancel, server);
     CHECK(kiwoom_recognized(cancel, "RC4033"));
-    CHECK(cancel.error().message_.find("recognized refusal: Kiwoom demo, cash cancellation, RC4033)") != std::string::npos);
+    CHECK(
+      cancel.error().message_.find("recognized refusal: Kiwoom demo, cash cancellation, RC4033)") != std::string::npos
+    );
     // The amendment shares the endpoint; only the cancellation is recognized.
     const auto amend = kiwoom_call(true, KiwoomCall::AMEND, demo_nothing_to_cancel, server);
     REQUIRE_FALSE(amend);
@@ -1607,15 +1587,16 @@ TEST_CASE("a Kiwoom real-server refusal is recognized under the same conditions 
     CHECK(kiwoom_recognized(
       Access::order_ack(
         ok_body(std::string(R"({"return_code":"20","return_msg":")") + KIWOOM_REAL_NOTHING_TO_CANCEL + "\"}"),
-        KiwoomOrderOperation::CANCEL,
-        false
+        KiwoomOrderOperation::CANCEL, false
       ),
       "506550"
     ));
     for (const char* extra : {R"(,"ord_no":"")", R"(,"cncl_qty":"000000000000")", R"(,"base_orig_ord_no":"0417354")"}) {
       CAPTURE(extra);
       CHECK(kiwoom_recognized(
-        Access::order_ack(ok_body(kiwoom_refusal_body(KIWOOM_REAL_NOTHING_TO_CANCEL, extra)), KiwoomOrderOperation::CANCEL, false),
+        Access::order_ack(
+          ok_body(kiwoom_refusal_body(KIWOOM_REAL_NOTHING_TO_CANCEL, extra)), KiwoomOrderOperation::CANCEL, false
+        ),
         "506550"
       ));
     }
@@ -1630,64 +1611,79 @@ TEST_CASE("a Kiwoom real-server refusal is recognized under the same conditions 
       CAPTURE(code);
       const auto result = Access::order_ack(
         ok_body(std::string(R"({"return_code":)") + code + R"(,"return_msg":")" + KIWOOM_REAL_NO_BALANCE + "\"}"),
-        KiwoomOrderOperation::PLACE,
-        false
+        KiwoomOrderOperation::PLACE, false
       );
       CHECK((!result || result.error().category_ != ErrorCategory::INVALID_ARGUMENT));
       if (!result) {
         CHECK(result.error().message_.find("recognized refusal") == std::string::npos);
       }
     }
-    for (const char* message : {
-           "[2000](506551:취소가능수량이 없습니다.)",
-           "[2000](5065500:취소가능수량이 없습니다.)",
-           "[2000](X506550:취소가능수량이 없습니다.)",
-           "[2001](506550:취소가능수량이 없습니다.)",
-           "[2000](506550:취소가능수량이 없습니다.) ",
-           "[2000](506550:)",
-           "506550",
-           "취소가능수량이 없습니다.",
-         }) {
+    for (
+      const char* message : {
+        "[2000](506551:취소가능수량이 없습니다.)",
+        "[2000](5065500:취소가능수량이 없습니다.)",
+        "[2000](X506550:취소가능수량이 없습니다.)",
+        "[2001](506550:취소가능수량이 없습니다.)",
+        "[2000](506550:취소가능수량이 없습니다.) ",
+        "[2000](506550:)",
+        "506550",
+        "취소가능수량이 없습니다.",
+      }
+    ) {
       CAPTURE(message);
-      CHECK(kiwoom_unknown(Access::order_ack(ok_body(kiwoom_refusal_body(message)), KiwoomOrderOperation::CANCEL, false)));
+      CHECK(
+        kiwoom_unknown(Access::order_ack(ok_body(kiwoom_refusal_body(message)), KiwoomOrderOperation::CANCEL, false))
+      );
     }
-    for (const char* message : {
-           "[2000](571446:유가증권 잔고가 존재하지 않습니다)",
-           "[2000](57144:유가증권 잔고가 존재하지 않습니다)",
-           "[2000](571445:유가증권 잔고가 존재하지 않습니다",
-           " [2000](571445:유가증권 잔고가 존재하지 않습니다)",
-         }) {
+    for (
+      const char* message : {
+        "[2000](571446:유가증권 잔고가 존재하지 않습니다)",
+        "[2000](57144:유가증권 잔고가 존재하지 않습니다)",
+        "[2000](571445:유가증권 잔고가 존재하지 않습니다",
+        " [2000](571445:유가증권 잔고가 존재하지 않습니다)",
+      }
+    ) {
       CAPTURE(message);
-      CHECK(kiwoom_unknown(Access::order_ack(ok_body(kiwoom_refusal_body(message)), KiwoomOrderOperation::PLACE, false)));
+      CHECK(
+        kiwoom_unknown(Access::order_ack(ok_body(kiwoom_refusal_body(message)), KiwoomOrderOperation::PLACE, false))
+      );
     }
-    for (const char* body : {
-           R"({"return_code":20})",
-           R"({"return_code":20,"return_msg":null})",
-           R"x({"return_code":20,"return_msg":["[2000](506550:text)"]})x",
-         }) {
+    for (
+      const char* body : {
+        R"({"return_code":20})",
+        R"({"return_code":20,"return_msg":null})",
+        R"x({"return_code":20,"return_msg":["[2000](506550:text)"]})x",
+      }
+    ) {
       CAPTURE(body);
       CHECK(kiwoom_unknown(Access::order_ack(ok_body(body), KiwoomOrderOperation::CANCEL, false)));
     }
   }
 
   SECTION("anything an acknowledgement carries") {
-    for (const char* extra : {
-           R"(,"ord_no":"0417393")",
-           R"(,"ord_no":417393)",
-           R"(,"ord_no":null)",
-           R"(,"ord_no":" ")",
-           R"(,"cncl_qty":"1")",
-           R"(,"cncl_qty":"000000000001")",
-           R"(,"cncl_qty":1)",
-           R"(,"mdfy_qty":"1")",
-           R"(,"mdfy_qty":null)",
-         }) {
+    for (
+      const char* extra : {
+        R"(,"ord_no":"0417393")",
+        R"(,"ord_no":417393)",
+        R"(,"ord_no":null)",
+        R"(,"ord_no":" ")",
+        R"(,"cncl_qty":"1")",
+        R"(,"cncl_qty":"000000000001")",
+        R"(,"cncl_qty":1)",
+        R"(,"mdfy_qty":"1")",
+        R"(,"mdfy_qty":null)",
+      }
+    ) {
       CAPTURE(extra);
       CHECK(kiwoom_unknown(
-        Access::order_ack(ok_body(kiwoom_refusal_body(KIWOOM_REAL_NOTHING_TO_CANCEL, extra)), KiwoomOrderOperation::CANCEL, false)
+        Access::order_ack(
+          ok_body(kiwoom_refusal_body(KIWOOM_REAL_NOTHING_TO_CANCEL, extra)), KiwoomOrderOperation::CANCEL, false
+        )
       ));
       CHECK(kiwoom_unknown(
-        Access::order_ack(ok_body(kiwoom_refusal_body(KIWOOM_REAL_NO_BALANCE, extra)), KiwoomOrderOperation::PLACE, false)
+        Access::order_ack(
+          ok_body(kiwoom_refusal_body(KIWOOM_REAL_NO_BALANCE, extra)), KiwoomOrderOperation::PLACE, false
+        )
       ));
     }
   }
@@ -1713,13 +1709,16 @@ TEST_CASE("a Kiwoom real-server refusal is recognized under the same conditions 
 
 TEST_CASE("a working-order row's date is assumed until the day's history states it", "[kiwoom][orders][history]") {
   // ka10075 states `tm` and no date: the demo server has listed the previous day's order after midnight.
-  const auto listed = kiwoom::KiwoomClientTestAccess::open_order(
-    json::parse(
-      R"({"ord_no":"0000050","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
+  const auto listed =
+    kiwoom::KiwoomClientTestAccess::open_order(
+      json::parse(
+        R"({"ord_no":"0000050","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
           "ord_qty":"10","ord_pric":"70000","oso_qty":"10","orig_ord_no":"0000000",
           "io_tp_nm":"+매수","trde_tp":"보통","tm":"130543","cntr_qty":"0","stex_tp":"1"})"
-    ).as_object()
-  ).order_;
+      )
+        .as_object()
+    )
+      .order_;
   REQUIRE(listed.ordered_at_.has_value());
   CHECK(listed.ordered_date_assumed_);
 
@@ -1729,7 +1728,8 @@ TEST_CASE("a working-order row's date is assumed until the day's history states 
         std::string(R"({"ord_no":"0000050","stk_cd":"A005930","trde_tp":"지정가","ord_qty":"0000000010",
           "ord_uv":"0000070000","stk_nm":"삼성전자","io_tp_nm":"현금매수","dmst_stex_tp":"KRX","ord_tm":")") +
         time + R"(","acpt_tp":"접수","cntr_qty":"0","ord_remnq":"10"})"
-      ).as_object(),
+      )
+        .as_object(),
       date
     );
   };
@@ -1821,13 +1821,17 @@ TEST_CASE("a working-order row whose time cannot be read names no order", "[kiwo
   placement.opened_at_ = placement.entry_.recorded_at_;
   for (const char* time : {"", "bad", "130543"}) {
     INFO("tm '" << time << "'");
-    const auto listed = kiwoom::KiwoomClientTestAccess::open_order(
-      json::parse(
-        std::string(R"({"ord_no":"0000050","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
+    const auto listed =
+      kiwoom::KiwoomClientTestAccess::open_order(
+        json::parse(
+          std::string(R"({"ord_no":"0000050","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
           "ord_qty":"10","ord_pric":"70000","oso_qty":"10","orig_ord_no":"0000000",
-          "io_tp_nm":"+매수","trde_tp":"보통","tm":")") + time + R"(","cntr_qty":"0","stex_tp":"1"})"
-      ).as_object()
-    ).order_;
+          "io_tp_nm":"+매수","trde_tp":"보통","tm":")") +
+          time + R"(","cntr_qty":"0","stex_tp":"1"})"
+        )
+          .as_object()
+      )
+        .order_;
     CHECK(listed.ordered_date_assumed_);
     const auto match = runner::match_against(placement, {listed}, placement.opened_at_ + std::chrono::hours(1));
     CHECK(match.verdict_ == runner::MatchVerdict::AMBIGUOUS);
@@ -1860,7 +1864,11 @@ TEST_CASE("a history row's state comes from two columns, not one", "[kiwoom][his
 
   // kt00007 publishes no 체결 state, so a fill is read from the quantities.
   const auto filled = kiwoom::KiwoomClientTestAccess::history_row(
-    json::parse("{" + base + R"(,"acpt_tp":"접수","mdfy_cncl":"","cntr_qty":"0000000010","cntr_uv":"0000070000","ord_remnq":"0000000000")" + "}")
+    json::parse(
+      "{" + base +
+      R"(,"acpt_tp":"접수","mdfy_cncl":"","cntr_qty":"0000000010","cntr_uv":"0000070000","ord_remnq":"0000000000")" +
+      "}"
+    )
       .as_object(),
     date
   );
@@ -1868,7 +1876,9 @@ TEST_CASE("a history row's state comes from two columns, not one", "[kiwoom][his
   CHECK(filled.execution_.average_filled_price_ == Decimal64(70000, 0));
 
   const auto partial = kiwoom::KiwoomClientTestAccess::history_row(
-    json::parse("{" + base + R"(,"acpt_tp":"접수","mdfy_cncl":"","cntr_qty":"0000000004","ord_remnq":"0000000006")" + "}")
+    json::parse(
+      "{" + base + R"(,"acpt_tp":"접수","mdfy_cncl":"","cntr_qty":"0000000004","ord_remnq":"0000000006")" + "}"
+    )
       .as_object(),
     date
   );
@@ -1890,19 +1900,20 @@ TEST_CASE("a cancelled order's own history row ends once its cancellation names 
   const auto date = Date{2026, 10, 6};
   // The demo server's rows for a far limit buy and its cancel (observed 2026-10-06), at 10 shares rather than the observed 1
   // so that a partial fill can be written.
-  const auto row = [](
-    const std::string& number, const std::string& original, const std::string& amendment,
-    const std::string& filled, const std::string& remaining, const std::string& side = "현금매수"
-  ) {
-    auto text = std::string(R"({"ord_no":")") + number + R"(","ori_ord":")" + original +
-      R"(","stk_cd":"A005930","stk_nm":"삼성전자","io_tp_nm":")" + side +
-      R"(","trde_tp":"보통가","acpt_tp":"주문완료","mdfy_cncl":")" + amendment +
-      R"(","ord_qty":"10","ord_uv":"221000","cntr_qty":")" + filled + R"(","dmst_stex_tp":"KRX","ord_tm":"09:01:12")";
-    if (!remaining.empty()) {
-      text += R"(,"ord_remnq":")" + remaining + "\"";
-    }
-    return text + "}";
-  };
+  const auto row =
+    [](
+      const std::string& number, const std::string& original, const std::string& amendment, const std::string& filled,
+      const std::string& remaining, const std::string& side = "현금매수"
+    ) {
+      auto text = std::string(R"({"ord_no":")") + number + R"(","ori_ord":")" + original +
+        R"(","stk_cd":"A005930","stk_nm":"삼성전자","io_tp_nm":")" + side +
+        R"(","trde_tp":"보통가","acpt_tp":"주문완료","mdfy_cncl":")" + amendment +
+        R"(","ord_qty":"10","ord_uv":"221000","cntr_qty":")" + filled + R"(","dmst_stex_tp":"KRX","ord_tm":"09:01:12")";
+      if (!remaining.empty()) {
+        text += R"(,"ord_remnq":")" + remaining + "\"";
+      }
+      return text + "}";
+    };
   const auto original = row("0013356", "0000000", "일반", "0", "0");
   const auto cancel = row("0013459", "0013356", "취소", "0", "0");
   const auto confirmed = row("0013459", "0013356", "취소확인", "0", "0");
@@ -1970,7 +1981,11 @@ TEST_CASE("a cancelled order's own history row ends once its cancellation names 
     // The order it cancels, a limit row with its price, is the limit placement's.
     const auto placed = Access::history_row(json::parse(original).as_object(), date, true);
     CHECK(runner::row_corresponds(limit, placed, runner::MatchWindow{}));
-    CHECK_FALSE(runner::row_corresponds(limit, Access::history_row(json::parse(original).as_object(), date, false), runner::MatchWindow{}));
+    CHECK_FALSE(
+      runner::row_corresponds(
+        limit, Access::history_row(json::parse(original).as_object(), date, false), runner::MatchWindow{}
+      )
+    );
   }
   SECTION("a bare 취소 on a real account is not a completed cancellation") {
     const auto orders = Access::history_rows({original, cancel}, date, false);
@@ -2003,7 +2018,8 @@ TEST_CASE("a cancelled order's own history row ends once its cancellation names 
     const auto twice = Access::history_rows({original, original, confirmed}, date, false);
     CHECK(twice[0].status_ != OrderStatus::CANCELED);
     CHECK(twice[1].status_ != OrderStatus::CANCELED);
-    const auto sell = Access::history_rows({row("0013356", "0000000", "일반", "0", "0", "현금매도"), confirmed}, date, false);
+    const auto sell =
+      Access::history_rows({row("0013356", "0000000", "일반", "0", "0", "현금매도"), confirmed}, date, false);
     CHECK(sell[0].status_ != OrderStatus::CANCELED);
   }
 }
@@ -2058,21 +2074,15 @@ TEST_CASE("both Kiwoom clients share one broker tag", "[kiwoom][port]") {
   // One tag, so a reference read through the blocking facade is usable with the asynchronous
   // client and is a different *type* from another broker's.
   STATIC_REQUIRE(
-    std::is_same_v<
-      BrokerTraits<kiwoom::KiwoomClient>::BrokerTag,
-      BrokerTraits<kiwoom::KiwoomBlockingClient>::BrokerTag
-    >
+    std::is_same_v<BrokerTraits<kiwoom::KiwoomClient>::BrokerTag, BrokerTraits<kiwoom::KiwoomBlockingClient>::BrokerTag>
   );
-  STATIC_REQUIRE_FALSE(
-    std::is_same_v<OrderRef<kiwoom::Broker>, OrderRef<kis::Broker>>
-  );
+  STATIC_REQUIRE_FALSE(std::is_same_v<OrderRef<kiwoom::Broker>, OrderRef<kis::Broker>>);
 }
 
 TEST_CASE("a Kiwoom session binds an account that carries nothing", "[kiwoom][port]") {
   ssl::context tls(ssl::context::tls_client);
   BlockingSession<kiwoom::KiwoomBlockingClient> session(
-    std::make_shared<kiwoom::KiwoomBlockingClient>(tls, kiwoom::KiwoomConfig{}),
-    kiwoom::KiwoomAccount{}
+    std::make_shared<kiwoom::KiwoomBlockingClient>(tls, kiwoom::KiwoomConfig{}), kiwoom::KiwoomAccount{}
   );
   CHECK(session.broker_name() == "kiwoom");
   // There is nothing to compare, which is the honest answer for a broker whose credential is its
@@ -2113,23 +2123,19 @@ TEST_CASE("a bar walk reports a cursor exactly when it can be acted on", "[kiwoo
   // Two pages of three, and Kiwoom says there is more after the second. The count is satisfied, so
   // the walk stops *with data still available* -- which is precisely when the caller needs the
   // cursor, and precisely the case that was broken when the key was recorded after the decision.
-  const auto satisfied = kiwoom::KiwoomClientTestAccess::walk(
-    query, {{3, std::string("page-2")}, {3, std::string("page-3")}}
-  );
+  const auto satisfied =
+    kiwoom::KiwoomClientTestAccess::walk(query, {{3, std::string("page-2")}, {3, std::string("page-3")}});
   REQUIRE(satisfied);
   CHECK(satisfied.value().bars_.size() == 6);
   REQUIRE(satisfied.value().next_cursor_);
   // The cursor is the oldest bar in hand, which is what `before_` takes to page further back.
-  CHECK(*satisfied.value().next_cursor_ ==
-        format_iso8601_utc(satisfied.value().bars_.front().timestamp_));
+  CHECK(*satisfied.value().next_cursor_ == format_iso8601_utc(satisfied.value().bars_.front().timestamp_));
   // Ascending, so the oldest is first and the newest last.
   CHECK(satisfied.value().bars_.front().timestamp_ < satisfied.value().bars_.back().timestamp_);
   CHECK(satisfied.value().stamp_ == BarStamp::OPEN);
 
   // An exhausted history reports no cursor rather than one that would return nothing.
-  const auto exhausted = kiwoom::KiwoomClientTestAccess::walk(
-    query, {{3, std::string("page-2")}, {2, std::nullopt}}
-  );
+  const auto exhausted = kiwoom::KiwoomClientTestAccess::walk(query, {{3, std::string("page-2")}, {2, std::nullopt}});
   REQUIRE(exhausted);
   CHECK(exhausted.value().bars_.size() == 5);
   CHECK_FALSE(exhausted.value().next_cursor_);
@@ -2143,9 +2149,7 @@ TEST_CASE("a bar walk reports a cursor exactly when it can be acted on", "[kiwoo
   CHECK(stalled.error().broker_code_ == "incomplete_listing");
 
   // Kiwoom offering another page with no key to ask for it is the same answer.
-  const auto keyless = kiwoom::KiwoomClientTestAccess::walk(
-    query, {{2, std::string("page-2")}, {2, std::string()}}
-  );
+  const auto keyless = kiwoom::KiwoomClientTestAccess::walk(query, {{2, std::string("page-2")}, {2, std::string()}});
   REQUIRE_FALSE(keyless);
   CHECK(keyless.error().broker_code_ == "incomplete_listing");
 
@@ -2196,9 +2200,7 @@ TEST_CASE("a modification with no resting shape is refused", "[kiwoom][orders]")
   basis.quantity_ = Decimal64(3, 0);
   basis.venue_ = Venue::KRX;
   basis.shape_ = OrderShape(OrderType::LIMIT, Decimal64(71000, 0), TimeInForce::DAY, OrderSession::REGULAR);
-  basis.resting_ = OrderShape(
-    OrderType::BEST_LIMIT, std::nullopt, TimeInForce::DAY, OrderSession::REGULAR
-  );
+  basis.resting_ = OrderShape(OrderType::BEST_LIMIT, std::nullopt, TimeInForce::DAY, OrderSession::REGULAR);
   const auto wrong_basis = Traits::to_replacement(ref, basis);
   REQUIRE_FALSE(wrong_basis);
   CHECK(wrong_basis.error().broker_code_ == "shape_change_unsupported");
@@ -2210,16 +2212,21 @@ TEST_CASE("a row whose side cannot be read fails the listing", "[kiwoom][orders]
   // would be reported as a *buy* if the field were left alone -- and a resting sell reported as a
   // buy is not deducted from what may be sold. This is the one unrecognized value the adapter
   // refuses rather than tolerates, because there is no way to represent not knowing.
-  const auto unreadable = json::parse(
-    R"({"ord_no":"0000069","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
+  const auto unreadable =
+    json::parse(
+      R"({"ord_no":"0000069","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
         "ord_qty":"1","ord_pric":"0","oso_qty":"1","io_tp_nm":"장내이체","trde_tp":"보통",
         "tm":"154113","cntr_qty":"0","stex_tp":"1"})"
-  ).as_object();
+    )
+      .as_object();
   CHECK_THROWS(kiwoom::KiwoomClientTestAccess::open_order(unreadable));
 
   // Every spelling the two listings document is readable, including the coloured and credit forms.
-  for (const char* label : {"+매수", "-매도", "매수", "매도", "현금매수", "현금매도",
-                            "융자매수", "융자매도", "매수정정", "매도취소", "매수신용"}) {
+  for (
+    const char* label :
+    {"+매수", "-매도", "매수", "매도", "현금매수", "현금매도", "융자매수", "융자매도", "매수정정", "매도취소",
+      "매수신용"}
+  ) {
     INFO(label);
     CHECK(kiwoom::normalized_order_side(label).has_value());
   }
@@ -2244,8 +2251,7 @@ TEST_CASE("all remaining is Kiwoom's own zero, not a quantity read from a listin
   CHECK(converted.value().quantity_ == Decimal64());
 
   ClientFixture fixture;
-  const auto request =
-    kiwoom::KiwoomClientTestAccess::amend_request(*fixture.client_, converted.value(), true);
+  const auto request = kiwoom::KiwoomClientTestAccess::amend_request(*fixture.client_, converted.value(), true);
   CHECK(body_of(request).at("cncl_qty").as_string() == "0");
   // And the client accepts it: a zero quantity is valid on an amendment and refused on an order.
   CHECK_FALSE(kiwoom::KiwoomClientTestAccess::validate_amendment(converted.value(), true));
@@ -2323,11 +2329,26 @@ TEST_CASE("the shape table is the codes Kiwoom publishes, and only those", "[kiw
   //  26:최유리(FOK), 28:스톱지정가, 29:중간가, 30:중간가(IOC), 31:중간가(FOK), 40:보통(GTP),
   //  46:최유리(GTP), 47:최우선(GTP)"
   static constexpr std::pair<const char*, const char*> kPublished[] = {
-    {"0", "보통"},         {"3", "시장가"},       {"5", "조건부지정가"}, {"81", "장마감후시간외"},
-    {"61", "장시작전시간외"}, {"6", "최유리지정가"}, {"7", "최우선지정가"}, {"10", "보통(IOC)"},
-    {"13", "시장가(IOC)"}, {"16", "최유리(IOC)"}, {"20", "보통(FOK)"},   {"23", "시장가(FOK)"},
-    {"26", "최유리(FOK)"}, {"28", "스톱지정가"},  {"29", "중간가"},      {"30", "중간가(IOC)"},
-    {"31", "중간가(FOK)"}, {"40", "보통(GTP)"},   {"46", "최유리(GTP)"}, {"47", "최우선(GTP)"},
+    {"0", "보통"},
+    {"3", "시장가"},
+    {"5", "조건부지정가"},
+    {"81", "장마감후시간외"},
+    {"61", "장시작전시간외"},
+    {"6", "최유리지정가"},
+    {"7", "최우선지정가"},
+    {"10", "보통(IOC)"},
+    {"13", "시장가(IOC)"},
+    {"16", "최유리(IOC)"},
+    {"20", "보통(FOK)"},
+    {"23", "시장가(FOK)"},
+    {"26", "최유리(FOK)"},
+    {"28", "스톱지정가"},
+    {"29", "중간가"},
+    {"30", "중간가(IOC)"},
+    {"31", "중간가(FOK)"},
+    {"40", "보통(GTP)"},
+    {"46", "최유리(GTP)"},
+    {"47", "최우선(GTP)"},
   };
   static_assert(sizeof(kPublished) / sizeof(kPublished[0]) == 20, "kt10000 publishes 20 codes");
 
@@ -2367,8 +2388,11 @@ TEST_CASE("the interval guard reads the same table the request does", "[kiwoom][
   // The guard used to answer from a constant, so it could have said "supported" for an interval
   // the request builder had no endpoint for -- and the builder fell through to the daily endpoint,
   // which would have returned *daily bars* under another interval's name.
-  for (const auto interval : {BarInterval::ONE_MINUTE, BarInterval::ONE_DAY, BarInterval::ONE_WEEK,
-                              BarInterval::ONE_MONTH, BarInterval::ONE_YEAR}) {
+  for (
+    const auto interval :
+    {BarInterval::ONE_MINUTE, BarInterval::ONE_DAY, BarInterval::ONE_WEEK, BarInterval::ONE_MONTH,
+      BarInterval::ONE_YEAR}
+  ) {
     INFO(bar_interval_name(interval));
     CHECK_FALSE(kiwoom::unsupported_bar_interval(interval));
     REQUIRE(kiwoom::chart_api_id(interval) != nullptr);
@@ -2381,8 +2405,10 @@ TEST_CASE("the interval guard reads the same table the request does", "[kiwoom][
   CHECK(std::string_view(kiwoom::chart_api_id(BarInterval::ONE_YEAR)) == "ka10094");
   // Kiwoom serves these through ka10080's tic_scope, but how it stamps them is not established, so this
   // client refuses them before any request.
-  for (const auto interval : {BarInterval::FIVE_MINUTES, BarInterval::FIFTEEN_MINUTES,
-                              BarInterval::THIRTY_MINUTES, BarInterval::ONE_HOUR}) {
+  for (
+    const auto interval :
+    {BarInterval::FIVE_MINUTES, BarInterval::FIFTEEN_MINUTES, BarInterval::THIRTY_MINUTES, BarInterval::ONE_HOUR}
+  ) {
     INFO(bar_interval_name(interval));
     const auto refused = kiwoom::unsupported_bar_interval(interval);
     REQUIRE(refused);
@@ -2422,8 +2448,7 @@ TEST_CASE("a priced limit order can be cancelled through the runner's own helper
   CHECK_FALSE(withdraw.value().price_);
 
   // A partial cancellation through the other helper works the same way and keeps its quantity.
-  const auto partial =
-    Traits::to_cancellation(working.ref_, cancel_quantity(working, Decimal64(3, 0)));
+  const auto partial = Traits::to_cancellation(working.ref_, cancel_quantity(working, Decimal64(3, 0)));
   REQUIRE(partial);
   CHECK(partial.value().quantity_ == Decimal64(3, 0));
 
@@ -2537,17 +2562,17 @@ TEST_CASE("an unreadable risk quantity fails the row rather than reading as zero
     INFO("rmnd_qty " << unreadable);
     HoldingsSnapshot snapshot;
     bool seen = false;
-    CHECK_THROWS(kiwoom::KiwoomClientTestAccess::holdings_page(
-      snapshot, seen, json::parse(holding(unreadable)).as_object()
-    ));
+    CHECK_THROWS(
+      kiwoom::KiwoomClientTestAccess::holdings_page(snapshot, seen, json::parse(holding(unreadable)).as_object())
+    );
   }
 
   // A reported zero is accepted and stays zero.
   HoldingsSnapshot empty;
   bool seen = false;
-  CHECK_NOTHROW(kiwoom::KiwoomClientTestAccess::holdings_page(
-    empty, seen, json::parse(holding("000000000000000")).as_object()
-  ));
+  CHECK_NOTHROW(
+    kiwoom::KiwoomClientTestAccess::holdings_page(empty, seen, json::parse(holding("000000000000000")).as_object())
+  );
   REQUIRE(empty.positions_.size() == 1);
   CHECK(empty.positions_.front().quantity_ == Decimal64());
 
@@ -2557,13 +2582,13 @@ TEST_CASE("an unreadable risk quantity fails the row rather than reading as zero
   // cost basis to report is not a reason to fail a poll.
   HoldingsSnapshot sparse;
   bool sparse_seen = false;
-  CHECK_NOTHROW(kiwoom::KiwoomClientTestAccess::holdings_page(
-    sparse,
-    sparse_seen,
-    json::parse(
-      R"({"acnt_evlt_remn_indv_tot":[{"stk_cd":"A005930","rmnd_qty":"3","trde_able_qty":"3"}]})"
-    ).as_object()
-  ));
+  CHECK_NOTHROW(
+    kiwoom::KiwoomClientTestAccess::holdings_page(
+      sparse, sparse_seen,
+      json::parse(R"({"acnt_evlt_remn_indv_tot":[{"stk_cd":"A005930","rmnd_qty":"3","trde_able_qty":"3"}]})")
+        .as_object()
+    )
+  );
   REQUIRE(sparse.positions_.size() == 1);
   CHECK(sparse.positions_.front().quantity_ == Decimal64(3, 0));
   CHECK(sparse.positions_.front().sellable_quantity_ == Decimal64(3, 0));
@@ -2573,19 +2598,14 @@ TEST_CASE("an unreadable risk quantity fails the row rather than reading as zero
 
   // The same for a working order's quantity and its filled quantity.
   const auto order = [](const char* quantity, const char* filled) {
-    return std::string(
-      R"({"ord_no":"0000069","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자","ord_qty":")") +
+    return std::string(R"({"ord_no":"0000069","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자","ord_qty":")") +
       quantity + R"(","ord_pric":"70000","oso_qty":"7","io_tp_nm":"+매수","trde_tp":"보통",
-          "tm":"154113","cntr_qty":")" + filled + R"(","stex_tp":"1"})";
+          "tm":"154113","cntr_qty":")" +
+      filled + R"(","stex_tp":"1"})";
   };
-  CHECK_THROWS(
-    kiwoom::KiwoomClientTestAccess::open_order(json::parse(order("garbled", "3")).as_object())
-  );
-  CHECK_THROWS(
-    kiwoom::KiwoomClientTestAccess::open_order(json::parse(order("10", "garbled")).as_object())
-  );
-  const auto readable =
-    kiwoom::KiwoomClientTestAccess::open_order(json::parse(order("10", "3")).as_object());
+  CHECK_THROWS(kiwoom::KiwoomClientTestAccess::open_order(json::parse(order("garbled", "3")).as_object()));
+  CHECK_THROWS(kiwoom::KiwoomClientTestAccess::open_order(json::parse(order("10", "garbled")).as_object()));
+  const auto readable = kiwoom::KiwoomClientTestAccess::open_order(json::parse(order("10", "3")).as_object());
   CHECK(readable.order_.quantity_ == Decimal64(10, 0));
   CHECK(readable.order_.execution_.filled_quantity_ == Decimal64(3, 0));
 }
@@ -2691,8 +2711,7 @@ TEST_CASE("a reprice is refused while the holdings scope is unestablished", "[ki
   CHECK_FALSE(kiwoom::KiwoomClientTestAccess::validate_amendment(withdraw.value(), true));
 
   // Reducing a resting order's size is still expressible while this holds.
-  const auto partial =
-    Traits::to_cancellation(working.ref_, cancel_quantity(working, Decimal64(3, 0)));
+  const auto partial = Traits::to_cancellation(working.ref_, cancel_quantity(working, Decimal64(3, 0)));
   REQUIRE(partial);
   CHECK_FALSE(kiwoom::KiwoomClientTestAccess::validate_amendment(partial.value(), true));
 
@@ -2724,8 +2743,7 @@ TEST_CASE("a cancellation refuses a trigger it cannot carry", "[kiwoom][orders]"
 
   // And the request builder really does drop it, which is why the refusal has to be here.
   ClientFixture fixture;
-  const auto request =
-    kiwoom::KiwoomClientTestAccess::amend_request(*fixture.client_, amendment, true);
+  const auto request = kiwoom::KiwoomClientTestAccess::amend_request(*fixture.client_, amendment, true);
   const auto body = body_of(request);
   CHECK_FALSE(body.contains("mdfy_cond_uv"));
   CHECK_FALSE(body.contains("cond_uv"));
@@ -2817,7 +2835,8 @@ TEST_CASE("a row with nothing outstanding keeps the status the broker stated", "
       R"({"ord_no":"0000069","stk_cd":"005930","ord_stt":"체결","stk_nm":"삼성전자",
           "ord_qty":"10","ord_pric":"70000","oso_qty":"0","orig_ord_no":"0000068",
           "io_tp_nm":"-매도","trde_tp":"보통","tm":"154113","cntr_qty":"10","stex_tp":"1"})"
-    ).as_object()
+    )
+      .as_object()
   );
   CHECK(settled.order_.status_ == OrderStatus::FILLED);
 }
@@ -2828,7 +2847,8 @@ TEST_CASE("an unfilled row that states nothing has filled reports pending", "[ki
       R"({"ord_no":"0000069","stk_cd":"005930","ord_stt":"취소","stk_nm":"삼성전자",
           "ord_qty":"10","ord_pric":"70000","oso_qty":"10","orig_ord_no":"0000068",
           "io_tp_nm":"+매수","trde_tp":"보통","tm":"154113","cntr_qty":"0","stex_tp":"1"})"
-    ).as_object()
+    )
+      .as_object()
   );
   CHECK(untouched.order_.status_ == OrderStatus::PENDING);
 }
@@ -2853,13 +2873,12 @@ TEST_CASE("Kiwoom places, amends and reads back a stop-limit order's trigger", "
   SECTION("28 is composed, and the trigger goes in cond_uv") {
     std::string code;
     // A settled holdings scope, so the only refusals possible are about the order itself.
-    REQUIRE_FALSE(kiwoom::KiwoomClientTestAccess::validate_order(
-      stop, code, kiwoom::KiwoomPositionScope::VALUATION_ONLY
-    ));
+    REQUIRE_FALSE(
+      kiwoom::KiwoomClientTestAccess::validate_order(stop, code, kiwoom::KiwoomPositionScope::VALUATION_ONLY)
+    );
     CHECK(code == "28");
-    const auto body = json::parse(
-      kiwoom::KiwoomClientTestAccess::place_request(*fixture.client_, stop, code).body_
-    ).as_object();
+    const auto body =
+      json::parse(kiwoom::KiwoomClientTestAccess::place_request(*fixture.client_, stop, code).body_).as_object();
     CHECK(body.at("trde_tp").as_string() == "28");
     CHECK(body.at("ord_uv").as_string() == "69000");
     CHECK(body.at("cond_uv").as_string() == "69500");
@@ -2869,18 +2888,16 @@ TEST_CASE("Kiwoom places, amends and reads back a stop-limit order's trigger", "
     auto limit = stop;
     limit.type_ = OrderType::LIMIT;
     limit.trigger_price_.reset();
-    const auto body = json::parse(
-      kiwoom::KiwoomClientTestAccess::place_request(*fixture.client_, limit, "0").body_
-    ).as_object();
+    const auto body =
+      json::parse(kiwoom::KiwoomClientTestAccess::place_request(*fixture.client_, limit, "0").body_).as_object();
     CHECK(body.at("cond_uv").as_string() == "");
   }
 
   SECTION("a trigger the order cannot carry, or a stop without one, is refused before I/O") {
     const auto refused = [](OrderRequest order) {
       std::string code;
-      const auto error = kiwoom::KiwoomClientTestAccess::validate_order(
-        order, code, kiwoom::KiwoomPositionScope::VALUATION_ONLY
-      );
+      const auto error =
+        kiwoom::KiwoomClientTestAccess::validate_order(order, code, kiwoom::KiwoomPositionScope::VALUATION_ONLY);
       REQUIRE(error);
       CHECK(error->broker_code_ == "invalid_trigger_price");
       CHECK_FALSE(error->reached_broker_);
@@ -2914,9 +2931,9 @@ TEST_CASE("Kiwoom places, amends and reads back a stop-limit order's trigger", "
     auto amendment = Traits::to_replacement(working.ref_, reprice(working, Decimal64(68000, 0)));
     REQUIRE(amendment);
     CHECK(amendment.value().condition_price_ == Decimal64(69500, 0));
-    const auto body = json::parse(
-      kiwoom::KiwoomClientTestAccess::amend_request(*fixture.client_, amendment.value(), false).body_
-    ).as_object();
+    const auto body =
+      json::parse(kiwoom::KiwoomClientTestAccess::amend_request(*fixture.client_, amendment.value(), false).body_)
+        .as_object();
     CHECK(body.at("mdfy_uv").as_string() == "68000");
     CHECK(body.at("mdfy_cond_uv").as_string() == "69500");
   }
@@ -2925,10 +2942,7 @@ TEST_CASE("Kiwoom places, amends and reads back a stop-limit order's trigger", "
     auto amendment = Traits::to_replacement(
       working.ref_,
       replace_with(
-        working,
-        OrderShape{
-          OrderType::STOP_LIMIT, Decimal64(69000, 0), std::nullopt, std::nullopt, Decimal64(69800, 0)
-        }
+        working, OrderShape{OrderType::STOP_LIMIT, Decimal64(69000, 0), std::nullopt, std::nullopt, Decimal64(69800, 0)}
       )
     );
     REQUIRE(amendment);
@@ -2961,30 +2975,39 @@ TEST_CASE("Kiwoom places, amends and reads back a stop-limit order's trigger", "
   }
 
   SECTION("the working listing reports the trigger from stop_pric") {
-    const auto row = kiwoom::KiwoomClientTestAccess::open_order(json::parse(
-      R"({"ord_no":"0000069","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
+    const auto row = kiwoom::KiwoomClientTestAccess::open_order(
+      json::parse(
+        R"({"ord_no":"0000069","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
           "ord_qty":"10","ord_pric":"69000","oso_qty":"10","orig_ord_no":"0000000",
           "io_tp_nm":"-매도","trde_tp":"스톱지정가","tm":"154113","cntr_qty":"0","stex_tp":"1",
           "stop_pric":"69500"})"
-    ).as_object());
+      )
+        .as_object()
+    );
     CHECK(row.order_.type_ == OrderType::STOP_LIMIT);
     CHECK(row.order_.trigger_price_ == Decimal64(69500, 0));
   }
 
   SECTION("an ordinary order's zero is not a trigger, and an unreadable one costs only the trigger") {
-    const auto plain = kiwoom::KiwoomClientTestAccess::open_order(json::parse(
-      R"({"ord_no":"0000070","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
+    const auto plain = kiwoom::KiwoomClientTestAccess::open_order(
+      json::parse(
+        R"({"ord_no":"0000070","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
           "ord_qty":"10","ord_pric":"70000","oso_qty":"10","orig_ord_no":"0000000",
           "io_tp_nm":"+매수","trde_tp":"보통","tm":"154113","cntr_qty":"0","stex_tp":"1",
           "stop_pric":"0"})"
-    ).as_object());
+      )
+        .as_object()
+    );
     CHECK_FALSE(plain.order_.trigger_price_);
-    const auto unreadable = kiwoom::KiwoomClientTestAccess::open_order(json::parse(
-      R"({"ord_no":"0000071","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
+    const auto unreadable = kiwoom::KiwoomClientTestAccess::open_order(
+      json::parse(
+        R"({"ord_no":"0000071","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
           "ord_qty":"10","ord_pric":"69000","oso_qty":"10","orig_ord_no":"0000000",
           "io_tp_nm":"-매도","trde_tp":"스톱지정가","tm":"154113","cntr_qty":"0","stex_tp":"1",
           "stop_pric":"69.5.0"})"
-    ).as_object());
+      )
+        .as_object()
+    );
     CHECK(unreadable.order_.type_ == OrderType::STOP_LIMIT);
     CHECK_FALSE(unreadable.order_.trigger_price_);
   }
@@ -2992,12 +3015,15 @@ TEST_CASE("Kiwoom places, amends and reads back a stop-limit order's trigger", "
   SECTION("a positive trigger on a row that is not a stop is recorded, and blocks a modification") {
     // Kiwoom contradicting its own `trde_tp` is kept where a caller can see it; a reprice then
     // restates a trigger on a basis that takes none and is refused, while the withdrawal works.
-    const auto row = kiwoom::KiwoomClientTestAccess::open_order(json::parse(
-      R"({"ord_no":"0000072","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
+    const auto row = kiwoom::KiwoomClientTestAccess::open_order(
+      json::parse(
+        R"({"ord_no":"0000072","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
           "ord_qty":"10","ord_pric":"70000","oso_qty":"10","orig_ord_no":"0000000",
           "io_tp_nm":"-매도","trde_tp":"보통","tm":"154113","cntr_qty":"0","stex_tp":"1",
           "stop_pric":"69500"})"
-    ).as_object());
+      )
+        .as_object()
+    );
     REQUIRE(row.order_.type_ == OrderType::LIMIT);
     REQUIRE(row.order_.trigger_price_ == Decimal64(69500, 0));
 
@@ -3007,8 +3033,7 @@ TEST_CASE("Kiwoom places, amends and reads back a stop-limit order's trigger", "
     contradicted.order_ = row.order_;
     contradicted.order_.venue_ = Venue::KRX;
     contradicted.amendable_quantity_ = row.amendable_quantity_;
-    const auto modified =
-      Traits::to_replacement(contradicted.ref_, reprice(contradicted, Decimal64(69000, 0)));
+    const auto modified = Traits::to_replacement(contradicted.ref_, reprice(contradicted, Decimal64(69000, 0)));
     REQUIRE_FALSE(modified);
     CHECK(modified.error().broker_code_ == "invalid_trigger_price");
     const auto canceled = Traits::to_cancellation(contradicted.ref_, cancel_all(contradicted));
@@ -3025,7 +3050,8 @@ TEST_CASE("Kiwoom places, amends and reads back a stop-limit order's trigger", "
             "io_tp_nm":"현금매도","loan_dt":"","cntr_qty":"0000000000","cntr_uv":"0000000000",
             "ord_remnq":"0000000010","comm_ord_tp":"영웅문4","mdfy_cncl":"","cnfm_tm":"",
             "dmst_stex_tp":"KRX","cond_uv":"0000069500"})"
-      ).as_object(),
+      )
+        .as_object(),
       Date{2026, 3, 28}
     );
     CHECK(row.type_ == OrderType::STOP_LIMIT);

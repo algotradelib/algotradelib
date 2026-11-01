@@ -154,10 +154,7 @@ std::string file_safe(std::string text) {
  * orders cannot be read as another's.
  */
 void name_journal(
-  live_program::Settings& settings,
-  const Arguments& arguments,
-  const std::string& broker,
-  bool demo,
+  live_program::Settings& settings, const Arguments& arguments, const std::string& broker, bool demo,
   const std::string& account
 ) {
   settings.journal_scope_ = broker + ':' + (demo ? "demo" : "live") + ':' + account;
@@ -172,10 +169,7 @@ void name_journal(
  * `demo_variable` names the broker's demo switch, or is null for a broker without one.
  */
 void announce(
-  const Arguments& arguments,
-  const live_program::Settings& settings,
-  bool demo,
-  const char* demo_variable
+  const Arguments& arguments, const live_program::Settings& settings, bool demo, const char* demo_variable
 ) {
   std::cout << "broker     : " << arguments.broker_ << (demo ? " (demo)" : " (LIVE ACCOUNT)") << '\n';
   // Demo because nothing said live: say how to say it, since live keys on the demo endpoints fail with
@@ -183,10 +177,11 @@ void announce(
   if (demo && demo_variable != nullptr && std::getenv(demo_variable) == nullptr) {
     std::cout << "             demo by default; set " << demo_variable << "=0 to trade live\n";
   }
-  std::cout << "instrument : " << arguments.symbol_ << '\n'
-            << "mode       : " << (arguments.live_ ? "TRADE -- orders will be sent" : "observe") << '\n'
-            << "limits     : at most " << settings.limits_.max_position_quantity_->str()
-            << " share(s), " << settings.limits_.max_order_notional_->str() << " per order\n";
+  std::cout
+    << "instrument : " << arguments.symbol_ << '\n'
+    << "mode       : " << (arguments.live_ ? "TRADE -- orders will be sent" : "observe") << '\n'
+    << "limits     : at most " << settings.limits_.max_position_quantity_->str() << " share(s), "
+    << settings.limits_.max_order_notional_->str() << " per order\n";
   if (settings.default_route_ != atl::Venue::UNSPECIFIED) {
     std::cout << "route      : " << atl::venue_name(settings.default_route_) << '\n';
   }
@@ -198,11 +193,8 @@ void announce(
 /** @brief Runs the chosen mode, installing the signal stop for the run's duration. */
 template <typename Session, typename MarketData>
 int run(
-  Session& session,
-  MarketData& market_data,
-  const atl::InstrumentId& instrument,
-  const live_program::Settings& settings,
-  bool live
+  Session& session, MarketData& market_data, const atl::InstrumentId& instrument,
+  const live_program::Settings& settings, bool live
 ) {
   runner::StopSource stop;
   runner::SignalStop::install(stop);
@@ -264,23 +256,24 @@ int run_kis(ssl::context& tls, const Arguments& arguments) {
     auto market_config = kis_credentials::market_data_config(arguments.credentials_);
     if (market_config) {
       atl::BlockingSession<kis::KisBlockingClient> market_data(
-        std::make_shared<kis::KisBlockingClient>(
-          tls, std::move(*market_config), kis_credentials::paced_options()
-        ),
+        std::make_shared<kis::KisBlockingClient>(tls, std::move(*market_config), kis_credentials::paced_options()),
         kis::KisAccount{}
       );
-      std::cout << "market data: kis " << (*arguments.credentials_ / "kis" / "real.json").string()
-                << " (no account: cannot trade)\n";
+      std::cout
+        << "market data: kis " << (*arguments.credentials_ / "kis" / "real.json").string()
+        << " (no account: cannot trade)\n";
       return run(session, market_data, instrument, settings, arguments.live_);
     }
     if (arguments.market_data_ == "kis") {
       throw std::runtime_error(
-        arguments.credentials_ ? "--market-data kis reads kis/real.json, and there is none" :
-                                 "--market-data kis reads kis/real.json; give --credentials DIR"
+        arguments.credentials_ ?
+          "--market-data kis reads kis/real.json, and there is none" :
+          "--market-data kis reads kis/real.json; give --credentials DIR"
       );
     }
-    std::cout << "market data: the demo account's own (no kis/real.json); a demo host refuses\n"
-              << "             reference data, so this run stops there\n";
+    std::cout
+      << "market data: the demo account's own (no kis/real.json); a demo host refuses\n"
+      << "             reference data, so this run stops there\n";
   }
   return run(session, instrument, settings, arguments.live_);
 }
@@ -309,8 +302,9 @@ int run_kiwoom(ssl::context& tls, const Arguments& arguments) {
   // journal is named after the account the key drives, as Kiwoom reports it.
   const auto accounts = session.accounts();
   if (!accounts || accounts.value().empty()) {
-    std::cerr << "could not read which account this Kiwoom key drives"
-              << (accounts ? std::string() : ": " + accounts.error().message_) << '\n';
+    std::cerr
+      << "could not read which account this Kiwoom key drives"
+      << (accounts ? std::string() : ": " + accounts.error().message_) << '\n';
     return static_cast<int>(live_program::Exit::ACCOUNT_UNRESOLVED);
   }
 
@@ -329,8 +323,9 @@ int run_kiwoom(ssl::context& tls, const Arguments& arguments) {
   //  - Holdings refuse until the scopes above are asserted, so the loop has no portfolio and holds.
   //  - Kiwoom publishes no trading calendar, so the market phase stays unknown, and the default
   //    limits open a position only while the market is open.
-  std::cout << "note       : on Kiwoom this program places nothing yet -- holdings need a stated\n"
-            << "             scope, and the market phase is unknown without a calendar\n";
+  std::cout
+    << "note       : on Kiwoom this program places nothing yet -- holdings need a stated\n"
+    << "             scope, and the market phase is unknown without a calendar\n";
   return run(session, instrument, settings, arguments.live_);
 }
 
@@ -348,13 +343,14 @@ int run_toss(ssl::context& tls, const Arguments& arguments) {
   const int unresolved = static_cast<int>(live_program::Exit::ACCOUNT_UNRESOLVED);
   auto accounts = atl::list_accounts(*client);
   if (!accounts || accounts.value().empty()) {
-    std::cerr << "could not list the accounts these Toss credentials reach"
-              << (accounts ? std::string() : ": " + accounts.error().message_) << '\n';
+    std::cerr
+      << "could not list the accounts these Toss credentials reach"
+      << (accounts ? std::string() : ": " + accounts.error().message_) << '\n';
     return unresolved;
   }
   if (!arguments.toss_account_ && accounts.value().size() > 1) {
-    std::cerr << "these Toss credentials reach " << accounts.value().size()
-              << " accounts; choose one with --toss-account:\n";
+    std::cerr
+      << "these Toss credentials reach " << accounts.value().size() << " accounts; choose one with --toss-account:\n";
     for (const auto& account : accounts.value()) {
       std::cerr << "  --toss-account " << account.selector_ << "   (" << account.type_ << ")\n";
     }
@@ -375,8 +371,9 @@ int run_toss(ssl::context& tls, const Arguments& arguments) {
     }
   }
   if (chosen.display_number_.empty()) {
-    std::cerr << "Toss reported no account number for sequence " << chosen.selector_
-              << ", so the journal could not be named after the account\n";
+    std::cerr
+      << "Toss reported no account number for sequence " << chosen.selector_
+      << ", so the journal could not be named after the account\n";
     return unresolved;
   }
 

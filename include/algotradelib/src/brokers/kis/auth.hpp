@@ -24,8 +24,7 @@ public:
    * @param ctx The TLS context; borrowed, and must outlive the wrapper.
    * @param config The credentials (copied).
    */
-  KisAuth(net::io_context& ioc, ssl::context& ctx, const KisConfig& config)
-  : ioc_(ioc), ctx_(ctx), req_(config) {}
+  KisAuth(net::io_context& ioc, ssl::context& ctx, const KisConfig& config) : ioc_(ioc), ctx_(ctx), req_(config) {}
 
   /** @brief Destroys the wrapper. */
   virtual ~KisAuth() = default;
@@ -72,9 +71,7 @@ private:
     KisHttpClient rest(ioc_, ctx_, req_.rest_host(), req_.rest_port());
     auto response = rest.post("/oauth2/tokenP", jsonbody, {{"content-type", "application/json"}});
     if (response.result_int() < 200 || response.result_int() >= 300) {
-      throw std::runtime_error(
-        "Token authentication failed with HTTP status " + std::to_string(response.result_int())
-      );
+      throw std::runtime_error("Token authentication failed with HTTP status " + std::to_string(response.result_int()));
     }
     const std::string resp = std::move(response.body());
     boost::system::error_code ec;
@@ -121,8 +118,7 @@ private:
     if (ec || !jv.is_object()) {
       // Not the body: an approval reply that did not parse may still hold the key.
       throw std::runtime_error(
-        "WebSocket authentication failed: the reply is not a JSON object (" + std::to_string(resp.size()) +
-        " bytes)"
+        "WebSocket authentication failed: the reply is not a JSON object (" + std::to_string(resp.size()) + " bytes)"
       );
     }
     ws_resp_.from_json(jv.as_object());

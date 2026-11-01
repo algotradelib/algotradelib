@@ -8,12 +8,16 @@
 using namespace algotradelib;
 
 struct Inner final {
-  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
 };
 
 struct Outer {
   Inner inner_;
-  template <class Ctx> void on_bar(Ctx& ctx, const strategy::BarEvent& bar) { runner::dispatch::bar(inner_, ctx, bar); }
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    runner::dispatch::bar(inner_, ctx, bar);
+  }
 };
 
 ATL_ASSERT_STRATEGY(Outer, strategy::MinimalContext);

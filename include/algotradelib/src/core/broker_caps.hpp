@@ -36,7 +36,7 @@ constexpr SellableBasis inquiry_basis() {
   }
 }
 
-}  // namespace caps_detail
+} // namespace caps_detail
 
 /**
  * @brief What one broker client implements, as compile-time constants.

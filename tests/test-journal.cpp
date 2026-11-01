@@ -41,15 +41,17 @@ using runner::SendOutcome;
 Clock::time_point utc(int year, int month, int day, int hour, int minute) {
   const long long a = (month <= 2) ? year - 1 : year;
   const long long m = (month <= 2) ? month + 12 : month;
-  const long long era_days =
-    365 * a + a / 4 - a / 100 + a / 400 + (153 * (m - 3) + 2) / 5 + day - 1;
-  return Clock::time_point{} + std::chrono::hours((era_days - 719468) * 24 + hour) +
-    std::chrono::minutes(minute);
+  const long long era_days = 365 * a + a / 4 - a / 100 + a / 400 + (153 * (m - 3) + 2) / 5 + day - 1;
+  return Clock::time_point{} + std::chrono::hours((era_days - 719468) * 24 + hour) + std::chrono::minutes(minute);
 }
 
-InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
+InstrumentId samsung() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+}
 
-InstrumentId hynix() { return InstrumentId{Country::KR, Venue::COMBINED, "000660"}; }
+InstrumentId hynix() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "000660"};
+}
 
 strategy::PlannedOrder buy_ten(const InstrumentId& id = samsung(), const char* price = "70000") {
   strategy::PlannedOrder order;
@@ -84,7 +86,6 @@ WorkingOrder<runner::DryTag> resting(const char* order_id) {
 template <typename Tag>
 class ObservingExecutor {
 public:
-
   /** A double reaches no broker, so it is exempt from having to have read the account. */
   static constexpr bool reaches_a_broker = false;
   ObservingExecutor() = default;
@@ -103,11 +104,17 @@ public:
     return cancel_outcome_;
   }
 
-  const std::vector<strategy::PlannedOrder>& placed() const noexcept { return placed_; }
-  const std::vector<OrderRef<Tag>>& canceled() const noexcept { return canceled_; }
+  const std::vector<strategy::PlannedOrder>& placed() const noexcept {
+    return placed_;
+  }
+  const std::vector<OrderRef<Tag>>& canceled() const noexcept {
+    return canceled_;
+  }
 
   /** What the journal held at the moment each send was attempted. */
-  const std::vector<std::vector<JournalEntry>>& seen() const noexcept { return seen_; }
+  const std::vector<std::vector<JournalEntry>>& seen() const noexcept {
+    return seen_;
+  }
 
   SendOutcome place_outcome_{SendOutcome::ACCEPTED};
   SendOutcome cancel_outcome_{SendOutcome::ACCEPTED};
@@ -129,7 +136,6 @@ private:
 template <typename Tag>
 class ReportingExecutor {
 public:
-
   /** A double reaches no broker, so it is exempt from having to have read the account. */
   static constexpr bool reaches_a_broker = false;
   SendOutcome place(const strategy::PlannedOrder&) {
@@ -146,10 +152,16 @@ public:
     return place_outcome_;
   }
 
-  SendOutcome cancel(const WorkingOrder<Tag>&) { return SendOutcome::ACCEPTED; }
+  SendOutcome cancel(const WorkingOrder<Tag>&) {
+    return SendOutcome::ACCEPTED;
+  }
 
-  const std::optional<OrderRef<Tag>>& last_ref() const noexcept { return last_ref_; }
-  const std::optional<BrokerError>& last_error() const noexcept { return last_error_; }
+  const std::optional<OrderRef<Tag>>& last_ref() const noexcept {
+    return last_ref_;
+  }
+  const std::optional<BrokerError>& last_error() const noexcept {
+    return last_error_;
+  }
 
   SendOutcome place_outcome_{SendOutcome::ACCEPTED};
   std::string issued_id_{"BROKER-1"};
@@ -160,8 +172,7 @@ private:
   std::optional<BrokerError> last_error_;
 };
 
-using Journaling =
-  runner::JournalingExecutor<ObservingExecutor<runner::DryTag>, MemoryJournal, runner::ManualClock>;
+using Journaling = runner::JournalingExecutor<ObservingExecutor<runner::DryTag>, MemoryJournal, runner::ManualClock>;
 
 } // namespace
 
@@ -222,11 +233,7 @@ TEST_CASE("every journal and control-file name round-trips through its strict re
 
 namespace {
 
-JournalEntry line(
-  const char* id,
-  JournalOutcome outcome,
-  const InstrumentId& instrument = samsung()
-) {
+JournalEntry line(const char* id, JournalOutcome outcome, const InstrumentId& instrument = samsung()) {
   JournalEntry entry;
   entry.id_ = id;
   entry.outcome_ = outcome;
@@ -358,7 +365,9 @@ TEST_CASE("a journal on a clock reference stamps the time its clock has moved to
   // the journal read the clock the loop advances.
   runner::ManualClock clock{std::chrono::system_clock::time_point{} + std::chrono::hours(500000)};
   MemoryJournal journal;
-  runner::JournalingExecutor<ObservingExecutor<runner::DryTag>, MemoryJournal, runner::ClockReference<runner::ManualClock>>
+  runner::JournalingExecutor<
+    ObservingExecutor<runner::DryTag>, MemoryJournal, runner::ClockReference<runner::ManualClock>
+  >
     executor{ObservingExecutor<runner::DryTag>{&journal}, journal, runner::ClockReference<runner::ManualClock>(clock)};
   executor.set_id_prefix("run");
 
@@ -428,8 +437,9 @@ TEST_CASE("a cancellation is journaled before it is attempted, naming its target
 
 TEST_CASE("a failed placement records what the executor said went wrong", "[journal]") {
   MemoryJournal journal;
-  runner::JournalingExecutor<ReportingExecutor<runner::DryTag>, MemoryJournal, runner::ManualClock>
-    executor{ReportingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}};
+  runner::JournalingExecutor<ReportingExecutor<runner::DryTag>, MemoryJournal, runner::ManualClock> executor{
+    ReportingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}
+  };
   executor.inner().place_outcome_ = SendOutcome::INDETERMINATE;
   executor.inner().message_ = "the connection was reset";
 
@@ -482,19 +492,24 @@ void write_journal(const std::string& path, const std::string& body, const char*
  */
 class TempJournal {
 public:
-  explicit TempJournal(const char* name)
-  : path_(std::string("atl-test-journal-") + name + ".jsonl") {
+  explicit TempJournal(const char* name) : path_(std::string("atl-test-journal-") + name + ".jsonl") {
     std::remove(path_.c_str());
   }
 
-  ~TempJournal() { std::remove(path_.c_str()); }
+  ~TempJournal() {
+    std::remove(path_.c_str());
+  }
 
   TempJournal(const TempJournal&) = delete;
   TempJournal& operator=(const TempJournal&) = delete;
 
   /** Returns the path, so a test reads like it holds a string. */
-  operator const std::string&() const noexcept { return path_; }
-  const std::string& str() const noexcept { return path_; }
+  operator const std::string&() const noexcept {
+    return path_;
+  }
+  const std::string& str() const noexcept {
+    return path_;
+  }
 
 private:
   std::string path_;
@@ -559,12 +574,10 @@ TEST_CASE("a damaged value makes a line unattributable, not a different order", 
   // and withholding it protects nothing.
   const auto damage = [](std::string_view field, std::string_view from, std::string_view to) {
     auto line = without_checksum(runner::journal_entry_to_line(sample_entry()));
-    const std::string needle = std::string("\"") + std::string(field) + "\":\"" +
-      std::string(from) + "\"";
+    const std::string needle = std::string("\"") + std::string(field) + "\":\"" + std::string(from) + "\"";
     const auto at = line.find(needle);
     REQUIRE(at != std::string::npos);
-    line.replace(at, needle.size(),
-      std::string("\"") + std::string(field) + "\":\"" + std::string(to) + "\"");
+    line.replace(at, needle.size(), std::string("\"") + std::string(field) + "\":\"" + std::string(to) + "\"");
     return line;
   };
 
@@ -596,9 +609,7 @@ TEST_CASE("a damaged value makes a line unattributable, not a different order", 
 
   // The undamaged line still reads as itself, so the assertions above are about
   // the damage rather than about the reader refusing everything.
-  const auto intact = runner::journal_entry_from_line(
-    runner::journal_entry_to_line(sample_entry())
-  );
+  const auto intact = runner::journal_entry_from_line(runner::journal_entry_to_line(sample_entry()));
   REQUIRE(intact.has_value());
   REQUIRE(intact->instrument_ == sample_entry().instrument_);
   REQUIRE_FALSE(intact->requires_operator_);
@@ -612,20 +623,21 @@ TEST_CASE("a torn line's wrong-typed prefix field is damage, not an absent one",
   // instrument, marked operator-only on that guessed key, while the real US
   // instrument stayed free to trade. `requires_operator_` does not protect a
   // key nobody is trading under.
-  const auto torn = R"({"id":"run-1","action":"place","outcome":"pending","country":null,)"
-                    R"("venue":"COMBINED","symbol":"AAPL","side":"BUY","quan)";
+  const auto torn =
+    R"({"id":"run-1","action":"place","outcome":"pending","country":null,)"
+    R"("venue":"COMBINED","symbol":"AAPL","side":"BUY","quan)";
   const auto salvaged = runner::salvage_journal_line(torn);
   REQUIRE(salvaged.has_value());
   REQUIRE(salvaged->requires_operator_);
   REQUIRE(salvaged->instrument_.symbol_.empty());
   // Specifically not the instrument the guess would have named.
-  REQUIRE_FALSE((salvaged->instrument_.country_ == Country::KR &&
-    salvaged->instrument_.symbol_ == "AAPL"));
+  REQUIRE_FALSE((salvaged->instrument_.country_ == Country::KR && salvaged->instrument_.symbol_ == "AAPL"));
 
   // A fragment that simply *ends* before those keys still takes its defaults,
   // because that is what a torn line is.
-  const auto plain = R"({"id":"run-2","action":"place","outcome":"pending",)"
-                     R"("symbol":"005930","side":"BUY","quan)";
+  const auto plain =
+    R"({"id":"run-2","action":"place","outcome":"pending",)"
+    R"("symbol":"005930","side":"BUY","quan)";
   const auto ordinary = runner::salvage_journal_line(plain);
   REQUIRE(ordinary.has_value());
   REQUIRE(ordinary->requires_operator_);
@@ -639,8 +651,9 @@ TEST_CASE("a torn line's wrong-typed prefix field is damage, not an absent one",
   // is the tell: a value followed by one finished being written, so failing to
   // read it is damage; a value with nothing after it is where the writer
   // stopped.
-  const auto cut_mid_value = R"({"id":"run-3","action":"place","outcome":"pending",)"
-                             R"("country":"KR","venue":"COMBINED","symbol":"005930","side":"BU)";
+  const auto cut_mid_value =
+    R"({"id":"run-3","action":"place","outcome":"pending",)"
+    R"("country":"KR","venue":"COMBINED","symbol":"005930","side":"BU)";
   const auto cut = runner::salvage_journal_line(cut_mid_value);
   REQUIRE(cut.has_value());
   REQUIRE(cut->requires_operator_);
@@ -648,9 +661,10 @@ TEST_CASE("a torn line's wrong-typed prefix field is damage, not an absent one",
   REQUIRE(cut->side_ == OrderSide::BUY);
 
   // The same key, written to completion and unreadable, is still damage.
-  const auto completed = R"({"id":"run-4","action":"place","outcome":"pending",)"
-                         R"("country":"KR","venue":"COMBINED","side":null,)"
-                         R"("symbol":"005930","quan)";
+  const auto completed =
+    R"({"id":"run-4","action":"place","outcome":"pending",)"
+    R"("country":"KR","venue":"COMBINED","side":null,)"
+    R"("symbol":"005930","quan)";
   const auto damaged_side = runner::salvage_journal_line(completed);
   REQUIRE(damaged_side.has_value());
   REQUIRE(damaged_side->instrument_.symbol_.empty());
@@ -671,8 +685,7 @@ TEST_CASE("a line the writer emits is readable, and unresolvable", "[journal]") 
   auto cancel = sample_entry();
   cancel.action_ = runner::JournalAction::CANCEL;
   cancel.order_id_.clear();
-  const auto read_cancel =
-    runner::journal_entry_from_line(runner::journal_entry_to_line(cancel));
+  const auto read_cancel = runner::journal_entry_from_line(runner::journal_entry_to_line(cancel));
   REQUIRE(read_cancel.has_value());
   REQUIRE(read_cancel->instrument_ == cancel.instrument_);
   REQUIRE_FALSE(read_cancel->requires_operator_);
@@ -680,8 +693,7 @@ TEST_CASE("a line the writer emits is readable, and unresolvable", "[journal]") 
   auto unpriced = sample_entry();
   unpriced.type_ = OrderType::LIMIT;
   unpriced.price_.reset();
-  const auto read_unpriced =
-    runner::journal_entry_from_line(runner::journal_entry_to_line(unpriced));
+  const auto read_unpriced = runner::journal_entry_from_line(runner::journal_entry_to_line(unpriced));
   REQUIRE(read_unpriced.has_value());
   REQUIRE(read_unpriced->instrument_ == unpriced.instrument_);
 
@@ -718,9 +730,7 @@ TEST_CASE("a truncated line is never allowed to resolve a pending one", "[journa
   // its legible prefix would mark the order resolved on the strength of a write that never
   // finished.
   write_journal(
-    path.str(),
-    runner::journal_entry_to_line(pending) + "\n" +
-      terminal_line.substr(0, terminal_line.size() * 2 / 3)
+    path.str(), runner::journal_entry_to_line(pending) + "\n" + terminal_line.substr(0, terminal_line.size() * 2 / 3)
   );
 
   const auto replay = runner::read_journal_file(path.str());
@@ -744,10 +754,14 @@ public:
     ++appends_;
     return false;
   }
-  runner::JournalReplay replay() const { return {}; }
+  runner::JournalReplay replay() const {
+    return {};
+  }
 
   /** How many records were offered, so a test can prove a send was gated rather than attempted. */
-  std::size_t appends() const noexcept { return appends_; }
+  std::size_t appends() const noexcept {
+    return appends_;
+  }
 
 private:
   std::size_t appends_{0};
@@ -757,9 +771,9 @@ private:
 
 TEST_CASE("an instruction that cannot be journaled is not sent", "[journal]") {
   FailingJournal journal;
-  runner::JournalingExecutor<runner::RecordingExecutor<runner::DryTag>, FailingJournal,
-    runner::ManualClock>
-    executor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}};
+  runner::JournalingExecutor<runner::RecordingExecutor<runner::DryTag>, FailingJournal, runner::ManualClock> executor{
+    runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}
+  };
 
   // `UNAVAILABLE` rather than `REJECTED`, and the distinction is the whole point: both mean the
   // order does not exist, but a rejection is the broker's answer about one instruction while this
@@ -801,7 +815,9 @@ public:
   }
 
   /** Stands in for an operator emptying the disk. */
-  void repair() { repaired_ = true; }
+  void repair() {
+    repaired_ = true;
+  }
 
   runner::JournalReplay replay() const {
     runner::JournalReplay replay;
@@ -812,7 +828,9 @@ public:
   std::size_t limit_{1};
 
   /** Everything recorded, so a test can count sends that actually happened. */
-  const std::vector<JournalEntry>& records() const noexcept { return entries_; }
+  const std::vector<JournalEntry>& records() const noexcept {
+    return entries_;
+  }
 
 private:
   std::size_t accepted_{0};
@@ -875,8 +893,8 @@ strategy::BarEvent bar_at(int day) {
   return strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, bar);
 }
 
-using BrokenExecutor = runner::JournalingExecutor<
-  runner::RecordingExecutor<runner::DryTag>, FailingJournal, runner::ManualClock>;
+using BrokenExecutor =
+  runner::JournalingExecutor<runner::RecordingExecutor<runner::DryTag>, FailingJournal, runner::ManualClock>;
 
 } // namespace
 
@@ -885,13 +903,10 @@ TEST_CASE("a terminal journal failure stops the runner too", "[journal]") {
   // would be a lie about an order that exists. But the journal is broken, and the earlier code
   // recorded that only on the executor, where nothing read it, so the runner did not stop.
   HalfFailingJournal journal;
-  using HalfExecutor = runner::JournalingExecutor<
-    runner::RecordingExecutor<runner::DryTag>, HalfFailingJournal, runner::ManualClock>;
+  using HalfExecutor =
+    runner::JournalingExecutor<runner::RecordingExecutor<runner::DryTag>, HalfFailingJournal, runner::ManualClock>;
   runner::Runner<HoldTen, strategy::NoCaps, runner::DryTag, HalfExecutor> dry{
-    HoldTen{},
-    {},
-    512,
-    HalfExecutor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}}
+    HoldTen{}, {}, 512, HalfExecutor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}}
   };
   dry.context().set_instrument(samsung_reference());
   dry.context().set_phase(strategy::MarketPhase::OPEN);
@@ -912,10 +927,7 @@ TEST_CASE("a terminal journal failure stops the runner too", "[journal]") {
 TEST_CASE("a halted runner sends no cancellation either", "[journal]") {
   FailingJournal journal;
   runner::Runner<WithdrawAll, strategy::NoCaps, runner::DryTag, BrokenExecutor> dry{
-    WithdrawAll{},
-    {},
-    512,
-    BrokenExecutor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}}
+    WithdrawAll{}, {}, 512, BrokenExecutor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}}
   };
   dry.context().set_instrument(samsung_reference());
   dry.context().set_phase(strategy::MarketPhase::OPEN);
@@ -965,9 +977,7 @@ TEST_CASE("a salvaged entry is never resolved by a sweep", "[journal][file]") {
   // returned `not_placed` and cleared the ledger -- resolving on missing data, in the one direction
   // that can leave a live order unwatched.
   MemoryJournal sink;
-  const auto swept = runner::reconcile_against(
-    recovery.open_, {}, utc(2030, 1, 1, 0, 0), ledger, sink
-  );
+  const auto swept = runner::reconcile_against(recovery.open_, {}, utc(2030, 1, 1, 0, 0), ledger, sink);
   // Nothing was written back either, because nothing was decided.
   REQUIRE(swept.recorded_ == 0);
   REQUIRE(swept.matches_.front().verdict_ == runner::MatchVerdict::NEEDS_OPERATOR);
@@ -1038,8 +1048,7 @@ TEST_CASE("a torn line naming nothing halts the runner beside another open instr
 }
 
 TEST_CASE(
-  "a cancellation of a market order the broker priced survives writer to reader",
-  "[journal][file][reconcile]"
+  "a cancellation of a market order the broker priced survives writer to reader", "[journal][file][reconcile]"
 ) {
   // The same case as the path it actually travels rather than as a hand-built
   // `OpenInstruction`: the direct test shows the matcher tolerates a price-inconsistent cancellation, but
@@ -1061,9 +1070,9 @@ TEST_CASE(
     REQUIRE(journal.open());
     ObservingExecutor<runner::DryTag> inner;
     inner.cancel_outcome_ = SendOutcome::INDETERMINATE;
-    runner::JournalingExecutor<ObservingExecutor<runner::DryTag>, runner::FileJournal,
-      runner::ManualClock>
-      executor{inner, journal, runner::ManualClock{utc(2026, 3, 30, 1, 0)}};
+    runner::JournalingExecutor<ObservingExecutor<runner::DryTag>, runner::FileJournal, runner::ManualClock> executor{
+      inner, journal, runner::ManualClock{utc(2026, 3, 30, 1, 0)}
+    };
     // No answer came back, which is what leaves the instruction open across the restart.
     REQUIRE(executor.cancel(working) == SendOutcome::INDETERMINATE);
   }
@@ -1093,12 +1102,10 @@ TEST_CASE(
   listed.price_ = Decimal64::parse("70000");
 
   // Present: the named order is still there, so the cancellation did not take.
-  REQUIRE(runner::match_against(open.front(), {listed}, now).verdict_ ==
-    runner::MatchVerdict::MATCHED);
+  REQUIRE(runner::match_against(open.front(), {listed}, now).verdict_ == runner::MatchVerdict::MATCHED);
   // Absent, past the window: it is gone, and the instrument may trade again. Before the fix both
   // of these were NEEDS_OPERATOR and the instrument was withheld for ever.
-  REQUIRE(runner::match_against(open.front(), {}, now).verdict_ ==
-    runner::MatchVerdict::NOT_PLACED);
+  REQUIRE(runner::match_against(open.front(), {}, now).verdict_ == runner::MatchVerdict::NOT_PLACED);
 }
 
 // ---------------------------------------------------------------------------
@@ -1273,7 +1280,9 @@ public:
     return replay;
   }
 
-  const std::vector<JournalEntry>& records() const noexcept { return entries_; }
+  const std::vector<JournalEntry>& records() const noexcept {
+    return entries_;
+  }
 
   std::size_t failures_remaining_{1};
 
@@ -1281,8 +1290,8 @@ private:
   std::vector<JournalEntry> entries_;
 };
 
-using RepairableExecutor = runner::JournalingExecutor<
-  runner::RecordingExecutor<runner::DryTag>, RepairableJournal, runner::ManualClock>;
+using RepairableExecutor =
+  runner::JournalingExecutor<runner::RecordingExecutor<runner::DryTag>, RepairableJournal, runner::ManualClock>;
 
 } // namespace
 
@@ -1292,10 +1301,7 @@ TEST_CASE("resuming a journal failure does not resume an operator's halt", "[jou
   RepairableJournal journal;
   journal.failures_remaining_ = 1;
   runner::Runner<HoldTen, strategy::NoCaps, runner::DryTag, RepairableExecutor> dry{
-    HoldTen{},
-    {},
-    512,
-    RepairableExecutor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}}
+    HoldTen{}, {}, 512, RepairableExecutor{runner::RecordingExecutor<runner::DryTag>{}, journal, runner::ManualClock{}}
   };
   dry.context().set_instrument(samsung_reference());
   dry.context().set_phase(strategy::MarketPhase::OPEN);
@@ -1304,7 +1310,7 @@ TEST_CASE("resuming a journal failure does not resume an operator's halt", "[jou
   dry.feed(bar_at(30));
   REQUIRE(dry.local_failure().has_value());
 
-  dry.guard().halt();  // the operator, having seen the alert, stops trading themselves
+  dry.guard().halt(); // the operator, having seen the alert, stops trading themselves
   dry.resume_after_local_failure();
 
   REQUIRE_FALSE(dry.local_failure().has_value());
@@ -1447,7 +1453,9 @@ TEST_CASE("a changed terminal line halts recovery rather than being dropped as a
   CHECK_FALSE(runner::journal_entry_from_line(annotated).has_value());
 }
 
-TEST_CASE("a line's instant is read from 1970-01-02 to 2200, and from 2020 on a line without a checksum", "[journal][integrity]") {
+TEST_CASE(
+  "a line's instant is read from 1970-01-02 to 2200, and from 2020 on a line without a checksum", "[journal][integrity]"
+) {
   // Built by the writer, which checksums whatever instant it is given: a paper market's historical clock,
   // or a writer that stamps the epoch.
   const auto line_at = [](std::int64_t micros) {
@@ -1545,8 +1553,7 @@ TEST_CASE("an entry overwritten by a newline or by the header is counted, not sk
   CHECK_FALSE(duplicated.second);
 
   // What this writer does produce is still clean: a header, then a pending and its answer.
-  const auto healthy =
-    recovered(header + "\n" + runner::journal_entry_to_line(pending) + "\n" + terminal + "\n");
+  const auto healthy = recovered(header + "\n" + runner::journal_entry_to_line(pending) + "\n" + terminal + "\n");
   CHECK(healthy.first == 0);
   CHECK(healthy.second);
 }
@@ -1565,14 +1572,15 @@ bool same_replay(const runner::JournalReplay& a, const runner::JournalReplay& b)
   for (std::size_t at = 0; at < a.entries_.size(); ++at) {
     const auto& left = a.entries_[at];
     const auto& right = b.entries_[at];
-    if (runner::journal_entry_to_line(left) != runner::journal_entry_to_line(right) ||
-        left.requires_operator_ != right.requires_operator_ || left.scope_ != right.scope_) {
+    if (
+      runner::journal_entry_to_line(left) != runner::journal_entry_to_line(right) ||
+      left.requires_operator_ != right.requires_operator_ || left.scope_ != right.scope_
+    ) {
       return false;
     }
   }
   return a.unreadable_lines_ == b.unreadable_lines_ && a.truncated_tail_ == b.truncated_tail_ &&
-    a.detail_ == b.detail_ && a.scope_ == b.scope_ && a.has_header_ == b.has_header_ &&
-    a.status_ == b.status_;
+    a.detail_ == b.detail_ && a.scope_ == b.scope_ && a.has_header_ == b.has_header_ && a.status_ == b.status_;
 }
 
 /** A journal text with every kind of line the reader tells apart, ending in a torn line. */

@@ -42,7 +42,6 @@ std::string money_or_absent(const std::optional<algotradelib::Decimal64>& amount
   return amount ? amount->str() : std::string("(absent: see the caveats)");
 }
 
-
 using algotradelib::Bar;
 using algotradelib::BarInterval;
 using algotradelib::BarStamp;
@@ -55,7 +54,9 @@ using algotradelib::PriceRule;
 using algotradelib::SecurityType;
 using algotradelib::Venue;
 
-InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
+InstrumentId samsung() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+}
 
 Instrument samsung_reference() {
   Instrument reference;
@@ -71,10 +72,46 @@ Instrument samsung_reference() {
 /** @brief A path that rises, stalls, falls and recovers, so a trend strategy has both sides to trade. */
 const std::vector<int>& closes() {
   static const std::vector<int> path = {
-    60000, 60500, 61200, 61000, 62000, 63000, 64500, 65000, 66200, 67000,
-    68500, 69000, 70200, 71000, 72500, 73000, 72800, 72000, 71000, 69500,
-    68000, 66500, 65000, 63500, 62000, 61000, 60000, 59000, 58500, 58000,
-    58500, 59500, 61000, 62500, 64000, 65500, 67000, 68500, 70000, 71500,
+    60000,
+    60500,
+    61200,
+    61000,
+    62000,
+    63000,
+    64500,
+    65000,
+    66200,
+    67000,
+    68500,
+    69000,
+    70200,
+    71000,
+    72500,
+    73000,
+    72800,
+    72000,
+    71000,
+    69500,
+    68000,
+    66500,
+    65000,
+    63500,
+    62000,
+    61000,
+    60000,
+    59000,
+    58500,
+    58000,
+    58500,
+    59500,
+    61000,
+    62500,
+    64000,
+    65500,
+    67000,
+    68500,
+    70000,
+    71500,
   };
   return path;
 }
@@ -106,9 +143,7 @@ backtest::Backtester<Strategy> replay(Strategy instance, BarInterval interval) {
   for (std::size_t at = 0; at < closes().size(); ++at) {
     const auto step = interval == BarInterval::ONE_MINUTE ?
       std::chrono::minutes(static_cast<int>(at)) :
-      std::chrono::duration_cast<std::chrono::minutes>(
-        std::chrono::hours(24 * static_cast<int>(at))
-      );
+      std::chrono::duration_cast<std::chrono::minutes>(std::chrono::hours(24 * static_cast<int>(at)));
     Bar bar;
     bar.timestamp_ = start + step;
     bar.open_ = Decimal64::parse(std::to_string(closes()[at]));
@@ -145,55 +180,57 @@ std::string plain(math::Scalar value) {
 #if defined(ATL_HAS_EIGEN)
 /** @brief Prints one report, figures first and then what they do not account for. */
 void print(const std::string& title, const backtest::Report& report) {
-  std::cout << title << "\n"
-            << "  bars            " << report.bars_ << "\n"
-            << "  executions      " << report.executions_ << "\n"
-            << "  total return    " << percent(report.total_return_) << "\n"
-            << "  Sharpe          " << plain(report.sharpe_) << "  (per bar)\n"
-            << "  annualized      " << plain(report.annualized_sharpe_) << "\n"
-            << "  Sortino         " << plain(report.sortino_) << "\n"
-            << "  max drawdown    " << percent(report.max_drawdown_) << "\n"
-            << "  turnover        " << percent(report.total_turnover_) << "\n"
-            << "  commission      " << money_or_absent(report.commission_paid_) << " KRW\n"
-            << "  slippage        " << money_or_absent(report.slippage_paid_) << " KRW\n";
-  std::cout << "  assumed         limit fills "
-            << backtest::limit_fill_price_name(report.caveats_.limit_fill_) << ", slippage "
-            << report.caveats_.slippage_ticks_ << " tick\n";
+  std::cout
+    << title << "\n"
+    << "  bars            " << report.bars_ << "\n"
+    << "  executions      " << report.executions_ << "\n"
+    << "  total return    " << percent(report.total_return_) << "\n"
+    << "  Sharpe          " << plain(report.sharpe_) << "  (per bar)\n"
+    << "  annualized      " << plain(report.annualized_sharpe_) << "\n"
+    << "  Sortino         " << plain(report.sortino_) << "\n"
+    << "  max drawdown    " << percent(report.max_drawdown_) << "\n"
+    << "  turnover        " << percent(report.total_turnover_) << "\n"
+    << "  commission      " << money_or_absent(report.commission_paid_) << " KRW\n"
+    << "  slippage        " << money_or_absent(report.slippage_paid_) << " KRW\n";
+  std::cout
+    << "  assumed         limit fills " << backtest::limit_fill_price_name(report.caveats_.limit_fill_) << ", slippage "
+    << report.caveats_.slippage_ticks_ << " tick\n";
   // The rates that actually charged something, rather than one number: a run spanning a rate change
   // or costing by venue charges more than one, and printing the first would name an accident.
   for (const auto& applied : report.caveats_.applied_rates_) {
-    std::cout << "  commission rate " << applied.rate_.str() << " with a "
-              << applied.minimum_.str() << " floor, "
-              << commission_origin_name(applied.origin_) << ", charged "
-              << applied.executions_ << " execution(s)\n";
+    std::cout
+      << "  commission rate " << applied.rate_.str() << " with a " << applied.minimum_.str() << " floor, "
+      << commission_origin_name(applied.origin_) << ", charged " << applied.executions_ << " execution(s)\n";
   }
   if (report.caveats_.cost_totals_incomplete_) {
     // The third reason a total can be absent, and the one a reader must not miss: it is not that
     // the run spanned currencies or traded nothing, it is that an addition did not fit and the
     // figures below it are short by an amount nobody can name.
-    std::cout << "  cost totals     INCOMPLETE -- an exact sum did not fit; slippage is understated"
-              << " and the fee totals are withheld\n";
+    std::cout
+      << "  cost totals     INCOMPLETE -- an exact sum did not fit; slippage is understated"
+      << " and the fee totals are withheld\n";
   }
   if (report.caveats_.inclusive_commission_executions_ > 0) {
-    std::cout << "  commission is    inclusive of any institution charge on "
-              << report.caveats_.inclusive_commission_executions_ << " execution(s)\n";
+    std::cout
+      << "  commission is    inclusive of any institution charge on "
+      << report.caveats_.inclusive_commission_executions_ << " execution(s)\n";
   }
   std::cout << "  not modelled    volume, queue position, market impact, borrow\n";
   if (report.caveats_.gaps_ > 0) {
-    std::cout << "  gaps            " << report.caveats_.gaps_
-              << " (not interpolated across)\n";
+    std::cout << "  gaps            " << report.caveats_.gaps_ << " (not interpolated across)\n";
   }
   if (report.caveats_.unfilled_ > 0) {
-    std::cout << "  unfilled        " << report.caveats_.unfilled_
-              << " (no next bar to fill against)\n";
+    std::cout << "  unfilled        " << report.caveats_.unfilled_ << " (no next bar to fill against)\n";
   }
   if (report.caveats_.expired_day_orders_ > 0) {
-    std::cout << "  expired         " << report.caveats_.expired_day_orders_
-              << " DAY order(s) unfilled at their session's close, as at a broker\n";
+    std::cout
+      << "  expired         " << report.caveats_.expired_day_orders_
+      << " DAY order(s) unfilled at their session's close, as at a broker\n";
   }
   if (report.caveats_.multiple_instruments_) {
-    std::cout << "  CAVEAT          more than one instrument: this result may carry survivorship\n"
-              << "                  bias, because reference data lists what exists now\n";
+    std::cout
+      << "  CAVEAT          more than one instrument: this result may carry survivorship\n"
+      << "                  bias, because reference data lists what exists now\n";
   }
   std::cout << "\n";
 }
@@ -202,16 +239,15 @@ void print(const std::string& title, const backtest::Report& report) {
 } // namespace
 
 int main() {
-  std::cout << "005930, " << closes().size()
-            << " bars built in code -- no credentials, no network\n\n";
+  std::cout << "005930, " << closes().size() << " bars built in code -- no credentials, no network\n\n";
 
 #if defined(ATL_HAS_EIGEN)
-  const auto daily_periods =
-    backtest::periods_per_year(BarInterval::ONE_DAY, strategy::SessionWindow::krx(), 245.0);
+  const auto daily_periods = backtest::periods_per_year(BarInterval::ONE_DAY, strategy::SessionWindow::krx(), 245.0);
   const auto minute_periods =
     backtest::periods_per_year(BarInterval::ONE_MINUTE, strategy::SessionWindow::krx(), 245.0);
-  std::cout << "periods per year: " << *daily_periods << " daily, " << *minute_periods
-            << " minute -- which is why annualizing takes the count rather than assuming it\n\n";
+  std::cout
+    << "periods per year: " << *daily_periods << " daily, " << *minute_periods
+    << " minute -- which is why annualizing takes the count rather than assuming it\n\n";
 
   vanilla::BuyAndHold holding;
   holding.params_.instrument_ = samsung();
@@ -228,10 +264,7 @@ int main() {
   crossing.quantity_ = Decimal64::parse("1000");
   {
     const auto engine = replay(vanilla::SmaCrossover{crossing}, BarInterval::ONE_DAY);
-    print(
-      "SmaCrossover(3, 8), daily",
-      backtest::summarize(engine.result(), engine.fills(), *daily_periods)
-    );
+    print("SmaCrossover(3, 8), daily", backtest::summarize(engine.result(), engine.fills(), *daily_periods));
   }
 
   // The same strategy over the same path, at a different granularity. The engine is told nothing about
@@ -260,10 +293,7 @@ int main() {
   breaking.params_.quantity_ = Decimal64::parse("1000");
   {
     const auto engine = replay(breaking, BarInterval::ONE_DAY);
-    print(
-      "DonchianBreakout(5), daily",
-      backtest::summarize(engine.result(), engine.fills(), *daily_periods)
-    );
+    print("DonchianBreakout(5), daily", backtest::summarize(engine.result(), engine.fills(), *daily_periods));
   }
 
   // And the same strategy at no cost at all, to show what costs were doing.

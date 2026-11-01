@@ -53,7 +53,12 @@ inline constexpr std::string_view journal_action_name(JournalAction action) noex
 }
 
 static_assert(
-  lists_every_value(all_journal_actions, [](JournalAction action) { return !journal_action_name(action).empty(); }),
+  lists_every_value(
+    all_journal_actions,
+    [](JournalAction action) {
+      return !journal_action_name(action).empty();
+    }
+  ),
   "all_journal_actions must list every JournalAction"
 );
 
@@ -166,7 +171,12 @@ inline constexpr std::string_view journal_outcome_name(JournalOutcome outcome) n
 }
 
 static_assert(
-  lists_every_value(all_journal_outcomes, [](JournalOutcome outcome) { return !journal_outcome_name(outcome).empty(); }),
+  lists_every_value(
+    all_journal_outcomes,
+    [](JournalOutcome outcome) {
+      return !journal_outcome_name(outcome).empty();
+    }
+  ),
   "all_journal_outcomes must list every JournalOutcome"
 );
 
@@ -592,9 +602,10 @@ inline std::vector<OpenInstruction> unresolved_instructions(const JournalReplay&
 inline std::vector<OpenInstruction> placements_of(const JournalReplay& replay, const std::vector<std::string>& ids) {
   std::vector<OpenInstruction> found;
   for (const auto& entry : replay.entries_) {
-    if (entry.action_ != JournalAction::PLACE || entry.requires_operator_ ||
-        !journal_outcome_leaves_open(entry.outcome_) ||
-        std::find(ids.begin(), ids.end(), entry.id_) == ids.end()) {
+    if (
+      entry.action_ != JournalAction::PLACE || entry.requires_operator_ ||
+      !journal_outcome_leaves_open(entry.outcome_) || std::find(ids.begin(), ids.end(), entry.id_) == ids.end()
+    ) {
       continue;
     }
     auto known = std::find_if(found.begin(), found.end(), [&](const OpenInstruction& instruction) {
@@ -658,16 +669,22 @@ public:
    * @brief Returns the lines recorded.
    * @return The lines, in order.
    */
-  const std::vector<JournalEntry>& records() const noexcept { return entries_; }
+  const std::vector<JournalEntry>& records() const noexcept {
+    return entries_;
+  }
 
   /** @brief Forgets every line. */
-  void clear() noexcept { entries_.clear(); }
+  void clear() noexcept {
+    entries_.clear();
+  }
 
   /**
    * @brief Returns the journal's broker and account.
    * @return The scope.
    */
-  const std::string& scope() const noexcept { return scope_; }
+  const std::string& scope() const noexcept {
+    return scope_;
+  }
 
 private:
   std::vector<JournalEntry> entries_;
@@ -718,7 +735,9 @@ public:
    *
    * @param prefix The prefix.
    */
-  void set_id_prefix(std::string prefix) { prefix_ = std::move(prefix); }
+  void set_id_prefix(std::string prefix) {
+    prefix_ = std::move(prefix);
+  }
 
   /**
    * @brief Returns the venue the wrapped executor says an order will reach.
@@ -742,7 +761,9 @@ public:
    * @param order The order.
    * @return `order.venue_`.
    */
-  Venue route_of(const strategy::PlannedOrder& order, long) const { return order.venue_; }
+  Venue route_of(const strategy::PlannedOrder& order, long) const {
+    return order.venue_;
+  }
 
   /**
    * @brief Returns the venue to record for an order: the binding's route, or the venue asked for.
@@ -758,7 +779,9 @@ public:
    * @param order The order.
    * @return The wrapped executor's outcome, or `UNAVAILABLE` if the `PENDING` line could not be written.
    */
-  SendOutcome place(const strategy::PlannedOrder& order) { return place(order, std::nullopt); }
+  SendOutcome place(const strategy::PlannedOrder& order) {
+    return place(order, std::nullopt);
+  }
 
   /**
    * @brief Records and places one order, stating the holding it was decided against (a serialized
@@ -809,7 +832,9 @@ public:
    *   was asked to place, sent or refused before sending.
    * @return The line, or `std::nullopt` before any placement was asked for.
    */
-  const std::optional<JournalEntry>& last_entry() const noexcept { return last_entry_; }
+  const std::optional<JournalEntry>& last_entry() const noexcept {
+    return last_entry_;
+  }
 
   /**
    * @brief Appends a line the caller built, such as a serialized `Runner`'s `CONFIRMED` line.
@@ -869,37 +894,49 @@ public:
    * @brief Returns the wrapped executor.
    * @return The executor.
    */
-  const Inner& inner() const noexcept { return inner_; }
+  const Inner& inner() const noexcept {
+    return inner_;
+  }
   /**
    * @brief Returns the wrapped executor.
    * @return The executor.
    */
-  Inner& inner() noexcept { return inner_; }
+  Inner& inner() noexcept {
+    return inner_;
+  }
 
   /**
    * @brief Returns the journal.
    * @return The journal.
    */
-  const Journal& journal() const noexcept { return *journal_; }
+  const Journal& journal() const noexcept {
+    return *journal_;
+  }
 
   /**
    * @brief Returns the first journal failure's description.
    * @return The description, or empty if no write has failed; never cleared.
    */
-  const std::string& last_journal_error() const noexcept { return journal_error_; }
+  const std::string& last_journal_error() const noexcept {
+    return journal_error_;
+  }
 
   /**
    * @brief Returns how many instructions were not sent because their `PENDING` line could not be written.
    * @return The count.
    */
-  std::size_t unjournaled_refusals() const noexcept { return refusals_; }
+  std::size_t unjournaled_refusals() const noexcept {
+    return refusals_;
+  }
 
   /**
    * @brief Returns how many journal writes have failed; `Runner` compares it with the count it last
    *   acknowledged to tell a new failure from an old one.
    * @return The count.
    */
-  std::size_t journal_failures() const noexcept { return failures_; }
+  std::size_t journal_failures() const noexcept {
+    return failures_;
+  }
 
   /**
    * @brief Returns the wrapped executor's route for a requested venue.
@@ -908,8 +945,7 @@ public:
    * @return The venue it routes to.
    */
   template <typename Executor = Inner>
-  auto requested_route(Venue asked) const noexcept
-    -> decltype(std::declval<const Executor&>().requested_route(asked)) {
+  auto requested_route(Venue asked) const noexcept -> decltype(std::declval<const Executor&>().requested_route(asked)) {
     return inner_.requested_route(asked);
   }
 
@@ -954,7 +990,9 @@ private:
   }
 
   // Returns a line id unique within this process and, by its prefix, across restarts.
-  std::string next_id() { return prefix_ + '-' + std::to_string(++sequence_); }
+  std::string next_id() {
+    return prefix_ + '-' + std::to_string(++sequence_);
+  }
 
   // Returns a prefix derived from the moment of construction, on the wall clock rather than `clock_`:
   // the prefix tells process runs apart, and an injected clock (a test's, a replay's) may start two
@@ -983,13 +1021,14 @@ private:
   }
 
   template <typename Executor = Inner>
-  auto accepted_order_id_impl(int) const
-    -> decltype(std::declval<const Executor&>().last_ref(), std::string()) {
+  auto accepted_order_id_impl(int) const -> decltype(std::declval<const Executor&>().last_ref(), std::string()) {
     const auto& ref = inner_.last_ref();
     return ref ? ref->primary_ : std::string();
   }
 
-  std::string accepted_order_id_impl(...) const { return {}; }
+  std::string accepted_order_id_impl(...) const {
+    return {};
+  }
 
   // Returns what the inner executor said went wrong, where it says anything.
   std::string failure_detail(SendOutcome outcome) const {
@@ -1006,13 +1045,14 @@ private:
   }
 
   template <typename Executor = Inner>
-  auto failure_detail_impl(int) const
-    -> decltype(std::declval<const Executor&>().last_error(), std::string()) {
+  auto failure_detail_impl(int) const -> decltype(std::declval<const Executor&>().last_error(), std::string()) {
     const auto& error = inner_.last_error();
     return error ? error->message_ : std::string();
   }
 
-  std::string failure_detail_impl(...) const { return {}; }
+  std::string failure_detail_impl(...) const {
+    return {};
+  }
 
   Inner inner_;
   Journal* journal_;

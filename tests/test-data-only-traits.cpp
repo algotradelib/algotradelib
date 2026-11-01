@@ -1,8 +1,8 @@
 #include "data_only_vendor.hpp"
 
 #include <algotradelib/broker>
-#include <algotradelib/strategy>
 #include <algotradelib/src/runner/execution.hpp>
+#include <algotradelib/strategy>
 
 #include <boost/asio/any_completion_executor.hpp>
 #include <boost/asio/executor_work_guard.hpp>
@@ -88,9 +88,7 @@ TEST_CASE("a blocking data-only session serves bars and quotes", "[data-only]") 
 }
 
 TEST_CASE("every blocking order verb refuses locally", "[data-only]") {
-  BlockingSession<vendor::BlockingClient> session(
-    std::make_shared<vendor::BlockingClient>(), data_only::NoAccount{}
-  );
+  BlockingSession<vendor::BlockingClient> session(std::make_shared<vendor::BlockingClient>(), data_only::NoAccount{});
   OrderRequest order;
   order.instrument_ = kInstrument;
   order.side_ = OrderSide::BUY;
@@ -169,7 +167,9 @@ TEST_CASE("every asynchronous session order verb refuses locally", "[data-only]"
   };
   // Bound to the io_context, so every completion runs inside `run()`: a callback naming no executor
   // completes on the system executor's threads instead.
-  const auto on_io = [&] { return net::bind_executor(io.get_executor(), record); };
+  const auto on_io = [&] {
+    return net::bind_executor(io.get_executor(), record);
+  };
   session.async_place(OrderRequest{}, on_io());
   session.async_replace(ref, AmendInstruction{}, on_io());
   session.async_cancel(ref, AmendInstruction{}, on_io());
@@ -216,9 +216,7 @@ TEST_CASE("a refusal through an erased strand executor completes on that strand"
   BrokerTraits<vendor::AsyncClient>::holdings(client, account, net::bind_executor(erased, record));
   session.async_holdings(net::bind_executor(erased, record));
   auto moved = std::make_shared<std::optional<BrokerError>>();
-  BrokerTraits<vendor::AsyncClient>::holdings(
-    client, account, net::bind_executor(erased, MoveOnlyRecorder(moved))
-  );
+  BrokerTraits<vendor::AsyncClient>::holdings(client, account, net::bind_executor(erased, MoveOnlyRecorder(moved)));
   // Only this thread runs the io_context, so nothing bound to the strand can have run yet.
   CHECK(completions == 0);
   CHECK_FALSE(moved->has_value());

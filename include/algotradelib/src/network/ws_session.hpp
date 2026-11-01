@@ -20,17 +20,11 @@ public:
    * @param headers Extra headers sent with the upgrade request.
    */
   WsSession(
-    net::io_context& ioc,
-    std::string host,
-    std::string port,
-    std::string target = "/",
+    net::io_context& ioc, std::string host, std::string port, std::string target = "/",
     std::map<std::string, std::string> headers = {}
   )
   : WebSocketSessionBase(
-      ioc,
-      std::move(host),
-      std::move(port),
-      WebSocketSessionOptions{std::move(target), std::move(headers)}
+      ioc, std::move(host), std::move(port), WebSocketSessionOptions{std::move(target), std::move(headers)}
     ) {}
 
 private:

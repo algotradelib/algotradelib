@@ -119,9 +119,7 @@ inline bool has_field(const json::object& row, std::string_view key) {
 }
 
 /** Returns the non-empty string `key` holds, or nothing when it holds no such thing. */
-inline std::optional<std::string> readable_string(
-  const json::object& row, std::string_view key
-) {
+inline std::optional<std::string> readable_string(const json::object& row, std::string_view key) {
   const auto value = row.if_contains(key);
   if (value == nullptr || !value->is_string() || value->as_string().empty()) {
     return std::nullopt;
@@ -155,7 +153,12 @@ inline constexpr std::string_view country_name(Country country) noexcept {
 }
 
 static_assert(
-  lists_every_value(all_countries, [](Country country) { return !country_name(country).empty(); }),
+  lists_every_value(
+    all_countries,
+    [](Country country) {
+      return !country_name(country).empty();
+    }
+  ),
   "all_countries must list every Country"
 );
 
@@ -188,7 +191,6 @@ inline std::optional<Venue> known_venue_from(std::string_view text) noexcept {
   return value_named(all_venues, venue_name, text);
 }
 
-
 /** Returns a stable name for `side`, as written to the journal. */
 inline constexpr std::string_view side_name(OrderSide side) noexcept {
   switch (side) {
@@ -201,10 +203,14 @@ inline constexpr std::string_view side_name(OrderSide side) noexcept {
 }
 
 static_assert(
-  lists_every_value(all_order_sides, [](OrderSide side) { return !side_name(side).empty(); }),
+  lists_every_value(
+    all_order_sides,
+    [](OrderSide side) {
+      return !side_name(side).empty();
+    }
+  ),
   "all_order_sides must list every OrderSide"
 );
-
 
 /**
  * Returns a stable name for `type`, as written to the journal.
@@ -239,10 +245,14 @@ inline constexpr std::string_view order_type_name(OrderType type) noexcept {
 }
 
 static_assert(
-  lists_every_value(all_order_types, [](OrderType type) { return !order_type_name(type).empty(); }),
+  lists_every_value(
+    all_order_types,
+    [](OrderType type) {
+      return !order_type_name(type).empty();
+    }
+  ),
   "all_order_types must list every OrderType"
 );
-
 
 /** Returns a stable name for `condition`, as written to the journal. */
 inline constexpr std::string_view time_in_force_name(TimeInForce condition) noexcept {
@@ -260,7 +270,12 @@ inline constexpr std::string_view time_in_force_name(TimeInForce condition) noex
 }
 
 static_assert(
-  lists_every_value(all_times_in_force, [](TimeInForce condition) { return !time_in_force_name(condition).empty(); }),
+  lists_every_value(
+    all_times_in_force,
+    [](TimeInForce condition) {
+      return !time_in_force_name(condition).empty();
+    }
+  ),
   "all_times_in_force must list every TimeInForce"
 );
 
@@ -290,10 +305,14 @@ inline constexpr std::string_view order_session_name(OrderSession session) noexc
 }
 
 static_assert(
-  lists_every_value(all_order_sessions, [](OrderSession session) { return !order_session_name(session).empty(); }),
+  lists_every_value(
+    all_order_sessions,
+    [](OrderSession session) {
+      return !order_session_name(session).empty();
+    }
+  ),
   "all_order_sessions must list every OrderSession"
 );
-
 
 /**
  * Strict readers for a value a journal line actually carries.
@@ -354,7 +373,6 @@ inline std::optional<TimeInForce> known_time_in_force_from(std::string_view text
 inline std::optional<OrderSession> known_order_session_from(std::string_view text) noexcept {
   return value_named(all_order_sessions, order_session_name, text);
 }
-
 
 /** Returns the instant `micros` names, as microseconds since the epoch. */
 inline std::chrono::system_clock::time_point instant_from(std::int64_t micros) noexcept {
@@ -446,8 +464,7 @@ inline bool ends_in_checksum(std::string_view line) {
     return false;
   }
   const auto suffix = line.substr(line.size() - kChecksumSuffixSize);
-  if (suffix.substr(0, kChecksumMember.size()) != kChecksumMember ||
-      suffix.substr(kChecksumSuffixSize - 2) != "\"}") {
+  if (suffix.substr(0, kChecksumMember.size()) != kChecksumMember || suffix.substr(kChecksumSuffixSize - 2) != "\"}") {
     return false;
   }
   for (const char digit : suffix.substr(kChecksumMember.size(), 8)) {
@@ -482,9 +499,28 @@ inline bool checksum_matches(std::string_view line) {
  */
 inline bool known_entry_key(std::string_view key) {
   static constexpr std::string_view known[] = {
-    "id", "action", "outcome", "symbol", "country", "venue", "side", "type", "time_in_force",
-    "session", "route", "quantity", "price", "trigger", "at", "at_text", "order_id", "detail",
-    "requires_operator", "scope", "crc", "baseline",
+    "id",
+    "action",
+    "outcome",
+    "symbol",
+    "country",
+    "venue",
+    "side",
+    "type",
+    "time_in_force",
+    "session",
+    "route",
+    "quantity",
+    "price",
+    "trigger",
+    "at",
+    "at_text",
+    "order_id",
+    "detail",
+    "requires_operator",
+    "scope",
+    "crc",
+    "baseline",
   };
   for (const auto candidate : known) {
     if (candidate == key) {
@@ -520,7 +556,9 @@ public:
    * @brief Returns the descriptor, still owned.
    * @return The descriptor, or negative for none.
    */
-  int get() const noexcept { return descriptor_; }
+  int get() const noexcept {
+    return descriptor_;
+  }
 
   /**
    * @brief Gives up ownership without closing.
@@ -560,8 +598,8 @@ struct FileStamp {
    */
   bool operator==(const FileStamp& other) const noexcept {
     return device_ == other.device_ && inode_ == other.inode_ && size_ == other.size_ &&
-      modified_s_ == other.modified_s_ && modified_ns_ == other.modified_ns_ &&
-      changed_s_ == other.changed_s_ && changed_ns_ == other.changed_ns_;
+      modified_s_ == other.modified_s_ && modified_ns_ == other.modified_ns_ && changed_s_ == other.changed_s_ &&
+      changed_ns_ == other.changed_ns_;
   }
 };
 
@@ -627,8 +665,7 @@ inline bool journal_header_declares_checksums(std::string_view line) {
     return false;
   }
   const auto* integrity = value.as_object().if_contains("integrity");
-  return integrity != nullptr && integrity->is_string() &&
-    std::string_view(integrity->as_string()) == "crc32";
+  return integrity != nullptr && integrity->is_string() && std::string_view(integrity->as_string()) == "crc32";
 }
 
 /**
@@ -644,8 +681,7 @@ inline std::optional<std::string> journal_header_scope(std::string_view line) {
   }
   const auto& row = value.as_object();
   const auto marker = row.if_contains("journal");
-  if (marker == nullptr || !marker->is_string() ||
-      std::string_view(marker->as_string()) != journal_format_name()) {
+  if (marker == nullptr || !marker->is_string() || std::string_view(marker->as_string()) != journal_format_name()) {
     return std::nullopt;
   }
   return journal_detail::string_field(row, "scope");
@@ -769,8 +805,7 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   const auto action = journal_action_from(journal_detail::string_field(row, "action"));
   const auto outcome = journal_outcome_from(journal_detail::string_field(row, "outcome"));
   const auto operator_only = row.if_contains("requires_operator");
-  const bool marked = operator_only != nullptr && operator_only->is_bool() &&
-    operator_only->as_bool();
+  const bool marked = operator_only != nullptr && operator_only->is_bool() && operator_only->as_bool();
 
   const auto at = row.if_contains("at");
   // An operator-only line may carry the epoch, below the bound, and deliberately: a salvaged fragment records the epoch precisely *because* it has no timestamp, and `requires_operator_` is what stops that epoch window resolving it.
@@ -862,20 +897,17 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
     // an order's size.
     !symbol || !country || !venue || !side || !type || !quantity ||
     // Legacy-defaulted fields: absent is fine, present and unreadable is not.
-    unusable("time_in_force", condition.has_value()) ||
-    unusable("session", session.has_value()) ||
+    unusable("time_in_force", condition.has_value()) || unusable("session", session.has_value()) ||
     // A price is absent for a market order and required for a basis that
     // carries one, so its presence is judged against the basis rather than
     // assumed either way.
     unusable("price", price.has_value()) ||
     // The same rule for a stop's trigger: absent on every other order and on every line written
     // before the field existed, and a present value that does not parse is damage.
-    unusable("trigger", trigger.has_value()) ||
-    unusable("baseline", baseline.has_value()) ||
+    unusable("trigger", trigger.has_value()) || unusable("baseline", baseline.has_value()) ||
     // Checked above, where a changed line becomes unreadable rather than damaged; restated so the
     // condition reads whole.
-    !checksum_holds ||
-    unknown_key;
+    !checksum_holds || unknown_key;
   // **A price missing from a priced basis, and a cancellation with no target
   // id, are deliberately *not* damage here.** Both are lines this library's own
   // writer emits: `JournalingExecutor` appends the pending line *before* the
@@ -1010,8 +1042,7 @@ inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
     if (text) {
       return std::optional<std::string>(*text);
     }
-    return salvage_damaged(line, key) ? std::optional<std::string>()
-                                                       : std::optional<std::string>(fallback);
+    return salvage_damaged(line, key) ? std::optional<std::string>() : std::optional<std::string>(fallback);
   };
   const auto parsed = [&salvaged](std::string_view key, const char* fallback, auto reader) {
     using Result = decltype(reader(std::string_view{}));
@@ -1023,8 +1054,7 @@ inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
   const auto venue = parsed("venue", "UNSPECIFIED", journal_detail::known_venue_from);
   const auto side = parsed("side", "BUY", journal_detail::known_side_from);
   const auto type = parsed("type", "UNKNOWN", journal_detail::known_order_type_from);
-  const auto condition =
-    parsed("time_in_force", "DAY", journal_detail::known_time_in_force_from);
+  const auto condition = parsed("time_in_force", "DAY", journal_detail::known_time_in_force_from);
   const auto session = parsed("session", "REGULAR", journal_detail::known_order_session_from);
   if (!country || !venue || !side || !type || !condition || !session) {
     auto unattributable = unattributable_journal_entry(line);
@@ -1040,9 +1070,7 @@ inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
   entry.type_ = *type;
   entry.time_in_force_ = *condition;
   entry.session_ = *session;
-  entry.venue_ = journal_detail::known_venue_from(
-    journal_detail::salvage_string(line, "route").value_or("")
-  );
+  entry.venue_ = journal_detail::known_venue_from(journal_detail::salvage_string(line, "route").value_or(""));
   if (const auto quantity = journal_detail::salvage_string(line, "quantity")) {
     // A truncated line's last field is routinely half-written, so an unparseable
     // number here is expected rather than exceptional -- and it must not throw
@@ -1065,7 +1093,6 @@ inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
   return entry;
 }
 
-
 /**
  * @brief Reads a journal file's bytes, without opening it for appending.
  * @param path The file.
@@ -1075,9 +1102,9 @@ inline std::optional<JournalEntry> salvage_journal_line(std::string_view line) {
 inline JournalBytes read_journal_bytes(const std::string& path) {
   JournalBytes bytes;
   errno = 0;
-  std::unique_ptr<std::FILE, int (*)(std::FILE*)> handle(
-    std::fopen(path.c_str(), "rb"), [](std::FILE* file) { return file ? std::fclose(file) : 0; }
-  );
+  std::unique_ptr<std::FILE, int (*)(std::FILE*)> handle(std::fopen(path.c_str(), "rb"), [](std::FILE* file) {
+    return file ? std::fclose(file) : 0;
+  });
   if (handle == nullptr) {
     if (errno == ENOENT) {
       bytes.status_ = JournalReadStatus::MISSING;
@@ -1152,8 +1179,10 @@ inline std::size_t parse_complete_lines(std::string_view text, JournalReplay& re
     }
     if (auto scope = journal_header_scope(line)) {
       if (replay.has_header_ || !replay.entries_.empty() || replay.unreadable_lines_ > 0) {
-        unreadable("the journal contains a header after its first line, which this library never "
-                   "writes");
+        unreadable(
+          "the journal contains a header after its first line, which this library never "
+          "writes"
+        );
         continue;
       }
       // Not an instruction and not damage. Recorded so an opener can check ownership before it
@@ -1206,12 +1235,11 @@ inline void parse_torn_tail(std::string_view tail, JournalReplay& replay) {
   // the format is line-oriented, and dropping it silently would defeat the feature.
   replay.truncated_tail_ = true;
   if (auto salvaged = salvage_journal_line(tail)) {
-    replay.detail_ = "the final journal line was truncated; it named " +
-      salvaged->instrument_.symbol_ + " and is treated as unresolved";
+    replay.detail_ = "the final journal line was truncated; it named " + salvaged->instrument_.symbol_ +
+      " and is treated as unresolved";
     replay.entries_.push_back(std::move(*salvaged));
   } else {
-    replay.detail_ =
-      "the final journal line was truncated and named no instrument; something was in flight";
+    replay.detail_ = "the final journal line was truncated and named no instrument; something was in flight";
     // The same entry a writer's repair appends for this tail, so recovery halts on it whether or
     // not the file was repaired, and whatever else is open beside it.
     replay.entries_.push_back(unattributable_journal_entry(tail));
@@ -1327,9 +1355,7 @@ public:
     // write handle: the lock lives exactly as long as `open()` is true, and moving the journal moves
     // it with the handle. Every refusal or exception below closes the descriptor (a held lock
     // outliving a failed open would refuse this program's own retry), until the handle takes it.
-    journal_detail::DescriptorOwner descriptor(
-      ::open(path_.c_str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0666)
-    );
+    journal_detail::DescriptorOwner descriptor(::open(path_.c_str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0666));
     if (descriptor.get() < 0) {
       const int error = errno;
       rejection_ = "the journal at " + path_ + " could not be opened (" + std::strerror(error) + ")";
@@ -1347,8 +1373,7 @@ public:
       descriptor.release();
     } else {
       const int error = errno;
-      rejection_ =
-        "the journal at " + path_ + " could not be opened for appending (" + std::strerror(error) + ")";
+      rejection_ = "the journal at " + path_ + " could not be opened for appending (" + std::strerror(error) + ")";
     }
 #endif
     if (!open()) {
@@ -1366,26 +1391,34 @@ public:
    * @brief Tests whether the journal opened.
    * @return `true` if it is open for appending.
    */
-  bool open() const noexcept { return handle_ != nullptr; }
+  bool open() const noexcept {
+    return handle_ != nullptr;
+  }
 
   /**
    * @brief Returns what opening had to repair: a torn last line is terminated and a salvaged entry
    *   written beside it.
    * @return The description, or empty if nothing was wrong.
    */
-  const std::string& repaired() const noexcept { return repaired_; }
+  const std::string& repaired() const noexcept {
+    return repaired_;
+  }
 
   /**
    * @brief Returns the file's path.
    * @return The path.
    */
-  const std::string& path() const noexcept { return path_; }
+  const std::string& path() const noexcept {
+    return path_;
+  }
 
   /**
    * @brief Returns the journal's broker and account.
    * @return The scope.
    */
-  const std::string& scope() const noexcept { return scope_; }
+  const std::string& scope() const noexcept {
+    return scope_;
+  }
 
   /**
    * @brief Returns why the journal refused to open.
@@ -1396,7 +1429,9 @@ public:
    *
    * @return The reason, or empty if it opened.
    */
-  const std::string& rejection() const noexcept { return rejection_; }
+  const std::string& rejection() const noexcept {
+    return rejection_;
+  }
 
   /**
    * @brief Appends one entry and flushes it to disk.
@@ -1476,8 +1511,10 @@ private:
     }
     struct stat after{};
     const auto stamp = journal_detail::stamp_of(before);
-    if (::stat(path_.c_str(), &after) != 0 || !(stamp == journal_detail::stamp_of(after)) ||
-        static_cast<std::size_t>(stamp.size_) != bytes.text_.size()) {
+    if (
+      ::stat(path_.c_str(), &after) != 0 || !(stamp == journal_detail::stamp_of(after)) ||
+      static_cast<std::size_t>(stamp.size_) != bytes.text_.size()
+    ) {
       return;
     }
     stamp_ = stamp;
@@ -1510,9 +1547,8 @@ private:
     std::string appended(size - parsed_to_, '\0');
     std::size_t got = 0;
     while (got < appended.size()) {
-      const auto read = ::pread(
-        reader.get(), &appended[got], appended.size() - got, static_cast<off_t>(parsed_to_ + got)
-      );
+      const auto read =
+        ::pread(reader.get(), &appended[got], appended.size() - got, static_cast<off_t>(parsed_to_ + got));
       if (read < 0 && errno == EINTR) {
         continue;
       }
@@ -1522,8 +1558,10 @@ private:
       got += static_cast<std::size_t>(read);
     }
     struct stat read_status{};
-    if (appended.back() != '\n' || ::fstat(reader.get(), &read_status) != 0 ||
-        !(journal_detail::stamp_of(read_status) == stamp_)) {
+    if (
+      appended.back() != '\n' || ::fstat(reader.get(), &read_status) != 0 ||
+      !(journal_detail::stamp_of(read_status) == stamp_)
+    ) {
       return false;
     }
     // Cleared first: a parse that throws leaves the next call reading the whole file.
@@ -1553,8 +1591,10 @@ private:
 #if !defined(_WIN32)
     struct stat now{};
     if (continuable_) {
-      if (::fstat(::fileno(handle_.get()), &now) == 0 &&
-          static_cast<std::size_t>(now.st_size) >= static_cast<std::size_t>(stamp_.size_) + written) {
+      if (
+        ::fstat(::fileno(handle_.get()), &now) == 0 &&
+        static_cast<std::size_t>(now.st_size) >= static_cast<std::size_t>(stamp_.size_) + written
+      ) {
         stamp_ = journal_detail::stamp_of(now);
       } else {
         continuable_ = false;
@@ -1592,25 +1632,21 @@ private:
       // Opening for *append* can succeed on a file that cannot be read -- a write-only file is the
       // plain case -- so without this the journal would claim a path whose contents it has never
       // seen, write a header into it, and report nothing owed.
-      rejection_ = replay.detail_.empty() ?
-        "the journal at " + path_ + " exists and cannot be read" :
-        replay.detail_;
+      rejection_ = replay.detail_.empty() ? "the journal at " + path_ + " exists and cannot be read" : replay.detail_;
       return false;
     }
-    const bool empty = !replay.has_header_ && replay.entries_.empty() &&
-      replay.unreadable_lines_ == 0 && !replay.truncated_tail_;
+    const bool empty =
+      !replay.has_header_ && replay.entries_.empty() && replay.unreadable_lines_ == 0 && !replay.truncated_tail_;
     if (empty) {
       needs_header_ = true;
       return true;
     }
     if (!replay.has_header_) {
-      rejection_ = "the journal at " + path_ +
-        " has no header, so the account it belongs to cannot be established";
+      rejection_ = "the journal at " + path_ + " has no header, so the account it belongs to cannot be established";
       return false;
     }
     if (replay.scope_ != scope_) {
-      rejection_ = "the journal at " + path_ + " belongs to " + replay.scope_ + ", not to " +
-        scope_;
+      rejection_ = "the journal at " + path_ + " belongs to " + replay.scope_ + ", not to " + scope_;
       return false;
     }
     return true;
@@ -1649,9 +1685,8 @@ private:
     }
     const auto tail = read_torn_tail(path_);
     auto salvaged = salvage_journal_line(tail);
-    pending_repair_ = salvaged ?
-      journal_entry_to_line(*salvaged) :
-      journal_entry_to_line(unattributable_journal_entry(tail));
+    pending_repair_ =
+      salvaged ? journal_entry_to_line(*salvaged) : journal_entry_to_line(unattributable_journal_entry(tail));
     repaired_ = salvaged ?
       "a torn final line was terminated and salvaged as " + salvaged->instrument_.symbol_ :
       "a torn final line was terminated; it named no instrument";
@@ -1685,19 +1720,18 @@ private:
     }
     const int error = errno;
     rejection_ = error == EWOULDBLOCK ?
-      "the journal at " + path_ + " is already open for writing, in another process or another "
-      "FileJournal (one journal, one writer)" :
+      "the journal at " + path_ +
+        " is already open for writing, in another process or another "
+        "FileJournal (one journal, one writer)" :
       "the journal at " + path_ + " could not be locked (" + std::strerror(error) +
-      "), so a second writer could not be refused";
+        "), so a second writer could not be refused";
     return false;
   }
 #endif
 
   // Returns the text after the file's last newline, which is the fragment a kill left behind.
   static std::string read_torn_tail(const std::string& path) {
-    std::unique_ptr<std::FILE, void (*)(std::FILE*)> reader(
-      std::fopen(path.c_str(), "rb"), &closer
-    );
+    std::unique_ptr<std::FILE, void (*)(std::FILE*)> reader(std::fopen(path.c_str(), "rb"), &closer);
     if (reader == nullptr) {
       return {};
     }

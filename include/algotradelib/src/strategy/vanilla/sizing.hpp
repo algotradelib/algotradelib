@@ -47,7 +47,9 @@ struct VolatilityTargetSizing {
    * @brief Returns how many bars to load before the first live bar.
    * @return `window_ + 2`.
    */
-  std::size_t warmup_bars() const { return params_.window_ + 2; }
+  std::size_t warmup_bars() const {
+    return params_.window_ + 2;
+  }
 
   /**
    * @brief States the volatility-sized target position on each bar of the instrument.
@@ -98,8 +100,7 @@ struct VolatilityTargetSizing {
 
     TargetPosition target;
     target.instrument_ = params_.instrument_;
-    target.target_quantity_ =
-      decimal_less(params_.max_quantity_, *sized) ? params_.max_quantity_ : *sized;
+    target.target_quantity_ = decimal_less(params_.max_quantity_, *sized) ? params_.max_quantity_ : *sized;
     target.tag_ = params_.tag_;
     ctx.submit(target);
   }
@@ -154,9 +155,7 @@ struct EqualWeightRebalance {
     // One divided by the count, truncated at the stated scale, so the arithmetic is exact and the
     // sum is at most one rather than possibly over it.
     const auto share = decimal_divide(
-      Decimal64::parse("1"),
-      Decimal64(static_cast<std::int64_t>(params_.universe_.size()), 0),
-      params_.weight_scale_
+      Decimal64::parse("1"), Decimal64(static_cast<std::int64_t>(params_.universe_.size()), 0), params_.weight_scale_
     );
     if (!share || share->coefficient() == 0) {
       return;
@@ -164,8 +163,7 @@ struct EqualWeightRebalance {
 
     for (const auto& instrument : params_.universe_) {
       ctx.submit(
-        OrderIntent::market(instrument, OrderSide::BUY, SizeSpec::target_weight(*share))
-          .with_tag(params_.tag_)
+        OrderIntent::market(instrument, OrderSide::BUY, SizeSpec::target_weight(*share)).with_tag(params_.tag_)
       );
     }
   }

@@ -79,8 +79,10 @@ inline ErrorCategory kiwoom_error_category(std::string_view code) noexcept {
   if (code == "1687") {
     return ErrorCategory::RATE_LIMIT;
   }
-  if (code == "1501" || code == "1504" || code == "1505" || code == "1511" || code == "1517" ||
-      code == "1901" || code == "1902" || code == "1903") {
+  if (
+    code == "1501" || code == "1504" || code == "1505" || code == "1511" || code == "1517" || code == "1901" ||
+    code == "1902" || code == "1903"
+  ) {
     return ErrorCategory::INVALID_ARGUMENT;
   }
   return ErrorCategory::PROTOCOL;
@@ -202,19 +204,15 @@ inline std::string_view kiwoom_refusal_code(std::string_view message) noexcept {
  *   outer code and the rule that matched), or `std::nullopt` if the reply is not one of them.
  */
 inline std::optional<BrokerError> kiwoom_recognized_refusal(
-  int http_status,
-  const boost::json::object& document,
-  KiwoomOrderOperation operation,
-  bool demo
+  int http_status, const boost::json::object& document, KiwoomOrderOperation operation, bool demo
 ) {
   if (http_status != 200) {
     return std::nullopt;
   }
   const auto code = document.if_contains("return_code");
-  const bool generic = code && (
-    (code->is_int64() && code->as_int64() == 20) || (code->is_uint64() && code->as_uint64() == 20) ||
-    (code->is_string() && code->as_string() == "20")
-  );
+  const bool generic = code &&
+    ((code->is_int64() && code->as_int64() == 20) || (code->is_uint64() && code->as_uint64() == 20) ||
+      (code->is_string() && code->as_string() == "20"));
   const auto message = document.if_contains("return_msg");
   if (!generic || !message || !message->is_string()) {
     return std::nullopt;
@@ -223,8 +221,8 @@ inline std::optional<BrokerError> kiwoom_recognized_refusal(
   const char* name = "";
   const bool placement = operation == KiwoomOrderOperation::PLACE &&
     (demo ? (stated == "800033" || stated == "RC4057" || stated == "RC4058") : stated == "571445");
-  const bool cancellation = operation == KiwoomOrderOperation::CANCEL &&
-    (demo ? stated == "RC4033" : stated == "506550");
+  const bool cancellation =
+    operation == KiwoomOrderOperation::CANCEL && (demo ? stated == "RC4033" : stated == "506550");
   if (placement) {
     name = "placement";
   } else if (cancellation) {
@@ -232,8 +230,9 @@ inline std::optional<BrokerError> kiwoom_recognized_refusal(
   } else {
     return std::nullopt;
   }
-  if (const auto number = document.if_contains("ord_no");
-      number && !(number->is_string() && number->as_string().empty())) {
+  if (
+    const auto number = document.if_contains("ord_no"); number && !(number->is_string() && number->as_string().empty())
+  ) {
     return std::nullopt;
   }
   for (const char* field : {"cncl_qty", "mdfy_qty"}) {
@@ -241,8 +240,9 @@ inline std::optional<BrokerError> kiwoom_recognized_refusal(
     if (!quantity) {
       continue;
     }
-    if (!quantity->is_string() ||
-        std::string_view(quantity->as_string()).find_first_not_of('0') != std::string_view::npos) {
+    if (
+      !quantity->is_string() || std::string_view(quantity->as_string()).find_first_not_of('0') != std::string_view::npos
+    ) {
       return std::nullopt;
     }
   }

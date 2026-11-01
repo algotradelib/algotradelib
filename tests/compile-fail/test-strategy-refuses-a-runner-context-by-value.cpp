@@ -7,8 +7,12 @@
 using namespace algotradelib;
 
 struct Probe {
-  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
-  template <class Ctx> void on_fill(Ctx ctx, const strategy::Fill&) { ctx.submit(strategy::TargetPosition{}); }
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx>
+  void on_fill(Ctx ctx, const strategy::Fill&) {
+    ctx.submit(strategy::TargetPosition{});
+  }
 };
 
 using RunnerContext = runner::Context<strategy::ProbeBroker, strategy::NoCaps>;

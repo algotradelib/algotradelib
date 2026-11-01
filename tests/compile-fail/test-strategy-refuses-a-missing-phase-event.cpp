@@ -8,8 +8,10 @@
 using namespace algotradelib;
 
 struct Probe {
-  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
-  template <class Ctx> void on_phase(Ctx&) {}  // no event
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx>
+  void on_phase(Ctx&) {} // no event
 };
 
 ATL_ASSERT_STRATEGY(Probe, strategy::MinimalContext);

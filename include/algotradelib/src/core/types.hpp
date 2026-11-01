@@ -3,11 +3,11 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
-#include <functional>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -70,7 +70,12 @@ inline constexpr std::string_view venue_name(Venue venue) noexcept {
 }
 
 static_assert(
-  lists_every_value(all_venues, [](Venue venue) { return !venue_name(venue).empty(); }),
+  lists_every_value(
+    all_venues,
+    [](Venue venue) {
+      return !venue_name(venue).empty();
+    }
+  ),
   "all_venues must list every Venue"
 );
 
@@ -95,8 +100,7 @@ struct InstrumentId {
    */
   friend bool operator==(const InstrumentId& lhs, const InstrumentId& rhs) {
     // The length and the first character settle most mismatches without a call to compare the strings.
-    return lhs.country_ == rhs.country_ && lhs.venue_ == rhs.venue_ &&
-      lhs.symbol_.size() == rhs.symbol_.size() &&
+    return lhs.country_ == rhs.country_ && lhs.venue_ == rhs.venue_ && lhs.symbol_.size() == rhs.symbol_.size() &&
       (lhs.symbol_.empty() || lhs.symbol_.front() == rhs.symbol_.front()) && lhs.symbol_ == rhs.symbol_;
   }
 
@@ -153,7 +157,7 @@ public:
 
   /** Takes `other`'s positions and leaves it empty. */
   PositionTable(PositionTable&& other) noexcept
-      : slots_(std::move(other.slots_)), count_(std::exchange(other.count_, 0)) {
+  : slots_(std::move(other.slots_)), count_(std::exchange(other.count_, 0)) {
     other.slots_.clear();
   }
 
@@ -168,7 +172,9 @@ public:
   }
 
   /** Whether the table holds no position. */
-  bool empty() const noexcept { return count_ == 0; }
+  bool empty() const noexcept {
+    return count_ == 0;
+  }
 
   /** Forgets every position and keeps the storage. */
   void reset() noexcept {
@@ -185,7 +191,7 @@ public:
       return std::nullopt;
     }
     const std::size_t mask = slots_.size() - 1;
-    for (std::size_t at = InstrumentIdHash{}(id) & mask;; at = (at + 1) & mask) {
+    for (std::size_t at = InstrumentIdHash{}(id)&mask;; at = (at + 1) & mask) {
       const std::size_t slot = slots_[at];
       if (slot == 0) {
         return std::nullopt;
@@ -309,25 +315,33 @@ public:
    * @brief Returns the code as a string.
    * @return A copy of the characters.
    */
-  std::string str() const { return std::string(view()); }
+  std::string str() const {
+    return std::string(view());
+  }
 
   /**
    * @brief Tests whether the code is empty.
    * @return `true` if it has no characters.
    */
-  bool empty() const noexcept { return size_ == 0; }
+  bool empty() const noexcept {
+    return size_ == 0;
+  }
 
   /**
    * @brief Returns the number of characters.
    * @return The length, at most `N`.
    */
-  std::size_t size() const noexcept { return size_; }
+  std::size_t size() const noexcept {
+    return size_;
+  }
 
   /**
    * @brief Returns the maximum number of characters.
    * @return `N`.
    */
-  static constexpr std::size_t capacity() noexcept { return N; }
+  static constexpr std::size_t capacity() noexcept {
+    return N;
+  }
 
   /**
    * @brief Compares two codes' characters.
@@ -335,7 +349,9 @@ public:
    * @param rhs The second code.
    * @return `true` if they are equal.
    */
-  friend bool operator==(const Code& lhs, const Code& rhs) { return lhs.view() == rhs.view(); }
+  friend bool operator==(const Code& lhs, const Code& rhs) {
+    return lhs.view() == rhs.view();
+  }
 
   /**
    * @brief Compares two codes for inequality.
@@ -343,7 +359,9 @@ public:
    * @param rhs The second code.
    * @return `true` if they differ.
    */
-  friend bool operator!=(const Code& lhs, const Code& rhs) { return !(lhs == rhs); }
+  friend bool operator!=(const Code& lhs, const Code& rhs) {
+    return !(lhs == rhs);
+  }
 
 private:
   std::array<char, N> characters_{};
@@ -379,19 +397,25 @@ public:
    * @brief Returns Korean won.
    * @return `KRW`.
    */
-  static Currency krw() { return Currency("KRW"); }
+  static Currency krw() {
+    return Currency("KRW");
+  }
 
   /**
    * @brief Returns United States dollars.
    * @return `USD`.
    */
-  static Currency usd() { return Currency("USD"); }
+  static Currency usd() {
+    return Currency("USD");
+  }
 
   /**
    * @brief Returns the code.
    * @return The three letters.
    */
-  std::string str() const { return std::string(code_.begin(), code_.end()); }
+  std::string str() const {
+    return std::string(code_.begin(), code_.end());
+  }
 
   /**
    * @brief Compares two currencies.
@@ -424,8 +448,7 @@ public:
    * @param coefficient The integer coefficient.
    * @param scale The number of fractional digits.
    */
-  Decimal64(std::int64_t coefficient, std::uint8_t scale)
-  : coefficient_(coefficient), scale_(scale) {}
+  Decimal64(std::int64_t coefficient, std::uint8_t scale) : coefficient_(coefficient), scale_(scale) {}
 
   /**
    * @brief Parses a decimal string exactly (no binary floating point).
@@ -498,10 +521,7 @@ public:
     }
 
     std::int64_t coefficient;
-    if (
-      negative &&
-      magnitude == static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1ULL
-    ) {
+    if (negative && magnitude == static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) + 1ULL) {
       coefficient = std::numeric_limits<std::int64_t>::min();
     } else {
       coefficient = static_cast<std::int64_t>(magnitude);
@@ -516,13 +536,17 @@ public:
    * @brief Returns the coefficient.
    * @return The signed integer coefficient.
    */
-  std::int64_t coefficient() const noexcept { return coefficient_; }
+  std::int64_t coefficient() const noexcept {
+    return coefficient_;
+  }
 
   /**
    * @brief Returns the scale.
    * @return The number of fractional digits.
    */
-  std::uint8_t scale() const noexcept { return scale_; }
+  std::uint8_t scale() const noexcept {
+    return scale_;
+  }
 
   /**
    * @brief Formats the value as a decimal string.
@@ -530,9 +554,8 @@ public:
    */
   std::string str() const {
     const bool negative = coefficient_ < 0;
-    std::uint64_t magnitude = negative ?
-      static_cast<std::uint64_t>(-(coefficient_ + 1)) + 1ULL :
-      static_cast<std::uint64_t>(coefficient_);
+    std::uint64_t magnitude =
+      negative ? static_cast<std::uint64_t>(-(coefficient_ + 1)) + 1ULL : static_cast<std::uint64_t>(coefficient_);
     std::string digits = std::to_string(magnitude);
     if (scale_ > 0) {
       if (digits.size() <= scale_) {
@@ -591,25 +614,21 @@ namespace decimal_detail {
  * fixed-width arithmetic can fail.
  */
 inline bool align(
-  const Decimal64& lhs,
-  const Decimal64& rhs,
-  std::int64_t& left,
-  std::int64_t& right,
-  std::uint8_t& scale
+  const Decimal64& lhs, const Decimal64& rhs, std::int64_t& left, std::int64_t& right, std::uint8_t& scale
 ) {
   scale = lhs.scale() > rhs.scale() ? lhs.scale() : rhs.scale();
   left = lhs.coefficient();
   right = rhs.coefficient();
   for (std::uint8_t step = lhs.scale(); step < scale; ++step) {
-    if (left > std::numeric_limits<std::int64_t>::max() / 10 ||
-        left < std::numeric_limits<std::int64_t>::min() / 10) {
+    if (left > std::numeric_limits<std::int64_t>::max() / 10 || left < std::numeric_limits<std::int64_t>::min() / 10) {
       return false;
     }
     left *= 10;
   }
   for (std::uint8_t step = rhs.scale(); step < scale; ++step) {
-    if (right > std::numeric_limits<std::int64_t>::max() / 10 ||
-        right < std::numeric_limits<std::int64_t>::min() / 10) {
+    if (
+      right > std::numeric_limits<std::int64_t>::max() / 10 || right < std::numeric_limits<std::int64_t>::min() / 10
+    ) {
       return false;
     }
     right *= 10;
@@ -633,8 +652,10 @@ inline std::optional<Decimal64> decimal_add(const Decimal64& lhs, const Decimal6
   if (!decimal_detail::align(lhs, rhs, left, right, scale)) {
     return std::nullopt;
   }
-  if ((right > 0 && left > std::numeric_limits<std::int64_t>::max() - right) ||
-      (right < 0 && left < std::numeric_limits<std::int64_t>::min() - right)) {
+  if (
+    (right > 0 && left > std::numeric_limits<std::int64_t>::max() - right) ||
+    (right < 0 && left < std::numeric_limits<std::int64_t>::min() - right)
+  ) {
     return std::nullopt;
   }
   return decimal_normalized(Decimal64(left + right, scale));
@@ -654,8 +675,10 @@ inline std::optional<Decimal64> decimal_subtract(const Decimal64& lhs, const Dec
   if (!decimal_detail::align(lhs, rhs, left, right, scale)) {
     return std::nullopt;
   }
-  if ((right < 0 && left > std::numeric_limits<std::int64_t>::max() + right) ||
-      (right > 0 && left < std::numeric_limits<std::int64_t>::min() + right)) {
+  if (
+    (right < 0 && left > std::numeric_limits<std::int64_t>::max() + right) ||
+    (right > 0 && left < std::numeric_limits<std::int64_t>::min() + right)
+  ) {
     return std::nullopt;
   }
   return decimal_normalized(Decimal64(left - right, scale));
@@ -671,14 +694,14 @@ inline std::optional<Decimal64> decimal_halve(const Decimal64& value) {
   if (coefficient % 2 == 0) {
     return decimal_normalized(Decimal64(coefficient / 2, value.scale()));
   }
-  if (value.scale() == std::numeric_limits<std::uint8_t>::max() ||
-      coefficient > std::numeric_limits<std::int64_t>::max() / 5 ||
-      coefficient < std::numeric_limits<std::int64_t>::min() / 5) {
+  if (
+    value.scale() == std::numeric_limits<std::uint8_t>::max() ||
+    coefficient > std::numeric_limits<std::int64_t>::max() / 5 ||
+    coefficient < std::numeric_limits<std::int64_t>::min() / 5
+  ) {
     return std::nullopt;
   }
-  return decimal_normalized(
-    Decimal64(coefficient * 5, static_cast<std::uint8_t>(value.scale() + 1))
-  );
+  return decimal_normalized(Decimal64(coefficient * 5, static_cast<std::uint8_t>(value.scale() + 1)));
 }
 
 /**
@@ -700,8 +723,11 @@ inline std::optional<Decimal64> decimal_multiply(const Decimal64& lhs, const Dec
     // wrapped price is exactly the failure this type exists to prevent.
     constexpr auto largest = std::numeric_limits<std::int64_t>::max();
     constexpr auto smallest = std::numeric_limits<std::int64_t>::min();
-    if (left > 0 ? (right > 0 ? left > largest / right : right < smallest / left)
-                 : (right > 0 ? left < smallest / right : left < largest / right)) {
+    if (
+      left > 0 ?
+        (right > 0 ? left > largest / right : right < smallest / left) :
+        (right > 0 ? left < smallest / right : left < largest / right)
+    ) {
       return std::nullopt;
     }
   }
@@ -719,11 +745,7 @@ inline std::optional<Decimal64> decimal_multiply(const Decimal64& lhs, const Dec
  * @return The normalized quotient, or `std::nullopt` if `rhs` is zero, or the rescaled operands or
  *   the dividend multiplied by `10^scale` do not fit.
  */
-inline std::optional<Decimal64> decimal_divide(
-  const Decimal64& lhs,
-  const Decimal64& rhs,
-  std::uint8_t scale
-) {
+inline std::optional<Decimal64> decimal_divide(const Decimal64& lhs, const Decimal64& rhs, std::uint8_t scale) {
   std::int64_t left = 0;
   std::int64_t right = 0;
   std::uint8_t common = 0;
@@ -733,8 +755,7 @@ inline std::optional<Decimal64> decimal_divide(
   // Aligning cancels the scales, so `left / right` is the plain ratio. Each requested decimal
   // place is one more factor of ten taken before the division.
   for (std::uint8_t step = 0; step < scale; ++step) {
-    if (left > std::numeric_limits<std::int64_t>::max() / 10 ||
-        left < std::numeric_limits<std::int64_t>::min() / 10) {
+    if (left > std::numeric_limits<std::int64_t>::max() / 10 || left < std::numeric_limits<std::int64_t>::min() / 10) {
       return std::nullopt;
     }
     left *= 10;
@@ -756,10 +777,7 @@ inline std::optional<Decimal64> decimal_divide(
  *   positive, the operands rescaled to a common scale do not fit, or the result does not fit (a
  *   negative `value` near the smallest `int64` coefficient).
  */
-inline std::optional<Decimal64> decimal_floor_to_multiple(
-  const Decimal64& value,
-  const Decimal64& step
-) {
+inline std::optional<Decimal64> decimal_floor_to_multiple(const Decimal64& value, const Decimal64& step) {
   std::int64_t left = 0;
   std::int64_t right = 0;
   std::uint8_t scale = 0;
@@ -932,41 +950,53 @@ public:
    * @brief Tests whether the result holds a value.
    * @return `true` for success.
    */
-  bool has_value() const noexcept { return std::holds_alternative<T>(value_); }
+  bool has_value() const noexcept {
+    return std::holds_alternative<T>(value_);
+  }
 
   /**
    * @brief Tests whether the result holds a value.
    * @return `true` for success.
    */
-  explicit operator bool() const noexcept { return has_value(); }
+  explicit operator bool() const noexcept {
+    return has_value();
+  }
 
   /**
    * @brief Returns the value.
    * @return The value.
    * @throws std::bad_variant_access if the result holds an error.
    */
-  T& value() { return std::get<T>(value_); }
+  T& value() {
+    return std::get<T>(value_);
+  }
 
   /**
    * @brief Returns the value.
    * @return The value.
    * @throws std::bad_variant_access if the result holds an error.
    */
-  const T& value() const { return std::get<T>(value_); }
+  const T& value() const {
+    return std::get<T>(value_);
+  }
 
   /**
    * @brief Returns the error.
    * @return The error.
    * @throws std::bad_variant_access if the result holds a value.
    */
-  BrokerError& error() { return std::get<BrokerError>(value_); }
+  BrokerError& error() {
+    return std::get<BrokerError>(value_);
+  }
 
   /**
    * @brief Returns the error.
    * @return The error.
    * @throws std::bad_variant_access if the result holds a value.
    */
-  const BrokerError& error() const { return std::get<BrokerError>(value_); }
+  const BrokerError& error() const {
+    return std::get<BrokerError>(value_);
+  }
 
 private:
   std::variant<T, BrokerError> value_;
@@ -1104,8 +1134,7 @@ struct SellableBasis {
  * @param coverage The coverage.
  * @return The name.
  */
-inline constexpr std::string_view sellable_coverage_name(SellableBasis::Coverage coverage
-) noexcept {
+inline constexpr std::string_view sellable_coverage_name(SellableBasis::Coverage coverage) noexcept {
   switch (coverage) {
     case SellableBasis::Coverage::UNESTABLISHED:
       return "unestablished";
@@ -1122,8 +1151,7 @@ inline constexpr std::string_view sellable_coverage_name(SellableBasis::Coverage
  * @param treatment The treatment.
  * @return The name.
  */
-inline constexpr std::string_view sellable_resting_name(SellableBasis::RestingTreatment treatment
-) noexcept {
+inline constexpr std::string_view sellable_resting_name(SellableBasis::RestingTreatment treatment) noexcept {
   switch (treatment) {
     case SellableBasis::RestingTreatment::UNESTABLISHED:
       return "unestablished";
@@ -1189,7 +1217,6 @@ struct HoldingsTotals {
   /** @brief The broker's total unrealized profit or loss in `currency_`, from its summary. */
   Decimal64 unrealized_profit_loss_;
 };
-
 
 /** @brief An account's positions and per-currency totals at one point in time. */
 struct HoldingsSnapshot {
@@ -1309,11 +1336,9 @@ inline Date date_from_epoch_days(std::int64_t days) {
   const std::int64_t shifted = days + 719468;
   const std::int64_t era = (shifted >= 0 ? shifted : shifted - 146096) / 146097;
   const std::int64_t day_of_era = shifted - era * 146097;
-  const std::int64_t year_of_era =
-    (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365;
+  const std::int64_t year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365;
   const std::int64_t year = year_of_era + era * 400;
-  const std::int64_t day_of_year =
-    day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+  const std::int64_t day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
   const std::int64_t shifted_month = (5 * day_of_year + 2) / 153;
   const std::int64_t day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
   const std::int64_t month = shifted_month + (shifted_month < 10 ? 3 : -9);
@@ -1334,7 +1359,18 @@ inline bool is_valid_date(const Date& date) {
     return false;
   }
   static constexpr unsigned days_per_month[] = {
-    31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    31,
+    28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
   };
   unsigned days = days_per_month[date.month_ - 1];
   const bool leap = date.year_ % 4 == 0 && (date.year_ % 100 != 0 || date.year_ % 400 == 0);
@@ -1370,7 +1406,9 @@ public:
    * @brief Returns the key for any venue.
    * @return A key of kind `ANY`.
    */
-  static VenueKey any() noexcept { return VenueKey(); }
+  static VenueKey any() noexcept {
+    return VenueKey();
+  }
 
   /**
    * @brief Makes a key for a normalized venue.
@@ -1407,25 +1445,33 @@ public:
    * @brief Returns the key's kind.
    * @return `ANY`, `NORMALIZED` or `RAW`.
    */
-  VenueKeyKind kind() const noexcept { return kind_; }
+  VenueKeyKind kind() const noexcept {
+    return kind_;
+  }
 
   /**
    * @brief Tests whether the key is for any venue.
    * @return `true` for kind `ANY`.
    */
-  bool is_any() const noexcept { return kind_ == VenueKeyKind::ANY; }
+  bool is_any() const noexcept {
+    return kind_ == VenueKeyKind::ANY;
+  }
 
   /**
    * @brief Returns the normalized venue.
    * @return The venue for kind `NORMALIZED`; `UNSPECIFIED` otherwise.
    */
-  Venue venue() const noexcept { return venue_; }
+  Venue venue() const noexcept {
+    return venue_;
+  }
 
   /**
    * @brief Returns the raw venue code.
    * @return The code for kind `RAW`; empty otherwise.
    */
-  const Code<8>& raw_code() const noexcept { return raw_; }
+  const Code<8>& raw_code() const noexcept {
+    return raw_;
+  }
 
   /**
    * @brief Tests whether two keys name the same venue, exactly in kind and value.
@@ -1457,7 +1503,9 @@ public:
    * @param rhs The second key.
    * @return `true` if they match.
    */
-  friend bool operator==(const VenueKey& lhs, const VenueKey& rhs) noexcept { return lhs.matches(rhs); }
+  friend bool operator==(const VenueKey& lhs, const VenueKey& rhs) noexcept {
+    return lhs.matches(rhs);
+  }
 
   /**
    * @brief Compares two keys for inequality.
@@ -1465,7 +1513,9 @@ public:
    * @param rhs The second key.
    * @return `true` if they do not match.
    */
-  friend bool operator!=(const VenueKey& lhs, const VenueKey& rhs) noexcept { return !(lhs == rhs); }
+  friend bool operator!=(const VenueKey& lhs, const VenueKey& rhs) noexcept {
+    return !(lhs == rhs);
+  }
 
 private:
   VenueKeyKind kind_{VenueKeyKind::ANY};
@@ -1618,7 +1668,9 @@ struct CommissionRate {
    * @brief Tests whether the rate's market is a normalized `Country`.
    * @return `true` if `other_` is empty, so `country_` names the market.
    */
-  bool normalized() const noexcept { return other_.empty(); }
+  bool normalized() const noexcept {
+    return other_.empty();
+  }
 
   /**
    * @brief Tests whether the rate applies on a date.
@@ -1709,11 +1761,7 @@ struct CommissionSchedule {
    * @param date The trading date.
    * @return The rate, or none with `bounds_unreadable_` saying whether damage is why.
    */
-  RateSelection rate_for(
-    Country country,
-    const VenueKey& asserted,
-    const Date& date
-  ) const {
+  RateSelection rate_for(Country country, const VenueKey& asserted, const Date& date) const {
     // A row for a market this library does not normalize can never be the answer to a question asked
     // in terms of `Country`, and it is kept so a caller can see that the broker sent it.
     const auto in_market = [&](const CommissionRate& rate) {
@@ -2238,7 +2286,9 @@ struct OrderRef {
    * @brief Returns the issuing broker's name.
    * @return `Broker::name`.
    */
-  static constexpr std::string_view broker() noexcept { return Broker::name; }
+  static constexpr std::string_view broker() noexcept {
+    return Broker::name;
+  }
 
   /**
    * @brief Formats the reference for logs, as `broker:primary[:secondary]`.
@@ -2271,7 +2321,9 @@ struct OrderRef {
    * @param rhs The second reference.
    * @return `true` if either part differs.
    */
-  friend bool operator!=(const OrderRef& lhs, const OrderRef& rhs) { return !(lhs == rhs); }
+  friend bool operator!=(const OrderRef& lhs, const OrderRef& rhs) {
+    return !(lhs == rhs);
+  }
 };
 
 /**
@@ -2309,11 +2361,8 @@ struct OrderShape {
    *   `STOP_LIMIT`.
    */
   OrderShape(
-    OrderType type,
-    std::optional<Decimal64> price,
-    std::optional<TimeInForce> time_in_force = std::nullopt,
-    std::optional<OrderSession> session = std::nullopt,
-    std::optional<Decimal64> trigger_price = std::nullopt
+    OrderType type, std::optional<Decimal64> price, std::optional<TimeInForce> time_in_force = std::nullopt,
+    std::optional<OrderSession> session = std::nullopt, std::optional<Decimal64> trigger_price = std::nullopt
   )
   : type_(type),
     price_(std::move(price)),
@@ -2532,9 +2581,7 @@ inline AmendInstruction cancel_quantity(const WorkingOrder<Broker>& order, Decim
  */
 template <typename Broker>
 inline AmendInstruction replace_with(
-  const WorkingOrder<Broker>& order,
-  OrderShape shape,
-  std::optional<Decimal64> quantity = std::nullopt
+  const WorkingOrder<Broker>& order, OrderShape shape, std::optional<Decimal64> quantity = std::nullopt
 ) {
   AmendInstruction instruction;
   instruction.shape_ = std::move(shape);
@@ -2556,9 +2603,7 @@ inline AmendInstruction replace_with(
  */
 template <typename Broker>
 inline AmendInstruction reprice(
-  const WorkingOrder<Broker>& order,
-  Decimal64 price,
-  std::optional<Decimal64> quantity = std::nullopt
+  const WorkingOrder<Broker>& order, Decimal64 price, std::optional<Decimal64> quantity = std::nullopt
 ) {
   auto shape = resting_shape(order);
   shape.price_ = std::move(price);
@@ -2595,9 +2640,7 @@ inline std::string format_iso8601_utc(std::chrono::system_clock::time_point valu
  *   fraction, an offset outside `-23:59`..`+23:59`, or anything after the zone included), or the
  *   date or time is invalid.
  */
-inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timestamp(
-  std::string_view value
-) {
+inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timestamp(std::string_view value) {
   // The fixed layout first: `sscanf`'s `%d` would accept signs, spaces and short fields.
   const auto digits = [value](std::size_t from, std::size_t count) {
     for (std::size_t index = from; index < from + count; ++index) {
@@ -2607,21 +2650,20 @@ inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timest
     }
     return true;
   };
-  if (value.size() < 20 || !digits(0, 4) || value[4] != '-' || !digits(5, 2) || value[7] != '-' ||
-      !digits(8, 2) || value[10] != 'T' || !digits(11, 2) || value[13] != ':' || !digits(14, 2) ||
-      value[16] != ':' || !digits(17, 2)) {
-    return std::nullopt;
-  }
-  int year, month, day, hour, minute, second;
   if (
-    std::sscanf(
-      std::string(value).c_str(), "%d-%d-%dT%d:%d:%d", &year, &month, &day, &hour, &minute, &second
-    ) != 6
+    value.size() < 20 || !digits(0, 4) || value[4] != '-' || !digits(5, 2) || value[7] != '-' || !digits(8, 2) ||
+    value[10] != 'T' || !digits(11, 2) || value[13] != ':' || !digits(14, 2) || value[16] != ':' || !digits(17, 2)
   ) {
     return std::nullopt;
   }
-  if (!is_valid_date(Date{year, static_cast<unsigned>(month), static_cast<unsigned>(day)}) ||
-      hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 60) {
+  int year, month, day, hour, minute, second;
+  if (std::sscanf(std::string(value).c_str(), "%d-%d-%dT%d:%d:%d", &year, &month, &day, &hour, &minute, &second) != 6) {
+    return std::nullopt;
+  }
+  if (
+    !is_valid_date(Date{year, static_cast<unsigned>(month), static_cast<unsigned>(day)}) || hour < 0 || hour > 23 ||
+    minute < 0 || minute > 59 || second < 0 || second > 60
+  ) {
     return std::nullopt;
   }
 
@@ -2629,8 +2671,7 @@ inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timest
   std::size_t timezone_position = 19;
   if (value[19] == '.') {
     timezone_position = 20;
-    while (timezone_position < value.size() && value[timezone_position] >= '0' &&
-           value[timezone_position] <= '9') {
+    while (timezone_position < value.size() && value[timezone_position] >= '0' && value[timezone_position] <= '9') {
       ++timezone_position;
     }
     if (timezone_position == 20) {
@@ -2646,8 +2687,10 @@ inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timest
       return std::nullopt;
     }
   } else if (zone == '+' || zone == '-') {
-    if (value.size() != timezone_position + 6 || !digits(timezone_position + 1, 2) ||
-        value[timezone_position + 3] != ':' || !digits(timezone_position + 4, 2)) {
+    if (
+      value.size() != timezone_position + 6 || !digits(timezone_position + 1, 2) ||
+      value[timezone_position + 3] != ':' || !digits(timezone_position + 4, 2)
+    ) {
       return std::nullopt;
     }
   } else {
@@ -2674,12 +2717,7 @@ inline std::optional<std::chrono::system_clock::time_point> parse_iso8601_timest
   if (value[timezone_position] != 'Z') {
     int offset_hour, offset_minute;
     if (
-      std::sscanf(
-        std::string(value.substr(timezone_position + 1)).c_str(),
-        "%d:%d",
-        &offset_hour,
-        &offset_minute
-      ) != 2
+      std::sscanf(std::string(value.substr(timezone_position + 1)).c_str(), "%d:%d", &offset_hour, &offset_minute) != 2
     ) {
       return std::nullopt;
     }

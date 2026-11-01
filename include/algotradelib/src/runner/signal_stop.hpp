@@ -61,7 +61,9 @@ public:
    * @brief Returns the installed source.
    * @return The source, or `nullptr` if none is installed.
    */
-  static StopSource* installed() noexcept { return slot().load(std::memory_order_acquire); }
+  static StopSource* installed() noexcept {
+    return slot().load(std::memory_order_acquire);
+  }
 
 private:
   // The handler, which does exactly one thing.

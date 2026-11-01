@@ -8,14 +8,20 @@
 using namespace algotradelib;
 
 struct Inner {
-  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
-  template <class Ctx> void on_phase(Ctx&, strategy::MarketPhase&) {}
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx>
+  void on_phase(Ctx&, strategy::MarketPhase&) {}
 };
 
 struct Outer {
   Inner inner_;
-  template <class Ctx> void on_bar(Ctx& ctx, const strategy::BarEvent& bar) { runner::dispatch::bar(inner_, ctx, bar); }
-  template <class Ctx> void on_phase(Ctx& ctx, const strategy::MarketPhase& phase) {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    runner::dispatch::bar(inner_, ctx, bar);
+  }
+  template <class Ctx>
+  void on_phase(Ctx& ctx, const strategy::MarketPhase& phase) {
     runner::dispatch::phase(inner_, ctx, phase);
   }
 };

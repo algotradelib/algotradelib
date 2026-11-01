@@ -7,8 +7,8 @@
 #include <algotradelib/core>
 
 #include <chrono>
-#include <utility>
 #include <optional>
+#include <utility>
 
 namespace algotradelib {
 namespace backtest {
@@ -45,9 +45,7 @@ inline std::optional<std::chrono::seconds> interval_duration(BarInterval interva
  *   `trading_days`, or (for intraday bars) a session whose close is not after its open.
  */
 inline std::optional<math::Scalar> periods_per_year(
-  BarInterval interval,
-  const strategy::SessionWindow& session,
-  math::Scalar trading_days
+  BarInterval interval, const strategy::SessionWindow& session, math::Scalar trading_days
 ) {
   if (!(trading_days > math::Scalar{0})) {
     return std::nullopt;
@@ -59,8 +57,7 @@ inline std::optional<math::Scalar> periods_per_year(
   if (!duration) {
     return std::nullopt;
   }
-  const auto session_seconds =
-    std::chrono::duration_cast<std::chrono::seconds>(session.close_ - session.open_).count();
+  const auto session_seconds = std::chrono::duration_cast<std::chrono::seconds>(session.close_ - session.open_).count();
   if (session_seconds <= 0 || duration->count() <= 0) {
     return std::nullopt;
   }
@@ -88,19 +85,25 @@ public:
    * @brief Returns the session window.
    * @return The window phases are derived from.
    */
-  const strategy::SessionWindow& session() const noexcept { return session_; }
+  const strategy::SessionWindow& session() const noexcept {
+    return session_;
+  }
 
   /**
    * @brief Returns the instant the replay has reached.
    * @return The current instant; the epoch before the first event.
    */
-  std::chrono::system_clock::time_point now() const noexcept { return now_; }
+  std::chrono::system_clock::time_point now() const noexcept {
+    return now_;
+  }
 
   /**
    * @brief Returns the market phase at the current instant.
    * @return The phase; `UNKNOWN` before the first event.
    */
-  strategy::MarketPhase phase() const noexcept { return phase_; }
+  strategy::MarketPhase phase() const noexcept {
+    return phase_;
+  }
 
   /**
    * @brief Moves the clock to a bar's period end and recomputes the phase.
@@ -125,10 +128,7 @@ public:
    * @param trading_day Whether that date trades; empty gives `UNKNOWN`.
    * @return `true` if the phase changed.
    */
-  bool advance_to(
-    std::chrono::system_clock::time_point at,
-    std::optional<bool> trading_day
-  ) {
+  bool advance_to(std::chrono::system_clock::time_point at, std::optional<bool> trading_day) {
     now_ = at;
     const auto next = session_.phase(now_, trading_day);
     const bool changed = next != phase_;
@@ -145,10 +145,7 @@ public:
    *   across sessions); `true` otherwise, including for daily and longer bars and for two different
    *   intervals, where gaps are not decided here.
    */
-  static bool contiguous(
-    const strategy::BarEvent& previous,
-    const strategy::BarEvent& event
-  ) {
+  static bool contiguous(const strategy::BarEvent& previous, const strategy::BarEvent& event) {
     return contiguous(previous.interval_, previous.period_end_, event);
   }
 
@@ -160,9 +157,7 @@ public:
    * @return `true` if the bar follows the previous one without a gap.
    */
   static bool contiguous(
-    BarInterval previous_interval,
-    std::chrono::system_clock::time_point previous_end,
-    const strategy::BarEvent& event
+    BarInterval previous_interval, std::chrono::system_clock::time_point previous_end, const strategy::BarEvent& event
   ) {
     const auto duration = interval_duration(event.interval_);
     if (!duration || previous_interval != event.interval_) {

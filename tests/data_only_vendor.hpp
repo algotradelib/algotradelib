@@ -104,7 +104,9 @@ struct algotradelib::BrokerTraits<vendor::BlockingClient> : algotradelib::DataOn
   static constexpr bool blocking = true;
 
   /** Daily bars only. */
-  static constexpr bool supports_interval(BarInterval interval) { return interval == BarInterval::ONE_DAY; }
+  static constexpr bool supports_interval(BarInterval interval) {
+    return interval == BarInterval::ONE_DAY;
+  }
 
   /** Refuses an interval it does not serve. */
   static std::optional<BrokerError> validate_bars(const BarQuery& query) {
@@ -142,7 +144,9 @@ struct algotradelib::BrokerTraits<vendor::AsyncClient> : algotradelib::DataOnlyT
   static constexpr bool blocking = false;
 
   /** Daily bars only. */
-  static constexpr bool supports_interval(BarInterval interval) { return interval == BarInterval::ONE_DAY; }
+  static constexpr bool supports_interval(BarInterval interval) {
+    return interval == BarInterval::ONE_DAY;
+  }
 
   /** Refuses an interval it does not serve. */
   static std::optional<BrokerError> validate_bars(const BarQuery& query) {
@@ -164,7 +168,6 @@ struct algotradelib::BrokerTraits<vendor::AsyncClient> : algotradelib::DataOnlyT
     return client.async_bars(std::move(query), std::forward<Token>(token));
   }
 };
-
 
 namespace vendor {
 

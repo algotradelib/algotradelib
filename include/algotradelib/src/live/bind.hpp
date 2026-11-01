@@ -29,12 +29,8 @@ inline constexpr std::size_t default_series_capacity = 512;
  * @tparam Session The broker session type.
  */
 template <typename Strategy, typename Session>
-using BoundRunner = runner::Runner<
-  Strategy,
-  typename Session::Caps,
-  typename Session::BrokerTag,
-  SessionExecutor<Session>
->;
+using BoundRunner =
+  runner::Runner<Strategy, typename Session::Caps, typename Session::BrokerTag, SessionExecutor<Session>>;
 
 /**
  * @brief The runner type `bind_observer` returns: the same capabilities and tag, sending nowhere.
@@ -43,10 +39,7 @@ using BoundRunner = runner::Runner<
  */
 template <typename Strategy, typename Session>
 using ObservingRunner = runner::Runner<
-  Strategy,
-  typename Session::Caps,
-  typename Session::BrokerTag,
-  runner::RecordingExecutor<typename Session::BrokerTag>
+  Strategy, typename Session::Caps, typename Session::BrokerTag, runner::RecordingExecutor<typename Session::BrokerTag>
 >;
 
 /**
@@ -69,17 +62,11 @@ using ObservingRunner = runner::Runner<
  */
 template <typename Strategy, typename Session>
 BoundRunner<Strategy, Session> bind(
-  Session& session,
-  Strategy strategy,
-  strategy::RiskLimits limits = {},
-  std::size_t series_capacity = default_series_capacity,
-  Venue default_route = Venue::UNSPECIFIED
+  Session& session, Strategy strategy, strategy::RiskLimits limits = {},
+  std::size_t series_capacity = default_series_capacity, Venue default_route = Venue::UNSPECIFIED
 ) {
   BoundRunner<Strategy, Session> bound(
-    std::move(strategy),
-    std::move(limits),
-    series_capacity,
-    SessionExecutor<Session>(session, default_route)
+    std::move(strategy), std::move(limits), series_capacity, SessionExecutor<Session>(session, default_route)
   );
   // **A runner that can reach a broker requires an account it has actually read** -- and that is not
   // arranged here. It comes from `SessionExecutor::reaches_a_broker`, so a runner assembled by hand
@@ -98,9 +85,7 @@ BoundRunner<Strategy, Session> bind(
  */
 template <typename Strategy, typename Session, typename Journal, typename Clock = runner::SteadyClock>
 using JournaledRunner = runner::Runner<
-  Strategy,
-  typename Session::Caps,
-  typename Session::BrokerTag,
+  Strategy, typename Session::Caps, typename Session::BrokerTag,
   runner::JournalingExecutor<SessionExecutor<Session>, Journal, Clock>
 >;
 
@@ -135,18 +120,11 @@ using JournaledRunner = runner::Runner<
  */
 template <typename Strategy, typename Session, typename Journal, typename Clock = runner::SteadyClock>
 JournaledRunner<Strategy, Session, Journal, Clock> bind_journaled(
-  Session& session,
-  Journal& journal,
-  Strategy strategy,
-  strategy::RiskLimits limits = {},
-  std::size_t series_capacity = default_series_capacity,
-  Venue default_route = Venue::UNSPECIFIED,
-  Clock clock = {}
+  Session& session, Journal& journal, Strategy strategy, strategy::RiskLimits limits = {},
+  std::size_t series_capacity = default_series_capacity, Venue default_route = Venue::UNSPECIFIED, Clock clock = {}
 ) {
   JournaledRunner<Strategy, Session, Journal, Clock> bound(
-    std::move(strategy),
-    std::move(limits),
-    series_capacity,
+    std::move(strategy), std::move(limits), series_capacity,
     runner::JournalingExecutor<SessionExecutor<Session>, Journal, Clock>(
       SessionExecutor<Session>(session, default_route), journal, std::move(clock)
     )
@@ -173,15 +151,11 @@ JournaledRunner<Strategy, Session, Journal, Clock> bind_journaled(
  */
 template <typename Strategy, typename Session>
 ObservingRunner<Strategy, Session> bind_observer(
-  Session& session,
-  Strategy strategy,
-  strategy::RiskLimits limits = {},
+  Session& session, Strategy strategy, strategy::RiskLimits limits = {},
   std::size_t series_capacity = default_series_capacity
 ) {
   (void)session;
-  return ObservingRunner<Strategy, Session>(
-    std::move(strategy), std::move(limits), series_capacity, {}
-  );
+  return ObservingRunner<Strategy, Session>(std::move(strategy), std::move(limits), series_capacity, {});
 }
 
 } // namespace live

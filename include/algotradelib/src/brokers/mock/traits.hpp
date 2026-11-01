@@ -131,7 +131,9 @@ struct BrokerTraits<mock::MockClient> {
    * @brief Admits every calendar request; the market refuses another country itself.
    * @return Nothing.
    */
-  static std::optional<BrokerError> validate_calendar(Country, std::optional<Date>) { return std::nullopt; }
+  static std::optional<BrokerError> validate_calendar(Country, std::optional<Date>) {
+    return std::nullopt;
+  }
 
   /**
    * @brief Refuses an idempotency key, before the client.
@@ -150,7 +152,9 @@ struct BrokerTraits<mock::MockClient> {
    * @param raw The client's answer.
    * @return The same.
    */
-  static Result<PlacedOrder<mock::Broker>> normalize_place(Result<PlaceAck> raw) { return raw; }
+  static Result<PlacedOrder<mock::Broker>> normalize_place(Result<PlaceAck> raw) {
+    return raw;
+  }
 
   /**
    * @brief Returns the listing as it is.
@@ -166,7 +170,9 @@ struct BrokerTraits<mock::MockClient> {
    * @return `INVALID_ARGUMENT` `replace_unsupported`, not sent.
    */
   static Result<Amendment> to_replacement(const OrderRef<mock::Broker>&, const AmendInstruction&) {
-    return Result<Amendment>(refusal("replace_unsupported", "the mock broker does not modify orders; cancel and place"));
+    return Result<Amendment>(
+      refusal("replace_unsupported", "the mock broker does not modify orders; cancel and place")
+    );
   }
 
   /**
@@ -177,7 +183,9 @@ struct BrokerTraits<mock::MockClient> {
    */
   static Result<Amendment> to_cancellation(const OrderRef<mock::Broker>& ref, const AmendInstruction& instruction) {
     if (!instruction.all_remaining_) {
-      return Result<Amendment>(refusal("partial_cancel_unsupported", "the mock broker cancels the whole remainder only"));
+      return Result<Amendment>(
+        refusal("partial_cancel_unsupported", "the mock broker cancels the whole remainder only")
+      );
     }
     return Result<Amendment>(Amendment{ref.primary_});
   }
@@ -200,7 +208,9 @@ struct BrokerTraits<mock::MockClient> {
    * @brief The mock broker is never paced.
    * @return `nullptr`.
    */
-  static const network::RateLimitStats* rate_limit_stats(const Client&) { return nullptr; }
+  static const network::RateLimitStats* rate_limit_stats(const Client&) {
+    return nullptr;
+  }
 
   /**
    * @brief Forwards a quote request.
@@ -208,7 +218,9 @@ struct BrokerTraits<mock::MockClient> {
    * @param instrument The instrument.
    * @return The client's answer.
    */
-  static Result<QuoteSnapshot> quote(Client& client, InstrumentId instrument) { return client.quote(instrument); }
+  static Result<QuoteSnapshot> quote(Client& client, InstrumentId instrument) {
+    return client.quote(instrument);
+  }
 
   /**
    * @brief Forwards a reference-data request.
@@ -216,7 +228,9 @@ struct BrokerTraits<mock::MockClient> {
    * @param instrument The instrument.
    * @return The client's answer.
    */
-  static Result<Instrument> instrument(Client& client, InstrumentId instrument) { return client.instrument(instrument); }
+  static Result<Instrument> instrument(Client& client, InstrumentId instrument) {
+    return client.instrument(instrument);
+  }
 
   /**
    * @brief Forwards a calendar request; the answer covers every date the market has, whatever `from`.
@@ -234,14 +248,18 @@ struct BrokerTraits<mock::MockClient> {
    * @param query The query.
    * @return The client's answer.
    */
-  static Result<BarSeries> bars(Client& client, BarQuery query) { return client.bars(query); }
+  static Result<BarSeries> bars(Client& client, BarQuery query) {
+    return client.bars(query);
+  }
 
   /**
    * @brief Forwards a holdings request.
    * @param client The client.
    * @return The client's answer.
    */
-  static Result<HoldingsSnapshot> holdings(Client& client, const Account&) { return client.holdings(); }
+  static Result<HoldingsSnapshot> holdings(Client& client, const Account&) {
+    return client.holdings();
+  }
 
   /**
    * @brief Forwards a buying-power request.
@@ -286,7 +304,9 @@ struct BrokerTraits<mock::MockClient> {
    * @param client The client.
    * @return The client's answer.
    */
-  static Result<WorkingOrdersResult> working_orders(Client& client, const Account&) { return client.working_orders(); }
+  static Result<WorkingOrdersResult> working_orders(Client& client, const Account&) {
+    return client.working_orders();
+  }
 
   /**
    * @brief Forwards an order-history request.

@@ -1,6 +1,6 @@
-#include <algotradelib/tossinvest>
 #include <algotradelib/src/network/rate_limit.hpp>
 #include <algotradelib/src/runner/execution.hpp>
+#include <algotradelib/tossinvest>
 
 #include "local_https_server.hpp"
 
@@ -10,9 +10,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
-#include <stdexcept>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -20,7 +20,6 @@ using namespace algotradelib;
 using network::RateLimitBudget;
 using network::RateLimitGroup;
 using network::usable_burst;
-using network::RateLimitBudget;
 
 namespace {
 
@@ -38,14 +37,18 @@ struct TestClock {
   using time_point = std::chrono::time_point<TestClock, duration>;
 
   /** Returns the epoch; tests pass instants explicitly instead. */
-  static time_point now() { return time_point{}; }
+  static time_point now() {
+    return time_point{};
+  }
 };
 
 using Bucket = network::BasicRateLimitBucket<TestClock>;
 using Instant = TestClock::time_point;
 
 /** Returns the epoch instant these tests measure from. */
-Instant start() { return Instant{}; }
+Instant start() {
+  return Instant{};
+}
 
 /** Returns `count` milliseconds as the bucket's duration type. */
 std::chrono::nanoseconds ms(int count) {
@@ -55,7 +58,7 @@ std::chrono::nanoseconds ms(int count) {
 } // namespace
 
 TEST_CASE("a bucket admits a full burst from idle and then paces") {
-  Bucket bucket(4, 10);  // four back to back, then one every 100ms
+  Bucket bucket(4, 10); // four back to back, then one every 100ms
   const auto now = start();
 
   REQUIRE(bucket.interval() == ms(100));
@@ -88,33 +91,22 @@ TEST_CASE("an invalid allowance is refused at construction") {
 TEST_CASE("group priority orders trading ahead of polling") {
   using network::rate_limit_priority;
   REQUIRE(rate_limit_priority(RateLimitGroup::AUTH) > rate_limit_priority(RateLimitGroup::TRADING));
-  REQUIRE(
-    rate_limit_priority(RateLimitGroup::TRADING) > rate_limit_priority(RateLimitGroup::ACCOUNT)
-  );
-  REQUIRE(
-    rate_limit_priority(RateLimitGroup::ACCOUNT) > rate_limit_priority(RateLimitGroup::MARKET_DATA)
-  );
-  REQUIRE(
-    rate_limit_priority(RateLimitGroup::MARKET_DATA) >
-    rate_limit_priority(RateLimitGroup::REFERENCE)
-  );
+  REQUIRE(rate_limit_priority(RateLimitGroup::TRADING) > rate_limit_priority(RateLimitGroup::ACCOUNT));
+  REQUIRE(rate_limit_priority(RateLimitGroup::ACCOUNT) > rate_limit_priority(RateLimitGroup::MARKET_DATA));
+  REQUIRE(rate_limit_priority(RateLimitGroup::MARKET_DATA) > rate_limit_priority(RateLimitGroup::REFERENCE));
   REQUIRE(network::rate_limit_group_name(RateLimitGroup::MARKET_DATA) == "market_data");
 }
 
-TEST_CASE(
-  "pacing delays requests past the burst and records the wait",
-  "[rate-limit][tls][pacing]"
-) {
+TEST_CASE("pacing delays requests past the burst and records the wait", "[rate-limit][tls][pacing]") {
   test::LocalHttpsServer server;
   net::io_context ioc;
   ssl::context context(ssl::context::tls_client);
   test::trustLocalhostCertificate(context);
 
   network::HttpClientOptions options;
-  options.rate_limit_ = RateLimitBudget{1, 50, 0};  // one now, then one every 20ms
-  auto client = std::make_shared<network::AsyncHttpClient>(
-    ioc.get_executor(), context, "localhost", server.port(), options
-  );
+  options.rate_limit_ = RateLimitBudget{1, 50, 0}; // one now, then one every 20ms
+  auto client =
+    std::make_shared<network::AsyncHttpClient>(ioc.get_executor(), context, "localhost", server.port(), options);
 
   int completed = 0;
   for (const std::string target : {"/one", "/two", "/three"}) {
@@ -152,8 +144,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-  "a trading request admitted ahead of a waiting poll is not charged the poll's wait",
-  "[rate-limit][tls][pacing]"
+  "a trading request admitted ahead of a waiting poll is not charged the poll's wait", "[rate-limit][tls][pacing]"
 ) {
   test::LocalHttpsServer server;
   net::io_context ioc;
@@ -164,9 +155,8 @@ TEST_CASE(
   // the second waits, and a trading request arriving meanwhile goes on the reserve.
   network::HttpClientOptions options;
   options.rate_limit_ = RateLimitBudget{2, 1, 1};
-  auto client = std::make_shared<network::AsyncHttpClient>(
-    ioc.get_executor(), context, "localhost", server.port(), options
-  );
+  auto client =
+    std::make_shared<network::AsyncHttpClient>(ioc.get_executor(), context, "localhost", server.port(), options);
   using SteadyClock = std::chrono::steady_clock;
   const auto send = [&client](const std::string& target, RateLimitGroup group, auto handler) {
     network::HttpRequest request;
@@ -189,7 +179,9 @@ TEST_CASE(
       REQUIRE(waiting.admitted_ == 1);
       REQUIRE(client->admission_waits() >= 1);
       trading_sent = SteadyClock::now();
-      send("/order", RateLimitGroup::TRADING, [](Result<network::HttpResponse> sent) { REQUIRE(sent); });
+      send("/order", RateLimitGroup::TRADING, [](Result<network::HttpResponse> sent) {
+        REQUIRE(sent);
+      });
     });
   });
   send("/second-poll", RateLimitGroup::MARKET_DATA, [&](Result<network::HttpResponse> result) {
@@ -214,10 +206,7 @@ TEST_CASE(
   CHECK(polling.waited_ > second_done - trading_sent);
 }
 
-TEST_CASE(
-  "a rate-limited response is surfaced with its hints and never retried",
-  "[rate-limit][tls][retry]"
-) {
+TEST_CASE("a rate-limited response is surfaced with its hints and never retried", "[rate-limit][tls][retry]") {
   test::LocalHttpsServer server;
   net::io_context ioc;
   ssl::context context(ssl::context::tls_client);
@@ -225,9 +214,8 @@ TEST_CASE(
 
   network::HttpClientOptions options;
   options.rate_limit_ = RateLimitBudget{8, 8, 2};
-  auto client = std::make_shared<network::AsyncHttpClient>(
-    ioc.get_executor(), context, "localhost", server.port(), options
-  );
+  auto client =
+    std::make_shared<network::AsyncHttpClient>(ioc.get_executor(), context, "localhost", server.port(), options);
 
   // An order POST is the case that matters: a refused order must not be replayed.
   network::HttpRequest request;
@@ -301,10 +289,7 @@ TEST_CASE("a stated allowance is adopted and an unstated one is waited out") {
   REQUIRE(shared.stats().broker_rejections_ == 1);
 }
 
-TEST_CASE(
-  "a request that would wait past its deadline fails before the wire",
-  "[rate-limit][tls][deadline]"
-) {
+TEST_CASE("a request that would wait past its deadline fails before the wire", "[rate-limit][tls][deadline]") {
   test::LocalHttpsServer server;
   net::io_context ioc;
   ssl::context context(ssl::context::tls_client);
@@ -318,9 +303,8 @@ TEST_CASE(
   // The broker's one-minute hold below starts now, so neither request can start inside a
   // ten-second deadline.
   options.rate_limit_ = RateLimitBudget{1, 1, 0};
-  auto client = std::make_shared<network::AsyncHttpClient>(
-    ioc.get_executor(), context, "localhost", server.port(), options
-  );
+  auto client =
+    std::make_shared<network::AsyncHttpClient>(ioc.get_executor(), context, "localhost", server.port(), options);
   client->rate_limits()->shrink(1, 1, std::chrono::seconds(60));
 
   std::vector<BrokerError> errors;
@@ -329,16 +313,13 @@ TEST_CASE(
     network::HttpRequest request;
     request.target_ = target;
     request.group_ = RateLimitGroup::MARKET_DATA;
-    client->async_request(
-      std::move(request),
-      [&errors, &succeeded](Result<network::HttpResponse> result) {
-        if (result) {
-          ++succeeded;
-        } else {
-          errors.push_back(result.error());
-        }
+    client->async_request(std::move(request), [&errors, &succeeded](Result<network::HttpResponse> result) {
+      if (result) {
+        ++succeeded;
+      } else {
+        errors.push_back(result.error());
       }
-    );
+    });
   }
 
   ioc.run();
@@ -367,9 +348,8 @@ TEST_CASE("a full queue sheds with a structured error rather than growing") {
   network::HttpClientOptions options;
   options.queue_limit_ = 2;
   options.rate_limit_ = RateLimitBudget{1, 1, 0};
-  auto client = std::make_shared<network::AsyncHttpClient>(
-    ioc.get_executor(), context, "localhost", server.port(), options
-  );
+  auto client =
+    std::make_shared<network::AsyncHttpClient>(ioc.get_executor(), context, "localhost", server.port(), options);
 
   int shed = 0;
   for (const std::string target : {"/a", "/b", "/c", "/d"}) {
@@ -404,8 +384,7 @@ TEST_CASE("a connection that never opened never sent the order", "[http][tls][pr
   ssl::context context(ssl::context::tls_client);
   test::trustLocalhostCertificate(context);
   auto client = std::make_shared<network::AsyncHttpClient>(
-    ioc.get_executor(), context, "127.0.0.1", test::closed_loopback_port(),
-    network::HttpClientOptions{}
+    ioc.get_executor(), context, "127.0.0.1", test::closed_loopback_port(), network::HttpClientOptions{}
   );
 
   std::optional<BrokerError> failure;
@@ -413,14 +392,11 @@ TEST_CASE("a connection that never opened never sent the order", "[http][tls][pr
   request.method_ = http::verb::post;
   request.target_ = "/orders";
   request.group_ = RateLimitGroup::TRADING;
-  client->async_request(
-    std::move(request),
-    [&failure](Result<network::HttpResponse> result) {
-      if (!result) {
-        failure = result.error();
-      }
+  client->async_request(std::move(request), [&failure](Result<network::HttpResponse> result) {
+    if (!result) {
+      failure = result.error();
     }
-  );
+  });
 
   ioc.run();
   client->close();

@@ -72,19 +72,17 @@ struct IsolatedStrategy {
     if (!reference) {
       return;
     }
-    const auto limit = algotradelib::strategy::Price::rounded(
-      bar.bar_.close_, reference->price_rule_, algotradelib::OrderSide::BUY
-    );
+    const auto limit =
+      algotradelib::strategy::Price::rounded(bar.bar_.close_, reference->price_rule_, algotradelib::OrderSide::BUY);
     if (!limit) {
       return;
     }
     ctx.submit(
       algotradelib::strategy::OrderIntent::limit(
-        bar.instrument_,
-        algotradelib::OrderSide::BUY,
-        algotradelib::strategy::SizeSpec::quantity(algotradelib::Decimal64::parse("1")),
-        *limit
-      ).with_tag("isolated")
+        bar.instrument_, algotradelib::OrderSide::BUY,
+        algotradelib::strategy::SizeSpec::quantity(algotradelib::Decimal64::parse("1")), *limit
+      )
+        .with_tag("isolated")
     );
   }
 };
@@ -94,4 +92,6 @@ struct IsolatedStrategy {
 ATL_ASSERT_STRATEGY(IsolatedStrategy, algotradelib::strategy::MinimalContext);
 ATL_ASSERT_STRATEGY(IsolatedStrategy, algotradelib::strategy::FullContext);
 
-int main() { return 0; }
+int main() {
+  return 0;
+}

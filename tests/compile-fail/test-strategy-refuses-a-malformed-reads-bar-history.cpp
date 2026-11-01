@@ -13,8 +13,12 @@ using namespace algotradelib;
 inline constexpr bool no = false;
 
 struct PolicyProxy {
-  constexpr operator bool() const { return false; }
-  constexpr const bool* operator&() const { return nullptr; }
+  constexpr operator bool() const {
+    return false;
+  }
+  constexpr const bool* operator&() const {
+    return nullptr;
+  }
 };
 
 struct Probe {
@@ -28,7 +32,9 @@ private:
 
 public:
 #elif ATL_PROBE_VARIANT == 4
-  static constexpr bool reads_bar_history() { return false; }
+  static constexpr bool reads_bar_history() {
+    return false;
+  }
 #elif ATL_PROBE_VARIANT == 5
   static bool reads_bar_history;
 #elif ATL_PROBE_VARIANT == 6
@@ -36,11 +42,14 @@ public:
 #elif ATL_PROBE_VARIANT == 7
   static constexpr PolicyProxy reads_bar_history{};
 #endif
-  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
 };
 
 #if ATL_PROBE_VARIANT == 8
-bool records() { return runner::DryRunner<Probe>::records_bar_history; }
+bool records() {
+  return runner::DryRunner<Probe>::records_bar_history;
+}
 #else
 ATL_ASSERT_STRATEGY(Probe, strategy::MinimalContext);
 #endif

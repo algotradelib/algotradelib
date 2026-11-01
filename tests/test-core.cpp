@@ -1,6 +1,6 @@
 #include <algotradelib/kis>
-#include <algotradelib/src/brokers/kiwoom/config.hpp>
 #include <algotradelib/runner>
+#include <algotradelib/src/brokers/kiwoom/config.hpp>
 #include <algotradelib/strategy>
 #include <algotradelib/tossinvest>
 
@@ -20,10 +20,10 @@
 #include <limits>
 #include <memory>
 #include <optional>
-#include <thread>
 #include <stdexcept>
-#include <type_traits>
 #include <string>
+#include <thread>
+#include <type_traits>
 #include <vector>
 
 using namespace algotradelib;
@@ -55,16 +55,11 @@ struct KisClientTestAccess {
     client.http_ = std::make_shared<network::AsyncHttpClient>(client.strand_, context, "localhost", port);
   }
 
-  static Result<QuoteSnapshot> parse(
-    InstrumentId instrument,
-    Result<network::HttpResponse> response
-  ) {
+  static Result<QuoteSnapshot> parse(InstrumentId instrument, Result<network::HttpResponse> response) {
     return KisClient::parse_quote(std::move(instrument), std::move(response));
   }
 
-  static Result<HoldingsSnapshot> parse_holdings(
-    Result<network::HttpResponse> response
-  ) {
+  static Result<HoldingsSnapshot> parse_holdings(Result<network::HttpResponse> response) {
     return KisClient::parse_holdings(std::move(response));
   }
 
@@ -77,29 +72,20 @@ struct KisClientTestAccess {
   }
 
   static network::HttpRequest buying_power_request(
-    const KisConfig& config,
-    std::string_view access_token,
-    const KisAccount& account
+    const KisConfig& config, std::string_view access_token, const KisAccount& account
   ) {
     return KisClient::buying_power_request(config, access_token, account);
   }
 
   static Result<HoldingsSnapshot> parse_holdings_page(
-    Result<network::HttpResponse> response,
-    std::string& foreign_cursor,
-    std::string& domestic_cursor
+    Result<network::HttpResponse> response, std::string& foreign_cursor, std::string& domestic_cursor
   ) {
-    return KisClient::parse_holdings_page(
-      std::move(response), foreign_cursor, domestic_cursor
-    );
+    return KisClient::parse_holdings_page(std::move(response), foreign_cursor, domestic_cursor);
   }
 
   static network::HttpRequest holdings_request(
-    const KisAccount& account,
-    const KisConfig& config,
-    std::string_view foreign_cursor,
-    std::string_view domestic_cursor,
-    bool continuation
+    const KisAccount& account, const KisConfig& config, std::string_view foreign_cursor,
+    std::string_view domestic_cursor, bool continuation
   ) {
     return KisClient::make_holdings_request(
       account, config, "access-token", foreign_cursor, domestic_cursor, continuation
@@ -107,55 +93,30 @@ struct KisClientTestAccess {
   }
 
   static std::optional<BrokerError> append_holdings_page(
-    HoldingsSnapshot& snapshot,
-    std::size_t& page_count,
-    std::string& foreign_cursor,
-    std::string& domestic_cursor,
-    HoldingsSnapshot page,
-    std::string next_foreign_cursor,
-    std::string next_domestic_cursor,
-    bool has_next
+    HoldingsSnapshot& snapshot, std::size_t& page_count, std::string& foreign_cursor, std::string& domestic_cursor,
+    HoldingsSnapshot page, std::string next_foreign_cursor, std::string next_domestic_cursor, bool has_next
   ) {
     return KisClient::append_holdings_page(
-      snapshot,
-      page_count,
-      foreign_cursor,
-      domestic_cursor,
-      std::move(page),
-      std::move(next_foreign_cursor),
-      std::move(next_domestic_cursor),
-      has_next
+      snapshot, page_count, foreign_cursor, domestic_cursor, std::move(page), std::move(next_foreign_cursor),
+      std::move(next_domestic_cursor), has_next
     );
   }
   static network::HttpRequest place_order_request(
-    const KisAccount& account,
-    const KisConfig& config,
-    const OrderRequest& order,
-    std::string_view division
+    const KisAccount& account, const KisConfig& config, const OrderRequest& order, std::string_view division
   ) {
-    return KisClient::make_place_order_request(
-      account, config, "access-token", order, division
-    );
+    return KisClient::make_place_order_request(account, config, "access-token", order, division);
   }
 
   static network::HttpRequest amend_order_request(
-    const KisAccount& account,
-    const KisConfig& config,
-    const KisAmendment& amendment,
-    bool cancel,
+    const KisAccount& account, const KisConfig& config, const KisAmendment& amendment, bool cancel,
     std::string_view division
   ) {
-    return KisClient::make_amend_order_request(
-      account, config, "access-token", amendment, cancel, division
-    );
+    return KisClient::make_amend_order_request(account, config, "access-token", amendment, cancel, division);
   }
 
   static network::HttpRequest open_orders_request(
-    const KisAccount& account,
-    const KisConfig& config,
-    std::string_view foreign_cursor,
-    std::string_view domestic_cursor,
-    bool continuation
+    const KisAccount& account, const KisConfig& config, std::string_view foreign_cursor,
+    std::string_view domestic_cursor, bool continuation
   ) {
     return KisClient::make_open_orders_request(
       account, config, "access-token", foreign_cursor, domestic_cursor, continuation
@@ -163,19 +124,13 @@ struct KisClientTestAccess {
   }
 
   static network::HttpRequest order_history_request(
-    const KisAccount& account,
-    const KisConfig& config,
-    const KisHistoryRange& range
+    const KisAccount& account, const KisConfig& config, const KisHistoryRange& range
   ) {
-    return KisClient::make_order_history_request(
-      account, config, "access-token", range, "", "", false
-    );
+    return KisClient::make_order_history_request(account, config, "access-token", range, "", "", false);
   }
 
   static std::optional<BrokerError> validate_order(
-    const OrderRequest& order,
-    std::string& division,
-    const KisConfig& config = live_config()
+    const OrderRequest& order, std::string& division, const KisConfig& config = live_config()
   ) {
     return KisClient::validate_order(config, order, division);
   }
@@ -185,9 +140,7 @@ struct KisClientTestAccess {
   }
 
   static std::optional<BrokerError> amendment_division(
-    const KisAmendment& amendment,
-    std::string& division,
-    const KisConfig& config = live_config()
+    const KisAmendment& amendment, std::string& division, const KisConfig& config = live_config()
   ) {
     // `validate_amendment`, not `order_division`: the submission path's own
     // decision. Calling `order_division` here re-derived the answer from the
@@ -198,9 +151,7 @@ struct KisClientTestAccess {
   }
 
   static std::optional<BrokerError> cancel_division(
-    const KisAmendment& amendment,
-    std::string& division,
-    const KisConfig& config = live_config()
+    const KisAmendment& amendment, std::string& division, const KisConfig& config = live_config()
   ) {
     return KisClient::validate_amendment(config, amendment, division, true);
   }
@@ -210,10 +161,7 @@ struct KisClientTestAccess {
   }
 
   static std::optional<BrokerError> parse_bars_page(
-    Result<network::HttpResponse> response,
-    const BarQuery& query,
-    bool minutes,
-    std::vector<Bar>& into
+    Result<network::HttpResponse> response, const BarQuery& query, bool minutes, std::vector<Bar>& into
   ) {
     return KisClient::parse_bars_page(std::move(response), query, minutes, into);
   }
@@ -222,10 +170,7 @@ struct KisClientTestAccess {
     return KisClient::shortest_days_per_bar(interval);
   }
 
-  static Result<DepthSnapshot> parse_depth(
-    InstrumentId instrument,
-    Result<network::HttpResponse> response
-  ) {
+  static Result<DepthSnapshot> parse_depth(InstrumentId instrument, Result<network::HttpResponse> response) {
     return KisClient::parse_depth(std::move(instrument), std::move(response));
   }
 
@@ -233,29 +178,19 @@ struct KisClientTestAccess {
     return KisClient::parse_price_limits(InstrumentId{}, std::move(response));
   }
 
-  static Result<std::vector<TradePrint>> parse_trades(
-    Result<network::HttpResponse> response,
-    int count
-  ) {
+  static Result<std::vector<TradePrint>> parse_trades(Result<network::HttpResponse> response, int count) {
     return KisClient::parse_trades(InstrumentId{}, std::move(response), count);
   }
 
-  static Result<Instrument> parse_instrument(
-    InstrumentId requested,
-    Result<network::HttpResponse> response
-  ) {
+  static Result<Instrument> parse_instrument(InstrumentId requested, Result<network::HttpResponse> response) {
     return KisClient::parse_instrument(std::move(requested), std::move(response));
   }
 
   static std::optional<BrokerError> parse_calendar_page(
-    Result<network::HttpResponse> response,
-    TradingCalendar& calendar,
-    std::string& search_cursor,
+    Result<network::HttpResponse> response, TradingCalendar& calendar, std::string& search_cursor,
     std::string& next_cursor
   ) {
-    return KisClient::parse_calendar_page(
-      std::move(response), calendar, search_cursor, next_cursor
-    );
+    return KisClient::parse_calendar_page(std::move(response), calendar, search_cursor, next_cursor);
   }
 
   static bool calendar_covers(const TradingCalendar& calendar, const Date& from) {
@@ -272,38 +207,24 @@ struct KisClientTestAccess {
     return KisClient::parse_order_ack(std::move(response));
   }
 
-  static Result<KisOrderAck> parse_order_ack(
-    Result<network::HttpResponse> response,
-    Operation operation,
-    bool demo
-  ) {
+  static Result<KisOrderAck> parse_order_ack(Result<network::HttpResponse> response, Operation operation, bool demo) {
     return KisClient::parse_order_ack(std::move(response), operation, demo);
   }
 
-  static Result<KisOpenOrderPage> parse_open_orders(
-    Result<network::HttpResponse> response,
-    bool demo = false
-  ) {
+  static Result<KisOpenOrderPage> parse_open_orders(Result<network::HttpResponse> response, bool demo = false) {
     std::string foreign_cursor;
     std::string domestic_cursor;
-    return KisClient::parse_open_orders_page(
-      std::move(response), foreign_cursor, domestic_cursor, demo
-    );
+    return KisClient::parse_open_orders_page(std::move(response), foreign_cursor, domestic_cursor, demo);
   }
 
   static Result<OrderPage> parse_order_history(Result<network::HttpResponse> response) {
     std::string foreign_cursor;
     std::string domestic_cursor;
-    return KisClient::parse_order_history_page(
-      std::move(response), foreign_cursor, domestic_cursor
-    );
+    return KisClient::parse_order_history_page(std::move(response), foreign_cursor, domestic_cursor);
   }
 
   static OrderStatus derive_order_status(
-    const Decimal64& ordered,
-    const Decimal64& filled,
-    const Decimal64& remaining,
-    const Decimal64& rejected,
+    const Decimal64& ordered, const Decimal64& filled, const Decimal64& remaining, const Decimal64& rejected,
     bool canceled
   ) {
     return KisClient::derive_order_status(ordered, filled, remaining, rejected, canceled);
@@ -313,22 +234,15 @@ struct KisClientTestAccess {
 
 namespace algotradelib::tossinvest {
 struct TossClientTestAccess {
-  static Result<QuoteSnapshot> parse(
-    InstrumentId instrument,
-    Result<network::HttpResponse> response
-  ) {
+  static Result<QuoteSnapshot> parse(InstrumentId instrument, Result<network::HttpResponse> response) {
     return TossClient::parse_quote(std::move(instrument), std::move(response));
   }
 
-  static Result<std::vector<TossAccount>> parse_accounts(
-    Result<network::HttpResponse> response
-  ) {
+  static Result<std::vector<TossAccount>> parse_accounts(Result<network::HttpResponse> response) {
     return TossClient::parse_accounts(std::move(response));
   }
 
-  static Result<HoldingsSnapshot> parse_holdings(
-    Result<network::HttpResponse> response
-  ) {
+  static Result<HoldingsSnapshot> parse_holdings(Result<network::HttpResponse> response) {
     return TossClient::parse_holdings(std::move(response));
   }
 
@@ -343,10 +257,7 @@ struct TossClientTestAccess {
   static Result<CommissionSchedule> parse_commissions(Result<network::HttpResponse> response) {
     return TossClient::parse_commissions(std::move(response));
   }
-  static network::HttpRequest place_order_request(
-    std::int64_t account_sequence,
-    const OrderRequest& order
-  ) {
+  static network::HttpRequest place_order_request(std::int64_t account_sequence, const OrderRequest& order) {
     return TossClient::make_place_order_request(account_sequence, "access-token", order);
   }
 
@@ -354,10 +265,7 @@ struct TossClientTestAccess {
     return TossClient::validate_order(order);
   }
 
-  static network::HttpRequest replace_order_request(
-    std::int64_t account_sequence,
-    const TossAmendment& amendment
-  ) {
+  static network::HttpRequest replace_order_request(std::int64_t account_sequence, const TossAmendment& amendment) {
     return TossClient::make_replace_order_request(account_sequence, "access-token", amendment);
   }
 
@@ -365,10 +273,7 @@ struct TossClientTestAccess {
     return TossClient::validate_amendment_shape(type);
   }
 
-  static network::HttpRequest cancel_order_request(
-    std::int64_t account_sequence,
-    std::string_view order_id
-  ) {
+  static network::HttpRequest cancel_order_request(std::int64_t account_sequence, std::string_view order_id) {
     return TossClient::make_cancel_order_request(account_sequence, "access-token", order_id);
   }
 
@@ -376,10 +281,7 @@ struct TossClientTestAccess {
     return TossClient::make_orders_request("access-token", query);
   }
 
-  static Result<DepthSnapshot> parse_depth(
-    InstrumentId instrument,
-    Result<network::HttpResponse> response
-  ) {
+  static Result<DepthSnapshot> parse_depth(InstrumentId instrument, Result<network::HttpResponse> response) {
     return TossClient::parse_depth(std::move(instrument), std::move(response));
   }
 
@@ -392,33 +294,23 @@ struct TossClientTestAccess {
   }
 
   static std::optional<BrokerError> parse_bars_page(
-    Result<network::HttpResponse> response,
-    const BarQuery& query,
-    std::vector<Bar>& into,
-    std::optional<std::string>& cursor,
-    Currency& currency
+    Result<network::HttpResponse> response, const BarQuery& query, std::vector<Bar>& into,
+    std::optional<std::string>& cursor, Currency& currency
   ) {
     return TossClient::parse_bars_page(std::move(response), query, into, cursor, currency);
   }
 
   static Result<std::vector<QuoteSnapshot>> parse_prices(
-    const std::vector<InstrumentId>& requested,
-    Result<network::HttpResponse> response
+    const std::vector<InstrumentId>& requested, Result<network::HttpResponse> response
   ) {
     return TossClient::parse_prices(requested, std::move(response));
   }
 
-  static Result<Instrument> parse_instrument(
-    InstrumentId requested,
-    Result<network::HttpResponse> response
-  ) {
+  static Result<Instrument> parse_instrument(InstrumentId requested, Result<network::HttpResponse> response) {
     return TossClient::parse_instrument(std::move(requested), std::move(response));
   }
 
-  static Result<TradingCalendar> parse_calendar(
-    Country country,
-    Result<network::HttpResponse> response
-  ) {
+  static Result<TradingCalendar> parse_calendar(Country country, Result<network::HttpResponse> response) {
     return TossClient::parse_calendar(country, std::move(response));
   }
 
@@ -443,7 +335,9 @@ struct TossClientTestAccess {
     client.token_.expires_at_ = std::chrono::system_clock::now() + std::chrono::hours(24);
   }
 
-  static bool holds_token(const TossClient& client) { return client.token_.valid(); }
+  static bool holds_token(const TossClient& client) {
+    return client.token_.valid();
+  }
 
   static void forget_refused_token(TossClient& client, const std::string& authorization) {
     client.forget_refused_token(authorization);
@@ -519,36 +413,28 @@ private:
 };
 
 struct TestCredentials : network::ClientCredentials<TestCredentials> {
-  static constexpr std::string_view key_field() { return "key"; }
-  static constexpr std::string_view secret_field() { return "secret"; }
-  void set(
-    std::string key,
-    std::string secret
-  ) {
+  static constexpr std::string_view key_field() {
+    return "key";
+  }
+  static constexpr std::string_view secret_field() {
+    return "secret";
+  }
+  void set(std::string key, std::string secret) {
     key_ = std::move(key);
     secret_ = std::move(secret);
   }
 };
 
-TEST_CASE(
-  "Decimal64 preserves exact broker prices",
-  "[core][decimal]"
-) {
+TEST_CASE("Decimal64 preserves exact broker prices", "[core][decimal]") {
   REQUIRE(Decimal64::parse("72000") == Decimal64(72000, 0));
   REQUIRE(Decimal64::parse("185.700") == Decimal64(1857, 1));
   REQUIRE(Decimal64::parse("-0.050") == Decimal64(-5, 2));
-  REQUIRE(
-    Decimal64::parse("-9223372036854775808").coefficient() ==
-    std::numeric_limits<std::int64_t>::min()
-  );
+  REQUIRE(Decimal64::parse("-9223372036854775808").coefficient() == std::numeric_limits<std::int64_t>::min());
   REQUIRE(Decimal64::parse("000.000").str() == "0");
   REQUIRE_THROWS_AS(Decimal64::parse("9223372036854775808"), std::out_of_range);
 }
 
-TEST_CASE(
-  "ISO 8601 timestamps normalize offsets",
-  "[core][time]"
-) {
+TEST_CASE("ISO 8601 timestamps normalize offsets", "[core][time]") {
   const auto timestamp = parse_iso8601_timestamp("2026-03-25T09:30:00.123+09:00");
   const auto utc = parse_iso8601_timestamp("2026-03-25T00:30:00.123Z");
   REQUIRE(timestamp);
@@ -561,12 +447,22 @@ TEST_CASE(
   REQUIRE(parse_iso8601_timestamp("2026-03-24T15:30:00.123-09:00") == utc);
 
   // Anything but the exact layout is refused rather than read as some other instant.
-  for (const char* malformed : {
-         "2026-03-25T09:30:00+99:99", "2026-03-25T09:30:00+24:00", "2026-03-25T09:30:00+09:60",
-         "2026-03-25T09:30:00Zgarbage", "2026-03-25T09:30:00.123oopsZ", "2026-03-25T09:30:00.Z",
-         "2026-03-25T09:30:00", "2026-03-25T09:30:00+0900", "2026-03-25T09:30:00+09:00x",
-         "2026-3-25T09:30:00Z", " 2026-03-25T09:30:00Z", "+2026-03-25T09:30:00Z",
-       }) {
+  for (
+    const char* malformed : {
+      "2026-03-25T09:30:00+99:99",
+      "2026-03-25T09:30:00+24:00",
+      "2026-03-25T09:30:00+09:60",
+      "2026-03-25T09:30:00Zgarbage",
+      "2026-03-25T09:30:00.123oopsZ",
+      "2026-03-25T09:30:00.Z",
+      "2026-03-25T09:30:00",
+      "2026-03-25T09:30:00+0900",
+      "2026-03-25T09:30:00+09:00x",
+      "2026-3-25T09:30:00Z",
+      " 2026-03-25T09:30:00Z",
+      "+2026-03-25T09:30:00Z",
+    }
+  ) {
     INFO(malformed);
     REQUIRE_FALSE(parse_iso8601_timestamp(malformed));
   }
@@ -640,14 +536,19 @@ TEST_CASE("an unconstrained rule with bands reads them as a stated one does", "[
 
 TEST_CASE("KIS refuses the intraday intervals it publishes no chart for", "[core][kis][bars]") {
   // Its minute chart is one minute only; a day or longer has its period chart.
-  for (const auto interval : {BarInterval::ONE_MINUTE, BarInterval::ONE_DAY, BarInterval::ONE_WEEK,
-                              BarInterval::ONE_MONTH, BarInterval::ONE_YEAR}) {
+  for (
+    const auto interval :
+    {BarInterval::ONE_MINUTE, BarInterval::ONE_DAY, BarInterval::ONE_WEEK, BarInterval::ONE_MONTH,
+      BarInterval::ONE_YEAR}
+  ) {
     INFO(bar_interval_name(interval));
     CHECK_FALSE(kis::unsupported_bar_interval(interval));
     CHECK(BrokerCaps<kis::KisClient>::supports_interval(interval));
   }
-  for (const auto interval : {BarInterval::FIVE_MINUTES, BarInterval::FIFTEEN_MINUTES,
-                              BarInterval::THIRTY_MINUTES, BarInterval::ONE_HOUR}) {
+  for (
+    const auto interval :
+    {BarInterval::FIVE_MINUTES, BarInterval::FIFTEEN_MINUTES, BarInterval::THIRTY_MINUTES, BarInterval::ONE_HOUR}
+  ) {
     INFO(bar_interval_name(interval));
     const auto refused = kis::unsupported_bar_interval(interval);
     REQUIRE(refused);
@@ -662,8 +563,10 @@ TEST_CASE("KIS refuses the intraday intervals it publishes no chart for", "[core
   net::io_context ioc;
   ssl::context context(ssl::context::tls_client);
   auto client = std::make_shared<kis::KisClient>(ioc.get_executor(), context, kis::KisConfig{});
-  for (const auto interval : {BarInterval::FIVE_MINUTES, BarInterval::FIFTEEN_MINUTES,
-                              BarInterval::THIRTY_MINUTES, BarInterval::ONE_HOUR}) {
+  for (
+    const auto interval :
+    {BarInterval::FIVE_MINUTES, BarInterval::FIFTEEN_MINUTES, BarInterval::THIRTY_MINUTES, BarInterval::ONE_HOUR}
+  ) {
     INFO(bar_interval_name(interval));
     BarQuery query;
     query.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
@@ -731,8 +634,7 @@ TEST_CASE("decimal arithmetic at the edges of the coefficient", "[core][decimal]
 }
 
 TEST_CASE(
-  "KIS account loads explicit and default product codes from environment",
-  "[broker][kis][account][environment]"
+  "KIS account loads explicit and default product codes from environment", "[broker][kis][account][environment]"
 ) {
   ScopedEnvironmentVariable account_number("KIS_CANO");
   ScopedEnvironmentVariable product_code("KIS_ACNT_PRDT_CD");
@@ -755,16 +657,12 @@ TEST_CASE(
   REQUIRE_THROWS_AS(missing_account.from_env(), std::runtime_error);
 }
 
-TEST_CASE(
-  "The version macros agree with the version CMake read out of the header",
-  "[core][version]"
-) {
+TEST_CASE("The version macros agree with the version CMake read out of the header", "[core][version]") {
   // CMake parses version.hpp before project(); this checks the parse against the preprocessor's view
   // of the same file, and that the string is built from the parts rather than typed twice.
   REQUIRE(std::string_view(ATL_VERSION_STRING) == ATL_TEST_PROJECT_VERSION);
-  const std::string parts = std::to_string(ATL_VERSION_MAJOR) + "." + std::to_string(ATL_VERSION_MINOR) +
-    "." + std::to_string(ATL_VERSION_PATCH) +
-    (ATL_VERSION_DEV != 0 ? "." + std::to_string(ATL_VERSION_DEV) : std::string());
+  const std::string parts = std::to_string(ATL_VERSION_MAJOR) + "." + std::to_string(ATL_VERSION_MINOR) + "." +
+    std::to_string(ATL_VERSION_PATCH) + (ATL_VERSION_DEV != 0 ? "." + std::to_string(ATL_VERSION_DEV) : std::string());
   REQUIRE(parts == ATL_VERSION_STRING);
 
   // The encoded release carries no development part, as BOOST_VERSION does.
@@ -796,12 +694,16 @@ public:
     std::fclose(handle);
   }
 
-  ~TempCredentialFile() { std::remove(path_.c_str()); }
+  ~TempCredentialFile() {
+    std::remove(path_.c_str());
+  }
 
   TempCredentialFile(const TempCredentialFile&) = delete;
   TempCredentialFile& operator=(const TempCredentialFile&) = delete;
 
-  const std::string& str() const noexcept { return path_; }
+  const std::string& str() const noexcept {
+    return path_;
+  }
 
 private:
   std::string path_;
@@ -819,8 +721,7 @@ std::string refusal_of(Load load) {
 }
 
 TEST_CASE(
-  "A KIS config is demo unless KIS_DEMO says 0, and refuses any other value",
-  "[broker][kis][config][environment]"
+  "A KIS config is demo unless KIS_DEMO says 0, and refuses any other value", "[broker][kis][config][environment]"
 ) {
   ScopedEnvironmentVariable key("KIS_APP_KEY");
   ScopedEnvironmentVariable secret("KIS_APP_SECRET");
@@ -860,7 +761,9 @@ TEST_CASE(
 #endif
     demo.set(junk);
     kis::KisConfig refused;
-    const auto message = refusal_of([&] { refused.from_env(); });
+    const auto message = refusal_of([&] {
+      refused.from_env();
+    });
     INFO("KIS_DEMO=\"" << junk << "\"");
     REQUIRE(message.find(std::string("KIS_DEMO is \"") + junk + "\"") != std::string::npos);
     // Refused before anything was assigned: no half-loaded config is left to build a client from.
@@ -870,7 +773,9 @@ TEST_CASE(
   // A refused load leaves an already loaded config on the endpoint it selected.
   demo.set("junk");
   key.set("other-key");
-  CHECK_FALSE(refusal_of([&] { live.from_env(); }).empty());
+  CHECK_FALSE(refusal_of([&] {
+    live.from_env();
+  }).empty());
   CHECK_FALSE(live.is_demo_);
   CHECK(live.key() == "app-key");
 }
@@ -914,35 +819,28 @@ TEST_CASE(
 #endif
     demo.set(junk);
     kiwoom::KiwoomConfig refused;
-    const auto message = refusal_of([&] { refused.from_env(); });
+    const auto message = refusal_of([&] {
+      refused.from_env();
+    });
     INFO("KIWOOM_DEMO=\"" << junk << "\"");
     REQUIRE(message.find(std::string("KIWOOM_DEMO is \"") + junk + "\"") != std::string::npos);
     REQUIRE(refused.key().empty());
   }
 }
 
-TEST_CASE(
-  "A KIS credential file is demo unless its demo key says false",
-  "[broker][kis][config][json]"
-) {
-  const TempCredentialFile paper(
-    "kis-paper", R"({"app_key":"app-key","app_secret":"app-secret","demo":true})"
-  );
+TEST_CASE("A KIS credential file is demo unless its demo key says false", "[broker][kis][config][json]") {
+  const TempCredentialFile paper("kis-paper", R"({"app_key":"app-key","app_secret":"app-secret","demo":true})");
   kis::KisConfig paper_config;
   paper_config.from_json(paper.str());
   REQUIRE(paper_config.is_demo_);
   REQUIRE(paper_config.key() == "app-key");
 
-  const TempCredentialFile live(
-    "kis-live", R"({"app_key":"app-key","app_secret":"app-secret","demo":false})"
-  );
+  const TempCredentialFile live("kis-live", R"({"app_key":"app-key","app_secret":"app-secret","demo":false})");
   kis::KisConfig live_config;
   live_config.from_json(live.str());
   REQUIRE_FALSE(live_config.is_demo_);
 
-  const TempCredentialFile missing(
-    "kis-missing", R"({"app_key":"app-key","app_secret":"app-secret"})"
-  );
+  const TempCredentialFile missing("kis-missing", R"({"app_key":"app-key","app_secret":"app-secret"})");
   kis::KisConfig missing_config;
   missing_config.is_demo_ = false;
   missing_config.from_json(missing.str());
@@ -950,10 +848,10 @@ TEST_CASE(
 
   // A file refused for any reason leaves an already loaded config as it was. A refusal that changed
   // half the fields could leave a live config pointed at the wrong keys, or the reverse.
-  const TempCredentialFile malformed_secret(
-    "kis-malformed", R"({"app_key":"other-key","app_secret":7,"demo":true})"
-  );
-  CHECK_FALSE(refusal_of([&] { live_config.from_json(malformed_secret.str()); }).empty());
+  const TempCredentialFile malformed_secret("kis-malformed", R"({"app_key":"other-key","app_secret":7,"demo":true})");
+  CHECK_FALSE(refusal_of([&] {
+    live_config.from_json(malformed_secret.str());
+  }).empty());
   CHECK_FALSE(live_config.is_demo_);
   CHECK(live_config.key() == "app-key");
   CHECK(live_config.secret() == "app-secret");
@@ -961,11 +859,12 @@ TEST_CASE(
 
   for (const char* demo : {R"("false")", R"("1")", "1", "0", "null"}) {
     const TempCredentialFile junk(
-      "kis-junk",
-      std::string(R"({"app_key":"app-key","app_secret":"app-secret","demo":)") + demo + "}"
+      "kis-junk", std::string(R"({"app_key":"app-key","app_secret":"app-secret","demo":)") + demo + "}"
     );
     kis::KisConfig refused;
-    const auto message = refusal_of([&] { refused.from_json(junk.str()); });
+    const auto message = refusal_of([&] {
+      refused.from_json(junk.str());
+    });
     INFO("\"demo\": " << demo);
     REQUIRE(message.find("not true or false") != std::string::npos);
     REQUIRE(message.find(junk.str()) != std::string::npos);
@@ -973,13 +872,9 @@ TEST_CASE(
   }
 }
 
-TEST_CASE(
-  "A KIS credential file also selects the account",
-  "[broker][kis][config][json]"
-) {
+TEST_CASE("A KIS credential file also selects the account", "[broker][kis][config][json]") {
   const TempCredentialFile full(
-    "kis-account",
-    R"({"app_key":"k","app_secret":"s","account_number":"12345678","account_product_code":"22"})"
+    "kis-account", R"({"app_key":"k","app_secret":"s","account_number":"12345678","account_product_code":"22"})"
   );
   kis::KisAccount account;
   account.from_json(full.str());
@@ -992,12 +887,16 @@ TEST_CASE(
   CHECK(defaulted.product_code_ == "01");
 
   // A refusal names the file and the field, and repeats no digit the file holds.
-  for (const char* body :
-       {R"({"account_number":"1234567"})", R"({"account_number":12345678})",
-        R"({"account_number":"98765432","account_product_code":"7"})", R"({"app_key":"k"})"}) {
+  for (
+    const char* body :
+    {R"({"account_number":"1234567"})", R"({"account_number":12345678})",
+      R"({"account_number":"98765432","account_product_code":"7"})", R"({"app_key":"k"})"}
+  ) {
     const TempCredentialFile junk("kis-account-junk", body);
     kis::KisAccount refused;
-    const auto message = refusal_of([&] { refused.from_json(junk.str()); });
+    const auto message = refusal_of([&] {
+      refused.from_json(junk.str());
+    });
     INFO(body);
     REQUIRE_FALSE(message.empty());
     CHECK(message.find(junk.str()) != std::string::npos);
@@ -1008,21 +907,14 @@ TEST_CASE(
   }
 }
 
-TEST_CASE(
-  "A Kiwoom credential file is demo unless its demo key says false",
-  "[broker][kiwoom][config][json]"
-) {
-  const TempCredentialFile live(
-    "kiwoom-live", R"({"appkey":"app-key","secretkey":"secret-key","demo":false})"
-  );
+TEST_CASE("A Kiwoom credential file is demo unless its demo key says false", "[broker][kiwoom][config][json]") {
+  const TempCredentialFile live("kiwoom-live", R"({"appkey":"app-key","secretkey":"secret-key","demo":false})");
   kiwoom::KiwoomConfig live_config;
   live_config.from_json(live.str());
   REQUIRE_FALSE(live_config.is_demo_);
   REQUIRE(live_config.key() == "app-key");
 
-  const TempCredentialFile missing(
-    "kiwoom-missing", R"({"appkey":"app-key","secretkey":"secret-key"})"
-  );
+  const TempCredentialFile missing("kiwoom-missing", R"({"appkey":"app-key","secretkey":"secret-key"})");
   kiwoom::KiwoomConfig missing_config;
   missing_config.is_demo_ = false;
   missing_config.from_json(missing.str());
@@ -1031,7 +923,9 @@ TEST_CASE(
   const TempCredentialFile malformed_secret(
     "kiwoom-malformed", R"({"appkey":"other-key","secretkey":null,"demo":true})"
   );
-  CHECK_FALSE(refusal_of([&] { live_config.from_json(malformed_secret.str()); }).empty());
+  CHECK_FALSE(refusal_of([&] {
+    live_config.from_json(malformed_secret.str());
+  }).empty());
   CHECK_FALSE(live_config.is_demo_);
   CHECK(live_config.key() == "app-key");
   CHECK(live_config.secret() == "secret-key");
@@ -1039,21 +933,19 @@ TEST_CASE(
 
   for (const char* demo : {R"("true")", "0", "[]"}) {
     const TempCredentialFile junk(
-      "kiwoom-junk",
-      std::string(R"({"appkey":"app-key","secretkey":"secret-key","demo":)") + demo + "}"
+      "kiwoom-junk", std::string(R"({"appkey":"app-key","secretkey":"secret-key","demo":)") + demo + "}"
     );
     kiwoom::KiwoomConfig refused;
-    const auto message = refusal_of([&] { refused.from_json(junk.str()); });
+    const auto message = refusal_of([&] {
+      refused.from_json(junk.str());
+    });
     INFO("\"demo\": " << demo);
     REQUIRE(message.find("not true or false") != std::string::npos);
     REQUIRE(refused.key().empty());
   }
 }
 
-TEST_CASE(
-  "Credentials serialize without corrupting reserved characters",
-  "[auth][encoding]"
-) {
+TEST_CASE("Credentials serialize without corrupting reserved characters", "[auth][encoding]") {
   TestCredentials credentials;
   credentials.set("client id", "a+b&c");
   REQUIRE(
@@ -1065,30 +957,24 @@ TEST_CASE(
   REQUIRE(document.at("secret").as_string() == "a+b&c");
 }
 
-TEST_CASE(
-  "Broker clients reject unsupported instruments before network I/O",
-  "[broker][validation]"
-) {
+TEST_CASE("Broker clients reject unsupported instruments before network I/O", "[broker][validation]") {
   net::io_context ioc;
   ssl::context context(ssl::context::tls_client);
 
   auto kis_client = std::make_shared<kis::KisClient>(ioc.get_executor(), context, kis::KisConfig{});
   bool kis_completed = false;
   kis_client->async_quote(
-    InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"},
-    [&kis_completed](Result<QuoteSnapshot> result) {
+    InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"}, [&kis_completed](Result<QuoteSnapshot> result) {
       REQUIRE_FALSE(result);
       REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
       kis_completed = true;
     }
   );
 
-  auto toss_client =
-    std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
+  auto toss_client = std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
   bool toss_completed = false;
   toss_client->async_quote(
-    InstrumentId{Country::KR, Venue::COMBINED, "bad symbol"},
-    [&toss_completed](Result<QuoteSnapshot> result) {
+    InstrumentId{Country::KR, Venue::COMBINED, "bad symbol"}, [&toss_completed](Result<QuoteSnapshot> result) {
       REQUIRE_FALSE(result);
       REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
       toss_completed = true;
@@ -1100,19 +986,14 @@ TEST_CASE(
   REQUIRE(toss_completed);
 }
 
-TEST_CASE(
-  "a Toss sellable-quantity inquiry refuses a symbol that would change its URL",
-  "[toss][account]"
-) {
+TEST_CASE("a Toss sellable-quantity inquiry refuses a symbol that would change its URL", "[toss][account]") {
   // The symbol goes into the query string; one carrying `&` or `?` must not reach the wire.
   net::io_context ioc;
   ssl::context context(ssl::context::tls_client);
-  auto client =
-    std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
+  auto client = std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
   bool completed = false;
   client->async_sellable_quantity(
-    InstrumentId{Country::KR, Venue::COMBINED, "005930&symbol=000660"}, 1,
-    [&completed](Result<Decimal64> result) {
+    InstrumentId{Country::KR, Venue::COMBINED, "005930&symbol=000660"}, 1, [&completed](Result<Decimal64> result) {
       REQUIRE_FALSE(result);
       REQUIRE(result.error().broker_code_ == "invalid_instrument");
       REQUIRE_FALSE(result.error().reached_broker_);
@@ -1123,17 +1004,12 @@ TEST_CASE(
   REQUIRE(completed);
 }
 
-TEST_CASE(
-  "Async HTTP reconnects after a server-requested close",
-  "[http][tls][reconnect]"
-) {
+TEST_CASE("Async HTTP reconnects after a server-requested close", "[http][tls][reconnect]") {
   test::LocalHttpsServer server;
   net::io_context ioc;
   ssl::context context(ssl::context::tls_client);
   test::trustLocalhostCertificate(context);
-  auto client = std::make_shared<network::AsyncHttpClient>(
-    ioc.get_executor(), context, "localhost", server.port()
-  );
+  auto client = std::make_shared<network::AsyncHttpClient>(ioc.get_executor(), context, "localhost", server.port());
 
   std::vector<std::string> bodies;
   for (const std::string target : {"/close", "/after-close"}) {
@@ -1150,18 +1026,13 @@ TEST_CASE(
   REQUIRE(server.connectionCount() == 2);
 }
 
-TEST_CASE(
-  "Async HTTP retries GET once but never replays POST",
-  "[http][tls][retry]"
-) {
+TEST_CASE("Async HTTP retries GET once but never replays POST", "[http][tls][retry]") {
   SECTION("GET is retried after a dropped response") {
     test::LocalHttpsServer server;
     net::io_context ioc;
     ssl::context context(ssl::context::tls_client);
     test::trustLocalhostCertificate(context);
-    auto client = std::make_shared<network::AsyncHttpClient>(
-      ioc.get_executor(), context, "localhost", server.port()
-    );
+    auto client = std::make_shared<network::AsyncHttpClient>(ioc.get_executor(), context, "localhost", server.port());
 
     network::HttpRequest request;
     request.target_ = "/drop-get-once";
@@ -1183,9 +1054,7 @@ TEST_CASE(
     net::io_context ioc;
     ssl::context context(ssl::context::tls_client);
     test::trustLocalhostCertificate(context);
-    auto client = std::make_shared<network::AsyncHttpClient>(
-      ioc.get_executor(), context, "localhost", server.port()
-    );
+    auto client = std::make_shared<network::AsyncHttpClient>(ioc.get_executor(), context, "localhost", server.port());
 
     network::HttpRequest request;
     request.method_ = http::verb::post;
@@ -1204,56 +1073,52 @@ TEST_CASE(
   }
 }
 
-TEST_CASE(
-  "A POST after an idle pause is not written into a connection the server closed",
-  "[http][tls][retry][idle]"
-) {
+TEST_CASE("A POST after an idle pause is not written into a connection the server closed", "[http][tls][retry][idle]") {
   // The server closes a kept-alive connection idle for 200 ms, as KIS's hosts do after five seconds.
   // A POST is never replayed, so written into that connection it failed after its bytes left: an
   // order nobody received, reported as one that may exist (observed on a KIS demo account).
-  const auto post_after_pause = [](
-    std::chrono::milliseconds limit, std::chrono::milliseconds pause, bool server_closes_idle = true
-  ) {
-    test::LocalHttpsServer server;
-    if (server_closes_idle) {
-      server.set_idle_timeout(std::chrono::milliseconds(200));
-    }
-    net::io_context ioc;
-    ssl::context context(ssl::context::tls_client);
-    test::trustLocalhostCertificate(context);
-    network::HttpClientOptions options;
-    options.unreplayed_idle_limit_ = limit;
-    auto client = std::make_shared<network::AsyncHttpClient>(
-      ioc.get_executor(), context, "localhost", server.port(), options
-    );
+  const auto post_after_pause =
+    [](std::chrono::milliseconds limit, std::chrono::milliseconds pause, bool server_closes_idle = true) {
+      test::LocalHttpsServer server;
+      if (server_closes_idle) {
+        server.set_idle_timeout(std::chrono::milliseconds(200));
+      }
+      net::io_context ioc;
+      ssl::context context(ssl::context::tls_client);
+      test::trustLocalhostCertificate(context);
+      network::HttpClientOptions options;
+      options.unreplayed_idle_limit_ = limit;
+      auto client =
+        std::make_shared<network::AsyncHttpClient>(ioc.get_executor(), context, "localhost", server.port(), options);
 
-    network::HttpRequest read;
-    read.target_ = "/read";
-    bool read_ok = false;
-    client->async_request(std::move(read), [&read_ok](Result<network::HttpResponse> result) {
-      read_ok = static_cast<bool>(result);
-    });
-    ioc.run();
-    REQUIRE(read_ok);
+      network::HttpRequest read;
+      read.target_ = "/read";
+      bool read_ok = false;
+      client->async_request(std::move(read), [&read_ok](Result<network::HttpResponse> result) {
+        read_ok = static_cast<bool>(result);
+      });
+      ioc.run();
+      REQUIRE(read_ok);
 
-    std::this_thread::sleep_for(pause);
-    network::HttpRequest order;
-    order.method_ = http::verb::post;
-    order.target_ = "/order";
-    order.body_ = "order-like-payload";
-    std::optional<Result<network::HttpResponse>> outcome;
-    client->async_request(std::move(order), [&outcome](Result<network::HttpResponse> result) {
-      outcome.emplace(std::move(result));
-    });
-    ioc.restart();
-    // Bounded, so a client that reconnects for ever fails the test instead of hanging it.
-    ioc.run_for(std::chrono::seconds(10));
-    REQUIRE(outcome.has_value());
-    return std::make_pair(std::move(*outcome), server.connectionCount());
-  };
+      std::this_thread::sleep_for(pause);
+      network::HttpRequest order;
+      order.method_ = http::verb::post;
+      order.target_ = "/order";
+      order.body_ = "order-like-payload";
+      std::optional<Result<network::HttpResponse>> outcome;
+      client->async_request(std::move(order), [&outcome](Result<network::HttpResponse> result) {
+        outcome.emplace(std::move(result));
+      });
+      ioc.restart();
+      // Bounded, so a client that reconnects for ever fails the test instead of hanging it.
+      ioc.run_for(std::chrono::seconds(10));
+      REQUIRE(outcome.has_value());
+      return std::make_pair(std::move(*outcome), server.connectionCount());
+    };
 
   SECTION("past the limit, the POST goes out on a fresh connection") {
-    const auto [outcome, connections] = post_after_pause(std::chrono::milliseconds(100), std::chrono::milliseconds(400));
+    const auto [outcome, connections] =
+      post_after_pause(std::chrono::milliseconds(100), std::chrono::milliseconds(400));
     REQUIRE(outcome);
     CHECK(outcome.value().body() == "/order");
     CHECK(connections == 2);
@@ -1310,13 +1175,16 @@ TEST_CASE(
 ) {
   // A server can close a connection that has carried requests well inside its idle timeout (the KIS demo server closed one 0.66 s after an order's reply), and an order written into it is an order of unknown outcome.
   // With the option on, an order (`RateLimitGroup::TRADING`) goes on a connection no request has begun writing on, whatever the idle limit says.
-  const auto make_client = [](
-    test::LocalHttpsServer& server, net::io_context& ioc, ssl::context& context, network::HttpClientOptions options
-  ) {
-    options.fresh_connection_for_orders_ = true;
-    test::trustLocalhostCertificate(context);
-    return std::make_shared<network::AsyncHttpClient>(ioc.get_executor(), context, "localhost", server.port(), options);
-  };
+  const auto make_client =
+    [](
+      test::LocalHttpsServer& server, net::io_context& ioc, ssl::context& context, network::HttpClientOptions options
+    ) {
+      options.fresh_connection_for_orders_ = true;
+      test::trustLocalhostCertificate(context);
+      return std::make_shared<network::AsyncHttpClient>(
+        ioc.get_executor(), context, "localhost", server.port(), options
+      );
+    };
   const auto order_to = [](std::string target) {
     network::HttpRequest order;
     order.method_ = http::verb::post;
@@ -1374,7 +1242,9 @@ TEST_CASE(
   }
 
   SECTION("orders back to back each take their own connection, with any idle limit") {
-    for (const auto limit : {std::chrono::milliseconds(1000), std::chrono::milliseconds(0), std::chrono::milliseconds(-1)}) {
+    for (
+      const auto limit : {std::chrono::milliseconds(1000), std::chrono::milliseconds(0), std::chrono::milliseconds(-1)}
+    ) {
       test::LocalHttpsServer server;
       net::io_context ioc;
       ssl::context context(ssl::context::tls_client);
@@ -1446,7 +1316,8 @@ TEST_CASE(
         network::HttpClientOptions options;
         options.unreplayed_idle_limit_ = limit;
         options.fresh_connection_for_orders_ = setting;
-        auto client = std::make_shared<network::AsyncHttpClient>(ioc.get_executor(), context, "localhost", server.port(), options);
+        auto client =
+          std::make_shared<network::AsyncHttpClient>(ioc.get_executor(), context, "localhost", server.port(), options);
         network::HttpRequest read;
         read.target_ = "/read";
         bool ok = false;
@@ -1466,7 +1337,9 @@ TEST_CASE(
         return server.positionsOnConnection("/order");
       };
       CHECK(read_then_order(std::chrono::seconds(10), std::chrono::milliseconds(0)) == std::vector<std::size_t>{2});
-      CHECK(read_then_order(std::chrono::milliseconds(100), std::chrono::milliseconds(300)) == std::vector<std::size_t>{1});
+      CHECK(
+        read_then_order(std::chrono::milliseconds(100), std::chrono::milliseconds(300)) == std::vector<std::size_t>{1}
+      );
     }
   }
 
@@ -1504,10 +1377,7 @@ TEST_CASE("KIS writes orders on a fresh connection by default on demo only", "[k
   CHECK(Access::transport_options(on, real).fresh_connection_for_orders_ == std::optional<bool>{true});
 }
 
-TEST_CASE(
-  "Blocking HTTP retries GET once without exception-driven control flow",
-  "[http][tls][blocking][retry]"
-) {
+TEST_CASE("Blocking HTTP retries GET once without exception-driven control flow", "[http][tls][blocking][retry]") {
   SECTION("GET is retried after a dropped response") {
     test::LocalHttpsServer server;
     net::io_context ioc;
@@ -1528,19 +1398,13 @@ TEST_CASE(
     test::trustLocalhostCertificate(context);
     network::HttpClient client(ioc, context, "localhost", server.port());
 
-    REQUIRE_THROWS_AS(
-      client.post("/drop-post", "order-like-payload"),
-      beast::system_error
-    );
+    REQUIRE_THROWS_AS(client.post("/drop-post", "order-like-payload"), beast::system_error);
     REQUIRE(server.requestCount("/drop-post") == 1);
     REQUIRE(server.connectionCount() == 1);
   }
 }
 
-TEST_CASE(
-  "KIS and Toss quote payloads normalize to shared types",
-  "[broker][quote]"
-) {
+TEST_CASE("KIS and Toss quote payloads normalize to shared types", "[broker][quote]") {
   const InstrumentId samsung{Country::KR, Venue::COMBINED, "005930"};
 
   network::HttpResponse kis_response{http::status::ok, 11};
@@ -1561,18 +1425,14 @@ TEST_CASE(
   REQUIRE(toss_result.value().exchange_time_);
 
   network::HttpResponse toss_error{http::status::too_many_requests, 11};
-  toss_error.body() =
-    R"({"error":{"requestId":"request-1","code":"rate-limit-exceeded","message":"retry later"}})";
+  toss_error.body() = R"({"error":{"requestId":"request-1","code":"rate-limit-exceeded","message":"retry later"}})";
   auto error_result = tossinvest::TossClientTestAccess::parse(samsung, std::move(toss_error));
   REQUIRE_FALSE(error_result);
   REQUIRE(error_result.error().category_ == ErrorCategory::RATE_LIMIT);
   REQUIRE(error_result.error().request_id_ == "request-1");
 }
 
-TEST_CASE(
-  "KIS holdings request selects environment and continuation",
-  "[broker][kis][holdings]"
-) {
+TEST_CASE("KIS holdings request selects environment and continuation", "[broker][kis][holdings]") {
   const auto header_value = [](const network::HttpRequest& request, std::string_view name) {
     for (const auto& header : request.headers_) {
       if (header.first == name) {
@@ -1594,17 +1454,13 @@ TEST_CASE(
 
   kis::KisConfig demo;
   demo.is_demo_ = true;
-  const auto next =
-    kis::KisClientTestAccess::holdings_request(account, demo, "cursor key", "next", true);
+  const auto next = kis::KisClientTestAccess::holdings_request(account, demo, "cursor key", "next", true);
   REQUIRE(header_value(next, "tr_id") == "VTTC8434R");
   REQUIRE(header_value(next, "tr_cont") == "N");
   REQUIRE(next.target_.find("CTX_AREA_FK100=cursor%20key") != std::string::npos);
 }
 
-TEST_CASE(
-  "two KIS rows for one holding that disagree cannot authorize a sell",
-  "[broker][kis][holdings]"
-) {
+TEST_CASE("two KIS rows for one holding that disagree cannot authorize a sell", "[broker][kis][holdings]") {
   // **It starts at the wire rather than at a hand-built portfolio.** `parse_holdings_page` appends every `output1` row and `append_holdings_page`
   // concatenates pages, neither checking for a repeated `pdno` -- so a KIS response listing one
   // instrument twice with different `ord_psbl_qty` reaches the guard, and every row carries the same
@@ -1646,9 +1502,8 @@ TEST_CASE(
 
   std::string foreign_cursor;
   std::string domestic_cursor;
-  const auto parsed = kis::KisClientTestAccess::parse_holdings_page(
-    std::move(response), foreign_cursor, domestic_cursor
-  );
+  const auto parsed =
+    kis::KisClientTestAccess::parse_holdings_page(std::move(response), foreign_cursor, domestic_cursor);
   REQUIRE(parsed);
   // The parser does not dedupe, which is the premise rather than the defect: two rows arrive.
   REQUIRE(parsed.value().positions_.size() == 2);
@@ -1692,10 +1547,7 @@ TEST_CASE(
   REQUIRE(also->reason_ == strategy::GuardReason::SELLABLE_BASIS_UNESTABLISHED);
 }
 
-TEST_CASE(
-  "KIS percentage values use normalized ratio representation",
-  "[broker][kis][holdings][decimal]"
-) {
+TEST_CASE("KIS percentage values use normalized ratio representation", "[broker][kis][holdings][decimal]") {
   REQUIRE(broker_detail::percent_to_ratio("0.00") == Decimal64::parse("0"));
   REQUIRE(broker_detail::percent_to_ratio("10.00") == Decimal64::parse("0.1"));
   REQUIRE(broker_detail::percent_to_ratio("100.00") == Decimal64::parse("1"));
@@ -1704,8 +1556,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-  "KIS holdings pagination accumulates pages and rejects repeated cursors",
-  "[broker][kis][holdings][pagination]"
+  "KIS holdings pagination accumulates pages and rejects repeated cursors", "[broker][kis][holdings][pagination]"
 ) {
   HoldingsSnapshot snapshot;
   std::size_t page_count{0};
@@ -1725,14 +1576,7 @@ TEST_CASE(
     }
   );
   auto error = kis::KisClientTestAccess::append_holdings_page(
-    snapshot,
-    page_count,
-    foreign_cursor,
-    domestic_cursor,
-    std::move(first_page),
-    "foreign-next",
-    "domestic-next",
-    true
+    snapshot, page_count, foreign_cursor, domestic_cursor, std::move(first_page), "foreign-next", "domestic-next", true
   );
   REQUIRE_FALSE(error);
   REQUIRE(page_count == 1);
@@ -1753,14 +1597,7 @@ TEST_CASE(
     }
   );
   error = kis::KisClientTestAccess::append_holdings_page(
-    snapshot,
-    page_count,
-    foreign_cursor,
-    domestic_cursor,
-    std::move(second_page),
-    "",
-    "",
-    false
+    snapshot, page_count, foreign_cursor, domestic_cursor, std::move(second_page), "", "", false
   );
   REQUIRE_FALSE(error);
   REQUIRE(page_count == 2);
@@ -1770,13 +1607,7 @@ TEST_CASE(
 
   HoldingsSnapshot repeated_page;
   error = kis::KisClientTestAccess::append_holdings_page(
-    snapshot,
-    page_count,
-    foreign_cursor,
-    domestic_cursor,
-    std::move(repeated_page),
-    "foreign-next",
-    "domestic-next",
+    snapshot, page_count, foreign_cursor, domestic_cursor, std::move(repeated_page), "foreign-next", "domestic-next",
     true
   );
   REQUIRE(error);
@@ -1784,10 +1615,7 @@ TEST_CASE(
   REQUIRE(page_count == 2);
 }
 
-TEST_CASE(
-  "Toss account discovery preserves unknown account types",
-  "[broker][toss][accounts]"
-) {
+TEST_CASE("Toss account discovery preserves unknown account types", "[broker][toss][accounts]") {
   network::HttpResponse response{http::status::ok, 11};
   response.body() = R"({"result":[
     {"accountNo":"12345678901","accountSeq":1,"accountType":"BROKERAGE"},
@@ -1801,30 +1629,30 @@ TEST_CASE(
   REQUIRE(result.value()[1].account_type_ == "FUTURE_ACCOUNT_TYPE");
 }
 
-TEST_CASE(
-  "Toss asks for a new token after refusing the one it holds",
-  "[broker][toss][auth]"
-) {
+TEST_CASE("Toss asks for a new token after refusing the one it holds", "[broker][toss][auth]") {
   // Issuing a token with the same key revokes the one held; the code and message are the ones Toss
   // returned to a running program on 2026-10-17.
   test::LocalHttpsServer server;
-  server.scriptSequence("/oauth2/token", {
-    {200, R"({"access_token":"first","token_type":"Bearer","expires_in":86400})", {}},
-    {200, R"({"access_token":"second","token_type":"Bearer","expires_in":86400})", {}},
-  });
-  server.scriptSequence("/api/v1/accounts", {
+  server.scriptSequence(
+    "/oauth2/token",
     {
-      401,
-      R"({"error":{"requestId":"r1","code":"token-revoked","message":"새로 발급된 토큰으로 대체되어 더 이상 유효하지 않은 토큰입니다. 최신 토큰으로 다시 시도해 주세요."}})",
-      {}
-    },
-    {200, R"({"result":[{"accountNo":"12345678901","accountSeq":1,"accountType":"BROKERAGE"}]})", {}},
-  });
+      {200, R"({"access_token":"first","token_type":"Bearer","expires_in":86400})", {}},
+      {200, R"({"access_token":"second","token_type":"Bearer","expires_in":86400})", {}},
+    }
+  );
+  server.scriptSequence(
+    "/api/v1/accounts",
+    {
+      {401,
+        R"({"error":{"requestId":"r1","code":"token-revoked","message":"새로 발급된 토큰으로 대체되어 더 이상 유효하지 않은 토큰입니다. 최신 토큰으로 다시 시도해 주세요."}})",
+        {}},
+      {200, R"({"result":[{"accountNo":"12345678901","accountSeq":1,"accountType":"BROKERAGE"}]})", {}},
+    }
+  );
   net::io_context ioc;
   ssl::context context(ssl::context::tls_client);
   test::trustLocalhostCertificate(context);
-  auto client =
-    std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
+  auto client = std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
   tossinvest::TossClientTestAccess::connect(*client, context, server.port());
 
   auto refused = client->async_accounts(net::use_future);
@@ -1848,14 +1676,10 @@ TEST_CASE(
   REQUIRE(server.lastHeader("/api/v1/accounts", "Authorization") == "Bearer second");
 }
 
-TEST_CASE(
-  "Toss keeps a newer token when a request carrying an older one is refused",
-  "[broker][toss][auth]"
-) {
+TEST_CASE("Toss keeps a newer token when a request carrying an older one is refused", "[broker][toss][auth]") {
   net::io_context ioc;
   ssl::context context(ssl::context::tls_client);
-  auto client =
-    std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
+  auto client = std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
   tossinvest::TossClientTestAccess::hold_token(*client, "second");
 
   tossinvest::TossClientTestAccess::forget_refused_token(*client, "Bearer first");
@@ -1865,10 +1689,7 @@ TEST_CASE(
   REQUIRE_FALSE(tossinvest::TossClientTestAccess::holds_token(*client));
 }
 
-TEST_CASE(
-  "Toss holdings normalize multiple currencies and reject unknown countries",
-  "[broker][toss][holdings]"
-) {
+TEST_CASE("Toss holdings normalize multiple currencies and reject unknown countries", "[broker][toss][holdings]") {
   network::HttpResponse response{http::status::ok, 11};
   response.body() = R"({"result":{
     "totalPurchaseAmount":{"krw":"6500000","usd":"1553"},
@@ -1937,22 +1758,17 @@ TEST_CASE(
       "profitLoss":{"amount":"100","rate":"0.1111"}
     }]
   }})";
-  const auto future =
-    tossinvest::TossClientTestAccess::parse_holdings(std::move(future_response));
+  const auto future = tossinvest::TossClientTestAccess::parse_holdings(std::move(future_response));
   REQUIRE_FALSE(future);
   REQUIRE(future.error().category_ == ErrorCategory::PROTOCOL);
   REQUIRE(future.error().broker_code_ == "invalid_holdings_response");
   REQUIRE(future.error().message_ == "unsupported marketCountry: JP");
 }
 
-TEST_CASE(
-  "Toss holdings reject invalid account sequences before network I/O",
-  "[broker][toss][holdings][validation]"
-) {
+TEST_CASE("Toss holdings reject invalid account sequences before network I/O", "[broker][toss][holdings][validation]") {
   net::io_context ioc;
   ssl::context context(ssl::context::tls_client);
-  auto client =
-    std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
+  auto client = std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
   bool completed = false;
   client->async_holdings(0, [&completed](Result<HoldingsSnapshot> result) {
     REQUIRE_FALSE(result);
@@ -1964,10 +1780,7 @@ TEST_CASE(
   REQUIRE(completed);
 }
 
-TEST_CASE(
-  "Holdings parsers preserve empty results and broker errors",
-  "[broker][holdings][errors]"
-) {
+TEST_CASE("Holdings parsers preserve empty results and broker errors", "[broker][holdings][errors]") {
   SECTION("Toss accepts an empty portfolio") {
     network::HttpResponse response{http::status::ok, 11};
     response.body() = R"({"result":{
@@ -1999,8 +1812,7 @@ TEST_CASE(
 
   SECTION("Toss preserves structured HTTP errors") {
     network::HttpResponse response{http::status::too_many_requests, 11};
-    response.body() =
-      R"({"error":{"requestId":"holding-1","code":"rate-limit","message":"retry"}})";
+    response.body() = R"({"error":{"requestId":"holding-1","code":"rate-limit","message":"retry"}})";
     response.set("Retry-After", "3");
     const auto result = tossinvest::TossClientTestAccess::parse_holdings(std::move(response));
     REQUIRE_FALSE(result);
@@ -2068,10 +1880,7 @@ OrderRequest us_market_fractional_sell() {
 
 } // namespace
 
-TEST_CASE(
-  "KIS refuses a client order id through the whole placement path",
-  "[broker][kis][order][validation]"
-) {
+TEST_CASE("KIS refuses a client order id through the whole placement path", "[broker][kis][order][validation]") {
   // No credentials and no reachable server: the refusal has to arrive before
   // authentication, which is the only way this test can pass at all.
   ssl::context tls(ssl::context::tls_client);
@@ -2134,10 +1943,7 @@ TEST_CASE("Every date in a leap-year span round-trips through its day count", "[
   REQUIRE(checked == 1461);
 }
 
-TEST_CASE(
-  "KIS order request selects the transaction id for side and environment",
-  "[broker][kis][order]"
-) {
+TEST_CASE("KIS order request selects the transaction id for side and environment", "[broker][kis][order]") {
   const kis::KisAccount account{"12345678", "01"};
   kis::KisConfig live;
   live.is_demo_ = false;
@@ -2146,35 +1952,30 @@ TEST_CASE(
 
   SECTION("a live buy and sell use their documented transaction ids") {
     auto buy = korean_limit_buy();
-    const auto buy_request =
-      kis::KisClientTestAccess::place_order_request(account, live, buy, "00");
+    const auto buy_request = kis::KisClientTestAccess::place_order_request(account, live, buy, "00");
     REQUIRE(buy_request.method_ == http::verb::post);
     REQUIRE(buy_request.target_ == "/uapi/domestic-stock/v1/trading/order-cash");
     REQUIRE(header_of(buy_request, "tr_id") == "TTTC0012U");
 
     buy.side_ = OrderSide::SELL;
-    const auto sell_request =
-      kis::KisClientTestAccess::place_order_request(account, live, buy, "00");
+    const auto sell_request = kis::KisClientTestAccess::place_order_request(account, live, buy, "00");
     REQUIRE(header_of(sell_request, "tr_id") == "TTTC0011U");
   }
 
   SECTION("a demo buy and sell use their documented transaction ids") {
     auto order = korean_limit_buy();
     REQUIRE(
-      header_of(kis::KisClientTestAccess::place_order_request(account, demo, order, "00"), "tr_id")
-        == "VTTC0012U"
+      header_of(kis::KisClientTestAccess::place_order_request(account, demo, order, "00"), "tr_id") == "VTTC0012U"
     );
     order.side_ = OrderSide::SELL;
     REQUIRE(
-      header_of(kis::KisClientTestAccess::place_order_request(account, demo, order, "00"), "tr_id")
-        == "VTTC0011U"
+      header_of(kis::KisClientTestAccess::place_order_request(account, demo, order, "00"), "tr_id") == "VTTC0011U"
     );
   }
 
   SECTION("a limit order transmits its price and account selection") {
     const auto order = korean_limit_buy();
-    const auto request =
-      kis::KisClientTestAccess::place_order_request(account, live, order, "00");
+    const auto request = kis::KisClientTestAccess::place_order_request(account, live, order, "00");
     const auto body = json::parse(request.body_).as_object();
     REQUIRE(body.at("CANO").as_string() == "12345678");
     REQUIRE(body.at("ACNT_PRDT_CD").as_string() == "01");
@@ -2191,8 +1992,7 @@ TEST_CASE(
   SECTION("a combined route is transmitted as SOR") {
     auto order = korean_limit_buy();
     order.venue_ = Venue::COMBINED;
-    const auto request =
-      kis::KisClientTestAccess::place_order_request(account, live, order, "00");
+    const auto request = kis::KisClientTestAccess::place_order_request(account, live, order, "00");
     // Expressing no venue is not the same as expressing the combined one: the
     // broker's documented default is the honest outcome for a caller who asked
     // for nothing, and a substitution for a caller who asked for something.
@@ -2204,8 +2004,7 @@ TEST_CASE(
     auto order = korean_limit_buy();
     order.type_ = OrderType::MARKET;
     order.price_.reset();
-    const auto request =
-      kis::KisClientTestAccess::place_order_request(account, live, order, "01");
+    const auto request = kis::KisClientTestAccess::place_order_request(account, live, order, "01");
     const auto body = json::parse(request.body_).as_object();
     REQUIRE(body.at("ORD_DVSN").as_string() == "01");
     REQUIRE(body.at("ORD_UNPR").as_string() == "0");
@@ -2214,8 +2013,7 @@ TEST_CASE(
   SECTION("an explicit venue is transmitted as its exchange code") {
     auto order = korean_limit_buy();
     order.venue_ = Venue::NXT;
-    const auto request =
-      kis::KisClientTestAccess::place_order_request(account, live, order, "00");
+    const auto request = kis::KisClientTestAccess::place_order_request(account, live, order, "00");
     REQUIRE(json::parse(request.body_).as_object().at("EXCG_ID_DVSN_CD").as_string() == "NXT");
   }
 }
@@ -2249,52 +2047,32 @@ struct ShapeCase {
 constexpr ShapeCase kWorkbookShapes[] = {
   {"00", OrderType::LIMIT, TimeInForce::DAY, OrderSession::REGULAR, true, true, true, true},
   {"01", OrderType::MARKET, TimeInForce::DAY, OrderSession::REGULAR, true, false, true, true},
-  {"02", OrderType::CONDITIONAL_LIMIT, TimeInForce::DAY, OrderSession::REGULAR,
-   true, false, false, true},
+  {"02", OrderType::CONDITIONAL_LIMIT, TimeInForce::DAY, OrderSession::REGULAR, true, false, false, true},
   {"03", OrderType::BEST_LIMIT, TimeInForce::DAY, OrderSession::REGULAR, true, true, true, true},
-  {"04", OrderType::PRIMARY_LIMIT, TimeInForce::DAY, OrderSession::REGULAR,
-   true, true, true, true},
-  {"05", OrderType::CLOSING_PRICE, TimeInForce::DAY, OrderSession::PRE_MARKET,
-   true, false, false, true},
-  {"06", OrderType::CLOSING_PRICE, TimeInForce::DAY, OrderSession::AFTER_HOURS,
-   true, false, false, true},
-  {"07", OrderType::LIMIT, TimeInForce::DAY, OrderSession::AFTER_HOURS_AUCTION,
-   true, false, false, false},
-  {"11", OrderType::LIMIT, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,
-   true, true, true, true},
-  {"12", OrderType::LIMIT, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR,
-   true, true, true, true},
-  {"13", OrderType::MARKET, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,
-   true, true, true, true},
-  {"14", OrderType::MARKET, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR,
-   true, true, true, true},
-  {"15", OrderType::BEST_LIMIT, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,
-   true, true, true, true},
-  {"16", OrderType::BEST_LIMIT, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR,
-   true, true, true, true},
+  {"04", OrderType::PRIMARY_LIMIT, TimeInForce::DAY, OrderSession::REGULAR, true, true, true, true},
+  {"05", OrderType::CLOSING_PRICE, TimeInForce::DAY, OrderSession::PRE_MARKET, true, false, false, true},
+  {"06", OrderType::CLOSING_PRICE, TimeInForce::DAY, OrderSession::AFTER_HOURS, true, false, false, true},
+  {"07", OrderType::LIMIT, TimeInForce::DAY, OrderSession::AFTER_HOURS_AUCTION, true, false, false, false},
+  {"11", OrderType::LIMIT, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR, true, true, true, true},
+  {"12", OrderType::LIMIT, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR, true, true, true, true},
+  {"13", OrderType::MARKET, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR, true, true, true, true},
+  {"14", OrderType::MARKET, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR, true, true, true, true},
+  {"15", OrderType::BEST_LIMIT, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR, true, true, true, true},
+  {"16", OrderType::BEST_LIMIT, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR, true, true, true, true},
   {"21", OrderType::MID_PRICE, TimeInForce::DAY, OrderSession::REGULAR, true, true, false, true},
   {"22", OrderType::STOP_LIMIT, TimeInForce::DAY, OrderSession::REGULAR, true, true, false, true},
-  {"23", OrderType::MID_PRICE, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR,
-   true, true, false, true},
-  {"24", OrderType::MID_PRICE, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR,
-   true, true, false, true},
+  {"23", OrderType::MID_PRICE, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::REGULAR, true, true, false, true},
+  {"24", OrderType::MID_PRICE, TimeInForce::FILL_OR_KILL, OrderSession::REGULAR, true, true, false, true},
   {"27", OrderType::LIMIT, TimeInForce::DAY, OrderSession::GTP, false, true, false, true},
   {"28", OrderType::BEST_LIMIT, TimeInForce::DAY, OrderSession::GTP, false, true, false, true},
   {"29", OrderType::PRIMARY_LIMIT, TimeInForce::DAY, OrderSession::GTP, false, true, false, true},
-  {"41", OrderType::LIMIT, TimeInForce::DAY, OrderSession::AFTER_MARKET,
-   true, false, false, true},
-  {"42", OrderType::LIMIT, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::AFTER_MARKET,
-   true, false, false, true},
-  {"43", OrderType::LIMIT, TimeInForce::FILL_OR_KILL, OrderSession::AFTER_MARKET,
-   true, false, false, true},
-  {"44", OrderType::BEST_LIMIT, TimeInForce::DAY, OrderSession::AFTER_MARKET,
-   true, false, false, true},
-  {"45", OrderType::BEST_LIMIT, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::AFTER_MARKET,
-   true, false, false, true},
-  {"46", OrderType::BEST_LIMIT, TimeInForce::FILL_OR_KILL, OrderSession::AFTER_MARKET,
-   true, false, false, true},
-  {"47", OrderType::PRIMARY_LIMIT, TimeInForce::DAY, OrderSession::AFTER_MARKET,
-   true, false, false, true},
+  {"41", OrderType::LIMIT, TimeInForce::DAY, OrderSession::AFTER_MARKET, true, false, false, true},
+  {"42", OrderType::LIMIT, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::AFTER_MARKET, true, false, false, true},
+  {"43", OrderType::LIMIT, TimeInForce::FILL_OR_KILL, OrderSession::AFTER_MARKET, true, false, false, true},
+  {"44", OrderType::BEST_LIMIT, TimeInForce::DAY, OrderSession::AFTER_MARKET, true, false, false, true},
+  {"45", OrderType::BEST_LIMIT, TimeInForce::IMMEDIATE_OR_CANCEL, OrderSession::AFTER_MARKET, true, false, false, true},
+  {"46", OrderType::BEST_LIMIT, TimeInForce::FILL_OR_KILL, OrderSession::AFTER_MARKET, true, false, false, true},
+  {"47", OrderType::PRIMARY_LIMIT, TimeInForce::DAY, OrderSession::AFTER_MARKET, true, false, false, true},
 };
 
 /** Builds a request for `shape` at `venue`, priced so only the shape can refuse it. */
@@ -2329,8 +2107,7 @@ OrderRequest shaped_order(const ShapeCase& shape, Venue venue) {
 } // namespace
 
 TEST_CASE(
-  "KIS composes every order code the workbook publishes, and only where it publishes it",
-  "[broker][kis][order]"
+  "KIS composes every order code the workbook publishes, and only where it publishes it", "[broker][kis][order]"
 ) {
   SECTION("each venue accepts exactly the codes its own list carries") {
     for (const auto& shape : kWorkbookShapes) {
@@ -2341,8 +2118,7 @@ TEST_CASE(
       }};
       for (const auto& [venue, published] : venues) {
         std::string division;
-        const auto error =
-          kis::KisClientTestAccess::validate_order(shaped_order(shape, venue), division);
+        const auto error = kis::KisClientTestAccess::validate_order(shaped_order(shape, venue), division);
         const bool allowed = published && shape.requestable_;
         INFO("code " << shape.code_ << " at venue " << static_cast<int>(venue));
         if (allowed) {
@@ -2407,10 +2183,7 @@ TEST_CASE(
   }
 }
 
-TEST_CASE(
-  "naming a venue on the instrument is refused rather than routed on",
-  "[broker][order][identity]"
-) {
+TEST_CASE("naming a venue on the instrument is refused rather than routed on", "[broker][order][identity]") {
   // The refusal that keeps an order's identity equal to its holding's. Written
   // without a test, and a surviving mutation said so: deleting it failed
   // nothing, because every other case in this file already uses the identity
@@ -2435,9 +2208,7 @@ TEST_CASE(
   SECTION("Toss, which offers no venue choice at all") {
     boost::asio::io_context ioc;
     ssl::context context(ssl::context::tls_client);
-    auto client = std::make_shared<tossinvest::TossClient>(
-      ioc.get_executor(), context, tossinvest::TossConfig{}
-    );
+    auto client = std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
     const auto expect = [&](OrderRequest order, std::string_view code) {
       bool completed = false;
       client->async_place_order(7, std::move(order), [&](Result<OrderAck> result) {
@@ -2463,8 +2234,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-  "an order routed to a named venue is still the instrument it was placed in",
-  "[broker][kis][order][identity]"
+  "an order routed to a named venue is still the instrument it was placed in", "[broker][kis][order][identity]"
 ) {
   // The end-to-end shape of the defect the venue split exists to prevent, from
   // the request a caller writes to the verdict recovery reaches. Routing an
@@ -2481,34 +2251,29 @@ TEST_CASE(
   // 1. The request routes to NXT and still names the identity instrument.
   std::string division;
   REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division, live));
-  const auto body = json::parse(
-    kis::KisClientTestAccess::place_order_request(account, live, order, division).body_
-  ).as_object();
+  const auto body =
+    json::parse(kis::KisClientTestAccess::place_order_request(account, live, order, division).body_).as_object();
   REQUIRE(body.at("EXCG_ID_DVSN_CD").as_string() == "NXT");
   REQUIRE(order.instrument_.venue_ == kKoreanInstrumentVenue);
 
   // 2. The holding and the listing of that order agree on the instrument, and
   //    the listing reports the routing venue beside it.
-  auto holdings = kis::KisClientTestAccess::parse_holdings(
-    json_response(
-      R"({"rt_cd":"0","ctx_area_fk100":"","ctx_area_nk100":"","output1":[{)"
-      R"("pdno":"005930","prdt_name":"Samsung","hldg_qty":"10","ord_psbl_qty":"10",)"
-      R"("pchs_avg_pric":"70000.0000","pchs_amt":"700000","prpr":"72000",)"
-      R"("evlu_amt":"720000","evlu_pfls_amt":"20000","evlu_pfls_rt":"2.857142"}],)"
-      R"("output2":[{"pchs_amt_smtl_amt":"700000","evlu_amt_smtl_amt":"720000",)"
-      R"("evlu_pfls_smtl_amt":"20000"}]})"
-    )
-  );
+  auto holdings = kis::KisClientTestAccess::parse_holdings(json_response(
+    R"({"rt_cd":"0","ctx_area_fk100":"","ctx_area_nk100":"","output1":[{)"
+    R"("pdno":"005930","prdt_name":"Samsung","hldg_qty":"10","ord_psbl_qty":"10",)"
+    R"("pchs_avg_pric":"70000.0000","pchs_amt":"700000","prpr":"72000",)"
+    R"("evlu_amt":"720000","evlu_pfls_amt":"20000","evlu_pfls_rt":"2.857142"}],)"
+    R"("output2":[{"pchs_amt_smtl_amt":"700000","evlu_amt_smtl_amt":"720000",)"
+    R"("evlu_pfls_smtl_amt":"20000"}]})"
+  ));
   REQUIRE(holdings);
-  auto listing = kis::KisClientTestAccess::parse_open_orders(
-    json_response(
-      R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"0001569139",)"
-      R"("orgn_odno":"","ord_dvsn_name":"limit","pdno":"005930","prdt_name":"Samsung",)"
-      R"("rvse_cncl_dvsn_name":"modify","ord_qty":"10","ord_unpr":"70000",)"
-      R"("ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0","psbl_qty":"10",)"
-      R"("sll_buy_dvsn_cd":"02","ord_dvsn_cd":"00","excg_id_dvsn_cd":"NXT"}]})"
-    )
-  );
+  auto listing = kis::KisClientTestAccess::parse_open_orders(json_response(
+    R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"0001569139",)"
+    R"("orgn_odno":"","ord_dvsn_name":"limit","pdno":"005930","prdt_name":"Samsung",)"
+    R"("rvse_cncl_dvsn_name":"modify","ord_qty":"10","ord_unpr":"70000",)"
+    R"("ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0","psbl_qty":"10",)"
+    R"("sll_buy_dvsn_cd":"02","ord_dvsn_cd":"00","excg_id_dvsn_cd":"NXT"}]})"
+  ));
   REQUIRE(listing);
   const auto& resting = listing.value().orders_.front().order_;
   const auto& position = holdings.value().positions_.front();
@@ -2523,9 +2288,7 @@ TEST_CASE(
   WorkingOrder<kis::Broker> working;
   working.order_ = resting;
   portfolio.working_.push_back(working);
-  REQUIRE(
-    portfolio.working_quantity(order.instrument_, OrderSide::BUY) == Decimal64::parse("10")
-  );
+  REQUIRE(portfolio.working_quantity(order.instrument_, OrderSide::BUY) == Decimal64::parse("10"));
   REQUIRE(portfolio.net_quantity_of(order.instrument_) == Decimal64::parse("10"));
 
   // 4. A cancellation of it addresses the venue it was routed to.
@@ -2576,8 +2339,7 @@ TEST_CASE("every KIS market-data request reads the tape the adapter was told to"
   SECTION("consolidated is the default") {
     REQUIRE(std::string(kis::market_division_code(config.market_tape_)) == "UN");
     REQUIRE(
-      kis::KisClientTestAccess::market_query(config, "005930") ==
-      "?FID_COND_MRKT_DIV_CODE=UN&FID_INPUT_ISCD=005930"
+      kis::KisClientTestAccess::market_query(config, "005930") == "?FID_COND_MRKT_DIV_CODE=UN&FID_INPUT_ISCD=005930"
     );
   }
 
@@ -2585,15 +2347,13 @@ TEST_CASE("every KIS market-data request reads the tape the adapter was told to"
     config.market_tape_ = kis::MarketTape::KRX;
     REQUIRE(std::string(kis::market_division_code(config.market_tape_)) == "J");
     REQUIRE(
-      kis::KisClientTestAccess::market_query(config, "005930") ==
-      "?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=005930"
+      kis::KisClientTestAccess::market_query(config, "005930") == "?FID_COND_MRKT_DIV_CODE=J&FID_INPUT_ISCD=005930"
     );
 
     config.market_tape_ = kis::MarketTape::NXT;
     REQUIRE(std::string(kis::market_division_code(config.market_tape_)) == "NX");
     REQUIRE(
-      kis::KisClientTestAccess::market_query(config, "005930") ==
-      "?FID_COND_MRKT_DIV_CODE=NX&FID_INPUT_ISCD=005930"
+      kis::KisClientTestAccess::market_query(config, "005930") == "?FID_COND_MRKT_DIV_CODE=NX&FID_INPUT_ISCD=005930"
     );
   }
 
@@ -2603,8 +2363,7 @@ TEST_CASE("every KIS market-data request reads the tape the adapter was told to"
     // matters because the first draft of this change did derive it from `InstrumentId::venue_`,
     // and setting that field to name a book makes an order invalid -- see the next test.
     REQUIRE(
-      kis::KisClientTestAccess::market_query(config, "000660").find("FID_INPUT_ISCD=000660") !=
-      std::string::npos
+      kis::KisClientTestAccess::market_query(config, "000660").find("FID_INPUT_ISCD=000660") != std::string::npos
     );
   }
 }
@@ -2659,9 +2418,11 @@ TEST_CASE("a KIS demo account trades on KRX and is told so before I/O", "[broker
     for (const auto& config : {demo, live}) {
       REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division, config));
       REQUIRE(division == "00");
-      REQUIRE_FALSE(json::parse(
-        kis::KisClientTestAccess::place_order_request(account, config, order, division).body_
-      ).as_object().contains("EXCG_ID_DVSN_CD"));
+      REQUIRE_FALSE(
+        json::parse(kis::KisClientTestAccess::place_order_request(account, config, order, division).body_)
+          .as_object()
+          .contains("EXCG_ID_DVSN_CD")
+      );
     }
   }
 
@@ -2678,9 +2439,12 @@ TEST_CASE("a KIS demo account trades on KRX and is told so before I/O", "[broker
     REQUIRE_FALSE(error->reached_broker_);
 
     REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(order, division, live));
-    REQUIRE(json::parse(
-      kis::KisClientTestAccess::place_order_request(account, live, order, division).body_
-    ).as_object().at("EXCG_ID_DVSN_CD").as_string() == "SOR");
+    REQUIRE(
+      json::parse(kis::KisClientTestAccess::place_order_request(account, live, order, division).body_)
+        .as_object()
+        .at("EXCG_ID_DVSN_CD")
+        .as_string() == "SOR"
+    );
   }
 
   SECTION("a venue the demo account cannot reach is refused before any request") {
@@ -2728,9 +2492,9 @@ TEST_CASE("a KIS demo account trades on KRX and is told so before I/O", "[broker
     amendment.price_ = Decimal64::parse("70000");
     std::string division;
     REQUIRE_FALSE(kis::KisClientTestAccess::amendment_division(amendment, division, demo));
-    const auto body = json::parse(
-      kis::KisClientTestAccess::amend_order_request(account, demo, amendment, false, division).body_
-    ).as_object();
+    const auto body =
+      json::parse(kis::KisClientTestAccess::amend_order_request(account, demo, amendment, false, division).body_)
+        .as_object();
     REQUIRE_FALSE(body.contains("EXCG_ID_DVSN_CD"));
   }
 }
@@ -2797,9 +2561,9 @@ TEST_CASE("a KIS amendment restates the shape it is amending", "[broker][kis][or
     // from the one being amended, and one nobody asked for.
     REQUIRE(division == "11");
 
-    const auto body = json::parse(
-      kis::KisClientTestAccess::amend_order_request(account, live, amendment, false, division).body_
-    ).as_object();
+    const auto body =
+      json::parse(kis::KisClientTestAccess::amend_order_request(account, live, amendment, false, division).body_)
+        .as_object();
     REQUIRE(body.at("ORD_DVSN").as_string() == "11");
     REQUIRE(body.at("EXCG_ID_DVSN_CD").as_string() == "KRX");
   }
@@ -2832,10 +2596,7 @@ TEST_CASE("a KIS amendment restates the shape it is amending", "[broker][kis][or
   }
 }
 
-TEST_CASE(
-  "KIS rejects unrepresentable orders before any network I/O",
-  "[broker][kis][order][validation]"
-) {
+TEST_CASE("KIS rejects unrepresentable orders before any network I/O", "[broker][kis][order][validation]") {
   std::string division;
 
   SECTION("an order carrying a client order id is rejected") {
@@ -2955,46 +2716,32 @@ TEST_CASE(
   }
 }
 
-TEST_CASE(
-  "KIS amendment validates an order reference before authentication",
-  "[broker][kis][order][validation]"
-) {
+TEST_CASE("KIS amendment validates an order reference before authentication", "[broker][kis][order][validation]") {
   // KIS's own documented order-rvsecncl request example sends
   // KRX_FWDG_ORD_ORGNO blank, so an empty branch number must stay usable. The
   // predicate is checked directly for the accepted cases because a valid
   // reference would otherwise continue to authentication and network I/O.
   SECTION("an empty branch number is accepted with a ten-digit order number") {
-    REQUIRE(
-      kis::KisClientTestAccess::valid_order_reference(kis::KisOrderRef{"", "0001569157"})
-    );
+    REQUIRE(kis::KisClientTestAccess::valid_order_reference(kis::KisOrderRef{"", "0001569157"}));
   }
 
   SECTION("a five-digit branch number is accepted") {
-    REQUIRE(
-      kis::KisClientTestAccess::valid_order_reference(kis::KisOrderRef{"06010", "0001569157"})
-    );
+    REQUIRE(kis::KisClientTestAccess::valid_order_reference(kis::KisOrderRef{"06010", "0001569157"}));
   }
 
   SECTION("a malformed non-empty branch number is rejected") {
-    REQUIRE_FALSE(
-      kis::KisClientTestAccess::valid_order_reference(kis::KisOrderRef{"610", "0001569157"})
-    );
+    REQUIRE_FALSE(kis::KisClientTestAccess::valid_order_reference(kis::KisOrderRef{"610", "0001569157"}));
   }
 
   SECTION("an order number that is not ten digits is rejected") {
-    REQUIRE_FALSE(
-      kis::KisClientTestAccess::valid_order_reference(kis::KisOrderRef{"06010", "1569157"})
-    );
-    REQUIRE_FALSE(
-      kis::KisClientTestAccess::valid_order_reference(kis::KisOrderRef{"06010", ""})
-    );
+    REQUIRE_FALSE(kis::KisClientTestAccess::valid_order_reference(kis::KisOrderRef{"06010", "1569157"}));
+    REQUIRE_FALSE(kis::KisClientTestAccess::valid_order_reference(kis::KisOrderRef{"06010", ""}));
   }
 
   SECTION("a malformed reference fails through the async entry point") {
     net::io_context ioc;
     ssl::context context(ssl::context::tls_client);
-    auto client =
-      std::make_shared<kis::KisClient>(ioc.get_executor(), context, kis::KisConfig{});
+    auto client = std::make_shared<kis::KisClient>(ioc.get_executor(), context, kis::KisConfig{});
 
     kis::KisAmendment amendment;
     amendment.order_ = kis::KisOrderRef{"06010", "not-a-number"};
@@ -3003,9 +2750,7 @@ TEST_CASE(
 
     bool completed = false;
     client->async_replace_order(
-      kis::KisAccount{"12345678", "01"},
-      std::move(amendment),
-      [&completed](Result<kis::KisOrderAck> result) {
+      kis::KisAccount{"12345678", "01"}, std::move(amendment), [&completed](Result<kis::KisOrderAck> result) {
         REQUIRE_FALSE(result);
         REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
         REQUIRE(result.error().broker_code_ == "invalid_order_reference");
@@ -3018,26 +2763,20 @@ TEST_CASE(
 }
 
 TEST_CASE(
-  "KIS order history rejects invalid or reversed dates before authentication",
-  "[broker][kis][order][validation]"
+  "KIS order history rejects invalid or reversed dates before authentication", "[broker][kis][order][validation]"
 ) {
   net::io_context ioc;
   ssl::context context(ssl::context::tls_client);
-  auto client =
-    std::make_shared<kis::KisClient>(ioc.get_executor(), context, kis::KisConfig{});
+  auto client = std::make_shared<kis::KisClient>(ioc.get_executor(), context, kis::KisConfig{});
 
   const auto expect_rejection = [&](kis::KisHistoryRange range) {
     bool completed = false;
-    client->async_order_history(
-      kis::KisAccount{"12345678", "01"},
-      range,
-      [&completed](Result<OrderPage> result) {
-        REQUIRE_FALSE(result);
-        REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
-        REQUIRE(result.error().broker_code_ == "invalid_date_range");
-        completed = true;
-      }
-    );
+    client->async_order_history(kis::KisAccount{"12345678", "01"}, range, [&completed](Result<OrderPage> result) {
+      REQUIRE_FALSE(result);
+      REQUIRE(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+      REQUIRE(result.error().broker_code_ == "invalid_date_range");
+      completed = true;
+    });
     ioc.restart();
     ioc.run();
     REQUIRE(completed);
@@ -3047,18 +2786,14 @@ TEST_CASE(
   expect_rejection(kis::KisHistoryRange{Date{2026, 3, 31}, Date{2026, 3, 1}});
 }
 
-TEST_CASE(
-  "KIS answers the modifiable-order read on demo from today's order history",
-  "[broker][kis][order]"
-) {
+TEST_CASE("KIS answers the modifiable-order read on demo from today's order history", "[broker][kis][order]") {
   // Demo has no `TTTC0084R`. Refused, it kept a demo loop's startup gate closed for good.
   const kis::KisAccount account{"12345678", "01"};
   kis::KisConfig demo;
   demo.is_demo_ = true;
 
   SECTION("the request is the daily inquiry, today, unfilled orders only") {
-    const auto request =
-      kis::KisClientTestAccess::open_orders_request(account, demo, "", "", false);
+    const auto request = kis::KisClientTestAccess::open_orders_request(account, demo, "", "", false);
     REQUIRE(request.target_.find("/uapi/domestic-stock/v1/trading/inquire-daily-ccld") == 0);
     CHECK(header_of(request, "tr_id") == "VTTC0081R");
     CHECK(request.target_.find("&CCLD_DVSN=02&") != std::string::npos);
@@ -3131,14 +2866,15 @@ TEST_CASE(
     // 0) naming the order it cancels, which keeps `cncl_yn` `N` (and `cncl_cfrm_qty` 1, not read). A
     // new order's `orgn_odno` is all zeros. `CCLD_DVSN=02`, which the client sends, returned one row
     // after the amendment and none after the cancel, as asserted here on the wider rows.
-    const auto row = [](const char* odno, const char* original, const char* price, const char* remaining,
-                        const char* canceled) {
-      return std::string(R"({"ord_dt":"20261002","ord_gno_brno":"00950","odno":")") + odno +
-        R"(","orgn_odno":")" + original + R"(","pdno":"005930","prdt_name":"Samsung",)"
-        R"("sll_buy_dvsn_cd":"02","ord_dvsn_cd":"00","ord_qty":"1","ord_unpr":")" + price +
-        R"(","ord_tmd":"090351","tot_ccld_qty":"0","tot_ccld_amt":"0","avg_prvs":"0","cncl_yn":")" +
-        canceled + R"(","rmn_qty":")" + remaining + R"(","rjct_qty":"0"})";
-    };
+    const auto row =
+      [](const char* odno, const char* original, const char* price, const char* remaining, const char* canceled) {
+        return std::string(R"({"ord_dt":"20261002","ord_gno_brno":"00950","odno":")") + odno + R"(","orgn_odno":")" +
+          original +
+          R"(","pdno":"005930","prdt_name":"Samsung",)"
+          R"("sll_buy_dvsn_cd":"02","ord_dvsn_cd":"00","ord_qty":"1","ord_unpr":")" +
+          price + R"(","ord_tmd":"090351","tot_ccld_qty":"0","tot_ccld_amt":"0","avg_prvs":"0","cncl_yn":")" +
+          canceled + R"(","rmn_qty":")" + remaining + R"(","rjct_qty":"0"})";
+      };
     const auto page = [](const std::vector<std::string>& rows) {
       std::string body = R"({"rt_cd":"0","output1":[)";
       for (std::size_t i = 0; i < rows.size(); ++i) {
@@ -3148,8 +2884,9 @@ TEST_CASE(
     };
 
     auto amended = kis::KisClientTestAccess::parse_open_orders(
-      json_response(page({row("0000003493", "0000002391", "221000", "1", "N"),
-                          row("0000002391", "0000000000", "220000", "0", "N")})),
+      json_response(
+        page({row("0000003493", "0000002391", "221000", "1", "N"), row("0000002391", "0000000000", "220000", "0", "N")})
+      ),
       /*demo=*/true
     );
     REQUIRE(amended);
@@ -3160,9 +2897,10 @@ TEST_CASE(
     CHECK(amended.value().orders_[0].order_.price_ == Decimal64::parse("221000"));
 
     auto canceled = kis::KisClientTestAccess::parse_open_orders(
-      json_response(page({row("0000004393", "0000003493", "0", "0", "Y"),
-                          row("0000003493", "0000002391", "221000", "0", "N"),
-                          row("0000002391", "0000000000", "220000", "0", "N")})),
+      json_response(page(
+        {row("0000004393", "0000003493", "0", "0", "Y"), row("0000003493", "0000002391", "221000", "0", "N"),
+          row("0000002391", "0000000000", "220000", "0", "N")}
+      )),
       /*demo=*/true
     );
     REQUIRE(canceled);
@@ -3172,23 +2910,17 @@ TEST_CASE(
   SECTION("a live configuration still asks the modifiable-order inquiry") {
     kis::KisConfig live;
     live.is_demo_ = false;
-    const auto request =
-      kis::KisClientTestAccess::open_orders_request(account, live, "", "", false);
+    const auto request = kis::KisClientTestAccess::open_orders_request(account, live, "", "", false);
     CHECK(header_of(request, "tr_id") == "TTTC0084R");
   }
 }
 
-TEST_CASE(
-  "KIS order acknowledgement preserves the branch code needed to amend",
-  "[broker][kis][order]"
-) {
+TEST_CASE("KIS order acknowledgement preserves the branch code needed to amend", "[broker][kis][order]") {
   SECTION("an accepted order reports both identifier parts") {
-    auto result = kis::KisClientTestAccess::parse_order_ack(
-      json_response(
-        R"({"rt_cd":"0","msg_cd":"APBK0013","msg1":"order sent",)"
-        R"("output":{"KRX_FWDG_ORD_ORGNO":"06010","ODNO":"0001569157","ORD_TMD":"155211"}})"
-      )
-    );
+    auto result = kis::KisClientTestAccess::parse_order_ack(json_response(
+      R"({"rt_cd":"0","msg_cd":"APBK0013","msg1":"order sent",)"
+      R"("output":{"KRX_FWDG_ORD_ORGNO":"06010","ODNO":"0001569157","ORD_TMD":"155211"}})"
+    ));
     REQUIRE(result);
     REQUIRE(result.value().order_.branch_number_ == "06010");
     REQUIRE(result.value().order_.order_number_ == "0001569157");
@@ -3216,9 +2948,7 @@ TEST_CASE(
     response.body() = R"({"error":{"code":"rate-limit-exceeded","message":"slow down"}})";
     response.prepare_payload();
 
-    auto result = tossinvest::TossClientTestAccess::parse_order_ack(
-      Result<network::HttpResponse>(std::move(response))
-    );
+    auto result = tossinvest::TossClientTestAccess::parse_order_ack(Result<network::HttpResponse>(std::move(response)));
     REQUIRE_FALSE(result);
     REQUIRE(result.error().category_ == ErrorCategory::RATE_LIMIT);
     REQUIRE(result.error().broker_code_ == "rate-limit-exceeded");
@@ -3232,20 +2962,16 @@ TEST_CASE(
     // KIS reports a rate limit as a message code in an HTTP 200 body, with no
     // Retry-After header, so it has to be recognized while parsing or it reaches
     // the caller as an ordinary protocol failure.
-    auto ledger = kis::KisClientTestAccess::parse_order_ack(
-      json_response(
-        R"({"rt_cd":"1","msg_cd":"EGW00215",)"
-        R"("msg1":"원장에서 허용 가능한 초당 거래건수를 초과하였습니다."})"
-      )
-    );
+    auto ledger = kis::KisClientTestAccess::parse_order_ack(json_response(
+      R"({"rt_cd":"1","msg_cd":"EGW00215",)"
+      R"("msg1":"원장에서 허용 가능한 초당 거래건수를 초과하였습니다."})"
+    ));
     REQUIRE_FALSE(ledger);
     REQUIRE(ledger.error().category_ == ErrorCategory::RATE_LIMIT);
     REQUIRE(ledger.error().broker_code_ == "EGW00215");
 
     auto personal = kis::KisClientTestAccess::parse_order_ack(
-      json_response(
-        R"({"rt_cd":"1","msg_cd":"EGW00201","msg1":"초당 거래건수를 초과하였습니다."})"
-      )
+      json_response(R"({"rt_cd":"1","msg_cd":"EGW00201","msg1":"초당 거래건수를 초과하였습니다."})")
     );
     REQUIRE_FALSE(personal);
     REQUIRE(personal.error().category_ == ErrorCategory::RATE_LIMIT);
@@ -3291,8 +3017,7 @@ TEST_CASE(
 
     // The token endpoint's shape names its code `error_code`.
     auto token = kis::KisClientTestAccess::parse_order_history(json_response(
-      R"json({"error_code":"EGW00133","error_description":"접근토큰 발급 잠시 후 다시 시도하세요(1분당 1회)"})json",
-      403
+      R"json({"error_code":"EGW00133","error_description":"접근토큰 발급 잠시 후 다시 시도하세요(1분당 1회)"})json", 403
     ));
     REQUIRE_FALSE(token);
     CHECK(token.error().category_ == ErrorCategory::HTTP);
@@ -3309,127 +3034,90 @@ TEST_CASE(
   SECTION("a scheduled trading-control window is not a rate limit") {
     // EGW00317 reports a window during which the endpoint is unavailable. Backing
     // off would misreport a closed window as congestion.
-    auto result = kis::KisClientTestAccess::parse_order_ack(
-      json_response(
-        R"({"rt_cd":"1","msg_cd":"EGW00317",)"
-        R"("msg1":"09:00 ~ 09:30 시간 동안에는 조회하실 수 없습니다."})"
-      )
-    );
+    auto result = kis::KisClientTestAccess::parse_order_ack(json_response(
+      R"({"rt_cd":"1","msg_cd":"EGW00317",)"
+      R"("msg1":"09:00 ~ 09:30 시간 동안에는 조회하실 수 없습니다."})"
+    ));
     REQUIRE_FALSE(result);
     REQUIRE(result.error().category_ == ErrorCategory::PROTOCOL);
     REQUIRE(result.error().broker_code_ == "EGW00317");
   }
 
   SECTION("a successful response without an output object is a protocol error") {
-    auto result =
-      kis::KisClientTestAccess::parse_order_ack(json_response(R"({"rt_cd":"0"})"));
+    auto result = kis::KisClientTestAccess::parse_order_ack(json_response(R"({"rt_cd":"0"})"));
     REQUIRE_FALSE(result);
     REQUIRE(result.error().broker_code_ == "invalid_order_response");
   }
 
   SECTION("an HTTP failure is reported without parsing a body") {
-    auto result =
-      kis::KisClientTestAccess::parse_order_ack(json_response("gateway down", 502));
+    auto result = kis::KisClientTestAccess::parse_order_ack(json_response("gateway down", 502));
     REQUIRE_FALSE(result);
     REQUIRE(result.error().category_ == ErrorCategory::HTTP);
     REQUIRE(result.error().http_status_ == 502);
   }
 }
 
-TEST_CASE(
-  "KIS derives an order status from quantity columns alone",
-  "[broker][kis][order][status]"
-) {
-  const auto quantity = [](const char* value) { return Decimal64::parse(value); };
+TEST_CASE("KIS derives an order status from quantity columns alone", "[broker][kis][order][status]") {
+  const auto quantity = [](const char* value) {
+    return Decimal64::parse(value);
+  };
   const auto derive = kis::KisClientTestAccess::derive_order_status;
 
   SECTION("a rejection with no fill is REJECTED") {
-    REQUIRE(
-      derive(quantity("10"), quantity("0"), quantity("0"), quantity("10"), false) ==
-      OrderStatus::REJECTED
-    );
+    REQUIRE(derive(quantity("10"), quantity("0"), quantity("0"), quantity("10"), false) == OrderStatus::REJECTED);
   }
 
   SECTION("a cancellation with no fill is CANCELED") {
-    REQUIRE(
-      derive(quantity("10"), quantity("0"), quantity("10"), quantity("0"), true) ==
-      OrderStatus::CANCELED
-    );
+    REQUIRE(derive(quantity("10"), quantity("0"), quantity("10"), quantity("0"), true) == OrderStatus::CANCELED);
   }
 
   SECTION("a cancellation after a partial fill stays CANCELED") {
-    REQUIRE(
-      derive(quantity("10"), quantity("4"), quantity("6"), quantity("0"), true) ==
-      OrderStatus::CANCELED
-    );
+    REQUIRE(derive(quantity("10"), quantity("4"), quantity("6"), quantity("0"), true) == OrderStatus::CANCELED);
   }
 
   SECTION("a fully filled order is FILLED") {
-    REQUIRE(
-      derive(quantity("10"), quantity("10"), quantity("0"), quantity("0"), false) ==
-      OrderStatus::FILLED
-    );
+    REQUIRE(derive(quantity("10"), quantity("10"), quantity("0"), quantity("0"), false) == OrderStatus::FILLED);
   }
 
   SECTION("a partially filled order is PARTIAL_FILLED") {
-    REQUIRE(
-      derive(quantity("10"), quantity("4"), quantity("6"), quantity("0"), false) ==
-      OrderStatus::PARTIAL_FILLED
-    );
+    REQUIRE(derive(quantity("10"), quantity("4"), quantity("6"), quantity("0"), false) == OrderStatus::PARTIAL_FILLED);
   }
 
   SECTION("an unfilled order with a remainder is PENDING") {
-    REQUIRE(
-      derive(quantity("10"), quantity("0"), quantity("10"), quantity("0"), false) ==
-      OrderStatus::PENDING
-    );
+    REQUIRE(derive(quantity("10"), quantity("0"), quantity("10"), quantity("0"), false) == OrderStatus::PENDING);
   }
 
   SECTION("nothing filled and nothing remaining, with no cancel flag, is CANCELED") {
     // Observed on demo (2026-10-02): a cancelled order and an amended original both read so; the
     // cancel flag is on the cancel request's own row.
-    REQUIRE(
-      derive(quantity("10"), quantity("0"), quantity("0"), quantity("0"), false) ==
-      OrderStatus::CANCELED
-    );
+    REQUIRE(derive(quantity("10"), quantity("0"), quantity("0"), quantity("0"), false) == OrderStatus::CANCELED);
   }
 
   SECTION("a partial fill with nothing remaining and no cancel flag is CANCELED, its fill kept") {
-    REQUIRE(
-      derive(quantity("10"), quantity("4"), quantity("0"), quantity("0"), false) ==
-      OrderStatus::CANCELED
-    );
+    REQUIRE(derive(quantity("10"), quantity("4"), quantity("0"), quantity("0"), false) == OrderStatus::CANCELED);
   }
 }
 
-TEST_CASE(
-  "KIS modifiable-order inquiry reports the amendable quantity",
-  "[broker][kis][order]"
-) {
+TEST_CASE("KIS modifiable-order inquiry reports the amendable quantity", "[broker][kis][order]") {
   const kis::KisAccount account{"12345678", "01"};
   kis::KisConfig live;
   live.is_demo_ = false;
 
   SECTION("the request targets the documented endpoint and transaction id") {
-    const auto request =
-      kis::KisClientTestAccess::open_orders_request(account, live, "", "", false);
+    const auto request = kis::KisClientTestAccess::open_orders_request(account, live, "", "", false);
     REQUIRE(request.method_ == http::verb::get);
-    REQUIRE(
-      request.target_.find("/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl") == 0
-    );
+    REQUIRE(request.target_.find("/uapi/domestic-stock/v1/trading/inquire-psbl-rvsecncl") == 0);
     REQUIRE(header_of(request, "tr_id") == "TTTC0084R");
   }
 
   SECTION("a returned row normalizes its order and keeps its amendable quantity") {
-    auto result = kis::KisClientTestAccess::parse_open_orders(
-      json_response(
-        R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"0001569139",)"
-        R"("orgn_odno":"0001569136","ord_dvsn_name":"limit","pdno":"005930",)"
-        R"("prdt_name":"Samsung","rvse_cncl_dvsn_name":"modify","ord_qty":"10",)"
-        R"("ord_unpr":"70000","ord_tmd":"131438","tot_ccld_qty":"4","tot_ccld_amt":"280000",)"
-        R"("psbl_qty":"6","sll_buy_dvsn_cd":"02","ord_dvsn_cd":"00"}]})"
-      )
-    );
+    auto result = kis::KisClientTestAccess::parse_open_orders(json_response(
+      R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"0001569139",)"
+      R"("orgn_odno":"0001569136","ord_dvsn_name":"limit","pdno":"005930",)"
+      R"("prdt_name":"Samsung","rvse_cncl_dvsn_name":"modify","ord_qty":"10",)"
+      R"("ord_unpr":"70000","ord_tmd":"131438","tot_ccld_qty":"4","tot_ccld_amt":"280000",)"
+      R"("psbl_qty":"6","sll_buy_dvsn_cd":"02","ord_dvsn_cd":"00"}]})"
+    ));
     REQUIRE(result);
     REQUIRE(result.value().orders_.size() == 1);
     const auto& open_order = result.value().orders_.front();
@@ -3450,15 +3138,13 @@ TEST_CASE(
   // publish, and the combination it used to reach by accident is asserted
   // deliberately in the section below it.
   SECTION("an order division outside the published table does not fail the listing") {
-    auto result = kis::KisClientTestAccess::parse_open_orders(
-      json_response(
-        R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"1","orgn_odno":"",)"
-        R"("ord_dvsn_name":"x","pdno":"005930","prdt_name":"Samsung",)"
-        R"("rvse_cncl_dvsn_name":"x","ord_qty":"10","ord_unpr":"0","ord_tmd":"131438",)"
-        R"("tot_ccld_qty":"0","tot_ccld_amt":"0","psbl_qty":"10","sll_buy_dvsn_cd":"01",)"
-        R"("ord_dvsn_cd":"99"}]})"
-      )
-    );
+    auto result = kis::KisClientTestAccess::parse_open_orders(json_response(
+      R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"1","orgn_odno":"",)"
+      R"("ord_dvsn_name":"x","pdno":"005930","prdt_name":"Samsung",)"
+      R"("rvse_cncl_dvsn_name":"x","ord_qty":"10","ord_unpr":"0","ord_tmd":"131438",)"
+      R"("tot_ccld_qty":"0","tot_ccld_amt":"0","psbl_qty":"10","sll_buy_dvsn_cd":"01",)"
+      R"("ord_dvsn_cd":"99"}]})"
+    ));
     REQUIRE(result);
     const auto& open_order = result.value().orders_.front();
     REQUIRE(open_order.order_.type_ == OrderType::UNKNOWN);
@@ -3471,15 +3157,13 @@ TEST_CASE(
   }
 
   SECTION("a published order division is normalized into all three facts") {
-    auto result = kis::KisClientTestAccess::parse_open_orders(
-      json_response(
-        R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"1","orgn_odno":"",)"
-        R"("ord_dvsn_name":"x","pdno":"005930","prdt_name":"Samsung",)"
-        R"("rvse_cncl_dvsn_name":"x","ord_qty":"10","ord_unpr":"0","ord_tmd":"131438",)"
-        R"("tot_ccld_qty":"0","tot_ccld_amt":"0","psbl_qty":"10","sll_buy_dvsn_cd":"01",)"
-        R"("ord_dvsn_cd":"23"}]})"
-      )
-    );
+    auto result = kis::KisClientTestAccess::parse_open_orders(json_response(
+      R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"1","orgn_odno":"",)"
+      R"("ord_dvsn_name":"x","pdno":"005930","prdt_name":"Samsung",)"
+      R"("rvse_cncl_dvsn_name":"x","ord_qty":"10","ord_unpr":"0","ord_tmd":"131438",)"
+      R"("tot_ccld_qty":"0","tot_ccld_amt":"0","psbl_qty":"10","sll_buy_dvsn_cd":"01",)"
+      R"("ord_dvsn_cd":"23"}]})"
+    ));
     REQUIRE(result);
     const auto& open_order = result.value().orders_.front();
     REQUIRE(open_order.order_.type_ == OrderType::MID_PRICE);
@@ -3489,32 +3173,26 @@ TEST_CASE(
   }
 
   SECTION("an empty result is an empty page rather than an error") {
-    auto result =
-      kis::KisClientTestAccess::parse_open_orders(json_response(R"({"rt_cd":"0","output":[]})"));
+    auto result = kis::KisClientTestAccess::parse_open_orders(json_response(R"({"rt_cd":"0","output":[]})"));
     REQUIRE(result);
     REQUIRE(result.value().orders_.empty());
   }
 
   SECTION("an unknown side is a protocol error rather than a buy order") {
-    auto result = kis::KisClientTestAccess::parse_open_orders(
-      json_response(
-        R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"1","orgn_odno":"",)"
-        R"("ord_dvsn_name":"limit","pdno":"005930","prdt_name":"Samsung",)"
-        R"("rvse_cncl_dvsn_name":"","ord_qty":"10","ord_unpr":"70000",)"
-        R"("ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0",)"
-        R"("psbl_qty":"10","sll_buy_dvsn_cd":"03","ord_dvsn_cd":"00"}]})"
-      )
-    );
+    auto result = kis::KisClientTestAccess::parse_open_orders(json_response(
+      R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"1","orgn_odno":"",)"
+      R"("ord_dvsn_name":"limit","pdno":"005930","prdt_name":"Samsung",)"
+      R"("rvse_cncl_dvsn_name":"","ord_qty":"10","ord_unpr":"70000",)"
+      R"("ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0",)"
+      R"("psbl_qty":"10","sll_buy_dvsn_cd":"03","ord_dvsn_cd":"00"}]})"
+    ));
     REQUIRE_FALSE(result);
     REQUIRE(result.error().category_ == ErrorCategory::PROTOCOL);
     REQUIRE(result.error().broker_code_ == "invalid_open_order_response");
   }
 }
 
-TEST_CASE(
-  "KIS order history normalizes executions and Korean order times",
-  "[broker][kis][order][history]"
-) {
+TEST_CASE("KIS order history normalizes executions and Korean order times", "[broker][kis][order][history]") {
   const kis::KisAccount account{"12345678", "01"};
 
   SECTION("the request carries the inclusive range and environment transaction id") {
@@ -3538,16 +3216,14 @@ TEST_CASE(
   }
 
   SECTION("a filled row reports its execution and Korea Standard Time order stamp") {
-    auto result = kis::KisClientTestAccess::parse_order_history(
-      json_response(
-        R"({"rt_cd":"0","output1":[{"ord_dt":"20260328","ord_gno_brno":"06010",)"
-        R"("odno":"0001569157","orgn_odno":"","ord_dvsn_name":"limit",)"
-        R"("sll_buy_dvsn_cd":"02","sll_buy_dvsn_cd_name":"buy","pdno":"005930",)"
-        R"("prdt_name":"Samsung","ord_qty":"10","ord_unpr":"70000","ord_tmd":"093000",)"
-        R"("tot_ccld_qty":"10","avg_prvs":"70000","cncl_yn":"N","tot_ccld_amt":"700000",)"
-        R"("ord_dvsn_cd":"00","cncl_cfrm_qty":"0","rmn_qty":"0","rjct_qty":"0"}]})"
-      )
-    );
+    auto result = kis::KisClientTestAccess::parse_order_history(json_response(
+      R"({"rt_cd":"0","output1":[{"ord_dt":"20260328","ord_gno_brno":"06010",)"
+      R"("odno":"0001569157","orgn_odno":"","ord_dvsn_name":"limit",)"
+      R"("sll_buy_dvsn_cd":"02","sll_buy_dvsn_cd_name":"buy","pdno":"005930",)"
+      R"("prdt_name":"Samsung","ord_qty":"10","ord_unpr":"70000","ord_tmd":"093000",)"
+      R"("tot_ccld_qty":"10","avg_prvs":"70000","cncl_yn":"N","tot_ccld_amt":"700000",)"
+      R"("ord_dvsn_cd":"00","cncl_cfrm_qty":"0","rmn_qty":"0","rjct_qty":"0"}]})"
+    ));
     REQUIRE(result);
     REQUIRE(result.value().orders_.size() == 1);
     const auto& order = result.value().orders_.front();
@@ -3559,22 +3235,18 @@ TEST_CASE(
     REQUIRE(order.execution_.filled_amount_->amount_ == Decimal64::parse("700000"));
     REQUIRE(order.execution_.filled_amount_->currency_ == Currency::krw());
     REQUIRE(order.ordered_at_);
-    REQUIRE(
-      *order.ordered_at_ == *parse_iso8601_timestamp("2026-03-28T09:30:00+09:00")
-    );
+    REQUIRE(*order.ordered_at_ == *parse_iso8601_timestamp("2026-03-28T09:30:00+09:00"));
   }
 
   SECTION("an unfilled row reports no average price and stays PENDING") {
-    auto result = kis::KisClientTestAccess::parse_order_history(
-      json_response(
-        R"({"rt_cd":"0","output1":[{"ord_dt":"20260328","ord_gno_brno":"06010",)"
-        R"("odno":"0001569158","orgn_odno":"","ord_dvsn_name":"limit",)"
-        R"("sll_buy_dvsn_cd":"01","sll_buy_dvsn_cd_name":"sell","pdno":"005930",)"
-        R"("prdt_name":"Samsung","ord_qty":"10","ord_unpr":"70000","ord_tmd":"093000",)"
-        R"("tot_ccld_qty":"0","avg_prvs":"0","cncl_yn":"N","tot_ccld_amt":"0",)"
-        R"("ord_dvsn_cd":"00","cncl_cfrm_qty":"0","rmn_qty":"10","rjct_qty":"0"}]})"
-      )
-    );
+    auto result = kis::KisClientTestAccess::parse_order_history(json_response(
+      R"({"rt_cd":"0","output1":[{"ord_dt":"20260328","ord_gno_brno":"06010",)"
+      R"("odno":"0001569158","orgn_odno":"","ord_dvsn_name":"limit",)"
+      R"("sll_buy_dvsn_cd":"01","sll_buy_dvsn_cd_name":"sell","pdno":"005930",)"
+      R"("prdt_name":"Samsung","ord_qty":"10","ord_unpr":"70000","ord_tmd":"093000",)"
+      R"("tot_ccld_qty":"0","avg_prvs":"0","cncl_yn":"N","tot_ccld_amt":"0",)"
+      R"("ord_dvsn_cd":"00","cncl_cfrm_qty":"0","rmn_qty":"10","rjct_qty":"0"}]})"
+    ));
     REQUIRE(result);
     const auto& order = result.value().orders_.front();
     REQUIRE(order.status_ == OrderStatus::PENDING);
@@ -3591,13 +3263,9 @@ TEST_CASE(
   }
 }
 
-TEST_CASE(
-  "Toss order creation transmits the documented request shape",
-  "[broker][toss][order]"
-) {
+TEST_CASE("Toss order creation transmits the documented request shape", "[broker][toss][order]") {
   SECTION("a Korean limit buy carries its price and default validity") {
-    const auto request =
-      tossinvest::TossClientTestAccess::place_order_request(7, korean_limit_buy());
+    const auto request = tossinvest::TossClientTestAccess::place_order_request(7, korean_limit_buy());
     REQUIRE(request.method_ == http::verb::post);
     REQUIRE(request.target_ == "/api/v1/orders");
     REQUIRE(header_of(request, "X-Tossinvest-Account") == "7");
@@ -3617,9 +3285,7 @@ TEST_CASE(
     auto order = korean_limit_buy();
     order.type_ = OrderType::MARKET;
     order.price_.reset();
-    const auto body =
-      json::parse(tossinvest::TossClientTestAccess::place_order_request(7, order).body_)
-        .as_object();
+    const auto body = json::parse(tossinvest::TossClientTestAccess::place_order_request(7, order).body_).as_object();
     REQUIRE(body.at("orderType").as_string() == "MARKET");
     REQUIRE_FALSE(body.contains("price"));
   }
@@ -3628,9 +3294,7 @@ TEST_CASE(
     auto order = korean_limit_buy();
     order.client_order_id_ = "my-order-001";
     order.confirm_high_value_ = true;
-    const auto body =
-      json::parse(tossinvest::TossClientTestAccess::place_order_request(7, order).body_)
-        .as_object();
+    const auto body = json::parse(tossinvest::TossClientTestAccess::place_order_request(7, order).body_).as_object();
     REQUIRE(body.at("clientOrderId").as_string() == "my-order-001");
     REQUIRE(body.at("confirmHighValueOrder").as_bool());
   }
@@ -3638,9 +3302,7 @@ TEST_CASE(
   SECTION("a fractional US market sell is accepted and sent at its own scale") {
     const auto order = us_market_fractional_sell();
     REQUIRE_FALSE(tossinvest::TossClientTestAccess::validate_order(order));
-    const auto body =
-      json::parse(tossinvest::TossClientTestAccess::place_order_request(7, order).body_)
-        .as_object();
+    const auto body = json::parse(tossinvest::TossClientTestAccess::place_order_request(7, order).body_).as_object();
     REQUIRE(body.at("symbol").as_string() == "AAPL");
     REQUIRE(body.at("side").as_string() == "SELL");
     REQUIRE(body.at("orderType").as_string() == "MARKET");
@@ -3653,26 +3315,20 @@ TEST_CASE(
     order.instrument_ = InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"};
     order.session_ = OrderSession::CLOSING_AUCTION;
     order.price_ = Decimal64::parse("185.5");
-    const auto body =
-      json::parse(tossinvest::TossClientTestAccess::place_order_request(7, order).body_)
-        .as_object();
+    const auto body = json::parse(tossinvest::TossClientTestAccess::place_order_request(7, order).body_).as_object();
     REQUIRE(body.at("timeInForce").as_string() == "CLS");
     REQUIRE(body.at("price").as_string() == "185.5");
   }
 }
 
-TEST_CASE(
-  "Toss amendment and cancellation target one order",
-  "[broker][toss][order]"
-) {
+TEST_CASE("Toss amendment and cancellation target one order", "[broker][toss][order]") {
   SECTION("a modification sends only the fields it changes") {
     tossinvest::TossAmendment amendment;
     amendment.order_id_ = "order-1";
     amendment.type_ = OrderType::LIMIT;
     amendment.quantity_ = Decimal64::parse("15");
     amendment.price_ = Decimal64::parse("71000");
-    const auto request =
-      tossinvest::TossClientTestAccess::replace_order_request(7, amendment);
+    const auto request = tossinvest::TossClientTestAccess::replace_order_request(7, amendment);
     REQUIRE(request.method_ == http::verb::post);
     REQUIRE(request.target_ == "/api/v1/orders/order-1/modify");
     const auto body = json::parse(request.body_).as_object();
@@ -3686,8 +3342,7 @@ TEST_CASE(
     amendment.order_id_ = "order-1";
     amendment.price_ = Decimal64::parse("185.5");
     const auto body =
-      json::parse(tossinvest::TossClientTestAccess::replace_order_request(7, amendment).body_)
-        .as_object();
+      json::parse(tossinvest::TossClientTestAccess::replace_order_request(7, amendment).body_).as_object();
     REQUIRE_FALSE(body.contains("quantity"));
   }
 
@@ -3699,10 +3354,7 @@ TEST_CASE(
   }
 }
 
-TEST_CASE(
-  "Toss order listing omits paging where Toss ignores it",
-  "[broker][toss][order]"
-) {
+TEST_CASE("Toss order listing omits paging where Toss ignores it", "[broker][toss][order]") {
   tossinvest::TossOrderQuery query;
   query.account_sequence_ = 7;
   query.cursor_ = "cursor value";
@@ -3731,14 +3383,10 @@ TEST_CASE(
   }
 }
 
-TEST_CASE(
-  "Toss rejects unusable order instructions before any network I/O",
-  "[broker][toss][order][validation]"
-) {
+TEST_CASE("Toss rejects unusable order instructions before any network I/O", "[broker][toss][order][validation]") {
   net::io_context ioc;
   ssl::context context(ssl::context::tls_client);
-  auto client =
-    std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
+  auto client = std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
 
   const auto expect_rejection = [&](OrderRequest order, std::string_view code) {
     bool completed = false;
@@ -3789,9 +3437,10 @@ TEST_CASE(
 
   SECTION("a US market sell is refused past six decimals and at zero") {
     // Seven places is refused even when the seventh is a zero, because `str()` would send it.
-    for (const auto quantity :
-         {Decimal64::parse("0.1234567"), Decimal64(1234560, 7), Decimal64::parse("0"),
-          Decimal64::parse("-0.5")}) {
+    for (
+      const auto quantity :
+      {Decimal64::parse("0.1234567"), Decimal64(1234560, 7), Decimal64::parse("0"), Decimal64::parse("-0.5")}
+    ) {
       auto order = us_market_fractional_sell();
       order.quantity_ = quantity;
       expect_rejection(std::move(order), "invalid_quantity");
@@ -3817,8 +3466,7 @@ TEST_CASE(
   }
 
   SECTION("an execution condition Toss does not publish is refused before I/O") {
-    for (const auto condition :
-         {TimeInForce::IMMEDIATE_OR_CANCEL, TimeInForce::FILL_OR_KILL}) {
+    for (const auto condition : {TimeInForce::IMMEDIATE_OR_CANCEL, TimeInForce::FILL_OR_KILL}) {
       auto order = korean_limit_buy();
       order.time_in_force_ = condition;
       expect_rejection(std::move(order), "unsupported_time_in_force");
@@ -3826,9 +3474,11 @@ TEST_CASE(
   }
 
   SECTION("a price basis Toss does not publish is refused before I/O") {
-    for (const auto type :
-         {OrderType::MID_PRICE, OrderType::BEST_LIMIT, OrderType::PRIMARY_LIMIT,
-          OrderType::CONDITIONAL_LIMIT, OrderType::STOP_LIMIT, OrderType::CLOSING_PRICE}) {
+    for (
+      const auto type :
+      {OrderType::MID_PRICE, OrderType::BEST_LIMIT, OrderType::PRIMARY_LIMIT, OrderType::CONDITIONAL_LIMIT,
+        OrderType::STOP_LIMIT, OrderType::CLOSING_PRICE}
+    ) {
       auto order = korean_limit_buy();
       order.type_ = type;
       order.price_.reset();
@@ -3837,9 +3487,11 @@ TEST_CASE(
   }
 
   SECTION("a session Toss does not publish is refused before I/O") {
-    for (const auto session :
-         {OrderSession::PRE_MARKET, OrderSession::AFTER_HOURS, OrderSession::AFTER_MARKET,
-          OrderSession::GTP, OrderSession::AFTER_HOURS_AUCTION}) {
+    for (
+      const auto session :
+      {OrderSession::PRE_MARKET, OrderSession::AFTER_HOURS, OrderSession::AFTER_MARKET, OrderSession::GTP,
+        OrderSession::AFTER_HOURS_AUCTION}
+    ) {
       auto order = korean_limit_buy();
       order.session_ = session;
       expect_rejection(std::move(order), "unsupported_session");
@@ -3938,10 +3590,7 @@ TEST_CASE(
   }
 }
 
-TEST_CASE(
-  "Toss order responses normalize fills and tolerate unknown codes",
-  "[broker][toss][order]"
-) {
+TEST_CASE("Toss order responses normalize fills and tolerate unknown codes", "[broker][toss][order]") {
   SECTION("an acknowledgement echoes the idempotency key when one was sent") {
     auto result = tossinvest::TossClientTestAccess::parse_order_ack(
       json_response(R"({"result":{"orderId":"order-1","clientOrderId":"my-order-001"}})")
@@ -3952,13 +3601,11 @@ TEST_CASE(
   }
 
   SECTION("a conflict preserves its broker code and request id") {
-    auto result = tossinvest::TossClientTestAccess::parse_order_ack(
-      json_response(
-        R"({"error":{"requestId":"01HXYZ","code":"already-filled",)"
-        R"("message":"already filled"}})",
-        409
-      )
-    );
+    auto result = tossinvest::TossClientTestAccess::parse_order_ack(json_response(
+      R"({"error":{"requestId":"01HXYZ","code":"already-filled",)"
+      R"("message":"already filled"}})",
+      409
+    ));
     REQUIRE_FALSE(result);
     REQUIRE(result.error().http_status_ == 409);
     REQUIRE(result.error().broker_code_ == "already-filled");
@@ -3974,17 +3621,15 @@ TEST_CASE(
   }
 
   SECTION("an amount-based order keeps the amount it committed") {
-    auto result = tossinvest::TossClientTestAccess::parse_orders(
-      json_response(
-        R"({"result":{"orders":[)"
-        R"({"orderId":"c","symbol":"AAPL","side":"BUY","orderType":"MARKET",)"
-        R"("timeInForce":"CLS","status":"PENDING","price":null,"quantity":"0",)"
-        R"("orderAmount":"100.5","currency":"USD","orderedAt":"2026-03-29T10:00:00+09:00",)"
-        R"("canceledAt":null,"execution":{"filledQuantity":"0","averageFilledPrice":null,)"
-        R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
-        R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
-      )
-    );
+    auto result = tossinvest::TossClientTestAccess::parse_orders(json_response(
+      R"({"result":{"orders":[)"
+      R"({"orderId":"c","symbol":"AAPL","side":"BUY","orderType":"MARKET",)"
+      R"("timeInForce":"CLS","status":"PENDING","price":null,"quantity":"0",)"
+      R"("orderAmount":"100.5","currency":"USD","orderedAt":"2026-03-29T10:00:00+09:00",)"
+      R"("canceledAt":null,"execution":{"filledQuantity":"0","averageFilledPrice":null,)"
+      R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
+      R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
+    ));
     REQUIRE(result);
     const auto& order = result.value().orders_.front();
     // An amount order states money and lets the fill decide the quantity. The
@@ -4001,18 +3646,19 @@ TEST_CASE(
     // Constructed. A real Toss order list carried an `orderAmount` with twenty fractional digits,
     // and refusing that one field failed the whole list.
     const auto amount_of = [](std::string_view amount) {
-      return tossinvest::TossClientTestAccess::parse_orders(
-        json_response(
-          std::string(R"({"result":{"orders":[)"
+      return tossinvest::TossClientTestAccess::parse_orders(json_response(
+        std::string(
+          R"({"result":{"orders":[)"
           R"({"orderId":"c","symbol":"AAPL","side":"BUY","orderType":"MARKET",)"
           R"("timeInForce":"DAY","status":"FILLED","price":null,"quantity":"0",)"
-          R"("orderAmount":")") + std::string(amount) +
-          R"(","currency":"USD","orderedAt":"2026-03-29T10:00:00+09:00",)"
-          R"("canceledAt":null,"execution":{"filledQuantity":"0","averageFilledPrice":null,)"
-          R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
-          R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
-        )
-      );
+          R"("orderAmount":")"
+        ) +
+        std::string(amount) +
+        R"(","currency":"USD","orderedAt":"2026-03-29T10:00:00+09:00",)"
+        R"("canceledAt":null,"execution":{"filledQuantity":"0","averageFilledPrice":null,)"
+        R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
+        R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
+      ));
     };
     const auto rounded = [&](std::string_view amount) {
       auto result = amount_of(amount);
@@ -4029,8 +3675,7 @@ TEST_CASE(
     // The digits count from the first nonzero one: an amount below one keeps 18 of them.
     CHECK(rounded("0.00012345678901234567891") == Decimal64::parse("0.000123456789012345679"));
     CHECK(
-      rounded("0.00000000000000000012345678901234567891") ==
-      Decimal64::parse("0.000000000000000000123456789012345679")
+      rounded("0.00000000000000000012345678901234567891") == Decimal64::parse("0.000000000000000000123456789012345679")
     );
     // Only the fraction is rounded: an integer part that does not fit is still refused.
     CHECK_FALSE(amount_of("12345678901234567890.5"));
@@ -4041,33 +3686,29 @@ TEST_CASE(
   }
 
   SECTION("an order amount sent as a number is refused") {
-    auto result = tossinvest::TossClientTestAccess::parse_orders(
-      json_response(
-        R"({"result":{"orders":[)"
-        R"({"orderId":"c","symbol":"AAPL","side":"BUY","orderType":"MARKET",)"
-        R"("timeInForce":"DAY","status":"FILLED","price":null,"quantity":"0",)"
-        R"("orderAmount":100.5,"currency":"USD","orderedAt":"2026-03-29T10:00:00+09:00",)"
-        R"("canceledAt":null,"execution":{"filledQuantity":"0","averageFilledPrice":null,)"
-        R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
-        R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
-      )
-    );
+    auto result = tossinvest::TossClientTestAccess::parse_orders(json_response(
+      R"({"result":{"orders":[)"
+      R"({"orderId":"c","symbol":"AAPL","side":"BUY","orderType":"MARKET",)"
+      R"("timeInForce":"DAY","status":"FILLED","price":null,"quantity":"0",)"
+      R"("orderAmount":100.5,"currency":"USD","orderedAt":"2026-03-29T10:00:00+09:00",)"
+      R"("canceledAt":null,"execution":{"filledQuantity":"0","averageFilledPrice":null,)"
+      R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
+      R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
+    ));
     REQUIRE_FALSE(result);
     CHECK(result.error().broker_code_ == "invalid_orders_response");
   }
 
   SECTION("a validity code Toss adds later is unknown in both facts, not assumed to be DAY") {
-    auto result = tossinvest::TossClientTestAccess::parse_orders(
-      json_response(
-        R"({"result":{"orders":[)"
-        R"({"orderId":"d","symbol":"005930","side":"BUY","orderType":"LIMIT",)"
-        R"("timeInForce":"XYZ","status":"PENDING","price":"70000","quantity":"1",)"
-        R"("orderAmount":null,"currency":"KRW","orderedAt":"2026-03-29T09:30:00+09:00",)"
-        R"("canceledAt":null,"execution":{"filledQuantity":"0","averageFilledPrice":null,)"
-        R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
-        R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
-      )
-    );
+    auto result = tossinvest::TossClientTestAccess::parse_orders(json_response(
+      R"({"result":{"orders":[)"
+      R"({"orderId":"d","symbol":"005930","side":"BUY","orderType":"LIMIT",)"
+      R"("timeInForce":"XYZ","status":"PENDING","price":"70000","quantity":"1",)"
+      R"("orderAmount":null,"currency":"KRW","orderedAt":"2026-03-29T09:30:00+09:00",)"
+      R"("canceledAt":null,"execution":{"filledQuantity":"0","averageFilledPrice":null,)"
+      R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
+      R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
+    ));
     REQUIRE(result);
     const auto& order = result.value().orders_.front();
     REQUIRE(order.session_ == OrderSession::UNKNOWN);
@@ -4076,24 +3717,22 @@ TEST_CASE(
   }
 
   SECTION("a listing normalizes a Korean and a US order independently") {
-    auto result = tossinvest::TossClientTestAccess::parse_orders(
-      json_response(
-        R"({"result":{"orders":[)"
-        R"({"orderId":"a","symbol":"005930","side":"BUY","orderType":"LIMIT",)"
-        R"("timeInForce":"DAY","status":"PENDING","price":"70000","quantity":"10",)"
-        R"("orderAmount":null,"currency":"KRW","orderedAt":"2026-03-29T09:30:00+09:00",)"
-        R"("canceledAt":null,"execution":{"filledQuantity":"0","averageFilledPrice":null,)"
-        R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
-        R"("settlementDate":null}},)"
-        R"({"orderId":"b","symbol":"AAPL","side":"SELL","orderType":"LIMIT",)"
-        R"("timeInForce":"DAY","status":"PARTIAL_FILLED","price":"185.5","quantity":"5",)"
-        R"("orderAmount":null,"currency":"USD","orderedAt":"2026-03-29T10:00:00+09:00",)"
-        R"("canceledAt":null,"execution":{"filledQuantity":"2",)"
-        R"("averageFilledPrice":"185.25","filledAmount":"370.5","commission":"0.66",)"
-        R"("tax":"0","filledAt":"2026-03-29T10:00:05+09:00","settlementDate":"2026-03-31"}}],)"
-        R"("nextCursor":null,"hasNext":false}})"
-      )
-    );
+    auto result = tossinvest::TossClientTestAccess::parse_orders(json_response(
+      R"({"result":{"orders":[)"
+      R"({"orderId":"a","symbol":"005930","side":"BUY","orderType":"LIMIT",)"
+      R"("timeInForce":"DAY","status":"PENDING","price":"70000","quantity":"10",)"
+      R"("orderAmount":null,"currency":"KRW","orderedAt":"2026-03-29T09:30:00+09:00",)"
+      R"("canceledAt":null,"execution":{"filledQuantity":"0","averageFilledPrice":null,)"
+      R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
+      R"("settlementDate":null}},)"
+      R"({"orderId":"b","symbol":"AAPL","side":"SELL","orderType":"LIMIT",)"
+      R"("timeInForce":"DAY","status":"PARTIAL_FILLED","price":"185.5","quantity":"5",)"
+      R"("orderAmount":null,"currency":"USD","orderedAt":"2026-03-29T10:00:00+09:00",)"
+      R"("canceledAt":null,"execution":{"filledQuantity":"2",)"
+      R"("averageFilledPrice":"185.25","filledAmount":"370.5","commission":"0.66",)"
+      R"("tax":"0","filledAt":"2026-03-29T10:00:05+09:00","settlementDate":"2026-03-31"}}],)"
+      R"("nextCursor":null,"hasNext":false}})"
+    ));
     REQUIRE(result);
     REQUIRE(result.value().orders_.size() == 2);
     REQUIRE_FALSE(result.value().next_cursor_);
@@ -4122,16 +3761,14 @@ TEST_CASE(
   }
 
   SECTION("an unknown status, type, and validity do not fail the listing") {
-    auto result = tossinvest::TossClientTestAccess::parse_orders(
-      json_response(
-        R"({"result":{"orders":[{"orderId":"a","symbol":"005930","side":"BUY",)"
-        R"("orderType":"TRAILING_STOP","timeInForce":"GTC","status":"SUSPENDED",)"
-        R"("quantity":"10","currency":"KRW","orderedAt":"2026-03-29T09:30:00+09:00",)"
-        R"("execution":{"filledQuantity":"0","averageFilledPrice":null,)"
-        R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
-        R"("settlementDate":null}}],"nextCursor":"next-page","hasNext":true}})"
-      )
-    );
+    auto result = tossinvest::TossClientTestAccess::parse_orders(json_response(
+      R"({"result":{"orders":[{"orderId":"a","symbol":"005930","side":"BUY",)"
+      R"("orderType":"TRAILING_STOP","timeInForce":"GTC","status":"SUSPENDED",)"
+      R"("quantity":"10","currency":"KRW","orderedAt":"2026-03-29T09:30:00+09:00",)"
+      R"("execution":{"filledQuantity":"0","averageFilledPrice":null,)"
+      R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
+      R"("settlementDate":null}}],"nextCursor":"next-page","hasNext":true}})"
+    ));
     REQUIRE(result);
     const auto& order = result.value().orders_.front();
     REQUIRE(order.type_ == OrderType::UNKNOWN);
@@ -4142,32 +3779,28 @@ TEST_CASE(
   }
 
   SECTION("an unknown side is a protocol error rather than a buy order") {
-    auto result = tossinvest::TossClientTestAccess::parse_orders(
-      json_response(
-        R"({"result":{"orders":[{"orderId":"a","symbol":"005930","side":"HOLD",)"
-        R"("orderType":"LIMIT","timeInForce":"DAY","status":"PENDING","price":"70000",)"
-        R"("quantity":"10","currency":"KRW","orderedAt":"2026-03-29T09:30:00+09:00",)"
-        R"("execution":{"filledQuantity":"0","averageFilledPrice":null,)"
-        R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
-        R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
-      )
-    );
+    auto result = tossinvest::TossClientTestAccess::parse_orders(json_response(
+      R"({"result":{"orders":[{"orderId":"a","symbol":"005930","side":"HOLD",)"
+      R"("orderType":"LIMIT","timeInForce":"DAY","status":"PENDING","price":"70000",)"
+      R"("quantity":"10","currency":"KRW","orderedAt":"2026-03-29T09:30:00+09:00",)"
+      R"("execution":{"filledQuantity":"0","averageFilledPrice":null,)"
+      R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
+      R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
+    ));
     REQUIRE_FALSE(result);
     REQUIRE(result.error().category_ == ErrorCategory::PROTOCOL);
     REQUIRE(result.error().broker_code_ == "invalid_orders_response");
   }
 
   SECTION("an unsupported currency is not silently classified as Korean") {
-    auto result = tossinvest::TossClientTestAccess::parse_orders(
-      json_response(
-        R"({"result":{"orders":[{"orderId":"a","symbol":"7203","side":"BUY",)"
-        R"("orderType":"LIMIT","timeInForce":"DAY","status":"PENDING","price":"1000",)"
-        R"("quantity":"10","currency":"JPY","orderedAt":"2026-03-29T09:30:00+09:00",)"
-        R"("execution":{"filledQuantity":"0","averageFilledPrice":null,)"
-        R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
-        R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
-      )
-    );
+    auto result = tossinvest::TossClientTestAccess::parse_orders(json_response(
+      R"({"result":{"orders":[{"orderId":"a","symbol":"7203","side":"BUY",)"
+      R"("orderType":"LIMIT","timeInForce":"DAY","status":"PENDING","price":"1000",)"
+      R"("quantity":"10","currency":"JPY","orderedAt":"2026-03-29T09:30:00+09:00",)"
+      R"("execution":{"filledQuantity":"0","averageFilledPrice":null,)"
+      R"("filledAmount":null,"commission":null,"tax":null,"filledAt":null,)"
+      R"("settlementDate":null}}],"nextCursor":null,"hasNext":false}})"
+    ));
     REQUIRE_FALSE(result);
     REQUIRE(result.error().category_ == ErrorCategory::PROTOCOL);
     REQUIRE(result.error().broker_code_ == "invalid_orders_response");
@@ -4191,16 +3824,14 @@ TEST_CASE(
   }
 
   SECTION("a single order detail normalizes the same way as a listing row") {
-    auto result = tossinvest::TossClientTestAccess::parse_order(
-      json_response(
-        R"({"result":{"orderId":"a","symbol":"005930","side":"BUY","orderType":"MARKET",)"
-        R"("timeInForce":"DAY","status":"FILLED","price":null,"quantity":"10",)"
-        R"("currency":"KRW","orderedAt":"2026-03-28T09:30:00+09:00",)"
-        R"("canceledAt":null,"execution":{"filledQuantity":"10",)"
-        R"("averageFilledPrice":"70000","filledAmount":"700000","commission":"1400",)"
-        R"("tax":"0","filledAt":"2026-03-28T09:31:15+09:00","settlementDate":"2026-03-30"}}})"
-      )
-    );
+    auto result = tossinvest::TossClientTestAccess::parse_order(json_response(
+      R"({"result":{"orderId":"a","symbol":"005930","side":"BUY","orderType":"MARKET",)"
+      R"("timeInForce":"DAY","status":"FILLED","price":null,"quantity":"10",)"
+      R"("currency":"KRW","orderedAt":"2026-03-28T09:30:00+09:00",)"
+      R"("canceledAt":null,"execution":{"filledQuantity":"10",)"
+      R"("averageFilledPrice":"70000","filledAmount":"700000","commission":"1400",)"
+      R"("tax":"0","filledAt":"2026-03-28T09:31:15+09:00","settlementDate":"2026-03-30"}}})"
+    ));
     REQUIRE(result);
     REQUIRE(result.value().type_ == OrderType::MARKET);
     REQUIRE_FALSE(result.value().price_);
@@ -4209,16 +3840,11 @@ TEST_CASE(
   }
 }
 
-TEST_CASE(
-  "A dropped connection during an order POST is never replayed",
-  "[broker][order][tls][retry]"
-) {
+TEST_CASE("A dropped connection during an order POST is never replayed", "[broker][order][tls][retry]") {
   const kis::KisAccount account{"12345678", "01"};
   kis::KisConfig live;
   live.is_demo_ = false;
-  auto order_request = kis::KisClientTestAccess::place_order_request(
-    account, live, korean_limit_buy(), "00"
-  );
+  auto order_request = kis::KisClientTestAccess::place_order_request(account, live, korean_limit_buy(), "00");
   REQUIRE(order_request.method_ == http::verb::post);
   REQUIRE_FALSE(order_request.body_.empty());
 
@@ -4230,19 +3856,14 @@ TEST_CASE(
   net::io_context ioc;
   ssl::context context(ssl::context::tls_client);
   test::trustLocalhostCertificate(context);
-  auto client = std::make_shared<network::AsyncHttpClient>(
-    ioc.get_executor(), context, "localhost", server.port()
-  );
+  auto client = std::make_shared<network::AsyncHttpClient>(ioc.get_executor(), context, "localhost", server.port());
 
   bool completed = false;
-  client->async_request(
-    std::move(order_request),
-    [&completed](Result<network::HttpResponse> result) {
-      REQUIRE_FALSE(result);
-      REQUIRE(result.error().category_ == ErrorCategory::TRANSPORT);
-      completed = true;
-    }
-  );
+  client->async_request(std::move(order_request), [&completed](Result<network::HttpResponse> result) {
+    REQUIRE_FALSE(result);
+    REQUIRE(result.error().category_ == ErrorCategory::TRANSPORT);
+    completed = true;
+  });
 
   ioc.run();
   REQUIRE(completed);
@@ -4273,8 +3894,8 @@ std::string kis_real_refusal_body(const std::string& code, const std::string& me
 
 /** Whether an order reply is read as the recognized refusal `code`. */
 bool kis_recognized(const Result<kis::KisOrderAck>& result, const std::string& code) {
-  return !result && result.error().category_ == ErrorCategory::INVALID_ARGUMENT &&
-    result.error().reached_broker_ && result.error().broker_code_ == code;
+  return !result && result.error().category_ == ErrorCategory::INVALID_ARGUMENT && result.error().reached_broker_ &&
+    result.error().broker_code_ == code;
 }
 
 } // namespace
@@ -4353,24 +3974,29 @@ TEST_CASE("a KIS demo cash order refusal the client recognizes is a rejection", 
     CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(body), KisOperation::UNCLASSIFIED, true)));
     for (const char* code : {"40570001", "4057000", "405700000", " 40570000", "40570000 "}) {
       CAPTURE(code);
-      CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(
-        json_response(kis_refusal_body(code, KIS_MARKET_NOT_OPEN)), KisOperation::PLACE, true
-      )));
+      CHECK(unknown(
+        kis::KisClientTestAccess::parse_order_ack(
+          json_response(kis_refusal_body(code, KIS_MARKET_NOT_OPEN)), KisOperation::PLACE, true
+        )
+      ));
     }
-    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(
-      json_response(kis_refusal_body("40570000", KIS_MARKET_NOT_OPEN, R"(,"output":{"ODNO":"0001569157"})")),
-      KisOperation::PLACE,
-      true
-    )));
+    CHECK(unknown(
+      kis::KisClientTestAccess::parse_order_ack(
+        json_response(kis_refusal_body("40570000", KIS_MARKET_NOT_OPEN, R"(,"output":{"ODNO":"0001569157"})")),
+        KisOperation::PLACE, true
+      )
+    ));
   }
 
   SECTION("an empty acknowledgement beside it, or the original order echoed, changes nothing") {
-    for (const char* extra : {
-           R"(,"output":{})",
-           R"(,"output":{"KRX_FWDG_ORD_ORGNO":"","ODNO":"","ORD_TMD":""})",
-           R"(,"output":{"ORGN_ODNO":"0001569157"})",
-           R"(,"msg2":"an unrelated field")",
-         }) {
+    for (
+      const char* extra : {
+        R"(,"output":{})",
+        R"(,"output":{"KRX_FWDG_ORD_ORGNO":"","ODNO":"","ORD_TMD":""})",
+        R"(,"output":{"ORGN_ODNO":"0001569157"})",
+        R"(,"msg2":"an unrelated field")",
+      }
+    ) {
       CAPTURE(extra);
       CHECK(kis_recognized(
         kis::KisClientTestAccess::parse_order_ack(
@@ -4414,12 +4040,8 @@ TEST_CASE("a KIS order refusal outside the recognized replies stays an unknown o
   }
 
   SECTION("a success status other than 200") {
-    CHECK(unknown(
-      kis::KisClientTestAccess::parse_order_ack(json_response(cancel, 201), KisOperation::CANCEL, true)
-    ));
-    CHECK(unknown(
-      kis::KisClientTestAccess::parse_order_ack(json_response(cancel, 202), KisOperation::CANCEL, true)
-    ));
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(cancel, 201), KisOperation::CANCEL, true)));
+    CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(cancel, 202), KisOperation::CANCEL, true)));
   }
 
   SECTION("another code, or the code inside other text") {
@@ -4454,26 +4076,29 @@ TEST_CASE("a KIS order refusal outside the recognized replies stays an unknown o
   }
 
   SECTION("a status, code or message of another value or type") {
-    for (const char* body : {
-           R"({"rt_cd":"7","msg_cd":"40330000","msg1":"m"})",
-           R"({"rt_cd":" 1","msg_cd":"40330000","msg1":"m"})",
-           R"({"rt_cd":"1","msg_cd":40330000,"msg1":"m"})",
-           R"({"rt_cd":"1","msg_cd":"40330000"})",
-           R"({"rt_cd":"1","msg_cd":"40330000","msg1":""})",
-           R"({"rt_cd":"1","msg_cd":"40330000","msg1":null})",
-           R"({"rt_cd":"1","msg_cd":"40330000","msg1":["m"]})",
-         }) {
+    for (
+      const char* body : {
+        R"({"rt_cd":"7","msg_cd":"40330000","msg1":"m"})",
+        R"({"rt_cd":" 1","msg_cd":"40330000","msg1":"m"})",
+        R"({"rt_cd":"1","msg_cd":40330000,"msg1":"m"})",
+        R"({"rt_cd":"1","msg_cd":"40330000"})",
+        R"({"rt_cd":"1","msg_cd":"40330000","msg1":""})",
+        R"({"rt_cd":"1","msg_cd":"40330000","msg1":null})",
+        R"({"rt_cd":"1","msg_cd":"40330000","msg1":["m"]})",
+      }
+    ) {
       CAPTURE(body);
       CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(body), KisOperation::CANCEL, true)));
     }
     // A status that is not a string is not a reply this parser reads at all.
-    for (const char* body : {
-           R"({"rt_cd":1,"msg_cd":"40330000","msg1":"m"})",
-           R"({"msg_cd":"40330000","msg1":"m"})",
-         }) {
+    for (
+      const char* body : {
+        R"({"rt_cd":1,"msg_cd":"40330000","msg1":"m"})",
+        R"({"msg_cd":"40330000","msg1":"m"})",
+      }
+    ) {
       CAPTURE(body);
-      const auto result =
-        kis::KisClientTestAccess::parse_order_ack(json_response(body), KisOperation::CANCEL, true);
+      const auto result = kis::KisClientTestAccess::parse_order_ack(json_response(body), KisOperation::CANCEL, true);
       REQUIRE_FALSE(result);
       CHECK(result.error().category_ == ErrorCategory::PROTOCOL);
       CHECK(result.error().broker_code_ == "invalid_order_response");
@@ -4481,19 +4106,21 @@ TEST_CASE("a KIS order refusal outside the recognized replies stays an unknown o
   }
 
   SECTION("anything an acknowledgement carries, or an output that is not an object") {
-    for (const char* extra : {
-           R"(,"output":{"ODNO":"0001569157"})",
-           R"(,"output":{"ODNO":1569157})",
-           R"(,"output":{"ODNO":null})",
-           R"(,"output":{"ODNO":" "})",
-           R"(,"output":{"ODNO":"","ORD_TMD":"155211"})",
-           R"(,"output":{"KRX_FWDG_ORD_ORGNO":"06010"})",
-           R"(,"output":null)",
-           R"(,"output":[])",
-           R"(,"output":[{"ODNO":""}])",
-           R"(,"output":"")",
-           R"(,"output":0)",
-         }) {
+    for (
+      const char* extra : {
+        R"(,"output":{"ODNO":"0001569157"})",
+        R"(,"output":{"ODNO":1569157})",
+        R"(,"output":{"ODNO":null})",
+        R"(,"output":{"ODNO":" "})",
+        R"(,"output":{"ODNO":"","ORD_TMD":"155211"})",
+        R"(,"output":{"KRX_FWDG_ORD_ORGNO":"06010"})",
+        R"(,"output":null)",
+        R"(,"output":[])",
+        R"(,"output":[{"ODNO":""}])",
+        R"(,"output":"")",
+        R"(,"output":0)",
+      }
+    ) {
       CAPTURE(extra);
       CHECK(unknown(
         kis::KisClientTestAccess::parse_order_ack(
@@ -4514,12 +4141,14 @@ TEST_CASE("a KIS order refusal outside the recognized replies stays an unknown o
   }
 
   SECTION("an HTTP error with the same body keeps its own reading") {
-    const auto server = kis::KisClientTestAccess::parse_order_ack(json_response(cancel, 500), KisOperation::CANCEL, true);
+    const auto server =
+      kis::KisClientTestAccess::parse_order_ack(json_response(cancel, 500), KisOperation::CANCEL, true);
     REQUIRE_FALSE(server);
     CHECK(server.error().category_ == ErrorCategory::HTTP);
     CHECK(runner::outcome_of(server.error()) == runner::SendOutcome::INDETERMINATE);
 
-    const auto client = kis::KisClientTestAccess::parse_order_ack(json_response(cancel, 400), KisOperation::CANCEL, true);
+    const auto client =
+      kis::KisClientTestAccess::parse_order_ack(json_response(cancel, 400), KisOperation::CANCEL, true);
     REQUIRE_FALSE(client);
     CHECK(client.error().category_ == ErrorCategory::HTTP);
     CHECK(client.error().http_status_ == 400);
@@ -4529,8 +4158,7 @@ TEST_CASE("a KIS order refusal outside the recognized replies stays an unknown o
   SECTION("a rate limit and an accepted order are read as before") {
     const auto limited = kis::KisClientTestAccess::parse_order_ack(
       json_response(R"({"rt_cd":"1","msg_cd":"EGW00201","msg1":"초당 거래건수를 초과하였습니다."})"),
-      KisOperation::CANCEL,
-      true
+      KisOperation::CANCEL, true
     );
     REQUIRE_FALSE(limited);
     CHECK(limited.error().category_ == ErrorCategory::RATE_LIMIT);
@@ -4540,8 +4168,7 @@ TEST_CASE("a KIS order refusal outside the recognized replies stays an unknown o
         R"({"rt_cd":"0","msg_cd":"40330000","msg1":"m",)"
         R"("output":{"KRX_FWDG_ORD_ORGNO":"06010","ODNO":"0001569157","ORD_TMD":"155211"}})"
       ),
-      KisOperation::CANCEL,
-      true
+      KisOperation::CANCEL, true
     );
     REQUIRE(accepted);
     CHECK(accepted.value().order_.order_number_ == "0001569157");
@@ -4602,12 +4229,13 @@ Result<kis::KisOrderAck> kis_call(bool demo, KisCall call, const std::string& re
   ssl::context context(ssl::context::tls_client);
   test::trustLocalhostCertificate(context);
   server.script(
-    "/oauth2/tokenP",
-    200,
+    "/oauth2/tokenP", 200,
     R"({"access_token":"test-token","token_type":"Bearer","expires_in":86400,)"
     R"("access_token_token_expired":"2099-12-31 23:59:59"})"
   );
-  server.script(call == KisCall::PLACE_BUY || call == KisCall::PLACE_SELL ? KIS_ORDER_CASH : KIS_ORDER_AMEND, 200, reply);
+  server.script(
+    call == KisCall::PLACE_BUY || call == KisCall::PLACE_SELL ? KIS_ORDER_CASH : KIS_ORDER_AMEND, 200, reply
+  );
   auto client = scripted_kis(ioc, context, server, demo);
   const kis::KisAccount account{"12345678", "01"};
   std::future<Result<kis::KisOrderAck>> result;
@@ -4631,7 +4259,9 @@ Result<kis::KisOrderAck> kis_call(bool demo, KisCall call, const std::string& re
 
 } // namespace
 
-TEST_CASE("a KIS order reply is read with the operation and environment of the call that sent it", "[broker][kis][order]") {
+TEST_CASE(
+  "a KIS order reply is read with the operation and environment of the call that sent it", "[broker][kis][order]"
+) {
   test::LocalHttpsServer server;
   const std::string after_market = kis_real_refusal_body("APBK3061", KIS_AFTER_MARKET_ONLY);
   const std::string nothing_held = kis_refusal_body("40240000", KIS_NOTHING_HELD);
@@ -4673,7 +4303,9 @@ TEST_CASE("a KIS order reply is read with the operation and environment of the c
     const auto demo_sell = kis_call(true, KisCall::PLACE_SELL, nothing_held, server);
     REQUIRE_FALSE(demo_sell);
     CHECK(demo_sell.error().category_ == ErrorCategory::INVALID_ARGUMENT);
-    CHECK(demo_sell.error().message_.find("(recognized refusal: KIS demo, cash placement, 40240000)") != std::string::npos);
+    CHECK(
+      demo_sell.error().message_.find("(recognized refusal: KIS demo, cash placement, 40240000)") != std::string::npos
+    );
     const auto real_sell = kis_call(false, KisCall::PLACE_SELL, nothing_held, server);
     REQUIRE_FALSE(real_sell);
     CHECK(real_sell.error().category_ == ErrorCategory::PROTOCOL);
@@ -4681,7 +4313,10 @@ TEST_CASE("a KIS order reply is read with the operation and environment of the c
     const auto demo_cancel = kis_call(true, KisCall::CANCEL, nothing_to_cancel, server);
     REQUIRE_FALSE(demo_cancel);
     CHECK(demo_cancel.error().category_ == ErrorCategory::INVALID_ARGUMENT);
-    CHECK(demo_cancel.error().message_.find("(recognized refusal: KIS demo, cash cancellation, 40330000)") != std::string::npos);
+    CHECK(
+      demo_cancel.error().message_.find("(recognized refusal: KIS demo, cash cancellation, 40330000)") !=
+      std::string::npos
+    );
     CHECK(server.lastHeader(KIS_ORDER_AMEND, "tr_id") == "VTTC0013U");
     CHECK(json::parse(server.lastBody(KIS_ORDER_AMEND)).as_object().at("RVSE_CNCL_DVSN_CD").as_string() == "02");
 
@@ -4715,11 +4350,13 @@ TEST_CASE("a KIS real-server refusal is recognized under the same conditions as 
       result.error().message_ ==
       std::string(KIS_AFTER_MARKET_ONLY) + " (recognized refusal: KIS real, cash placement, APBK3061)"
     );
-    for (const char* extra : {
-           R"(,"output":{})",
-           R"(,"output":{"KRX_FWDG_ORD_ORGNO":"","ODNO":"","ORD_TMD":""})",
-           R"(,"msg2":"an unrelated field")",
-         }) {
+    for (
+      const char* extra : {
+        R"(,"output":{})",
+        R"(,"output":{"KRX_FWDG_ORD_ORGNO":"","ODNO":"","ORD_TMD":""})",
+        R"(,"msg2":"an unrelated field")",
+      }
+    ) {
       CAPTURE(extra);
       CHECK(kis_recognized(
         kis::KisClientTestAccess::parse_order_ack(
@@ -4737,9 +4374,13 @@ TEST_CASE("a KIS real-server refusal is recognized under the same conditions as 
     CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(place))));
     CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(place), KisOperation::PLACE, true)));
     for (const int status : {201, 202}) {
-      CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(place, status), KisOperation::PLACE, false)));
+      CHECK(
+        unknown(kis::KisClientTestAccess::parse_order_ack(json_response(place, status), KisOperation::PLACE, false))
+      );
     }
-    for (const char* code : {"APBK3062", "APBK306", "APBK30610", " APBK3061", "APBK3061 ", "apbk3061", "40580000", ""}) {
+    for (
+      const char* code : {"APBK3062", "APBK306", "APBK30610", " APBK3061", "APBK3061 ", "apbk3061", "40580000", ""}
+    ) {
       CAPTURE(code);
       CHECK(unknown(
         kis::KisClientTestAccess::parse_order_ack(
@@ -4757,11 +4398,13 @@ TEST_CASE("a KIS real-server refusal is recognized under the same conditions as 
 
   SECTION("a status, code or message of another value or type") {
     // A success status, or one that is not a string, is not a reply the refusal rule reads.
-    for (const char* body : {
-           R"({"rt_cd":"0","msg_cd":"APBK3061","msg1":"m"})",
-           R"({"rt_cd":1,"msg_cd":"APBK3061","msg1":"m"})",
-           R"({"msg_cd":"APBK3061","msg1":"m"})",
-         }) {
+    for (
+      const char* body : {
+        R"({"rt_cd":"0","msg_cd":"APBK3061","msg1":"m"})",
+        R"({"rt_cd":1,"msg_cd":"APBK3061","msg1":"m"})",
+        R"({"msg_cd":"APBK3061","msg1":"m"})",
+      }
+    ) {
       CAPTURE(body);
       const auto result = kis::KisClientTestAccess::parse_order_ack(json_response(body), KisOperation::PLACE, false);
       REQUIRE_FALSE(result);
@@ -4769,30 +4412,34 @@ TEST_CASE("a KIS real-server refusal is recognized under the same conditions as 
       CHECK(result.error().broker_code_ == "invalid_order_response");
     }
     // The demo server's refusal status, `"1"`, is not the status the real server stated this code with.
-    for (const char* body : {
-           R"({"rt_cd":"1","msg_cd":"APBK3061","msg1":"m"})",
-           R"({"rt_cd":" 7","msg_cd":"APBK3061","msg1":"m"})",
-           R"({"rt_cd":"7 ","msg_cd":"APBK3061","msg1":"m"})",
-           R"({"rt_cd":"7","msg_cd":["APBK3061"],"msg1":"m"})",
-           R"({"rt_cd":"7","msg_cd":"APBK3061"})",
-           R"({"rt_cd":"7","msg_cd":"APBK3061","msg1":""})",
-           R"({"rt_cd":"7","msg_cd":"APBK3061","msg1":null})",
-         }) {
+    for (
+      const char* body : {
+        R"({"rt_cd":"1","msg_cd":"APBK3061","msg1":"m"})",
+        R"({"rt_cd":" 7","msg_cd":"APBK3061","msg1":"m"})",
+        R"({"rt_cd":"7 ","msg_cd":"APBK3061","msg1":"m"})",
+        R"({"rt_cd":"7","msg_cd":["APBK3061"],"msg1":"m"})",
+        R"({"rt_cd":"7","msg_cd":"APBK3061"})",
+        R"({"rt_cd":"7","msg_cd":"APBK3061","msg1":""})",
+        R"({"rt_cd":"7","msg_cd":"APBK3061","msg1":null})",
+      }
+    ) {
       CAPTURE(body);
       CHECK(unknown(kis::KisClientTestAccess::parse_order_ack(json_response(body), KisOperation::PLACE, false)));
     }
   }
 
   SECTION("anything an acknowledgement carries, or an output that is not an object") {
-    for (const char* extra : {
-           R"(,"output":{"ODNO":"0001569157"})",
-           R"(,"output":{"ODNO":null})",
-           R"(,"output":{"ODNO":"","ORD_TMD":"194112"})",
-           R"(,"output":{"KRX_FWDG_ORD_ORGNO":"06010"})",
-           R"(,"output":null)",
-           R"(,"output":[])",
-           R"(,"output":"")",
-         }) {
+    for (
+      const char* extra : {
+        R"(,"output":{"ODNO":"0001569157"})",
+        R"(,"output":{"ODNO":null})",
+        R"(,"output":{"ODNO":"","ORD_TMD":"194112"})",
+        R"(,"output":{"KRX_FWDG_ORD_ORGNO":"06010"})",
+        R"(,"output":null)",
+        R"(,"output":[])",
+        R"(,"output":"")",
+      }
+    ) {
       CAPTURE(extra);
       CHECK(unknown(
         kis::KisClientTestAccess::parse_order_ack(
@@ -4804,7 +4451,8 @@ TEST_CASE("a KIS real-server refusal is recognized under the same conditions as 
 
   SECTION("an HTTP error with the same body keeps its own reading") {
     for (const int status : {400, 500}) {
-      const auto result = kis::KisClientTestAccess::parse_order_ack(json_response(place, status), KisOperation::PLACE, false);
+      const auto result =
+        kis::KisClientTestAccess::parse_order_ack(json_response(place, status), KisOperation::PLACE, false);
       REQUIRE_FALSE(result);
       CHECK(result.error().category_ == ErrorCategory::HTTP);
       CHECK(result.error().message_.find("recognized refusal") == std::string::npos);
@@ -4833,7 +4481,7 @@ TEST_CASE("an HTTP error carries at most the start of its reply body", "[broker]
   CHECK(broker_detail::reply_excerpt(std::string(limit, 'y')) == std::string(limit, 'y'));
 
   // A three-byte Korean character straddling the limit is left out whole rather than split.
-  const std::string korean = std::string(limit - 1, 'z') + "초과";  // 511 + 3 + 3 bytes
+  const std::string korean = std::string(limit - 1, 'z') + "초과"; // 511 + 3 + 3 bytes
   const auto excerpt = broker_detail::reply_excerpt(korean);
   CHECK(excerpt == std::string(limit - 1, 'z') + "... (6 more bytes)");
 
@@ -4871,9 +4519,9 @@ TEST_CASE("a reply whose body is not a JSON object keeps its HTTP status", "[bro
   SECTION("at KIS, which reads the status first") {
     for (const char* body : {"", "<html></html>", "[]"}) {
       CAPTURE(body);
-      CHECK(unreadable(
-        kis::KisClientTestAccess::parse_order_ack(json_response(body), KisOperation::PLACE, false), 200
-      ));
+      CHECK(
+        unreadable(kis::KisClientTestAccess::parse_order_ack(json_response(body), KisOperation::PLACE, false), 200)
+      );
     }
     // A non-2xx reply is still an HTTP error, whatever its body.
     const auto server = kis::KisClientTestAccess::parse_order_ack(json_response("<html></html>", 500));
@@ -4883,10 +4531,7 @@ TEST_CASE("a reply whose body is not a JSON object keeps its HTTP status", "[bro
   }
 }
 
-TEST_CASE(
-  "Toss candles normalize into ascending bars with its stamp convention",
-  "[broker][tossinvest][bars]"
-) {
+TEST_CASE("Toss candles normalize into ascending bars with its stamp convention", "[broker][tossinvest][bars]") {
   BarQuery query;
   query.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
   std::vector<Bar> bars;
@@ -4905,10 +4550,7 @@ TEST_CASE(
         R"("lowPrice":"71000","closePrice":"71600","volume":"2984000","currency":"KRW"}],)"
         R"("nextBefore":"2026-03-24T00:00:00+09:00"}})"
       ),
-      query,
-      bars,
-      cursor,
-      currency
+      query, bars, cursor, currency
     );
     REQUIRE_FALSE(failure);
     REQUIRE(bars.size() == 2);
@@ -4935,10 +4577,7 @@ TEST_CASE(
         R"("lowPrice":"71950","closePrice":"72050","volume":"15200","currency":"KRW"}],)"
         R"("nextBefore":null}})"
       ),
-      query,
-      bars,
-      cursor,
-      currency
+      query, bars, cursor, currency
     );
     REQUIRE_FALSE(failure);
     REQUIRE(bars.size() == 1);
@@ -4950,10 +4589,7 @@ TEST_CASE(
   SECTION("an empty page reports no cursor so paging cannot continue forever") {
     query.interval_ = BarInterval::ONE_DAY;
     const auto failure = tossinvest::TossClientTestAccess::parse_bars_page(
-      json_response(R"({"result":{"candles":[],"nextBefore":"2026-03-24T00:00:00+09:00"}})"),
-      query,
-      bars,
-      cursor,
+      json_response(R"({"result":{"candles":[],"nextBefore":"2026-03-24T00:00:00+09:00"}})"), query, bars, cursor,
       currency
     );
     REQUIRE_FALSE(failure);
@@ -4964,11 +4600,7 @@ TEST_CASE(
   SECTION("a malformed candle is a protocol error") {
     query.interval_ = BarInterval::ONE_DAY;
     const auto failure = tossinvest::TossClientTestAccess::parse_bars_page(
-      json_response(R"({"result":{"candles":[{"timestamp":"not-a-time"}]}})"),
-      query,
-      bars,
-      cursor,
-      currency
+      json_response(R"({"result":{"candles":[{"timestamp":"not-a-time"}]}})"), query, bars, cursor, currency
     );
     REQUIRE(failure);
     REQUIRE(failure->category_ == ErrorCategory::PROTOCOL);
@@ -4976,10 +4608,7 @@ TEST_CASE(
   }
 }
 
-TEST_CASE(
-  "KIS bars normalize from its period and minute endpoints",
-  "[broker][kis][bars]"
-) {
+TEST_CASE("KIS bars normalize from its period and minute endpoints", "[broker][kis][bars]") {
   BarQuery query;
   query.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
   std::vector<Bar> bars;
@@ -4993,9 +4622,7 @@ TEST_CASE(
         R"("stck_hgpr":"72300","stck_lwpr":"71500","acml_vol":"3521000",)"
         R"("acml_tr_pbmn":"253000000000","mod_yn":"N"}]})"
       ),
-      query,
-      false,
-      bars
+      query, false, bars
     );
     REQUIRE_FALSE(failure);
     REQUIRE(bars.size() == 1);
@@ -5015,9 +4642,7 @@ TEST_CASE(
         R"({"stck_bsop_date":"20260325","stck_clpr":"72000","stck_oprc":"0",)"
         R"("stck_hgpr":"72000","stck_lwpr":"72000","acml_vol":"0","mod_yn":"Y"}]})"
       ),
-      query,
-      false,
-      bars
+      query, false, bars
     );
     REQUIRE_FALSE(failure);
     REQUIRE(bars.size() == 1);
@@ -5033,9 +4658,7 @@ TEST_CASE(
         R"({"stck_bsop_date":"20260325","stck_cntg_hour":"093200","stck_prpr":"72050",)"
         R"("stck_oprc":"72000","stck_hgpr":"72100","stck_lwpr":"71950","cntg_vol":"15200"}]})"
       ),
-      query,
-      true,
-      bars
+      query, true, bars
     );
     REQUIRE_FALSE(failure);
     REQUIRE(bars.size() == 1);
@@ -5047,8 +4670,10 @@ TEST_CASE(
     CHECK(series.stamp_ == BarStamp::OPEN);
     // The raw time is kept: 09:32:00 KST is 00:32:00 UTC.
     CHECK(format_iso8601_utc(series.bars_.front().timestamp_) == "2026-03-25T00:32:00Z");
-    CHECK(strategy::bar_period_end(series.bars_.front(), series.interval_, series.stamp_) ==
-          series.bars_.front().timestamp_ + std::chrono::minutes(1));
+    CHECK(
+      strategy::bar_period_end(series.bars_.front(), series.interval_, series.stamp_) ==
+      series.bars_.front().timestamp_ + std::chrono::minutes(1)
+    );
   }
 
   SECTION("blank padding rows are skipped rather than parsed") {
@@ -5062,9 +4687,7 @@ TEST_CASE(
         R"({"stck_bsop_date":"","stck_clpr":"","stck_oprc":"","stck_hgpr":"",)"
         R"("stck_lwpr":"","acml_vol":""}]})"
       ),
-      query,
-      false,
-      bars
+      query, false, bars
     );
     REQUIRE_FALSE(failure);
     REQUIRE(bars.size() == 1);
@@ -5088,9 +4711,9 @@ TEST_CASE("a KIS minute page repeating the previous page's oldest bar adds it on
   query.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
   query.interval_ = BarInterval::ONE_MINUTE;
   const auto row = [](const char* time, const char* close) {
-    return std::string(R"({"stck_bsop_date":"20260901","stck_cntg_hour":")") + time +
-      R"(","stck_prpr":")" + close + R"(","stck_oprc":")" + close + R"(","stck_hgpr":")" + close +
-      R"(","stck_lwpr":")" + close + R"(","cntg_vol":"100"})";
+    return std::string(R"({"stck_bsop_date":"20260901","stck_cntg_hour":")") + time + R"(","stck_prpr":")" + close +
+      R"(","stck_oprc":")" + close + R"(","stck_hgpr":")" + close + R"(","stck_lwpr":")" + close +
+      R"(","cntg_vol":"100"})";
   };
   const auto page = [&](std::initializer_list<std::string> rows) {
     std::string body = R"({"rt_cd":"0","output2":[)";
@@ -5102,15 +4725,19 @@ TEST_CASE("a KIS minute page repeating the previous page's oldest bar adds it on
     return json_response(body + "]}");
   };
   std::vector<Bar> descending;
-  REQUIRE_FALSE(kis::KisClientTestAccess::parse_bars_page(
-    page({row("112500", "254500"), row("112400", "254400"), row("112300", "254300")}), query, true, descending
-  ));
+  REQUIRE_FALSE(
+    kis::KisClientTestAccess::parse_bars_page(
+      page({row("112500", "254500"), row("112400", "254400"), row("112300", "254300")}), query, true, descending
+    )
+  );
   REQUIRE(descending.size() == 3);
 
   // The next page starts with the bar the last one ended on.
-  REQUIRE_FALSE(kis::KisClientTestAccess::parse_bars_page(
-    page({row("112300", "254300"), row("112200", "254200"), row("112100", "254100")}), query, true, descending
-  ));
+  REQUIRE_FALSE(
+    kis::KisClientTestAccess::parse_bars_page(
+      page({row("112300", "254300"), row("112200", "254200"), row("112100", "254100")}), query, true, descending
+    )
+  );
   REQUIRE(descending.size() == 5);
   BarSeries series;
   series.bars_.assign(descending.rbegin(), descending.rend());
@@ -5118,16 +4745,15 @@ TEST_CASE("a KIS minute page repeating the previous page's oldest bar adds it on
   CHECK(series.bars_[2].close_ == Decimal64::parse("254300"));
 
   // A page with nothing older adds nothing, which the request reads as an empty page and ends on.
-  REQUIRE_FALSE(kis::KisClientTestAccess::parse_bars_page(
-    page({row("112200", "254200"), row("112100", "254100")}), query, true, descending
-  ));
+  REQUIRE_FALSE(
+    kis::KisClientTestAccess::parse_bars_page(
+      page({row("112200", "254200"), row("112100", "254100")}), query, true, descending
+    )
+  );
   CHECK(descending.size() == 5);
 }
 
-TEST_CASE(
-  "a KIS period page spans enough calendar days to hold a page of bars",
-  "[broker][kis][bars]"
-) {
+TEST_CASE("a KIS period page spans enough calendar days to hold a page of bars", "[broker][kis][bars]") {
   // KIS selects period bars by date range, so the range has to be sized in calendar
   // days. A fixed span would under-deliver badly for the longer intervals: a
   // hundred monthly bars would need thirty pages and a hundred yearly bars would
@@ -5144,10 +4770,7 @@ TEST_CASE(
   REQUIRE(100 * KisClientTestAccess::shortest_days_per_bar(BarInterval::ONE_YEAR) == 36500);
 }
 
-TEST_CASE(
-  "an order book is ordered best first whatever order the broker sent",
-  "[broker][depth]"
-) {
+TEST_CASE("an order book is ordered best first whatever order the broker sent", "[broker][depth]") {
   const auto samsung = InstrumentId{Country::KR, Venue::COMBINED, "005930"};
 
   SECTION("Toss asks arrive descending in its own example and are still corrected") {
@@ -5261,12 +4884,10 @@ TEST_CASE(
 
 TEST_CASE("price bounds distinguish a market with no limit from a limit of zero") {
   SECTION("Toss reports both bounds for a Korean equity") {
-    auto result = tossinvest::TossClientTestAccess::parse_price_limits(
-      json_response(
-        R"({"result":{"timestamp":"2026-03-25T09:30:00.123+09:00",)"
-        R"("upperLimitPrice":"93000","lowerLimitPrice":"50400","currency":"KRW"}})"
-      )
-    );
+    auto result = tossinvest::TossClientTestAccess::parse_price_limits(json_response(
+      R"({"result":{"timestamp":"2026-03-25T09:30:00.123+09:00",)"
+      R"("upperLimitPrice":"93000","lowerLimitPrice":"50400","currency":"KRW"}})"
+    ));
     REQUIRE(result);
     REQUIRE(*result.value().upper_ == Decimal64::parse("93000"));
     REQUIRE(*result.value().lower_ == Decimal64::parse("50400"));
@@ -5277,12 +4898,10 @@ TEST_CASE("price bounds distinguish a market with no limit from a limit of zero"
   SECTION("Toss reports null bounds for a market without a price limit") {
     // A bound of zero would read as "may not trade above nothing", which is the
     // opposite of what an unlimited market means.
-    auto result = tossinvest::TossClientTestAccess::parse_price_limits(
-      json_response(
-        R"({"result":{"timestamp":"2026-03-25T22:30:00.456+09:00",)"
-        R"("upperLimitPrice":null,"lowerLimitPrice":null,"currency":"USD"}})"
-      )
-    );
+    auto result = tossinvest::TossClientTestAccess::parse_price_limits(json_response(
+      R"({"result":{"timestamp":"2026-03-25T22:30:00.456+09:00",)"
+      R"("upperLimitPrice":null,"lowerLimitPrice":null,"currency":"USD"}})"
+    ));
     REQUIRE(result);
     REQUIRE_FALSE(result.value().upper_.has_value());
     REQUIRE_FALSE(result.value().lower_.has_value());
@@ -5290,12 +4909,10 @@ TEST_CASE("price bounds distinguish a market with no limit from a limit of zero"
   }
 
   SECTION("KIS reports both bounds on its current-price inquiry") {
-    auto result = kis::KisClientTestAccess::parse_price_limits(
-      json_response(
-        R"({"rt_cd":"0","msg_cd":"MCA00000","output":{"stck_prpr":"72000",)"
-        R"("stck_mxpr":"93000","stck_llam":"50400"}})"
-      )
-    );
+    auto result = kis::KisClientTestAccess::parse_price_limits(json_response(
+      R"({"rt_cd":"0","msg_cd":"MCA00000","output":{"stck_prpr":"72000",)"
+      R"("stck_mxpr":"93000","stck_llam":"50400"}})"
+    ));
     REQUIRE(result);
     REQUIRE(*result.value().upper_ == Decimal64::parse("93000"));
     REQUIRE(*result.value().lower_ == Decimal64::parse("50400"));
@@ -5314,15 +4931,13 @@ TEST_CASE("price bounds distinguish a market with no limit from a limit of zero"
 
 TEST_CASE("recent executions normalize from both brokers") {
   SECTION("Toss returns a bare array of prints") {
-    auto result = tossinvest::TossClientTestAccess::parse_trades(
-      json_response(
-        R"({"result":[)"
-        R"({"price":"72000","volume":"120","timestamp":"2026-03-25T09:30:42.000+09:00",)"
-        R"("currency":"KRW"},)"
-        R"({"price":"71900","volume":"50","timestamp":"2026-03-25T09:30:41.500+09:00",)"
-        R"("currency":"KRW"}]})"
-      )
-    );
+    auto result = tossinvest::TossClientTestAccess::parse_trades(json_response(
+      R"({"result":[)"
+      R"({"price":"72000","volume":"120","timestamp":"2026-03-25T09:30:42.000+09:00",)"
+      R"("currency":"KRW"},)"
+      R"({"price":"71900","volume":"50","timestamp":"2026-03-25T09:30:41.500+09:00",)"
+      R"("currency":"KRW"}]})"
+    ));
     REQUIRE(result);
     REQUIRE(result.value().size() == 2);
     REQUIRE(result.value().front().price_ == Decimal64::parse("72000"));
@@ -5392,8 +5007,7 @@ TEST_CASE("a batch quote keeps the instrument identities the caller stated") {
 
   SECTION("a row for a symbol that was not asked for is a protocol error") {
     auto result = tossinvest::TossClientTestAccess::parse_prices(
-      requested,
-      json_response(R"({"result":[{"symbol":"000660","lastPrice":"1","currency":"KRW"}]})")
+      requested, json_response(R"({"result":[{"symbol":"000660","lastPrice":"1","currency":"KRW"}]})")
     );
     REQUIRE_FALSE(result);
     REQUIRE(result.error().category_ == ErrorCategory::PROTOCOL);
@@ -5404,10 +5018,10 @@ TEST_CASE("a batch quote keeps the instrument identities the caller stated") {
 TEST_CASE("a trading calendar tells closed apart from not covered") {
   TradingCalendar calendar;
   calendar.days_ = {
-    TradingDay{Date{2026, 3, 20}, true},   // Friday
-    TradingDay{Date{2026, 3, 21}, false},  // Saturday
-    TradingDay{Date{2026, 3, 22}, false},  // Sunday
-    TradingDay{Date{2026, 3, 23}, true},   // Monday
+    TradingDay{Date{2026, 3, 20}, true}, // Friday
+    TradingDay{Date{2026, 3, 21}, false}, // Saturday
+    TradingDay{Date{2026, 3, 22}, false}, // Sunday
+    TradingDay{Date{2026, 3, 23}, true}, // Monday
   };
 
   REQUIRE(calendar.is_trading_day(Date{2026, 3, 20}) == true);
@@ -5457,9 +5071,7 @@ TEST_CASE("both brokers' calendars normalize to the same trading days") {
         R"({"bass_dt":"20260323","wday_dvsn_cd":"02","bzdy_yn":"Y","tr_day_yn":"Y",)"
         R"("opnd_yn":"Y","sttl_day_yn":"Y"}]})"
       ),
-      calendar,
-      search,
-      next
+      calendar, search, next
     );
     REQUIRE_FALSE(failure);
     REQUIRE(calendar.days_.size() == 3);
@@ -5480,9 +5092,7 @@ TEST_CASE("both brokers' calendars normalize to the same trading days") {
         R"({"bass_dt":"20260501","bzdy_yn":"Y","tr_day_yn":"Y","opnd_yn":"N",)"
         R"("sttl_day_yn":"N"}]})"
       ),
-      calendar,
-      search,
-      next
+      calendar, search, next
     );
     REQUIRE(calendar.is_trading_day(Date{2026, 5, 1}) == false);
   }
@@ -5557,19 +5167,13 @@ TEST_CASE("both brokers' calendars normalize to the same trading days") {
 
   SECTION("a Toss today without its market's hours field is refused, not read as closed") {
     auto us_as_kr = tossinvest::TossClientTestAccess::parse_calendar(
-      Country::US,
-      json_response(
-        R"({"result":{"today":{"date":"2026-03-25","integrated":{"open":"09:00"}}}})"
-      )
+      Country::US, json_response(R"({"result":{"today":{"date":"2026-03-25","integrated":{"open":"09:00"}}}})")
     );
     REQUIRE_FALSE(us_as_kr);
     CHECK(us_as_kr.error().broker_code_ == "invalid_calendar_response");
 
     auto kr_as_us = tossinvest::TossClientTestAccess::parse_calendar(
-      Country::KR,
-      json_response(
-        R"({"result":{"today":{"date":"2026-03-25","regularMarket":{"startTime":"x"}}}})"
-      )
+      Country::KR, json_response(R"({"result":{"today":{"date":"2026-03-25","regularMarket":{"startTime":"x"}}}})")
     );
     REQUIRE_FALSE(kr_as_us);
   }
@@ -5605,9 +5209,7 @@ TEST_CASE("a KIS calendar page that fails leaves the calendar as it was", "[core
   std::string next;
   // Good rows first, then one that is not an object: the page fails, and nothing it held is kept.
   const auto failure = kis::KisClientTestAccess::parse_calendar_page(
-    json_response(
-      R"({"rt_cd":"0","output":[{"bass_dt":"20260901","opnd_yn":"Y"},{"bass_dt":"2026090x"},7]})"
-    ),
+    json_response(R"({"rt_cd":"0","output":[{"bass_dt":"20260901","opnd_yn":"Y"},{"bass_dt":"2026090x"},7]})"),
     calendar, search, next
   );
   REQUIRE(failure);
@@ -5639,8 +5241,7 @@ TEST_CASE("a KIS page of only unreadable rows is progress, not the end of the li
   std::string search;
   std::string next;
   const auto failure = kis::KisClientTestAccess::parse_calendar_page(
-    json_response(R"({"rt_cd":"0","output":[{"bass_dt":"2026090x"},{"bass_dt":""}]})"),
-    calendar, search, next
+    json_response(R"({"rt_cd":"0","output":[{"bass_dt":"2026090x"},{"bass_dt":""}]})"), calendar, search, next
   );
   REQUIRE_FALSE(failure);
   CHECK(calendar.days_.size() == 1);
@@ -5679,8 +5280,7 @@ TEST_CASE("a KIS calendar request reads on past a page of only unreadable rows",
   ssl::context context(ssl::context::tls_client);
   test::trustLocalhostCertificate(context);
   server.script(
-    "/oauth2/tokenP",
-    200,
+    "/oauth2/tokenP", 200,
     R"({"access_token":"test-token","token_type":"Bearer","expires_in":86400,)"
     R"("access_token_token_expired":"2099-12-31 23:59:59"})"
   );
@@ -5704,14 +5304,15 @@ TEST_CASE("a KIS calendar request reads on past a page of only unreadable rows",
   CHECK(calendar.value().is_trading_day(Date{2026, 9, 2}) == std::optional<bool>(false));
 }
 
-TEST_CASE("a KIS calendar day dropped as unreadable is asked for again but a cached day is not", "[core][calendar][kis]") {
+TEST_CASE(
+  "a KIS calendar day dropped as unreadable is asked for again but a cached day is not", "[core][calendar][kis]"
+) {
   test::LocalHttpsServer server;
   net::io_context ioc;
   ssl::context context(ssl::context::tls_client);
   test::trustLocalhostCertificate(context);
   server.script(
-    "/oauth2/tokenP",
-    200,
+    "/oauth2/tokenP", 200,
     R"({"access_token":"test-token","token_type":"Bearer","expires_in":86400,)"
     R"("access_token_token_expired":"2099-12-31 23:59:59"})"
   );
@@ -5719,11 +5320,11 @@ TEST_CASE("a KIS calendar day dropped as unreadable is asked for again but a cac
     KIS_CALENDAR,
     {
       kis_calendar_page(
-        "C1", false, R"({"bass_dt":"20260901","opnd_yn":"Y"},{"bass_dt":"2026090x"},{"bass_dt":"20260903","opnd_yn":"Y"})"
+        "C1", false,
+        R"({"bass_dt":"20260901","opnd_yn":"Y"},{"bass_dt":"2026090x"},{"bass_dt":"20260903","opnd_yn":"Y"})"
       ),
       kis_calendar_page(
-        "C2",
-        false,
+        "C2", false,
         R"({"bass_dt":"20260901","opnd_yn":"Y"},{"bass_dt":"20260902","opnd_yn":"Y"},{"bass_dt":"20260903","opnd_yn":"Y"})"
       ),
     }
@@ -5890,10 +5491,7 @@ TEST_CASE("an ETF gets no price grid rather than the equity one", "[broker][refe
   REQUIRE(result);
   REQUIRE(result.value().type_ == SecurityType::ETF);
   REQUIRE(result.value().price_rule_.kind_ == PriceRule::Kind::UNKNOWN);
-  REQUIRE_FALSE(
-    result.value().price_rule_.round_to_tick(Decimal64::parse("34567"), OrderSide::BUY)
-      .has_value()
-  );
+  REQUIRE_FALSE(result.value().price_rule_.round_to_tick(Decimal64::parse("34567"), OrderSide::BUY).has_value());
 
   // The same instrument's cash-equity neighbour does get the ladder.
   auto equity = kis::KisClientTestAccess::parse_instrument(
@@ -5933,27 +5531,19 @@ TEST_CASE("flooring onto a multiple goes toward negative infinity on both sides 
   REQUIRE(*decimal_floor_to_multiple(Decimal64::parse("-47"), lot) == Decimal64::parse("-50"));
 
   // A fractional step works the same way.
-  REQUIRE(
-    *decimal_floor_to_multiple(Decimal64::parse("1.07"), Decimal64::parse("0.25")) ==
-    Decimal64::parse("1")
-  );
+  REQUIRE(*decimal_floor_to_multiple(Decimal64::parse("1.07"), Decimal64::parse("0.25")) == Decimal64::parse("1"));
 
   // A step with no multiples to choose between is refused.
   REQUIRE_FALSE(decimal_floor_to_multiple(Decimal64::parse("47"), Decimal64::parse("0")));
   REQUIRE_FALSE(decimal_floor_to_multiple(Decimal64::parse("47"), Decimal64::parse("-10")));
 }
 
-TEST_CASE(
-  "Toss holds a stated commission bound apart from an absent one",
-  "[core][capacity][toss]"
-) {
+TEST_CASE("Toss holds a stated commission bound apart from an absent one", "[core][capacity][toss]") {
   const auto parse = [](std::string_view start, std::string_view end) {
-    return tossinvest::TossClientTestAccess::parse_commissions(
-      json_response(
-        std::string(R"({"result":[{"marketCountry":"KR","commissionRate":"0.00015",)") +
-        R"("startDate":)" + std::string(start) + R"(,"endDate":)" + std::string(end) + "}]}"
-      )
-    );
+    return tossinvest::TossClientTestAccess::parse_commissions(json_response(
+      std::string(R"({"result":[{"marketCountry":"KR","commissionRate":"0.00015",)") + R"("startDate":)" +
+      std::string(start) + R"(,"endDate":)" + std::string(end) + "}]}"
+    ));
   };
 
   SECTION("null is the broker's own spelling for open-ended, and is not damage") {
@@ -6024,8 +5614,7 @@ namespace stated_date_break {
 template <typename T, typename = void>
 struct testable_as_bool : std::false_type {};
 template <typename T>
-struct testable_as_bool<T, std::void_t<decltype(static_cast<bool>(std::declval<const T&>()))>>
-: std::true_type {};
+struct testable_as_bool<T, std::void_t<decltype(static_cast<bool>(std::declval<const T&>()))>> : std::true_type {};
 
 template <typename T, typename = void>
 struct dereferenceable : std::false_type {};
@@ -6041,20 +5630,18 @@ struct comparable_with_date<T, std::void_t<decltype(std::declval<const T&>() == 
 template <typename T, typename = void>
 struct orderable_with_date : std::false_type {};
 template <typename T>
-struct orderable_with_date<T, std::void_t<decltype(std::declval<const T&>() < std::declval<Date>())>>
-: std::true_type {};
+struct orderable_with_date<T, std::void_t<decltype(std::declval<const T&>() < std::declval<Date>())>> : std::true_type {
+};
 
 template <typename T, typename = void>
 struct has_value_member : std::false_type {};
 template <typename T>
-struct has_value_member<T, std::void_t<decltype(std::declval<const T&>().has_value())>>
-: std::true_type {};
+struct has_value_member<T, std::void_t<decltype(std::declval<const T&>().has_value())>> : std::true_type {};
 
 template <typename T, typename = void>
 struct exposes_date_member : std::false_type {};
 template <typename T>
-struct exposes_date_member<T, std::void_t<decltype(std::declval<const T&>().date_)>>
-: std::true_type {};
+struct exposes_date_member<T, std::void_t<decltype(std::declval<const T&>().date_)>> : std::true_type {};
 
 } // namespace stated_date_break
 
@@ -6093,7 +5680,9 @@ TEST_CASE("an instrument's dates rule a day out only from a date that was read",
     instrument.delisted_on_ = delist;
     return instrument;
   };
-  const auto stated = [](Date date) { return StatedDate::stated(date); };
+  const auto stated = [](Date date) {
+    return StatedDate::stated(date);
+  };
   const auto unreadable = StatedDate::unreadable();
   const StatedDate absent;
 
@@ -6124,8 +5713,8 @@ TEST_CASE("KIS reads an instrument date as stated, not stated, or unreadable", "
       InstrumentId{Country::KR, Venue::COMBINED, "000660"},
       json_response(
         std::string(R"({"rt_cd":"0","output":{"mket_id_cd":"STK","scty_grp_id_cd":"ST",)") +
-        R"("std_pdno":"KR7000660001","prdt_name":"x","prdt_eng_name":"x",)" +
-        R"("scts_mket_lstg_dt":)" + std::string(listing) + R"(,"scts_mket_lstg_abol_dt":""}})"
+        R"("std_pdno":"KR7000660001","prdt_name":"x","prdt_eng_name":"x",)" + R"("scts_mket_lstg_dt":)" +
+        std::string(listing) + R"(,"scts_mket_lstg_abol_dt":""}})"
       )
     );
   };
@@ -6149,9 +5738,10 @@ TEST_CASE("KIS reads an instrument date as stated, not stated, or unreadable", "
   // character after '9', so digit arithmetic without that check reads "0:" as 10 and "1996120:" as
   // 1996-12-10.
   REQUIRE(':' - '0' == 10);
-  for (const auto* damaged :
-       {R"("1996122x")", R"("1996120:")", R"("1996-12-26")", R"("19961332")", R"("2024023")",
-        R"("1996 226")", "19961226"}) {
+  for (
+    const auto* damaged :
+    {R"("1996122x")", R"("1996120:")", R"("1996-12-26")", R"("19961332")", R"("2024023")", R"("1996 226")", "19961226"}
+  ) {
     const auto result = parse(damaged);
     // The row survives: a damaged date costs nothing else in it.
     REQUIRE(result);
@@ -6161,20 +5751,16 @@ TEST_CASE("KIS reads an instrument date as stated, not stated, or unreadable", "
   }
 }
 
-TEST_CASE(
-  "Toss records an instrument date it cannot read, and keeps the row",
-  "[core][reference][toss]"
-) {
+TEST_CASE("Toss records an instrument date it cannot read, and keeps the row", "[core][reference][toss]") {
   const auto hynix = InstrumentId{Country::KR, Venue::KRX, "000660"};
   const auto parse = [&](std::string_view list, std::string_view delist, std::string_view status) {
     return tossinvest::TossClientTestAccess::parse_instrument(
       hynix,
       json_response(
         std::string(R"({"result":[{"symbol":"000660","name":"SK","englishName":"SK",)") +
-        R"("isinCode":"KR7000660001","market":"KOSPI","securityType":"STOCK",)" +
-        R"("isCommonShare":true,"status":")" + std::string(status) + R"(","currency":"KRW",)" +
-        R"("listDate":)" + std::string(list) + R"(,"delistDate":)" + std::string(delist) +
-        R"(,"sharesOutstanding":"728002365"}]})"
+        R"("isinCode":"KR7000660001","market":"KOSPI","securityType":"STOCK",)" + R"("isCommonShare":true,"status":")" +
+        std::string(status) + R"(","currency":"KRW",)" + R"("listDate":)" + std::string(list) + R"(,"delistDate":)" +
+        std::string(delist) + R"(,"sharesOutstanding":"728002365"}]})"
       )
     );
   };
@@ -6219,10 +5805,7 @@ TEST_CASE(
   CHECK(scheduled.value().status_ == InstrumentStatus::SCHEDULED);
 }
 
-TEST_CASE(
-  "Toss buying power normalizes to money carrying the broker's own currency",
-  "[core][capacity][toss]"
-) {
+TEST_CASE("Toss buying power normalizes to money carrying the broker's own currency", "[core][capacity][toss]") {
   // The spec's own KRW example.
   const auto won = tossinvest::TossClientTestAccess::parse_buying_power(
     json_response(R"({"result":{"currency":"KRW","cashBuyingPower":"5000000"}})")
@@ -6241,23 +5824,17 @@ TEST_CASE(
 
   // A broker error is the error, not an empty reading that would read as "no money".
   const auto refused = tossinvest::TossClientTestAccess::parse_buying_power(
-    json_response(
-      R"({"error":{"code":"invalid-request","message":"지원하지 않는 통화입니다."}})", 400
-    )
+    json_response(R"({"error":{"code":"invalid-request","message":"지원하지 않는 통화입니다."}})", 400)
   );
   REQUIRE_FALSE(refused);
 
-  const auto malformed = tossinvest::TossClientTestAccess::parse_buying_power(
-    json_response(R"({"result":{"currency":"KRW"}})")
-  );
+  const auto malformed =
+    tossinvest::TossClientTestAccess::parse_buying_power(json_response(R"({"result":{"currency":"KRW"}})"));
   REQUIRE_FALSE(malformed);
   REQUIRE(malformed.error().category_ == ErrorCategory::PROTOCOL);
 }
 
-TEST_CASE(
-  "Toss sellable quantity keeps a fractional share",
-  "[core][capacity][toss]"
-) {
+TEST_CASE("Toss sellable quantity keeps a fractional share", "[core][capacity][toss]") {
   const auto domestic = tossinvest::TossClientTestAccess::parse_sellable_quantity(
     json_response(R"({"result":{"sellableQuantity":"100"}})")
   );
@@ -6273,27 +5850,21 @@ TEST_CASE(
   REQUIRE(foreign.value() == Decimal64::parse("5.5"));
 
   // Nothing sellable is a number, and must survive as one rather than becoming an absence.
-  const auto none = tossinvest::TossClientTestAccess::parse_sellable_quantity(
-    json_response(R"({"result":{"sellableQuantity":"0"}})")
-  );
+  const auto none =
+    tossinvest::TossClientTestAccess::parse_sellable_quantity(json_response(R"({"result":{"sellableQuantity":"0"}})"));
   REQUIRE(none);
   REQUIRE(none.value() == Decimal64::parse("0"));
 }
 
-TEST_CASE(
-  "Toss commission rows carry their windows, including open-ended ones",
-  "[core][capacity][toss]"
-) {
+TEST_CASE("Toss commission rows carry their windows, including open-ended ones", "[core][capacity][toss]") {
   // The spec's "standard" example: a bounded domestic window and a US row with a null start.
-  const auto schedule = tossinvest::TossClientTestAccess::parse_commissions(
-    json_response(
-      R"({"result":[)"
-      R"({"marketCountry":"KR","commissionRate":"0.00015",)"
-      R"("startDate":"2026-01-01","endDate":"2026-12-31"},)"
-      R"({"marketCountry":"US","commissionRate":"0.001",)"
-      R"("startDate":null,"endDate":"2026-06-30"}]})"
-    )
-  );
+  const auto schedule = tossinvest::TossClientTestAccess::parse_commissions(json_response(
+    R"({"result":[)"
+    R"({"marketCountry":"KR","commissionRate":"0.00015",)"
+    R"("startDate":"2026-01-01","endDate":"2026-12-31"},)"
+    R"({"marketCountry":"US","commissionRate":"0.001",)"
+    R"("startDate":null,"endDate":"2026-06-30"}]})"
+  ));
   REQUIRE(schedule);
   REQUIRE(schedule.value().rates_.size() == 2);
   REQUIRE(schedule.value().rates_[0].country_ == Country::KR);
@@ -6309,12 +5880,10 @@ TEST_CASE(
   REQUIRE_FALSE(schedule.value().rate_for(Country::US, Date{2026, 9, 23}).rate_);
 
   // The spec's "unlimited" example: a null end is a rate with no scheduled change.
-  const auto unlimited = tossinvest::TossClientTestAccess::parse_commissions(
-    json_response(
-      R"({"result":[{"marketCountry":"KR","commissionRate":"0.00015",)"
-      R"("startDate":"2026-01-01","endDate":null}]})"
-    )
-  );
+  const auto unlimited = tossinvest::TossClientTestAccess::parse_commissions(json_response(
+    R"({"result":[{"marketCountry":"KR","commissionRate":"0.00015",)"
+    R"("startDate":"2026-01-01","endDate":null}]})"
+  ));
   REQUIRE(unlimited);
   REQUIRE_FALSE(unlimited.value().rates_[0].until_);
   REQUIRE(unlimited.value().rate_for(Country::KR, Date{2099, 1, 1}).rate_);
@@ -6322,12 +5891,10 @@ TEST_CASE(
   // A market this library does not normalize is preserved, not dropped: Toss's own specification
   // requires accepting unknown values of this enum, so a schedule that quietly omitted the row
   // would be a successful, incomplete answer with no way for a caller to see what was missing.
-  const auto mixed = tossinvest::TossClientTestAccess::parse_commissions(
-    json_response(
-      R"({"result":[{"marketCountry":"JP","commissionRate":"0.002","startDate":null,"endDate":null},)"
-      R"({"marketCountry":"KR","commissionRate":"0.00015","startDate":null,"endDate":null}]})"
-    )
-  );
+  const auto mixed = tossinvest::TossClientTestAccess::parse_commissions(json_response(
+    R"({"result":[{"marketCountry":"JP","commissionRate":"0.002","startDate":null,"endDate":null},)"
+    R"({"marketCountry":"KR","commissionRate":"0.00015","startDate":null,"endDate":null}]})"
+  ));
   REQUIRE(mixed);
   REQUIRE(mixed.value().rates_.size() == 2);
   REQUIRE_FALSE(mixed.value().rates_[0].normalized());
@@ -6343,13 +5910,11 @@ TEST_CASE(
 
   // A code too long for `Code<16>` cannot be preserved, and that row alone is skipped rather than
   // reported under a market it does not belong to or failing the whole schedule.
-  const auto unstorable = tossinvest::TossClientTestAccess::parse_commissions(
-    json_response(
-      R"({"result":[{"marketCountry":"A_MARKET_NAME_FAR_TOO_LONG_TO_STORE",)"
-      R"("commissionRate":"0.002","startDate":null,"endDate":null},)"
-      R"({"marketCountry":"KR","commissionRate":"0.00015","startDate":null,"endDate":null}]})"
-    )
-  );
+  const auto unstorable = tossinvest::TossClientTestAccess::parse_commissions(json_response(
+    R"({"result":[{"marketCountry":"A_MARKET_NAME_FAR_TOO_LONG_TO_STORE",)"
+    R"("commissionRate":"0.002","startDate":null,"endDate":null},)"
+    R"({"marketCountry":"KR","commissionRate":"0.00015","startDate":null,"endDate":null}]})"
+  ));
   REQUIRE(unstorable);
   REQUIRE(unstorable.value().rates_.size() == 1);
   REQUIRE(unstorable.value().rates_[0].country_ == Country::KR);
@@ -6360,13 +5925,11 @@ TEST_CASE(
   // A row naming no market at all is the dangerous one, because an empty code *stores*: an empty
   // `other_` is how a row says it names a normalized market, so this would have become a Korean
   // rate -- winning `rate_for(KR, ...)` against a rate Toss never published.
-  const auto nameless = tossinvest::TossClientTestAccess::parse_commissions(
-    json_response(
-      R"({"result":[{"marketCountry":"","commissionRate":"0.9",)"
-      R"("startDate":null,"endDate":null},)"
-      R"({"marketCountry":"KR","commissionRate":"0.00015","startDate":null,"endDate":null}]})"
-    )
-  );
+  const auto nameless = tossinvest::TossClientTestAccess::parse_commissions(json_response(
+    R"({"result":[{"marketCountry":"","commissionRate":"0.9",)"
+    R"("startDate":null,"endDate":null},)"
+    R"({"marketCountry":"KR","commissionRate":"0.00015","startDate":null,"endDate":null}]})"
+  ));
   REQUIRE(nameless);
   REQUIRE(nameless.value().rates_.size() == 1);
   REQUIRE(nameless.value().dropped_ == 1);
@@ -6379,17 +5942,12 @@ TEST_CASE(
   REQUIRE(schedule.value().unreadable_bounds_ == 0);
 
   // An account with no stated rates is a real answer, and not the same as having no inquiry.
-  const auto empty = tossinvest::TossClientTestAccess::parse_commissions(
-    json_response(R"({"result":[]})")
-  );
+  const auto empty = tossinvest::TossClientTestAccess::parse_commissions(json_response(R"({"result":[]})"));
   REQUIRE(empty);
   REQUIRE(empty.value().rates_.empty());
 }
 
-TEST_CASE(
-  "KIS buying power asks for the amount alone, with the symbol and price blank",
-  "[core][capacity][kis]"
-) {
+TEST_CASE("KIS buying power asks for the amount alone, with the symbol and price blank", "[core][capacity][kis]") {
   const kis::KisAccount account{"12345678", "01"};
   kis::KisConfig live;
   live.is_demo_ = false;
@@ -6398,9 +5956,7 @@ TEST_CASE(
 
   const auto request = kis::KisClientTestAccess::buying_power_request(live, "token", account);
   REQUIRE(request.method_ == http::verb::get);
-  REQUIRE(
-    request.target_.rfind("/uapi/domestic-stock/v1/trading/inquire-psbl-order", 0) == 0
-  );
+  REQUIRE(request.target_.rfind("/uapi/domestic-stock/v1/trading/inquire-psbl-order", 0) == 0);
   REQUIRE(header_of(request, "tr_id") == "TTTC8908R");
 
   // The blanks are the whole request: they are how KIS is asked for the account-level amount
@@ -6420,23 +5976,18 @@ TEST_CASE(
   REQUIRE(header_of(demo_request, "tr_id") == "VTTC8908R");
 }
 
-TEST_CASE(
-  "KIS buying power normalizes the credit-free amount, not the maximum",
-  "[core][capacity][kis]"
-) {
+TEST_CASE("KIS buying power normalizes the credit-free amount, not the maximum", "[core][capacity][kis]") {
   // The response shape from the published sheet. `max_buy_amt` is deliberately larger here: it
   // includes 미수, which Toss never reports, and normalizing it would make one library type mean
   // cash at one broker and cash-plus-credit at the other -- in the direction that permits more.
-  const auto reading = kis::KisClientTestAccess::parse_buying_power(
-    json_response(
-      R"({"rt_cd":"0","msg_cd":"APBK0013","msg1":"조회되었습니다","output":{)"
-      R"("ord_psbl_cash":"741191178","ord_psbl_sbst":"0","ruse_psbl_amt":"0",)"
-      R"("fund_rpch_chgs":"0","psbl_qty_calc_unpr":"0",)"
-      R"("nrcvb_buy_amt":"741191178","nrcvb_buy_qty":"0",)"
-      R"("max_buy_amt":"2223573534","max_buy_qty":"0","cma_evlu_amt":"0",)"
-      R"("ovrs_re_use_amt_wcrc":"0","ord_psbl_frcr_amt_wcrc":"0"}})"
-    )
-  );
+  const auto reading = kis::KisClientTestAccess::parse_buying_power(json_response(
+    R"({"rt_cd":"0","msg_cd":"APBK0013","msg1":"조회되었습니다","output":{)"
+    R"("ord_psbl_cash":"741191178","ord_psbl_sbst":"0","ruse_psbl_amt":"0",)"
+    R"("fund_rpch_chgs":"0","psbl_qty_calc_unpr":"0",)"
+    R"("nrcvb_buy_amt":"741191178","nrcvb_buy_qty":"0",)"
+    R"("max_buy_amt":"2223573534","max_buy_qty":"0","cma_evlu_amt":"0",)"
+    R"("ovrs_re_use_amt_wcrc":"0","ord_psbl_frcr_amt_wcrc":"0"}})"
+  ));
   REQUIRE(reading);
   REQUIRE(reading.value().cash_.amount_ == Decimal64::parse("741191178"));
   REQUIRE(reading.value().cash_.currency_ == Currency::krw());
@@ -6448,9 +5999,8 @@ TEST_CASE(
   REQUIRE_FALSE(refused);
   REQUIRE(refused.error().broker_code_ == "APBK0919");
 
-  const auto malformed = kis::KisClientTestAccess::parse_buying_power(
-    json_response(R"({"rt_cd":"0","output":{"ord_psbl_cash":"1"}})")
-  );
+  const auto malformed =
+    kis::KisClientTestAccess::parse_buying_power(json_response(R"({"rt_cd":"0","output":{"ord_psbl_cash":"1"}})"));
   REQUIRE_FALSE(malformed);
   REQUIRE(malformed.error().category_ == ErrorCategory::PROTOCOL);
 }
@@ -6499,18 +6049,17 @@ TEST_CASE("KIS places, amends and reads back a stop-limit order's trigger", "[br
     std::string division;
     REQUIRE_FALSE(kis::KisClientTestAccess::validate_order(stop, division));
     REQUIRE(division == "22");
-    const auto body = json::parse(
-      kis::KisClientTestAccess::place_order_request(account, live, stop, division).body_
-    ).as_object();
+    const auto body =
+      json::parse(kis::KisClientTestAccess::place_order_request(account, live, stop, division).body_).as_object();
     CHECK(body.at("ORD_DVSN").as_string() == "22");
     CHECK(body.at("ORD_UNPR").as_string() == "69000");
     CHECK(body.at("CNDT_PRIC").as_string() == "69500");
   }
 
   SECTION("every other body is sent without the field, as before") {
-    const auto body = json::parse(
-      kis::KisClientTestAccess::place_order_request(account, live, korean_limit_buy(), "00").body_
-    ).as_object();
+    const auto body =
+      json::parse(kis::KisClientTestAccess::place_order_request(account, live, korean_limit_buy(), "00").body_)
+        .as_object();
     CHECK_FALSE(body.contains("CNDT_PRIC"));
   }
 
@@ -6562,9 +6111,8 @@ TEST_CASE("KIS places, amends and reads back a stop-limit order's trigger", "[br
       kis::KisClientTestAccess::cancel_division(amendment, division) :
       kis::KisClientTestAccess::amendment_division(amendment, division);
     REQUIRE_FALSE(refused);
-    return json::parse(
-      kis::KisClientTestAccess::amend_order_request(account, live, amendment, cancel, division).body_
-    ).as_object();
+    return json::parse(kis::KisClientTestAccess::amend_order_request(account, live, amendment, cancel, division).body_)
+      .as_object();
   };
 
   SECTION("a reprice restates the resting trigger") {
@@ -6616,36 +6164,34 @@ TEST_CASE("KIS places, amends and reads back a stop-limit order's trigger", "[br
     REQUIRE(stray);
     std::string division;
     REQUIRE_FALSE(kis::KisClientTestAccess::cancel_division(stray.value(), division));
-    const auto body = json::parse(
-      kis::KisClientTestAccess::amend_order_request(account, live, stray.value(), true, division).body_
-    ).as_object();
+    const auto body =
+      json::parse(kis::KisClientTestAccess::amend_order_request(account, live, stray.value(), true, division).body_)
+        .as_object();
     CHECK(body.at("ORD_DVSN").as_string() == "00");
     CHECK_FALSE(body.contains("CNDT_PRIC"));
   }
 
   SECTION("the working listing reports the trigger and the raw release flag") {
-    auto orders = kis::KisClientTestAccess::parse_open_orders(
-      json_response(
-        R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"0001569139",)"
-        R"("orgn_odno":"","ord_dvsn_name":"stop","pdno":"005930",)"
-        R"("prdt_name":"Samsung","rvse_cncl_dvsn_name":"modify","ord_qty":"10",)"
-        R"("ord_unpr":"69000","ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0",)"
-        R"("psbl_qty":"10","sll_buy_dvsn_cd":"02","ord_dvsn_cd":"22",)"
-        R"("stpm_cndt_pric":"69500","stpm_efct_occr_yn":"N"},)"
-        R"({"ord_gno_brno":"06010","odno":"0001569140",)"
-        R"("orgn_odno":"","ord_dvsn_name":"limit","pdno":"005930",)"
-        R"("prdt_name":"Samsung","rvse_cncl_dvsn_name":"modify","ord_qty":"10",)"
-        R"("ord_unpr":"70000","ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0",)"
-        R"("psbl_qty":"10","sll_buy_dvsn_cd":"02","ord_dvsn_cd":"00",)"
-        R"("stpm_cndt_pric":"0"},)"
-        R"({"ord_gno_brno":"06010","odno":"0001569141",)"
-        R"("orgn_odno":"","ord_dvsn_name":"stop","pdno":"005930",)"
-        R"("prdt_name":"Samsung","rvse_cncl_dvsn_name":"modify","ord_qty":"10",)"
-        R"("ord_unpr":"69000","ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0",)"
-        R"("psbl_qty":"10","sll_buy_dvsn_cd":"02","ord_dvsn_cd":"22",)"
-        R"("stpm_cndt_pric":"abc"}]})"
-      )
-    );
+    auto orders = kis::KisClientTestAccess::parse_open_orders(json_response(
+      R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"0001569139",)"
+      R"("orgn_odno":"","ord_dvsn_name":"stop","pdno":"005930",)"
+      R"("prdt_name":"Samsung","rvse_cncl_dvsn_name":"modify","ord_qty":"10",)"
+      R"("ord_unpr":"69000","ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0",)"
+      R"("psbl_qty":"10","sll_buy_dvsn_cd":"02","ord_dvsn_cd":"22",)"
+      R"("stpm_cndt_pric":"69500","stpm_efct_occr_yn":"N"},)"
+      R"({"ord_gno_brno":"06010","odno":"0001569140",)"
+      R"("orgn_odno":"","ord_dvsn_name":"limit","pdno":"005930",)"
+      R"("prdt_name":"Samsung","rvse_cncl_dvsn_name":"modify","ord_qty":"10",)"
+      R"("ord_unpr":"70000","ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0",)"
+      R"("psbl_qty":"10","sll_buy_dvsn_cd":"02","ord_dvsn_cd":"00",)"
+      R"("stpm_cndt_pric":"0"},)"
+      R"({"ord_gno_brno":"06010","odno":"0001569141",)"
+      R"("orgn_odno":"","ord_dvsn_name":"stop","pdno":"005930",)"
+      R"("prdt_name":"Samsung","rvse_cncl_dvsn_name":"modify","ord_qty":"10",)"
+      R"("ord_unpr":"69000","ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0",)"
+      R"("psbl_qty":"10","sll_buy_dvsn_cd":"02","ord_dvsn_cd":"22",)"
+      R"("stpm_cndt_pric":"abc"}]})"
+    ));
     REQUIRE(orders);
     const auto& rows = orders.value().orders_;
     REQUIRE(rows.size() == 3);
@@ -6661,16 +6207,14 @@ TEST_CASE("KIS places, amends and reads back a stop-limit order's trigger", "[br
   }
 
   SECTION("a positive trigger on a row that is not a stop is recorded, and blocks a modification") {
-    auto orders = kis::KisClientTestAccess::parse_open_orders(
-      json_response(
-        R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"0001569140",)"
-        R"("orgn_odno":"","ord_dvsn_name":"limit","pdno":"005930",)"
-        R"("prdt_name":"Samsung","rvse_cncl_dvsn_name":"modify","ord_qty":"10",)"
-        R"("ord_unpr":"70000","ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0",)"
-        R"("psbl_qty":"10","sll_buy_dvsn_cd":"02","ord_dvsn_cd":"00",)"
-        R"("stpm_cndt_pric":"69500"}]})"
-      )
-    );
+    auto orders = kis::KisClientTestAccess::parse_open_orders(json_response(
+      R"({"rt_cd":"0","output":[{"ord_gno_brno":"06010","odno":"0001569140",)"
+      R"("orgn_odno":"","ord_dvsn_name":"limit","pdno":"005930",)"
+      R"("prdt_name":"Samsung","rvse_cncl_dvsn_name":"modify","ord_qty":"10",)"
+      R"("ord_unpr":"70000","ord_tmd":"131438","tot_ccld_qty":"0","tot_ccld_amt":"0",)"
+      R"("psbl_qty":"10","sll_buy_dvsn_cd":"02","ord_dvsn_cd":"00",)"
+      R"("stpm_cndt_pric":"69500"}]})"
+    ));
     REQUIRE(orders);
     const auto& row = orders.value().orders_.front();
     // KIS contradicting its own code is kept where a caller can see it, not discarded.
@@ -6694,17 +6238,15 @@ TEST_CASE("KIS places, amends and reads back a stop-limit order's trigger", "[br
   }
 
   SECTION("the history listing reports the trigger") {
-    auto result = kis::KisClientTestAccess::parse_order_history(
-      json_response(
-        R"({"rt_cd":"0","output1":[{"ord_dt":"20260328","ord_gno_brno":"06010",)"
-        R"("odno":"0001569157","orgn_odno":"","ord_dvsn_name":"stop",)"
-        R"("sll_buy_dvsn_cd":"01","sll_buy_dvsn_cd_name":"sell","pdno":"005930",)"
-        R"("prdt_name":"Samsung","ord_qty":"10","ord_unpr":"69000","ord_tmd":"093000",)"
-        R"("tot_ccld_qty":"0","avg_prvs":"0","cncl_yn":"N","tot_ccld_amt":"0",)"
-        R"("ord_dvsn_cd":"22","cncl_cfrm_qty":"0","rmn_qty":"10","rjct_qty":"0",)"
-        R"("stpm_cndt_pric":"69500"}]})"
-      )
-    );
+    auto result = kis::KisClientTestAccess::parse_order_history(json_response(
+      R"({"rt_cd":"0","output1":[{"ord_dt":"20260328","ord_gno_brno":"06010",)"
+      R"("odno":"0001569157","orgn_odno":"","ord_dvsn_name":"stop",)"
+      R"("sll_buy_dvsn_cd":"01","sll_buy_dvsn_cd_name":"sell","pdno":"005930",)"
+      R"("prdt_name":"Samsung","ord_qty":"10","ord_unpr":"69000","ord_tmd":"093000",)"
+      R"("tot_ccld_qty":"0","avg_prvs":"0","cncl_yn":"N","tot_ccld_amt":"0",)"
+      R"("ord_dvsn_cd":"22","cncl_cfrm_qty":"0","rmn_qty":"10","rjct_qty":"0",)"
+      R"("stpm_cndt_pric":"69500"}]})"
+    ));
     REQUIRE(result);
     CHECK(result.value().orders_.front().trigger_price_ == Decimal64::parse("69500"));
   }

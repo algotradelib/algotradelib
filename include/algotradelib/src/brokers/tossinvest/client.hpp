@@ -1,25 +1,25 @@
 #pragma once
 
-#include "./config.hpp"
 #include "../common.hpp"
+#include "./config.hpp"
 
 #include <boost/asio/any_completion_handler.hpp>
-#include <boost/asio/async_result.hpp>
 #include <boost/asio/associated_executor.hpp>
+#include <boost/asio/async_result.hpp>
 #include <boost/asio/dispatch.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/strand.hpp>
 
 #include <algorithm>
 #include <cstdint>
-#include <limits>
-#include <type_traits>
 #include <cstdio>
 #include <deque>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -200,15 +200,11 @@ public:
    * @param options HTTP options (set `rate_limit_` to pace requests).
    */
   TossClient(
-    net::any_io_executor executor,
-    ssl::context& context,
-    TossConfig config,
-    network::HttpClientOptions options = {}
+    net::any_io_executor executor, ssl::context& context, TossConfig config, network::HttpClientOptions options = {}
   )
-  : strand_(net::make_strand(std::move(executor))), config_(std::move(config)),
-    http_(
-      std::make_shared<network::AsyncHttpClient>(strand_, context, "openapi.tossinvest.com", "443", options)
-    ) {}
+  : strand_(net::make_strand(std::move(executor))),
+    config_(std::move(config)),
+    http_(std::make_shared<network::AsyncHttpClient>(strand_, context, "openapi.tossinvest.com", "443", options)) {}
 
   /**
    * @brief Requests up to `count_` bars, oldest first.
@@ -226,12 +222,9 @@ public:
     return net::async_initiate<CompletionToken, void(Result<BarSeries>)>(
       [self = shared_from_this(), query = std::move(query)](auto&& handler) mutable {
         auto completion = BarsHandler(std::forward<decltype(handler)>(handler));
-        net::post(
-          self->strand_,
-          [self, query = std::move(query), completion = std::move(completion)]() mutable {
-            self->start_bars(std::move(query), std::move(completion));
-          }
-        );
+        net::post(self->strand_, [self, query = std::move(query), completion = std::move(completion)]() mutable {
+          self->start_bars(std::move(query), std::move(completion));
+        });
       },
       token
     );
@@ -252,12 +245,9 @@ public:
     return net::async_initiate<CompletionToken, void(Result<TradingCalendar>)>(
       [self = shared_from_this(), country, from](auto&& handler) mutable {
         auto completion = CalendarHandler(std::forward<decltype(handler)>(handler));
-        net::post(
-          self->strand_,
-          [self, country, from, completion = std::move(completion)]() mutable {
-            self->start_calendar(country, from, std::move(completion));
-          }
-        );
+        net::post(self->strand_, [self, country, from, completion = std::move(completion)]() mutable {
+          self->start_calendar(country, from, std::move(completion));
+        });
       },
       token
     );
@@ -276,13 +266,9 @@ public:
       [self = shared_from_this(), instrument = std::move(instrument)](auto&& handler) mutable {
         auto completion = InstrumentHandler(std::forward<decltype(handler)>(handler));
         net::post(
-          self->strand_,
-          [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
+          self->strand_, [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
             self->start_market_read(
-              std::move(instrument),
-              "/api/v1/stocks?symbols=",
-              std::move(completion),
-              parse_instrument
+              std::move(instrument), "/api/v1/stocks?symbols=", std::move(completion), parse_instrument
             );
           }
         );
@@ -304,13 +290,9 @@ public:
       [self = shared_from_this(), instrument = std::move(instrument)](auto&& handler) mutable {
         auto completion = PriceLimitsHandler(std::forward<decltype(handler)>(handler));
         net::post(
-          self->strand_,
-          [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
+          self->strand_, [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
             self->start_market_read(
-              std::move(instrument),
-              "/api/v1/price-limits?symbol=",
-              std::move(completion),
-              parse_price_limits
+              std::move(instrument), "/api/v1/price-limits?symbol=", std::move(completion), parse_price_limits
             );
           }
         );
@@ -330,23 +312,18 @@ public:
   template <typename CompletionToken>
   auto async_trades(InstrumentId instrument, int count, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<std::vector<TradePrint>>)>(
-      [self = shared_from_this(), instrument = std::move(instrument), count](
-        auto&& handler
-      ) mutable {
+      [self = shared_from_this(), instrument = std::move(instrument), count](auto&& handler) mutable {
         auto completion = TradesHandler(std::forward<decltype(handler)>(handler));
         net::post(
           self->strand_,
-          [self, instrument = std::move(instrument), count, completion = std::move(completion)]()
-            mutable {
+          [self, instrument = std::move(instrument), count, completion = std::move(completion)]() mutable {
             // Toss caps this at fifty prints; asking for more would be answered with
             // fifty anyway, so the cap is applied here rather than silently by the
             // broker.
             const int wanted = count < 1 ? 1 : (count > trade_limit_ ? trade_limit_ : count);
             self->start_market_read(
               std::move(instrument),
-              "/api/v1/trades?count=" + std::to_string(wanted) + "&symbol=",
-              std::move(completion),
-              parse_trades
+              "/api/v1/trades?count=" + std::to_string(wanted) + "&symbol=", std::move(completion), parse_trades
             );
           }
         );
@@ -368,9 +345,7 @@ public:
       [self = shared_from_this(), instruments = std::move(instruments)](auto&& handler) mutable {
         auto completion = PricesHandler(std::forward<decltype(handler)>(handler));
         net::post(
-          self->strand_,
-          [self, instruments = std::move(instruments), completion = std::move(completion)]()
-            mutable {
+          self->strand_, [self, instruments = std::move(instruments), completion = std::move(completion)]() mutable {
             self->start_prices(std::move(instruments), std::move(completion));
           }
         );
@@ -392,8 +367,7 @@ public:
       [self = shared_from_this(), instrument = std::move(instrument)](auto&& handler) mutable {
         auto completion = DepthHandler(std::forward<decltype(handler)>(handler));
         net::post(
-          self->strand_,
-          [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
+          self->strand_, [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
             self->start_depth(std::move(instrument), std::move(completion));
           }
         );
@@ -416,8 +390,7 @@ public:
       [self = shared_from_this(), instrument = std::move(instrument)](auto&& handler) mutable {
         auto completion = QuoteHandler(std::forward<decltype(handler)>(handler));
         net::post(
-          self->strand_,
-          [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
+          self->strand_, [self, instrument = std::move(instrument), completion = std::move(completion)]() mutable {
             self->start_quote(std::move(instrument), std::move(completion));
           }
         );
@@ -437,12 +410,9 @@ public:
     return net::async_initiate<CompletionToken, void(Result<std::vector<TossAccount>>)>(
       [self = shared_from_this()](auto&& handler) mutable {
         auto completion = AccountsHandler(std::forward<decltype(handler)>(handler));
-        net::post(
-          self->strand_,
-          [self, completion = std::move(completion)]() mutable {
-            self->start_accounts(std::move(completion));
-          }
-        );
+        net::post(self->strand_, [self, completion = std::move(completion)]() mutable {
+          self->start_accounts(std::move(completion));
+        });
       },
       token
     );
@@ -461,12 +431,9 @@ public:
     return net::async_initiate<CompletionToken, void(Result<BuyingPower>)>(
       [self = shared_from_this(), currency, account_sequence](auto&& handler) mutable {
         auto completion = BuyingPowerHandler(std::forward<decltype(handler)>(handler));
-        net::post(
-          self->strand_,
-          [self, currency, account_sequence, completion = std::move(completion)]() mutable {
-            self->start_buying_power(currency, account_sequence, std::move(completion));
-          }
-        );
+        net::post(self->strand_, [self, currency, account_sequence, completion = std::move(completion)]() mutable {
+          self->start_buying_power(currency, account_sequence, std::move(completion));
+        });
       },
       token
     );
@@ -481,23 +448,14 @@ public:
    * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>
-  auto async_sellable_quantity(
-    InstrumentId instrument,
-    std::int64_t account_sequence,
-    CompletionToken&& token
-  ) {
+  auto async_sellable_quantity(InstrumentId instrument, std::int64_t account_sequence, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<Decimal64>)>(
-      [self = shared_from_this(), instrument = std::move(instrument), account_sequence](
-        auto&& handler
-      ) mutable {
+      [self = shared_from_this(), instrument = std::move(instrument), account_sequence](auto&& handler) mutable {
         auto completion = SellableQuantityHandler(std::forward<decltype(handler)>(handler));
         net::post(
           self->strand_,
-          [self, instrument = std::move(instrument), account_sequence,
-           completion = std::move(completion)]() mutable {
-            self->start_sellable_quantity(
-              std::move(instrument), account_sequence, std::move(completion)
-            );
+          [self, instrument = std::move(instrument), account_sequence, completion = std::move(completion)]() mutable {
+            self->start_sellable_quantity(std::move(instrument), account_sequence, std::move(completion));
           }
         );
       },
@@ -517,12 +475,9 @@ public:
     return net::async_initiate<CompletionToken, void(Result<CommissionSchedule>)>(
       [self = shared_from_this(), account_sequence](auto&& handler) mutable {
         auto completion = CommissionScheduleHandler(std::forward<decltype(handler)>(handler));
-        net::post(
-          self->strand_,
-          [self, account_sequence, completion = std::move(completion)]() mutable {
-            self->start_commissions(account_sequence, std::move(completion));
-          }
-        );
+        net::post(self->strand_, [self, account_sequence, completion = std::move(completion)]() mutable {
+          self->start_commissions(account_sequence, std::move(completion));
+        });
       },
       token
     );
@@ -540,12 +495,9 @@ public:
     return net::async_initiate<CompletionToken, void(Result<HoldingsSnapshot>)>(
       [self = shared_from_this(), account_sequence](auto&& handler) mutable {
         auto completion = HoldingsHandler(std::forward<decltype(handler)>(handler));
-        net::post(
-          self->strand_,
-          [self, account_sequence, completion = std::move(completion)]() mutable {
-            self->start_holdings(account_sequence, std::move(completion));
-          }
-        );
+        net::post(self->strand_, [self, account_sequence, completion = std::move(completion)]() mutable {
+          self->start_holdings(account_sequence, std::move(completion));
+        });
       },
       token
     );
@@ -575,24 +527,13 @@ public:
    * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>
-  auto async_place_order(
-    std::int64_t account_sequence,
-    OrderRequest order,
-    CompletionToken&& token
-  ) {
+  auto async_place_order(std::int64_t account_sequence, OrderRequest order, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<OrderAck>)>(
-      [self = shared_from_this(), account_sequence, order = std::move(order)](
-        auto&& handler
-      ) mutable {
+      [self = shared_from_this(), account_sequence, order = std::move(order)](auto&& handler) mutable {
         auto completion = OrderAckHandler(std::forward<decltype(handler)>(handler));
         net::post(
           self->strand_,
-          [
-            self,
-            account_sequence,
-            order = std::move(order),
-            completion = std::move(completion)
-          ]() mutable {
+          [self, account_sequence, order = std::move(order), completion = std::move(completion)]() mutable {
             self->start_place_order(account_sequence, std::move(order), std::move(completion));
           }
         );
@@ -618,27 +559,14 @@ public:
    * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>
-  auto async_replace_order(
-    std::int64_t account_sequence,
-    TossAmendment amendment,
-    CompletionToken&& token
-  ) {
+  auto async_replace_order(std::int64_t account_sequence, TossAmendment amendment, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<OrderAck>)>(
-      [self = shared_from_this(), account_sequence, amendment = std::move(amendment)](
-        auto&& handler
-      ) mutable {
+      [self = shared_from_this(), account_sequence, amendment = std::move(amendment)](auto&& handler) mutable {
         auto completion = OrderAckHandler(std::forward<decltype(handler)>(handler));
         net::post(
           self->strand_,
-          [
-            self,
-            account_sequence,
-            amendment = std::move(amendment),
-            completion = std::move(completion)
-          ]() mutable {
-            self->start_replace_order(
-              account_sequence, std::move(amendment), std::move(completion)
-            );
+          [self, account_sequence, amendment = std::move(amendment), completion = std::move(completion)]() mutable {
+            self->start_replace_order(account_sequence, std::move(amendment), std::move(completion));
           }
         );
       },
@@ -661,24 +589,13 @@ public:
    * @return Whatever the completion token returns.
    */
   template <typename CompletionToken>
-  auto async_cancel_order(
-    std::int64_t account_sequence,
-    std::string order_id,
-    CompletionToken&& token
-  ) {
+  auto async_cancel_order(std::int64_t account_sequence, std::string order_id, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<OrderAck>)>(
-      [self = shared_from_this(), account_sequence, order_id = std::move(order_id)](
-        auto&& handler
-      ) mutable {
+      [self = shared_from_this(), account_sequence, order_id = std::move(order_id)](auto&& handler) mutable {
         auto completion = OrderAckHandler(std::forward<decltype(handler)>(handler));
         net::post(
           self->strand_,
-          [
-            self,
-            account_sequence,
-            order_id = std::move(order_id),
-            completion = std::move(completion)
-          ]() mutable {
+          [self, account_sequence, order_id = std::move(order_id), completion = std::move(completion)]() mutable {
             self->start_cancel_order(account_sequence, std::move(order_id), std::move(completion));
           }
         );
@@ -707,12 +624,9 @@ public:
     return net::async_initiate<CompletionToken, void(Result<OrderPage>)>(
       [self = shared_from_this(), query = std::move(query)](auto&& handler) mutable {
         auto completion = OrderPageHandler(std::forward<decltype(handler)>(handler));
-        net::post(
-          self->strand_,
-          [self, query = std::move(query), completion = std::move(completion)]() mutable {
-            self->start_orders(std::move(query), std::move(completion));
-          }
-        );
+        net::post(self->strand_, [self, query = std::move(query), completion = std::move(completion)]() mutable {
+          self->start_orders(std::move(query), std::move(completion));
+        });
       },
       token
     );
@@ -734,18 +648,11 @@ public:
   template <typename CompletionToken>
   auto async_order(std::int64_t account_sequence, std::string order_id, CompletionToken&& token) {
     return net::async_initiate<CompletionToken, void(Result<OrderSnapshot>)>(
-      [self = shared_from_this(), account_sequence, order_id = std::move(order_id)](
-        auto&& handler
-      ) mutable {
+      [self = shared_from_this(), account_sequence, order_id = std::move(order_id)](auto&& handler) mutable {
         auto completion = OrderHandler(std::forward<decltype(handler)>(handler));
         net::post(
           self->strand_,
-          [
-            self,
-            account_sequence,
-            order_id = std::move(order_id),
-            completion = std::move(completion)
-          ]() mutable {
+          [self, account_sequence, order_id = std::move(order_id), completion = std::move(completion)]() mutable {
             self->start_order(account_sequence, std::move(order_id), std::move(completion));
           }
         );
@@ -768,7 +675,9 @@ public:
   }
 
   /** @brief Cancels transport work and queued HTTP operations. */
-  void close() { http_->close(); }
+  void close() {
+    http_->close();
+  }
 
 private:
   friend struct TossClientTestAccess;
@@ -822,19 +731,13 @@ private:
     }
 
     auto operation = std::make_shared<BarOperation>(std::move(query), std::move(completion));
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->deliver(
-              std::move(operation->completion_), Result<BarSeries>(std::move(*token_error))
-            );
-            return;
-          }
-          self->request_bars(operation);
-        }
-      )
-    );
+    ensure_token(TokenHandler([self = shared_from_this(), operation](std::optional<BrokerError> token_error) mutable {
+      if (token_error) {
+        self->deliver(std::move(operation->completion_), Result<BarSeries>(std::move(*token_error)));
+        return;
+      }
+      self->request_bars(operation);
+    }));
   }
 
   // Returns an error when Toss cannot answer the request as described.
@@ -862,14 +765,12 @@ private:
 
   // Sends the next page of a bar request.
   void request_bars(const std::shared_ptr<BarOperation>& operation) {
-    const int outstanding = operation->query_.count_ -
-      static_cast<int>(operation->descending_.size());
+    const int outstanding = operation->query_.count_ - static_cast<int>(operation->descending_.size());
     const int wanted = outstanding > bar_page_limit_ ? bar_page_limit_ : outstanding;
 
-    std::string target = "/api/v1/candles?symbol=" +
-      broker_detail::query_encode(operation->query_.instrument_.symbol_) +
-      "&interval=" + bar_interval_code(operation->query_.interval_) +
-      "&count=" + std::to_string(wanted) +
+    std::string target =
+      "/api/v1/candles?symbol=" + broker_detail::query_encode(operation->query_.instrument_.symbol_) +
+      "&interval=" + bar_interval_code(operation->query_.interval_) + "&count=" + std::to_string(wanted) +
       "&adjusted=" + (operation->query_.adjusted_ ? "true" : "false");
     if (operation->before_) {
       target += "&before=" + broker_detail::query_encode(*operation->before_);
@@ -883,23 +784,16 @@ private:
     request.headers_.emplace_back("Authorization", "Bearer " + token_.access_token_);
 
     ++operation->pages_;
-    send(
-      std::move(request),
-      [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
-        self->handle_bars_page(operation, std::move(result));
-      }
-    );
+    send(std::move(request), [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
+      self->handle_bars_page(operation, std::move(result));
+    });
   }
 
   // Accumulates one page and either continues or finishes the request.
-  void handle_bars_page(
-    const std::shared_ptr<BarOperation>& operation,
-    Result<network::HttpResponse> result
-  ) {
+  void handle_bars_page(const std::shared_ptr<BarOperation>& operation, Result<network::HttpResponse> result) {
     std::optional<std::string> cursor;
-    auto appended = parse_bars_page(
-      std::move(result), operation->query_, operation->descending_, cursor, operation->currency_
-    );
+    auto appended =
+      parse_bars_page(std::move(result), operation->query_, operation->descending_, cursor, operation->currency_);
     if (appended) {
       deliver(std::move(operation->completion_), Result<BarSeries>(std::move(*appended)));
       return;
@@ -929,11 +823,8 @@ private:
   // Takes the accumulation and cursor by reference rather than an operation, so the
   // normalization is a pure function of a response and can be tested as one.
   static std::optional<BrokerError> parse_bars_page(
-    Result<network::HttpResponse> result,
-    const BarQuery& query,
-    std::vector<Bar>& into,
-    std::optional<std::string>& cursor,
-    Currency& currency
+    Result<network::HttpResponse> result, const BarQuery& query, std::vector<Bar>& into,
+    std::optional<std::string>& cursor, Currency& currency
   ) {
     if (!result) {
       return std::move(result.error());
@@ -1014,18 +905,13 @@ private:
   //
   // Paging runs backwards from the newest bar, so an overshoot is always at the
   // old end; the newest `count_` bars are what the caller asked for.
-  void finish_bars(
-    const std::shared_ptr<BarOperation>& operation,
-    const std::optional<std::string>& cursor
-  ) {
+  void finish_bars(const std::shared_ptr<BarOperation>& operation, const std::optional<std::string>& cursor) {
     BarSeries series;
     series.instrument_ = operation->query_.instrument_;
     series.interval_ = operation->query_.interval_;
     // Toss stamps a one-minute bar at the instant it closed, aggregating
     // `[t - 1m, t)`, and a one-day bar at local midnight, which is its open.
-    series.stamp_ = operation->query_.interval_ == BarInterval::ONE_MINUTE ?
-      BarStamp::CLOSE :
-      BarStamp::OPEN;
+    series.stamp_ = operation->query_.interval_ == BarInterval::ONE_MINUTE ? BarStamp::CLOSE : BarStamp::OPEN;
     series.currency_ = operation->currency_;
     series.adjusted_ = operation->query_.adjusted_;
     series.received_at_ = std::chrono::system_clock::now();
@@ -1076,10 +962,7 @@ private:
   //
   // `price_rule_` is the library's own grid, not Toss's: Toss names a tick only when it refuses an
   // off-tick price, so the rule is chosen from the market rather than normalized from a field.
-  static Result<Instrument> parse_instrument(
-    InstrumentId requested,
-    Result<network::HttpResponse> result
-  ) {
+  static Result<Instrument> parse_instrument(InstrumentId requested, Result<network::HttpResponse> result) {
     auto payload = market_result(std::move(result));
     if (!payload) {
       return Result<Instrument>(std::move(payload.error()));
@@ -1100,8 +983,7 @@ private:
       instrument.isin_ = broker_detail::json_string(row, "isinCode");
       instrument.segment_ = market_segment(broker_detail::json_string(row, "market"));
       instrument.type_ = normalized_security_type(broker_detail::json_string(row, "securityType"));
-      instrument.status_ =
-        normalized_listing_status(broker_detail::json_string(row, "status"));
+      instrument.status_ = normalized_listing_status(broker_detail::json_string(row, "status"));
       instrument.currency_ = Currency(broker_detail::json_string(row, "currency"));
       if (const auto value = row.if_contains("isCommonShare"); value && value->is_bool()) {
         instrument.common_share_ = value->as_bool();
@@ -1114,8 +996,7 @@ private:
       instrument.listed_on_ = stated_calendar_date(row, "listDate");
       instrument.delisted_on_ = stated_calendar_date(row, "delistDate");
       instrument.shares_outstanding_ = nullable_decimal(row, "sharesOutstanding");
-      instrument.price_rule_ =
-        price_rule_for(instrument.id_.country_, instrument.type_);
+      instrument.price_rule_ = price_rule_for(instrument.id_.country_, instrument.type_);
       return Result<Instrument>(std::move(instrument));
     } catch (const std::exception& exception) {
       return Result<Instrument>(market_error("invalid_reference_response", exception));
@@ -1198,41 +1079,30 @@ private:
       return;
     }
 
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), country, from, completion = std::move(completion)](
-          std::optional<BrokerError> token_error
-        ) mutable {
-          if (token_error) {
-            self->deliver(
-              std::move(completion), Result<TradingCalendar>(std::move(*token_error))
-            );
-            return;
-          }
-          network::HttpRequest request;
-          // The calendar is reference data, the lowest-priority traffic there is.
-          request.group_ = network::RateLimitGroup::REFERENCE;
-          request.method_ = http::verb::get;
-          request.target_ = std::string("/api/v1/market-calendar/") + std::string(market_code(country));
-          if (from) {
-            request.target_ += "?date=" + iso_date(*from);
-          }
-          request.headers_.emplace_back(
-            "Authorization", "Bearer " + self->token_.access_token_
-          );
-          self->send(
-            std::move(request),
-            [self, country, completion = std::move(completion)](
-              Result<network::HttpResponse> result
-            ) mutable {
-              self->deliver(
-                std::move(completion), parse_calendar(country, std::move(result))
-              );
-            }
-          );
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), country, from,
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->deliver(std::move(completion), Result<TradingCalendar>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        network::HttpRequest request;
+        // The calendar is reference data, the lowest-priority traffic there is.
+        request.group_ = network::RateLimitGroup::REFERENCE;
+        request.method_ = http::verb::get;
+        request.target_ = std::string("/api/v1/market-calendar/") + std::string(market_code(country));
+        if (from) {
+          request.target_ += "?date=" + iso_date(*from);
+        }
+        request.headers_.emplace_back("Authorization", "Bearer " + self->token_.access_token_);
+        self->send(
+          std::move(request),
+          [self, country, completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+            self->deliver(std::move(completion), parse_calendar(country, std::move(result)));
+          }
+        );
+      }
+    ));
   }
 
   // Normalizes Toss's calendar into the three days it reports.
@@ -1250,10 +1120,7 @@ private:
   // The two days either side are reported as business days, which is why they are
   // recorded as open without consulting their hours: Toss has already answered the
   // question by calling them that.
-  static Result<TradingCalendar> parse_calendar(
-    Country country,
-    Result<network::HttpResponse> result
-  ) {
+  static Result<TradingCalendar> parse_calendar(Country country, Result<network::HttpResponse> result) {
     auto payload = market_result(std::move(result));
     if (!payload) {
       return Result<TradingCalendar>(std::move(payload.error()));
@@ -1269,11 +1136,9 @@ private:
       append_calendar_day(object, "previousBusinessDay", hours, true, calendar);
       append_calendar_day(object, "today", hours, false, calendar);
       append_calendar_day(object, "nextBusinessDay", hours, true, calendar);
-      std::sort(
-        calendar.days_.begin(),
-        calendar.days_.end(),
-        [](const TradingDay& lhs, const TradingDay& rhs) { return lhs.date_ < rhs.date_; }
-      );
+      std::sort(calendar.days_.begin(), calendar.days_.end(), [](const TradingDay& lhs, const TradingDay& rhs) {
+        return lhs.date_ < rhs.date_;
+      });
       calendar.received_at_ = std::chrono::system_clock::now();
       return Result<TradingCalendar>(std::move(calendar));
     } catch (const std::exception& exception) {
@@ -1283,10 +1148,7 @@ private:
 
   // Reads one reported day, deciding whether the market opens on it.
   static void append_calendar_day(
-    const json::object& object,
-    std::string_view key,
-    std::string_view hours_key,
-    bool business_day,
+    const json::object& object, std::string_view key, std::string_view hours_key, bool business_day,
     TradingCalendar& calendar
   ) {
     const auto value = object.if_contains(key);
@@ -1392,12 +1254,7 @@ private:
   // The three single-instrument reads differ only in their path and their parser,
   // so the token handling, the traffic class, and the validation live here once.
   template <typename Handler, typename Parse>
-  void start_market_read(
-    InstrumentId instrument,
-    std::string prefix,
-    Handler completion,
-    Parse parse
-  ) {
+  void start_market_read(InstrumentId instrument, std::string prefix, Handler completion, Parse parse) {
     using ResultType = decltype(parse(InstrumentId{}, Result<network::HttpResponse>(BrokerError{})));
     static_assert(!std::is_void<ResultType>::value, "a market-data parser must return a Result");
     if (!broker_detail::valid_symbol(instrument.symbol_)) {
@@ -1410,40 +1267,28 @@ private:
       return;
     }
 
-    ensure_token(
-      TokenHandler(
-        [
-          self = shared_from_this(),
-          instrument = std::move(instrument),
-          prefix = std::move(prefix),
-          completion = std::move(completion),
-          parse
-        ](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->deliver(std::move(completion), ResultType(std::move(*token_error)));
-            return;
-          }
-          network::HttpRequest request;
-          // Market data is the traffic the trading reserve holds back.
-          request.group_ = network::RateLimitGroup::MARKET_DATA;
-          request.method_ = http::verb::get;
-          request.target_ = prefix + broker_detail::query_encode(instrument.symbol_);
-          request.headers_.emplace_back(
-            "Authorization", "Bearer " + self->token_.access_token_
-          );
-          self->send(
-            std::move(request),
-            [self, instrument = std::move(instrument), completion = std::move(completion), parse](
-              Result<network::HttpResponse> result
-            ) mutable {
-              self->deliver(
-                std::move(completion), parse(std::move(instrument), std::move(result))
-              );
-            }
-          );
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), instrument = std::move(instrument), prefix = std::move(prefix),
+        completion = std::move(completion), parse](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->deliver(std::move(completion), ResultType(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        network::HttpRequest request;
+        // Market data is the traffic the trading reserve holds back.
+        request.group_ = network::RateLimitGroup::MARKET_DATA;
+        request.method_ = http::verb::get;
+        request.target_ = prefix + broker_detail::query_encode(instrument.symbol_);
+        request.headers_.emplace_back("Authorization", "Bearer " + self->token_.access_token_);
+        self->send(
+          std::move(request),
+          [self, instrument = std::move(instrument), completion = std::move(completion),
+            parse](Result<network::HttpResponse> result) mutable {
+            self->deliver(std::move(completion), parse(std::move(instrument), std::move(result)));
+          }
+        );
+      }
+    ));
   }
 
   // Normalizes Toss's price bounds.
@@ -1451,10 +1296,7 @@ private:
   // Both bounds are null in a market without a price limit, and the absence is
   // preserved: a bound of zero would read as "this instrument may not trade above
   // nothing", which is not what an unlimited market means.
-  static Result<PriceLimits> parse_price_limits(
-    InstrumentId instrument,
-    Result<network::HttpResponse> result
-  ) {
+  static Result<PriceLimits> parse_price_limits(InstrumentId instrument, Result<network::HttpResponse> result) {
     static_cast<void>(instrument);
     auto payload = market_result(std::move(result));
     if (!payload) {
@@ -1479,10 +1321,7 @@ private:
   }
 
   // Normalizes Toss's recent executions.
-  static Result<std::vector<TradePrint>> parse_trades(
-    InstrumentId instrument,
-    Result<network::HttpResponse> result
-  ) {
+  static Result<std::vector<TradePrint>> parse_trades(InstrumentId instrument, Result<network::HttpResponse> result) {
     static_cast<void>(instrument);
     auto payload = market_result(std::move(result));
     if (!payload) {
@@ -1504,8 +1343,7 @@ private:
         print.price_ = Decimal64::parse(broker_detail::json_string(row, "price"));
         print.quantity_ = Decimal64::parse(broker_detail::json_string(row, "volume"));
         print.currency_ = Currency(broker_detail::json_string(row, "currency"));
-        print.exchange_time_ =
-          parse_iso8601_timestamp(broker_detail::json_string(row, "timestamp"));
+        print.exchange_time_ = parse_iso8601_timestamp(broker_detail::json_string(row, "timestamp"));
         if (!print.exchange_time_) {
           throw std::runtime_error("invalid trade timestamp");
         }
@@ -1552,41 +1390,27 @@ private:
       symbols += instrument.symbol_;
     }
 
-    ensure_token(
-      TokenHandler(
-        [
-          self = shared_from_this(),
-          instruments = std::move(instruments),
-          symbols = std::move(symbols),
-          completion = std::move(completion)
-        ](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->deliver(
-              std::move(completion),
-              Result<std::vector<QuoteSnapshot>>(std::move(*token_error))
-            );
-            return;
-          }
-          network::HttpRequest request;
-          request.group_ = network::RateLimitGroup::MARKET_DATA;
-          request.method_ = http::verb::get;
-          request.target_ = "/api/v1/prices?symbols=" + broker_detail::query_encode(symbols);
-          request.headers_.emplace_back(
-            "Authorization", "Bearer " + self->token_.access_token_
-          );
-          self->send(
-            std::move(request),
-            [self, instruments = std::move(instruments), completion = std::move(completion)](
-              Result<network::HttpResponse> result
-            ) mutable {
-              self->deliver(
-                std::move(completion), parse_prices(instruments, std::move(result))
-              );
-            }
-          );
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), instruments = std::move(instruments), symbols = std::move(symbols),
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->deliver(std::move(completion), Result<std::vector<QuoteSnapshot>>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        network::HttpRequest request;
+        request.group_ = network::RateLimitGroup::MARKET_DATA;
+        request.method_ = http::verb::get;
+        request.target_ = "/api/v1/prices?symbols=" + broker_detail::query_encode(symbols);
+        request.headers_.emplace_back("Authorization", "Bearer " + self->token_.access_token_);
+        self->send(
+          std::move(request),
+          [self, instruments = std::move(instruments),
+            completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+            self->deliver(std::move(completion), parse_prices(instruments, std::move(result)));
+          }
+        );
+      }
+    ));
   }
 
   // Normalizes a batch of quotes, keeping the caller's instrument identities.
@@ -1596,8 +1420,7 @@ private:
   // alone, which would lose the country and venue the caller stated. A row for a
   // symbol that was not asked for is a protocol error.
   static Result<std::vector<QuoteSnapshot>> parse_prices(
-    const std::vector<InstrumentId>& requested,
-    Result<network::HttpResponse> result
+    const std::vector<InstrumentId>& requested, Result<network::HttpResponse> result
   ) {
     auto payload = market_result(std::move(result));
     if (!payload) {
@@ -1616,11 +1439,9 @@ private:
         }
         const auto& row = value.as_object();
         const auto symbol = broker_detail::json_string(row, "symbol");
-        const auto match = std::find_if(
-          requested.begin(),
-          requested.end(),
-          [&symbol](const InstrumentId& candidate) { return candidate.symbol_ == symbol; }
-        );
+        const auto match = std::find_if(requested.begin(), requested.end(), [&symbol](const InstrumentId& candidate) {
+          return candidate.symbol_ == symbol;
+        });
         if (match == requested.end()) {
           throw std::runtime_error("price response carries an unrequested symbol");
         }
@@ -1661,41 +1482,28 @@ private:
       return;
     }
 
-    ensure_token(
-      TokenHandler(
-        [
-          self = shared_from_this(),
-          instrument = std::move(instrument),
-          completion = std::move(completion)
-        ](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->deliver(
-              std::move(completion), Result<DepthSnapshot>(std::move(*token_error))
-            );
-            return;
-          }
-          network::HttpRequest request;
-          // The book is polling traffic, held back by the trading reserve.
-          request.group_ = network::RateLimitGroup::MARKET_DATA;
-          request.method_ = http::verb::get;
-          request.target_ = "/api/v1/orderbook?symbol=" +
-            broker_detail::query_encode(instrument.symbol_);
-          request.headers_.emplace_back(
-            "Authorization", "Bearer " + self->token_.access_token_
-          );
-          self->send(
-            std::move(request),
-            [self, instrument = std::move(instrument), completion = std::move(completion)](
-              Result<network::HttpResponse> result
-            ) mutable {
-              self->deliver(
-                std::move(completion), parse_depth(std::move(instrument), std::move(result))
-              );
-            }
-          );
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), instrument = std::move(instrument),
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->deliver(std::move(completion), Result<DepthSnapshot>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        network::HttpRequest request;
+        // The book is polling traffic, held back by the trading reserve.
+        request.group_ = network::RateLimitGroup::MARKET_DATA;
+        request.method_ = http::verb::get;
+        request.target_ = "/api/v1/orderbook?symbol=" + broker_detail::query_encode(instrument.symbol_);
+        request.headers_.emplace_back("Authorization", "Bearer " + self->token_.access_token_);
+        self->send(
+          std::move(request),
+          [self, instrument = std::move(instrument),
+            completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+            self->deliver(std::move(completion), parse_depth(std::move(instrument), std::move(result)));
+          }
+        );
+      }
+    ));
   }
 
   // Normalizes one Toss order book.
@@ -1704,10 +1512,7 @@ private:
   // specification documents `asks` as ascending and its own worked example lists
   // them descending, so trusting either would be a guess, and reading the best
   // offer off the wrong end of the book makes the spread negative.
-  static Result<DepthSnapshot> parse_depth(
-    InstrumentId instrument,
-    Result<network::HttpResponse> result
-  ) {
+  static Result<DepthSnapshot> parse_depth(InstrumentId instrument, Result<network::HttpResponse> result) {
     if (!result) {
       return Result<DepthSnapshot>(std::move(result.error()));
     }
@@ -1745,11 +1550,7 @@ private:
   }
 
   // Reads one side of the book into `levels`.
-  static void append_levels(
-    const json::object& payload,
-    std::string_view key,
-    std::vector<DepthLevel>& levels
-  ) {
+  static void append_levels(const json::object& payload, std::string_view key, std::vector<DepthLevel>& levels) {
     const auto rows = payload.if_contains(key);
     if (!rows || !rows->is_array()) {
       throw std::runtime_error("missing array field: " + std::string(key));
@@ -1779,47 +1580,31 @@ private:
       complete(std::move(completion), Result<QuoteSnapshot>(std::move(error)));
       return;
     }
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(),
-          instrument = std::move(instrument),
-          completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->complete(
-              std::move(completion), Result<QuoteSnapshot>(std::move(*token_error))
-            );
-            return;
-          }
-          self->request_quote(std::move(instrument), std::move(completion));
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), instrument = std::move(instrument),
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->complete(std::move(completion), Result<QuoteSnapshot>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        self->request_quote(std::move(instrument), std::move(completion));
+      }
+    ));
   }
 
   void start_accounts(AccountsHandler completion) {
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), completion = std::move(completion)](
-          std::optional<BrokerError> token_error
-        ) mutable {
-          if (token_error) {
-            self->complete_accounts(
-              std::move(completion),
-              Result<std::vector<TossAccount>>(std::move(*token_error))
-            );
-            return;
-          }
-          self->request_accounts(std::move(completion));
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->complete_accounts(std::move(completion), Result<std::vector<TossAccount>>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        self->request_accounts(std::move(completion));
+      }
+    ));
   }
 
-  void start_buying_power(
-    Currency currency,
-    std::int64_t account_sequence,
-    BuyingPowerHandler completion
-  ) {
+  void start_buying_power(Currency currency, std::int64_t account_sequence, BuyingPowerHandler completion) {
     auto invalid = validate_account_sequence(account_sequence);
     if (!invalid && !priced_currency(currency)) {
       // Refused here rather than sent: the endpoint answers for the currencies Toss prices, and a
@@ -1835,28 +1620,19 @@ private:
       complete_buying_power(std::move(completion), Result<BuyingPower>(std::move(*invalid)));
       return;
     }
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), currency, account_sequence, completion = std::move(completion)](
-          std::optional<BrokerError> token_error
-        ) mutable {
-          if (token_error) {
-            self->complete_buying_power(
-              std::move(completion), Result<BuyingPower>(std::move(*token_error))
-            );
-            return;
-          }
-          self->request_buying_power(currency, account_sequence, std::move(completion));
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), currency, account_sequence,
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->complete_buying_power(std::move(completion), Result<BuyingPower>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        self->request_buying_power(currency, account_sequence, std::move(completion));
+      }
+    ));
   }
 
-  void request_buying_power(
-    Currency currency,
-    std::int64_t account_sequence,
-    BuyingPowerHandler completion
-  ) {
+  void request_buying_power(Currency currency, std::int64_t account_sequence, BuyingPowerHandler completion) {
     network::HttpRequest request;
     // The same class as holdings: an account read, above polling and below trading.
     request.group_ = network::RateLimitGroup::ACCOUNT;
@@ -1868,25 +1644,16 @@ private:
     };
     send(
       std::move(request),
-      [self = shared_from_this(), completion = std::move(completion)](
-        Result<network::HttpResponse> result
-      ) mutable {
-        net::post(
-          self->strand_,
-          [self, completion = std::move(completion), result = std::move(result)]() mutable {
-            self->complete_buying_power(
-              std::move(completion), parse_buying_power(std::move(result))
-            );
-          }
-        );
+      [self = shared_from_this(), completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+        net::post(self->strand_, [self, completion = std::move(completion), result = std::move(result)]() mutable {
+          self->complete_buying_power(std::move(completion), parse_buying_power(std::move(result)));
+        });
       }
     );
   }
 
   void start_sellable_quantity(
-    InstrumentId instrument,
-    std::int64_t account_sequence,
-    SellableQuantityHandler completion
+    InstrumentId instrument, std::int64_t account_sequence, SellableQuantityHandler completion
   ) {
     if (auto invalid = validate_account_sequence(account_sequence)) {
       complete_sellable_quantity(std::move(completion), Result<Decimal64>(std::move(*invalid)));
@@ -1901,77 +1668,54 @@ private:
       complete_sellable_quantity(std::move(completion), Result<Decimal64>(std::move(error)));
       return;
     }
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), instrument = std::move(instrument), account_sequence,
-         completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->complete_sellable_quantity(
-              std::move(completion), Result<Decimal64>(std::move(*token_error))
-            );
-            return;
-          }
-          self->request_sellable_quantity(
-            std::move(instrument), account_sequence, std::move(completion)
-          );
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), instrument = std::move(instrument), account_sequence,
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->complete_sellable_quantity(std::move(completion), Result<Decimal64>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        self->request_sellable_quantity(std::move(instrument), account_sequence, std::move(completion));
+      }
+    ));
   }
 
   void request_sellable_quantity(
-    InstrumentId instrument,
-    std::int64_t account_sequence,
-    SellableQuantityHandler completion
+    InstrumentId instrument, std::int64_t account_sequence, SellableQuantityHandler completion
   ) {
     network::HttpRequest request;
     request.group_ = network::RateLimitGroup::ACCOUNT;
     request.method_ = http::verb::get;
-    request.target_ =
-      "/api/v1/sellable-quantity?symbol=" + broker_detail::query_encode(instrument.symbol_);
+    request.target_ = "/api/v1/sellable-quantity?symbol=" + broker_detail::query_encode(instrument.symbol_);
     request.headers_ = {
       {"Authorization", "Bearer " + token_.access_token_},
       {"X-Tossinvest-Account", std::to_string(account_sequence)},
     };
     send(
       std::move(request),
-      [self = shared_from_this(), completion = std::move(completion)](
-        Result<network::HttpResponse> result
-      ) mutable {
-        net::post(
-          self->strand_,
-          [self, completion = std::move(completion), result = std::move(result)]() mutable {
-            self->complete_sellable_quantity(
-              std::move(completion), parse_sellable_quantity(std::move(result))
-            );
-          }
-        );
+      [self = shared_from_this(), completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+        net::post(self->strand_, [self, completion = std::move(completion), result = std::move(result)]() mutable {
+          self->complete_sellable_quantity(std::move(completion), parse_sellable_quantity(std::move(result)));
+        });
       }
     );
   }
 
   void start_commissions(std::int64_t account_sequence, CommissionScheduleHandler completion) {
     if (auto invalid = validate_account_sequence(account_sequence)) {
-      complete_commissions(
-        std::move(completion), Result<CommissionSchedule>(std::move(*invalid))
-      );
+      complete_commissions(std::move(completion), Result<CommissionSchedule>(std::move(*invalid)));
       return;
     }
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), account_sequence, completion = std::move(completion)](
-          std::optional<BrokerError> token_error
-        ) mutable {
-          if (token_error) {
-            self->complete_commissions(
-              std::move(completion), Result<CommissionSchedule>(std::move(*token_error))
-            );
-            return;
-          }
-          self->request_commissions(account_sequence, std::move(completion));
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), account_sequence,
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->complete_commissions(std::move(completion), Result<CommissionSchedule>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        self->request_commissions(account_sequence, std::move(completion));
+      }
+    ));
   }
 
   void request_commissions(std::int64_t account_sequence, CommissionScheduleHandler completion) {
@@ -1985,43 +1729,29 @@ private:
     };
     send(
       std::move(request),
-      [self = shared_from_this(), completion = std::move(completion)](
-        Result<network::HttpResponse> result
-      ) mutable {
-        net::post(
-          self->strand_,
-          [self, completion = std::move(completion), result = std::move(result)]() mutable {
-            self->complete_commissions(
-              std::move(completion), parse_commissions(std::move(result))
-            );
-          }
-        );
+      [self = shared_from_this(), completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+        net::post(self->strand_, [self, completion = std::move(completion), result = std::move(result)]() mutable {
+          self->complete_commissions(std::move(completion), parse_commissions(std::move(result)));
+        });
       }
     );
   }
 
   void start_holdings(std::int64_t account_sequence, HoldingsHandler completion) {
     if (auto invalid = validate_account_sequence(account_sequence)) {
-      complete_holdings(
-        std::move(completion), Result<HoldingsSnapshot>(std::move(*invalid))
-      );
+      complete_holdings(std::move(completion), Result<HoldingsSnapshot>(std::move(*invalid)));
       return;
     }
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), account_sequence, completion = std::move(completion)](
-          std::optional<BrokerError> token_error
-        ) mutable {
-          if (token_error) {
-            self->complete_holdings(
-              std::move(completion), Result<HoldingsSnapshot>(std::move(*token_error))
-            );
-            return;
-          }
-          self->request_holdings(account_sequence, std::move(completion));
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), account_sequence,
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->complete_holdings(std::move(completion), Result<HoldingsSnapshot>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        self->request_holdings(account_sequence, std::move(completion));
+      }
+    ));
   }
 
   void ensure_token(TokenHandler handler) {
@@ -2041,14 +1771,11 @@ private:
     request.target_ = "/oauth2/token";
     request.body_ = config_.to_form_urlencoded_body();
     request.headers_.emplace_back("content-type", "application/x-www-form-urlencoded");
-    http_->async_request(
-      std::move(request),
-      [self = shared_from_this()](Result<network::HttpResponse> result) mutable {
-        net::post(self->strand_, [self, result = std::move(result)]() mutable {
-          self->finish_token(std::move(result));
-        });
-      }
-    );
+    http_->async_request(std::move(request), [self = shared_from_this()](Result<network::HttpResponse> result) mutable {
+      net::post(self->strand_, [self, result = std::move(result)]() mutable {
+        self->finish_token(std::move(result));
+      });
+    });
   }
 
   void finish_token(Result<network::HttpResponse> result) {
@@ -2105,22 +1832,13 @@ private:
     request.headers_.emplace_back("Authorization", "Bearer " + token_.access_token_);
     send(
       std::move(request),
-      [
-        self = shared_from_this(),
-        instrument = std::move(instrument),
-        completion = std::move(completion)
-      ](Result<network::HttpResponse> result) mutable {
+      [self = shared_from_this(), instrument = std::move(instrument),
+        completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
         net::post(
           self->strand_,
-          [
-            self,
-            instrument = std::move(instrument),
-            completion = std::move(completion),
-            result = std::move(result)
-          ]() mutable {
-            self->complete(
-              std::move(completion), parse_quote(std::move(instrument), std::move(result))
-            );
+          [self, instrument = std::move(instrument), completion = std::move(completion),
+            result = std::move(result)]() mutable {
+            self->complete(std::move(completion), parse_quote(std::move(instrument), std::move(result)));
           }
         );
       }
@@ -2136,17 +1854,10 @@ private:
     request.headers_.emplace_back("Authorization", "Bearer " + token_.access_token_);
     send(
       std::move(request),
-      [self = shared_from_this(), completion = std::move(completion)](
-        Result<network::HttpResponse> result
-      ) mutable {
-        net::post(
-          self->strand_,
-          [self, completion = std::move(completion), result = std::move(result)]() mutable {
-            self->complete_accounts(
-              std::move(completion), parse_accounts(std::move(result))
-            );
-          }
-        );
+      [self = shared_from_this(), completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+        net::post(self->strand_, [self, completion = std::move(completion), result = std::move(result)]() mutable {
+          self->complete_accounts(std::move(completion), parse_accounts(std::move(result)));
+        });
       }
     );
   }
@@ -2163,17 +1874,10 @@ private:
     };
     send(
       std::move(request),
-      [self = shared_from_this(), completion = std::move(completion)](
-        Result<network::HttpResponse> result
-      ) mutable {
-        net::post(
-          self->strand_,
-          [self, completion = std::move(completion), result = std::move(result)]() mutable {
-            self->complete_holdings(
-              std::move(completion), parse_holdings(std::move(result))
-            );
-          }
-        );
+      [self = shared_from_this(), completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+        net::post(self->strand_, [self, completion = std::move(completion), result = std::move(result)]() mutable {
+          self->complete_holdings(std::move(completion), parse_holdings(std::move(result)));
+        });
       }
     );
   }
@@ -2193,10 +1897,7 @@ private:
     }
     try {
       const auto payload = document->if_contains("result");
-      if (
-        !payload || !payload->is_array() || payload->as_array().empty() ||
-        !payload->as_array().front().is_object()
-      ) {
+      if (!payload || !payload->is_array() || payload->as_array().empty() || !payload->as_array().front().is_object()) {
         throw std::runtime_error("missing non-empty result array");
       }
       const auto& output = payload->as_array().front().as_object();
@@ -2207,9 +1908,7 @@ private:
       quote.instrument_ = std::move(instrument);
       quote.last_price_ = Decimal64::parse(broker_detail::json_string(output, "lastPrice"));
       quote.currency_ = Currency(broker_detail::json_string(output, "currency"));
-      if (
-        const auto timestamp = output.if_contains("timestamp"); timestamp && timestamp->is_string()
-      ) {
+      if (const auto timestamp = output.if_contains("timestamp"); timestamp && timestamp->is_string()) {
         quote.exchange_time_ = parse_iso8601_timestamp(timestamp->as_string().c_str());
         if (!quote.exchange_time_) {
           throw std::runtime_error("invalid timestamp");
@@ -2316,9 +2015,7 @@ private:
         throw std::runtime_error("sellable quantity result is not an object");
       }
       const auto& output = payload.value().as_object();
-      return Result<Decimal64>(
-        Decimal64::parse(broker_detail::json_string(output, "sellableQuantity"))
-      );
+      return Result<Decimal64>(Decimal64::parse(broker_detail::json_string(output, "sellableQuantity")));
     } catch (const std::exception& exception) {
       return Result<Decimal64>(account_error("invalid_sellable_quantity_response", exception));
     }
@@ -2572,25 +2269,17 @@ private:
     const auto& market_value = required_object(output, "marketValue");
     const auto& profit_loss = required_object(output, "profitLoss");
     HoldingPosition position;
-    position.instrument_ = InstrumentId{
-      country, venue, broker_detail::json_string(output, "symbol")
-    };
+    position.instrument_ = InstrumentId{country, venue, broker_detail::json_string(output, "symbol")};
     position.name_ = broker_detail::json_string(output, "name");
     position.quantity_ = Decimal64::parse(broker_detail::json_string(output, "quantity"));
-    position.average_purchase_price_ =
-      Decimal64::parse(broker_detail::json_string(output, "averagePurchasePrice"));
+    position.average_purchase_price_ = Decimal64::parse(broker_detail::json_string(output, "averagePurchasePrice"));
     position.last_price_ = Decimal64::parse(broker_detail::json_string(output, "lastPrice"));
-    position.purchase_value_ = Money{
-      Decimal64::parse(broker_detail::json_string(market_value, "purchaseAmount")), currency
-    };
-    position.market_value_ = Money{
-      Decimal64::parse(broker_detail::json_string(market_value, "amount")), currency
-    };
-    position.unrealized_profit_loss_ = Money{
-      Decimal64::parse(broker_detail::json_string(profit_loss, "amount")), currency
-    };
-    position.unrealized_return_ =
-      Decimal64::parse(broker_detail::json_string(profit_loss, "rate"));
+    position.purchase_value_ =
+      Money{Decimal64::parse(broker_detail::json_string(market_value, "purchaseAmount")), currency};
+    position.market_value_ = Money{Decimal64::parse(broker_detail::json_string(market_value, "amount")), currency};
+    position.unrealized_profit_loss_ =
+      Money{Decimal64::parse(broker_detail::json_string(profit_loss, "amount")), currency};
+    position.unrealized_return_ = Decimal64::parse(broker_detail::json_string(profit_loss, "rate"));
     return position;
   }
 
@@ -2640,7 +2329,10 @@ private:
     if (all_usd) {
       totals.push_back(
         HoldingsTotals{
-          Currency::usd(), *usd_purchase, *usd_market, *usd_profit_loss,
+          Currency::usd(),
+          *usd_purchase,
+          *usd_market,
+          *usd_profit_loss,
         }
       );
     }
@@ -2710,8 +2402,8 @@ private:
   static std::optional<BrokerError> validate_client_order_id(std::string_view client_order_id) {
     bool valid = !client_order_id.empty() && client_order_id.size() <= 36;
     for (const char ch : client_order_id) {
-      const bool allowed = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-        (ch >= '0' && ch <= '9') || ch == '-' || ch == '_';
+      const bool allowed =
+        (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_';
       valid = valid && allowed;
     }
     if (valid) {
@@ -2721,8 +2413,7 @@ private:
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
     error.reached_broker_ = false;
     error.broker_code_ = "invalid_client_order_id";
-    error.message_ =
-      "Toss client order id must be 1-36 characters of letters, digits, hyphen, or underscore";
+    error.message_ = "Toss client order id must be 1-36 characters of letters, digits, hyphen, or underscore";
     return error;
   }
 
@@ -2731,10 +2422,7 @@ private:
   //
   // The raw scale is checked rather than a normalized one, because the request sends
   // `quantity.str()`, which keeps it.
-  static std::optional<BrokerError> validate_quantity(
-    const Decimal64& quantity,
-    bool fraction_allowed = false
-  ) {
+  static std::optional<BrokerError> validate_quantity(const Decimal64& quantity, bool fraction_allowed = false) {
     const auto max_scale = fraction_allowed ? 6 : 0;
     if (quantity.coefficient() > 0 && quantity.scale() <= max_scale) {
       return std::nullopt;
@@ -2750,10 +2438,7 @@ private:
   }
 
   // Returns an error when a price does not match its order type.
-  static std::optional<BrokerError> validate_price(
-    OrderType type,
-    const std::optional<Decimal64>& price
-  ) {
+  static std::optional<BrokerError> validate_price(OrderType type, const std::optional<Decimal64>& price) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
     error.reached_broker_ = false;
@@ -2797,10 +2482,7 @@ private:
   // the rule without spending an order on it: the closing auction is US limit
   // orders only, and the opening auction is Korean orders only.
   static std::optional<BrokerError> validate_order_shape(
-    OrderType type,
-    TimeInForce time_in_force,
-    OrderSession session,
-    Country country
+    OrderType type, TimeInForce time_in_force, OrderSession session, Country country
   ) {
     BrokerError error;
     error.category_ = ErrorCategory::INVALID_ARGUMENT;
@@ -2827,8 +2509,7 @@ private:
         if (country == Country::US && type == OrderType::LIMIT) {
           return std::nullopt;
         }
-        error.message_ =
-          "Toss accepts a closing-auction order only for a US limit order";
+        error.message_ = "Toss accepts a closing-auction order only for a US limit order";
         return error;
       case OrderSession::OPENING_AUCTION:
         if (country == Country::KR) {
@@ -2878,8 +2559,7 @@ private:
       error.category_ = ErrorCategory::INVALID_ARGUMENT;
       error.reached_broker_ = false;
       error.broker_code_ = "venue_unavailable";
-      error.message_ =
-        "Toss publishes no venue choice on an order; leave OrderRequest::venue_ unspecified";
+      error.message_ = "Toss publishes no venue choice on an order; leave OrderRequest::venue_ unspecified";
       return error;
     }
     if (order.client_order_id_) {
@@ -2904,9 +2584,9 @@ private:
     // refused by `validate_price` as "limit and market orders only" -- the right
     // outcome under a code that names the wrong field, and it made
     // `validate_order_shape`'s own basis check unreachable from this path.
-    if (auto error = validate_order_shape(
-          order.type_, order.time_in_force_, order.session_, order.instrument_.country_
-        )) {
+    if (
+      auto error = validate_order_shape(order.type_, order.time_in_force_, order.session_, order.instrument_.country_)
+    ) {
       return error;
     }
     // The shape check above refuses every session without a code; this keeps the two from drifting, before
@@ -2921,8 +2601,8 @@ private:
     }
     // Toss's one fractional shape (`createOrder`, `fractionalQuantityUsSellOnly`). Its other rule,
     // the regular session until an hour before the close, is left to Toss's own `422`.
-    const bool fraction_allowed = order.instrument_.country_ == Country::US &&
-      order.type_ == OrderType::MARKET && order.side_ == OrderSide::SELL;
+    const bool fraction_allowed =
+      order.instrument_.country_ == Country::US && order.type_ == OrderType::MARKET && order.side_ == OrderSide::SELL;
     if (auto error = validate_quantity(order.quantity_, fraction_allowed)) {
       return error;
     }
@@ -3030,9 +2710,7 @@ private:
 
   // Builds the authenticated Toss order-placement POST request.
   static network::HttpRequest make_place_order_request(
-    std::int64_t account_sequence,
-    std::string_view access_token,
-    const OrderRequest& order
+    std::int64_t account_sequence, std::string_view access_token, const OrderRequest& order
   ) {
     json::object body{
       {"symbol", order.instrument_.symbol_},
@@ -3067,9 +2745,7 @@ private:
 
   // Builds the authenticated Toss order-modification POST request.
   static network::HttpRequest make_replace_order_request(
-    std::int64_t account_sequence,
-    std::string_view access_token,
-    const TossAmendment& amendment
+    std::int64_t account_sequence, std::string_view access_token, const TossAmendment& amendment
   ) {
     json::object body{{"orderType", order_type_code(amendment.type_)}};
     if (amendment.quantity_) {
@@ -3086,8 +2762,7 @@ private:
     // A modification carries an order instruction and ranks with one.
     request.group_ = network::RateLimitGroup::TRADING;
     request.method_ = http::verb::post;
-    request.target_ =
-      "/api/v1/orders/" + broker_detail::query_encode(amendment.order_id_) + "/modify";
+    request.target_ = "/api/v1/orders/" + broker_detail::query_encode(amendment.order_id_) + "/modify";
     request.body_ = json::serialize(body);
     request.headers_ = {
       {"Authorization", "Bearer " + std::string(access_token)},
@@ -3099,9 +2774,7 @@ private:
 
   // Builds the authenticated Toss order-cancellation POST request.
   static network::HttpRequest make_cancel_order_request(
-    std::int64_t account_sequence,
-    std::string_view access_token,
-    std::string_view order_id
+    std::int64_t account_sequence, std::string_view access_token, std::string_view order_id
   ) {
     network::HttpRequest request;
     // A cancellation is the request that must never queue behind polling.
@@ -3118,10 +2791,7 @@ private:
   }
 
   // Builds a Toss order-list request from the supplied filters.
-  static network::HttpRequest make_orders_request(
-    std::string_view access_token,
-    const TossOrderQuery& query
-  ) {
+  static network::HttpRequest make_orders_request(std::string_view access_token, const TossOrderQuery& query) {
     bool open = false;
     switch (query.scope_) {
       case TossOrderScope::OPEN:
@@ -3167,9 +2837,7 @@ private:
 
   // Builds a Toss request for one order by broker identifier.
   static network::HttpRequest make_order_request(
-    std::int64_t account_sequence,
-    std::string_view access_token,
-    std::string_view order_id
+    std::int64_t account_sequence, std::string_view access_token, std::string_view order_id
   ) {
     network::HttpRequest request;
     // A single-order inquiry is account monitoring.
@@ -3184,11 +2852,7 @@ private:
   }
 
   // Validates and starts one Toss order submission.
-  void start_place_order(
-    std::int64_t account_sequence,
-    OrderRequest order,
-    OrderAckHandler completion
-  ) {
+  void start_place_order(std::int64_t account_sequence, OrderRequest order, OrderAckHandler completion) {
     auto invalid = validate_account_sequence(account_sequence);
     if (!invalid) {
       invalid = validate_order(order);
@@ -3198,35 +2862,21 @@ private:
       return;
     }
 
-    ensure_token(
-      TokenHandler(
-        [
-          self = shared_from_this(),
-          account_sequence,
-          order = std::move(order),
-          completion = std::move(completion)
-        ](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->complete_order_ack(
-              std::move(completion), Result<OrderAck>(std::move(*token_error))
-            );
-            return;
-          }
-          auto request = make_place_order_request(
-            account_sequence, self->token_.access_token_, order
-          );
-          self->request_order_ack(std::move(request), std::move(completion));
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), account_sequence, order = std::move(order),
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->complete_order_ack(std::move(completion), Result<OrderAck>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        auto request = make_place_order_request(account_sequence, self->token_.access_token_, order);
+        self->request_order_ack(std::move(request), std::move(completion));
+      }
+    ));
   }
 
   // Validates and starts one Toss order modification.
-  void start_replace_order(
-    std::int64_t account_sequence,
-    TossAmendment amendment,
-    OrderAckHandler completion
-  ) {
+  void start_replace_order(std::int64_t account_sequence, TossAmendment amendment, OrderAckHandler completion) {
     auto invalid = validate_account_sequence(account_sequence);
     if (!invalid) {
       invalid = validate_order_id(amendment.order_id_);
@@ -3245,35 +2895,21 @@ private:
       return;
     }
 
-    ensure_token(
-      TokenHandler(
-        [
-          self = shared_from_this(),
-          account_sequence,
-          amendment = std::move(amendment),
-          completion = std::move(completion)
-        ](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->complete_order_ack(
-              std::move(completion), Result<OrderAck>(std::move(*token_error))
-            );
-            return;
-          }
-          auto request = make_replace_order_request(
-            account_sequence, self->token_.access_token_, amendment
-          );
-          self->request_order_ack(std::move(request), std::move(completion));
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), account_sequence, amendment = std::move(amendment),
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->complete_order_ack(std::move(completion), Result<OrderAck>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        auto request = make_replace_order_request(account_sequence, self->token_.access_token_, amendment);
+        self->request_order_ack(std::move(request), std::move(completion));
+      }
+    ));
   }
 
   // Validates and starts one Toss order cancellation.
-  void start_cancel_order(
-    std::int64_t account_sequence,
-    std::string order_id,
-    OrderAckHandler completion
-  ) {
+  void start_cancel_order(std::int64_t account_sequence, std::string order_id, OrderAckHandler completion) {
     auto invalid = validate_account_sequence(account_sequence);
     if (!invalid) {
       invalid = validate_order_id(order_id);
@@ -3283,42 +2919,27 @@ private:
       return;
     }
 
-    ensure_token(
-      TokenHandler(
-        [
-          self = shared_from_this(),
-          account_sequence,
-          order_id = std::move(order_id),
-          completion = std::move(completion)
-        ](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->complete_order_ack(
-              std::move(completion), Result<OrderAck>(std::move(*token_error))
-            );
-            return;
-          }
-          auto request = make_cancel_order_request(
-            account_sequence, self->token_.access_token_, order_id
-          );
-          self->request_order_ack(std::move(request), std::move(completion));
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), account_sequence, order_id = std::move(order_id),
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->complete_order_ack(std::move(completion), Result<OrderAck>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        auto request = make_cancel_order_request(account_sequence, self->token_.access_token_, order_id);
+        self->request_order_ack(std::move(request), std::move(completion));
+      }
+    ));
   }
 
   // Sends an order-writing request and dispatches its parsed acknowledgement.
   void request_order_ack(network::HttpRequest request, OrderAckHandler completion) {
     send(
       std::move(request),
-      [self = shared_from_this(), completion = std::move(completion)](
-        Result<network::HttpResponse> result
-      ) mutable {
-        net::post(
-          self->strand_,
-          [self, completion = std::move(completion), result = std::move(result)]() mutable {
-            self->complete_order_ack(std::move(completion), parse_order_ack(std::move(result)));
-          }
-        );
+      [self = shared_from_this(), completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+        net::post(self->strand_, [self, completion = std::move(completion), result = std::move(result)]() mutable {
+          self->complete_order_ack(std::move(completion), parse_order_ack(std::move(result)));
+        });
       }
     );
   }
@@ -3348,8 +2969,7 @@ private:
       return;
     }
     if (
-      (query.from_ && !is_valid_date(*query.from_)) ||
-      (query.to_ && !is_valid_date(*query.to_)) ||
+      (query.from_ && !is_valid_date(*query.from_)) || (query.to_ && !is_valid_date(*query.to_)) ||
       (query.from_ && query.to_ && *query.to_ < *query.from_)
     ) {
       BrokerError error;
@@ -3361,36 +2981,23 @@ private:
       return;
     }
 
-    ensure_token(
-      TokenHandler(
-        [self = shared_from_this(), query = std::move(query), completion = std::move(completion)](
-          std::optional<BrokerError> token_error
-        ) mutable {
-          if (token_error) {
-            self->complete_order_page(
-              std::move(completion), Result<OrderPage>(std::move(*token_error))
-            );
-            return;
-          }
-          auto request = make_orders_request(self->token_.access_token_, query);
-          self->send(
-            std::move(request),
-            [self, completion = std::move(completion)](
-              Result<network::HttpResponse> result
-            ) mutable {
-              net::post(
-                self->strand_,
-                [self, completion = std::move(completion), result = std::move(result)]() mutable {
-                  self->complete_order_page(
-                    std::move(completion), parse_orders(std::move(result))
-                  );
-                }
-              );
-            }
-          );
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), query = std::move(query),
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->complete_order_page(std::move(completion), Result<OrderPage>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        auto request = make_orders_request(self->token_.access_token_, query);
+        self->send(
+          std::move(request), [self, completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+            net::post(self->strand_, [self, completion = std::move(completion), result = std::move(result)]() mutable {
+              self->complete_order_page(std::move(completion), parse_orders(std::move(result)));
+            });
+          }
+        );
+      }
+    ));
   }
 
   // Validates and starts an inquiry for one Toss order.
@@ -3404,39 +3011,23 @@ private:
       return;
     }
 
-    ensure_token(
-      TokenHandler(
-        [
-          self = shared_from_this(),
-          account_sequence,
-          order_id = std::move(order_id),
-          completion = std::move(completion)
-        ](std::optional<BrokerError> token_error) mutable {
-          if (token_error) {
-            self->complete_order(
-              std::move(completion), Result<OrderSnapshot>(std::move(*token_error))
-            );
-            return;
-          }
-          auto request = make_order_request(
-            account_sequence, self->token_.access_token_, order_id
-          );
-          self->send(
-            std::move(request),
-            [self, completion = std::move(completion)](
-              Result<network::HttpResponse> result
-            ) mutable {
-              net::post(
-                self->strand_,
-                [self, completion = std::move(completion), result = std::move(result)]() mutable {
-                  self->complete_order(std::move(completion), parse_order(std::move(result)));
-                }
-              );
-            }
-          );
+    ensure_token(TokenHandler(
+      [self = shared_from_this(), account_sequence, order_id = std::move(order_id),
+        completion = std::move(completion)](std::optional<BrokerError> token_error) mutable {
+        if (token_error) {
+          self->complete_order(std::move(completion), Result<OrderSnapshot>(std::move(*token_error)));
+          return;
         }
-      )
-    );
+        auto request = make_order_request(account_sequence, self->token_.access_token_, order_id);
+        self->send(
+          std::move(request), [self, completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
+            net::post(self->strand_, [self, completion = std::move(completion), result = std::move(result)]() mutable {
+              self->complete_order(std::move(completion), parse_order(std::move(result)));
+            });
+          }
+        );
+      }
+    ));
   }
 
   // Parses a Toss order-instruction response into an acknowledgement.
@@ -3614,8 +3205,7 @@ private:
       throw std::runtime_error("missing object field: execution");
     }
     const auto& fills = execution->as_object();
-    order.execution_.filled_quantity_ =
-      Decimal64::parse(broker_detail::json_string(fills, "filledQuantity"));
+    order.execution_.filled_quantity_ = Decimal64::parse(broker_detail::json_string(fills, "filledQuantity"));
     order.execution_.average_filled_price_ = optional_decimal(fills, "averageFilledPrice");
     order.execution_.filled_amount_ = optional_money(fills, "filledAmount", currency);
     order.execution_.commission_ = optional_money(fills, "commission", currency);
@@ -3702,10 +3292,7 @@ private:
   // the execution amounts, which are always sent and merely nullable. Those
   // keep the stricter `optional_decimal`, so a genuinely missing execution
   // field is still reported as a protocol error.
-  static std::optional<Decimal64> nullable_decimal(
-    const json::object& object,
-    std::string_view key
-  ) {
+  static std::optional<Decimal64> nullable_decimal(const json::object& object, std::string_view key) {
     const auto value = object.if_contains(key);
     if (!value || value->is_null()) {
       return std::nullopt;
@@ -3723,10 +3310,7 @@ private:
   // the refusal failed every order list holding such an order. The fraction is rounded half to even
   // to the 18 significant digits a `Decimal64` always holds. The integer part is never rounded: a value
   // whose integer part does not fit is still refused.
-  static std::optional<Decimal64> nullable_rounded_decimal(
-    const json::object& object,
-    std::string_view key
-  ) {
+  static std::optional<Decimal64> nullable_rounded_decimal(const json::object& object, std::string_view key) {
     const auto value = object.if_contains(key);
     if (!value || value->is_null()) {
       return std::nullopt;
@@ -3802,9 +3386,7 @@ private:
 
   // Reads a nullable decimal string field as an amount in `currency`.
   static std::optional<Money> optional_money(
-    const json::object& object,
-    std::string_view key,
-    const Currency& currency
+    const json::object& object, std::string_view key, const Currency& currency
   ) {
     const auto amount = optional_decimal(object, key);
     if (!amount) {
@@ -3815,8 +3397,7 @@ private:
 
   // Reads a nullable ISO 8601 timestamp field.
   static std::optional<std::chrono::system_clock::time_point> optional_timestamp(
-    const json::object& object,
-    std::string_view key
+    const json::object& object, std::string_view key
   ) {
     const auto value = object.if_contains(key);
     if (!value || value->is_null()) {
@@ -3884,11 +3465,8 @@ private:
     }
     http_->async_request(
       std::move(request),
-      [
-        self = shared_from_this(),
-        authorization = std::move(authorization),
-        handler = std::move(handler)
-      ](Result<network::HttpResponse> result) mutable {
+      [self = shared_from_this(), authorization = std::move(authorization),
+        handler = std::move(handler)](Result<network::HttpResponse> result) mutable {
         if (result && result.value().result_int() == 401) {
           // Queued before the handler runs; every operation starts with a post to the strand, so
           // the next one finds the token gone.
@@ -3999,14 +3577,8 @@ public:
    * @param config The credentials.
    * @param options HTTP options.
    */
-  TossBlockingClient(
-    ssl::context& context,
-    TossConfig config,
-    network::HttpClientOptions options = {}
-  )
-  : client_(
-      std::make_shared<TossClient>(ioc_.get_executor(), context, std::move(config), options)
-    ) {}
+  TossBlockingClient(ssl::context& context, TossConfig config, network::HttpClientOptions options = {})
+  : client_(std::make_shared<TossClient>(ioc_.get_executor(), context, std::move(config), options)) {}
 
   /**
    * @brief Returns a quote for a Korean instrument (a US instrument is refused; use `prices`).
@@ -4015,7 +3587,9 @@ public:
    */
   Result<QuoteSnapshot> quote(InstrumentId instrument) {
     return run<QuoteSnapshot>(
-      [&](auto&& sink) { client_->async_quote(std::move(instrument), std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_quote(std::move(instrument), std::move(sink));
+      },
       "quote"
     );
   }
@@ -4026,7 +3600,9 @@ public:
    */
   Result<std::vector<TossAccount>> accounts() {
     return run<std::vector<TossAccount>>(
-      [&](auto&& sink) { client_->async_accounts(std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_accounts(std::move(sink));
+      },
       "accounts"
     );
   }
@@ -4038,7 +3614,9 @@ public:
    */
   Result<Instrument> instrument(InstrumentId subject) {
     return run<Instrument>(
-      [&](auto&& sink) { client_->async_instrument(std::move(subject), std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_instrument(std::move(subject), std::move(sink));
+      },
       "instrument"
     );
   }
@@ -4051,7 +3629,9 @@ public:
    */
   Result<TradingCalendar> calendar(Country country, std::optional<Date> from = std::nullopt) {
     return run<TradingCalendar>(
-      [&](auto&& sink) { client_->async_calendar(country, from, std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_calendar(country, from, std::move(sink));
+      },
       "calendar"
     );
   }
@@ -4063,7 +3643,9 @@ public:
    */
   Result<PriceLimits> price_limits(InstrumentId instrument) {
     return run<PriceLimits>(
-      [&](auto&& sink) { client_->async_price_limits(std::move(instrument), std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_price_limits(std::move(instrument), std::move(sink));
+      },
       "price_limits"
     );
   }
@@ -4090,7 +3672,9 @@ public:
    */
   Result<std::vector<QuoteSnapshot>> prices(std::vector<InstrumentId> instruments) {
     return run<std::vector<QuoteSnapshot>>(
-      [&](auto&& sink) { client_->async_prices(std::move(instruments), std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_prices(std::move(instruments), std::move(sink));
+      },
       "prices"
     );
   }
@@ -4102,7 +3686,9 @@ public:
    */
   Result<DepthSnapshot> depth(InstrumentId instrument) {
     return run<DepthSnapshot>(
-      [&](auto&& sink) { client_->async_depth(std::move(instrument), std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_depth(std::move(instrument), std::move(sink));
+      },
       "depth"
     );
   }
@@ -4114,7 +3700,9 @@ public:
    */
   Result<BarSeries> bars(BarQuery query) {
     return run<BarSeries>(
-      [&](auto&& sink) { client_->async_bars(std::move(query), std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_bars(std::move(query), std::move(sink));
+      },
       "bars"
     );
   }
@@ -4126,7 +3714,9 @@ public:
    */
   Result<HoldingsSnapshot> holdings(std::int64_t account_sequence) {
     return run<HoldingsSnapshot>(
-      [&](auto&& sink) { client_->async_holdings(account_sequence, std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_holdings(account_sequence, std::move(sink));
+      },
       "holdings"
     );
   }
@@ -4168,7 +3758,9 @@ public:
    */
   Result<CommissionSchedule> commissions(std::int64_t account_sequence) {
     return run<CommissionSchedule>(
-      [&](auto&& sink) { client_->async_commissions(account_sequence, std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_commissions(account_sequence, std::move(sink));
+      },
       "commissions"
     );
   }
@@ -4232,7 +3824,9 @@ public:
    */
   Result<OrderPage> orders(TossOrderQuery query) {
     return run<OrderPage>(
-      [&](auto&& sink) { client_->async_orders(std::move(query), std::move(sink)); },
+      [&](auto&& sink) {
+        client_->async_orders(std::move(query), std::move(sink));
+      },
       "order listing"
     );
   }
@@ -4266,7 +3860,9 @@ private:
   Result<T> run(Start start, std::string_view operation) {
     std::optional<Result<T>> result;
     ioc_.restart();
-    start([&result](Result<T> value) { result.emplace(std::move(value)); });
+    start([&result](Result<T> value) {
+      result.emplace(std::move(value));
+    });
     ioc_.run();
     if (!result) {
       BrokerError error;

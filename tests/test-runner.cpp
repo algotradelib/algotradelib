@@ -32,13 +32,13 @@ using Clock = std::chrono::system_clock;
 Clock::time_point utc(int year, int month, int day, int hour, int minute) {
   const long long a = (month <= 2) ? year - 1 : year;
   const long long m = (month <= 2) ? month + 12 : month;
-  const long long era_days =
-    365 * a + a / 4 - a / 100 + a / 400 + (153 * (m - 3) + 2) / 5 + day - 1;
-  return Clock::time_point{} + std::chrono::hours((era_days - 719468) * 24 + hour) +
-    std::chrono::minutes(minute);
+  const long long era_days = 365 * a + a / 4 - a / 100 + a / 400 + (153 * (m - 3) + 2) / 5 + day - 1;
+  return Clock::time_point{} + std::chrono::hours((era_days - 719468) * 24 + hour) + std::chrono::minutes(minute);
 }
 
-InstrumentId samsung() { return InstrumentId{Country::KR, Venue::COMBINED, "005930"}; }
+InstrumentId samsung() {
+  return InstrumentId{Country::KR, Venue::COMBINED, "005930"};
+}
 
 Instrument samsung_reference() {
   Instrument reference;
@@ -90,7 +90,10 @@ struct CancelSameRefTwice {
 /** Defines only on_start, to prove the other handlers cost nothing. */
 struct StartOnly {
   bool started_{false};
-  template <class Ctx> void on_start(Ctx&) { started_ = true; }
+  template <class Ctx>
+  void on_start(Ctx&) {
+    started_ = true;
+  }
 };
 
 /** Prices a limit above today's band, to show the runner clamping it. */
@@ -101,8 +104,7 @@ struct LimitAt80k {
     if (!reference) {
       return;
     }
-    const auto limit =
-      strategy::Price::checked(Decimal64::parse("80000"), reference->price_rule_);
+    const auto limit = strategy::Price::checked(Decimal64::parse("80000"), reference->price_rule_);
     if (!limit) {
       return;
     }
@@ -160,7 +162,9 @@ struct InquiringExecutor {
     ++sends;
     return runner::SendOutcome::ACCEPTED;
   }
-  runner::SendOutcome cancel(const WorkingOrder<runner::DryTag>&) { return runner::SendOutcome::ACCEPTED; }
+  runner::SendOutcome cancel(const WorkingOrder<runner::DryTag>&) {
+    return runner::SendOutcome::ACCEPTED;
+  }
 };
 
 /** Capabilities of a broker that lists working orders. */
@@ -352,8 +356,8 @@ TEST_CASE("the probe does not learn the broker's convention from this runner's o
   };
   dry.context().set_portfolio(portfolio);
 
-  dry.feed(bar_at(10, "70000"));   // sells sixty, and reserves it
-  dry.feed(bar_at(11, "70000"));   // observes a portfolio carrying that reservation
+  dry.feed(bar_at(10, "70000")); // sells sixty, and reserves it
+  dry.feed(bar_at(11, "70000")); // observes a portfolio carrying that reservation
 
   // Nothing was learned, because nothing the broker said changed.
   REQUIRE(dry.sellable_convention().overall().total() == 0);
@@ -462,7 +466,9 @@ namespace {
  * `reaches_a_broker` is not here.
  */
 struct UnrelatedLastError {
-  const std::optional<std::string>& last_error() const noexcept { return last_error_; }
+  const std::optional<std::string>& last_error() const noexcept {
+    return last_error_;
+  }
   std::optional<std::string> last_error_;
 };
 
@@ -481,7 +487,9 @@ struct SilentRejector {
     return runner::SendOutcome::ACCEPTED;
   }
 
-  const std::optional<BrokerError>& last_error() const noexcept { return last_error_; }
+  const std::optional<BrokerError>& last_error() const noexcept {
+    return last_error_;
+  }
 
   std::optional<BrokerError> last_error_;
 };
@@ -647,7 +655,6 @@ using runner::WithheldReason;
 template <typename Tag>
 class ScriptedExecutor {
 public:
-
   /** A double reaches no broker, so it is exempt from having to have read the account. */
   static constexpr bool reaches_a_broker = false;
   SendOutcome place(const strategy::PlannedOrder& order) {
@@ -660,8 +667,12 @@ public:
     return cancel_outcome_;
   }
 
-  const std::vector<strategy::PlannedOrder>& placed() const noexcept { return placed_; }
-  const std::vector<OrderRef<Tag>>& canceled() const noexcept { return canceled_; }
+  const std::vector<strategy::PlannedOrder>& placed() const noexcept {
+    return placed_;
+  }
+  const std::vector<OrderRef<Tag>>& canceled() const noexcept {
+    return canceled_;
+  }
 
   SendOutcome place_outcome_{SendOutcome::ACCEPTED};
   SendOutcome cancel_outcome_{SendOutcome::ACCEPTED};
@@ -679,9 +690,7 @@ struct CancelGhost {
   }
 };
 
-using ScriptedRunner = runner::Runner<
-  HoldTen, strategy::NoCaps, runner::DryTag, ScriptedExecutor<runner::DryTag>
->;
+using ScriptedRunner = runner::Runner<HoldTen, strategy::NoCaps, runner::DryTag, ScriptedExecutor<runner::DryTag>>;
 
 /** Targets zero in Samsung on every bar, so the closing path is reachable with a scripted outcome. */
 struct FlattenSamsung {
@@ -695,9 +704,8 @@ struct FlattenSamsung {
   }
 };
 
-using FlattenRunner = runner::Runner<
-  FlattenSamsung, strategy::NoCaps, runner::DryTag, ScriptedExecutor<runner::DryTag>
->;
+using FlattenRunner =
+  runner::Runner<FlattenSamsung, strategy::NoCaps, runner::DryTag, ScriptedExecutor<runner::DryTag>>;
 
 /** A hundred Samsung held, stamped now, which the close below reduces to flat. */
 strategy::Portfolio<runner::DryTag> holding_a_hundred() {
@@ -758,9 +766,7 @@ TEST_CASE("every send outcome and withheld reason has a stable name") {
   REQUIRE(runner::send_outcome_name(SendOutcome::ACCEPTED) == "accepted");
   REQUIRE(runner::send_outcome_name(SendOutcome::REJECTED) == "rejected");
   REQUIRE(runner::send_outcome_name(SendOutcome::INDETERMINATE) == "indeterminate");
-  REQUIRE(
-    runner::withheld_reason_name(WithheldReason::RECONCILE_REQUIRED) == "reconcile_required"
-  );
+  REQUIRE(runner::withheld_reason_name(WithheldReason::RECONCILE_REQUIRED) == "reconcile_required");
 }
 
 TEST_CASE("every error category is classified by whether the order might exist") {
@@ -926,11 +932,9 @@ TEST_CASE("a named withdrawal survives a hold that only means the runner is unin
   dry.context().set_portfolio(resting_sell(/*stamped=*/false));
 
   auto uninformed = GENERATE(
-    strategy::HaltReason::ORDER_LIST_UNREAD,
-    strategy::HaltReason::PORTFOLIO_ABSENT,
-    strategy::HaltReason::PORTFOLIO_STALE,
-    strategy::HaltReason::BUYING_POWER_UNREAD,
-    strategy::HaltReason::POLL_FAILING);
+    strategy::HaltReason::ORDER_LIST_UNREAD, strategy::HaltReason::PORTFOLIO_ABSENT,
+    strategy::HaltReason::PORTFOLIO_STALE, strategy::HaltReason::BUYING_POWER_UNREAD, strategy::HaltReason::POLL_FAILING
+  );
   dry.guard().halt(uninformed);
 
   const auto report = dry.feed(bar_at(10, "70000"));
@@ -961,10 +965,8 @@ TEST_CASE("every halt reason has a name, and the count matches the enumerators")
     CHECK(strategy::halt_reason_name(all[index]) != "unknown");
   }
   CHECK(strategy::halt_reason_name(strategy::HaltReason::PORTFOLIO_ABSENT) == "portfolio_absent");
-  CHECK(runner::withheld_plan_reason_name(runner::WithheldPlanReason::PLACEMENT_HELD) ==
-        "placement_held");
+  CHECK(runner::withheld_plan_reason_name(runner::WithheldPlanReason::PLACEMENT_HELD) == "placement_held");
 }
-
 
 TEST_CASE("a context finds an instrument's reference data and last price by its whole id", "[runner][context]") {
   runner::Context<runner::DryTag, strategy::NoCaps> ctx;
@@ -1042,7 +1044,9 @@ struct RewritesOnCancel {
   }
 };
 
-InstrumentId named(const char* symbol) { return InstrumentId{Country::KR, Venue::COMBINED, symbol}; }
+InstrumentId named(const char* symbol) {
+  return InstrumentId{Country::KR, Venue::COMBINED, symbol};
+}
 
 // Cancels its working order in A, then holds 110 of A, then states 100 of B fifteen times: seventeen
 // instructions, so the pass indexes the portfolio's rows.
@@ -1074,7 +1078,9 @@ TEST_CASE("a pass plans from the portfolio as an executor's cancellation left it
     INFO((how == OnCancel::SWAP_ROWS ? "rows swapped" : "first row dropped"));
     strategy::RiskLimits limits;
     limits.permitted_phases_ = std::nullopt;
-    runner::Runner<CancelsThenTargets, strategy::NoCaps, runner::DryTag, RewritesOnCancel> run(CancelsThenTargets{}, limits);
+    runner::Runner<CancelsThenTargets, strategy::NoCaps, runner::DryTag, RewritesOnCancel> run(
+      CancelsThenTargets{}, limits
+    );
     run.executor().context_ = &run.context();
     run.executor().how_ = how;
     for (const char* symbol : {"A", "B"}) {
@@ -1130,7 +1136,9 @@ TEST_CASE("a cached series stays where it is as more instruments and intervals a
   const auto* daily = context.bars(samsung(), BarInterval::ONE_DAY);
   REQUIRE(daily != nullptr);
   for (int k = 0; k < 600; ++k) {
-    context.record_bar(bar_for(InstrumentId{Country::KR, Venue::COMBINED, "N" + std::to_string(k)}, BarInterval::ONE_DAY, 0, "100"));
+    context.record_bar(
+      bar_for(InstrumentId{Country::KR, Venue::COMBINED, "N" + std::to_string(k)}, BarInterval::ONE_DAY, 0, "100")
+    );
   }
   context.record_bar(bar_for(samsung(), BarInterval::ONE_MINUTE, 1, "70100"));
   REQUIRE(context.bars(samsung(), BarInterval::ONE_DAY) == daily);
@@ -1152,8 +1160,7 @@ TEST_CASE("a context moves without throwing") {
   STATIC_REQUIRE(std::is_nothrow_move_assignable_v<Ctx>);
   // Move construction is as nothrow as the standard library's maps make it: MSVC's allocate a node when
   // move-constructed, so there a context never moved into a new one without the chance of a throw.
-  constexpr bool maps_move_without_throwing =
-    std::is_nothrow_move_constructible_v<std::map<int, int>> &&
+  constexpr bool maps_move_without_throwing = std::is_nothrow_move_constructible_v<std::map<int, int>> &&
     std::is_nothrow_move_constructible_v<std::unordered_map<int, int>>;
   STATIC_REQUIRE((!maps_move_without_throwing || std::is_nothrow_move_constructible_v<Ctx>));
 }
@@ -1174,7 +1181,9 @@ struct KeepsNoHistory {
   static constexpr bool reads_bar_history = false;
   int bars_{0};
   template <class Ctx>
-  void on_bar(Ctx&, const strategy::BarEvent&) { ++bars_; }
+  void on_bar(Ctx&, const strategy::BarEvent&) {
+    ++bars_;
+  }
 };
 
 /** The same, taking slices. */
@@ -1187,7 +1196,9 @@ struct SlicesKeepingNoHistory {
 /** Inherits the declaration, then reads the history from a handler that is not a bar handler. */
 struct BreaksTheDeclaration : KeepsNoHistory {
   template <class Ctx>
-  void on_phase(Ctx& ctx, const strategy::MarketPhase&) { static_cast<void>(ctx.bars(samsung())); }
+  void on_phase(Ctx& ctx, const strategy::MarketPhase&) {
+    static_cast<void>(ctx.bars(samsung()));
+  }
 };
 
 /** Inherits the declaration and overrides it. */
@@ -1205,7 +1216,9 @@ class DeclaresAPrivate {
   static constexpr bool reads_bar_history = false;
 };
 struct DeclaresAFunction {
-  static constexpr bool reads_bar_history() { return false; }
+  static constexpr bool reads_bar_history() {
+    return false;
+  }
 };
 
 } // namespace

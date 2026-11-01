@@ -7,8 +7,10 @@
 using namespace algotradelib;
 
 struct Probe {
-  template <class Ctx> void on_bar(Ctx&, const strategy::BarEvent&) {}
-  template <class Ctx> void on_quote(Ctx&, const strategy::BarEvent&) {}  // the wrong event
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {}
+  template <class Ctx>
+  void on_quote(Ctx&, const strategy::BarEvent&) {} // the wrong event
 };
 
 ATL_ASSERT_STRATEGY(Probe, strategy::MinimalContext);
