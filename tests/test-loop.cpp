@@ -2684,3 +2684,88 @@ TEST_CASE("an order on_start asks for without an account read is refused under t
   CHECK(runner_instance.plans_withheld() == 0);
   CHECK(runner_instance.orders_guard_refused() == 1);
 }
+
+namespace {
+
+/** States a position the moment it starts. */
+struct HoldsTenAtStart {
+  template <class Ctx>
+  void on_start(Ctx& ctx) {
+    strategy::TargetPosition target;
+    target.instrument_ = samsung();
+    target.target_quantity_ = algotradelib::Decimal64::parse("10");
+    ctx.submit(target);
+  }
+};
+
+using HoldsTenAtStartRunner = runner::DryRunner<HoldsTenAtStart>;
+
+/** Answers the holdings poll with a dated, empty account once told to. */
+struct HoldingsWhenTold {
+  static constexpr bool provides_working_orders = true;
+  bool serve_{false};
+
+  runner::PollOutcome poll(runner::PollKind kind, HoldsTenAtStartRunner& runner_instance) {
+    if (kind != runner::PollKind::HOLDINGS || !serve_) {
+      return runner::PollOutcome::UNCHANGED;
+    }
+    auto portfolio = runner_instance.context().portfolio();
+    portfolio.as_of_ = base_time();
+    runner_instance.context().set_portfolio(portfolio);
+    return runner::PollOutcome::UPDATED;
+  }
+
+  runner::PollOutcome read_order_list(HoldsTenAtStartRunner&) {
+    return runner::PollOutcome::UPDATED;
+  }
+};
+
+using HoldingsLoop = runner::PollingLoop<HoldsTenAtStartRunner, HoldingsWhenTold, runner::ManualClock>;
+
+HoldsTenAtStartRunner holds_ten_at_start() {
+  strategy::RiskLimits any_phase;
+  any_phase.permitted_phases_ = std::nullopt;
+  HoldsTenAtStartRunner runner_instance(HoldsTenAtStart{}, any_phase);
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  return runner_instance;
+}
+
+} // namespace
+
+TEST_CASE("a target on_start states on a cold start is placed after the first holdings read", "[loop][start]") {
+  auto runner_instance = holds_ten_at_start();
+  HoldingsWhenTold source;
+  runner::PollSchedule schedule;
+  schedule.holdings_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  HoldingsLoop loop(runner_instance, source, schedule, test_clock());
+  loop.allow_unbounded_portfolio_age();
+  StopSource stop;
+
+  loop.run(stop, 1);
+  CHECK(runner_instance.targets_retained() == 1);
+  CHECK(runner_instance.executor().placed().empty());
+
+  source.serve_ = true;
+  loop.run(stop, 1);
+  CHECK(runner_instance.executor().placed().size() == 1);
+}
+
+TEST_CASE("a target on_start states while a stop waits is not kept", "[loop][start]") {
+  auto runner_instance = holds_ten_at_start();
+  HoldingsWhenTold source;
+  source.serve_ = true;
+  runner::PollSchedule schedule;
+  schedule.holdings_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  HoldingsLoop loop(runner_instance, source, schedule, test_clock());
+  loop.allow_unbounded_portfolio_age();
+  StopSource stop;
+  stop.request(StopIntent::QUIESCE);
+
+  loop.run(stop, 1);
+  CHECK(runner_instance.started());
+  CHECK(runner_instance.targets_retained() == 0);
+  CHECK(runner_instance.executor().placed().empty());
+}

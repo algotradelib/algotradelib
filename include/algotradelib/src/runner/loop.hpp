@@ -1267,9 +1267,9 @@ public:
    * included. It is the first handler, and it decides before the first holdings, buying-power and
    * price-band polls, under the hold for an order list not yet read. While the account has never
    * been read, an order intent it places is withheld and dropped, and a target is retained and placed
-   * after the first holdings read, unless a later handler restates the instrument or a stop is
-   * pending. Otherwise (with `allow_absent_portfolio`, or a portfolio installed before the run),
-   * everything it places is refused under that hold and dropped. A replay retains nothing either, so
+   * after the first holdings read, unless a later handler restates the instrument or a stop, an
+   * operator's halt or an overdue order holds. Otherwise (with `allow_absent_portfolio`, or a current
+   * portfolio installed before the run), everything it places is refused under that hold and dropped. A replay retains nothing either, so
    * state targets from `on_bar` rather than from `on_start`.
    *
    * @param stop The stop source to poll (and that a signal handler may set).
