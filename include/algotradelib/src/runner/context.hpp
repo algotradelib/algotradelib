@@ -33,6 +33,7 @@ using strategy::MarketPhase;
 using strategy::OrderIntent;
 using strategy::Portfolio;
 using strategy::QuoteEvent;
+using strategy::SessionWindow;
 using strategy::TargetPosition;
 
 /**
@@ -338,6 +339,14 @@ public:
   }
 
   /**
+   * @brief Returns the session window the runner derives phases from, for `strategy::SessionEdges`.
+   * @return The window: the replay's `ReplayConfig::session_` or the live loop's `session_window()`.
+   */
+  const SessionWindow& session() const noexcept {
+    return session_;
+  }
+
+  /**
    * @brief Returns the trading calendar the runner last read.
    * @return The calendar; empty if none was read.
    */
@@ -493,6 +502,14 @@ public:
   }
 
   /**
+   * @brief Sets the session window (for runners).
+   * @param session The window.
+   */
+  void set_session(SessionWindow session) {
+    session_ = std::move(session);
+  }
+
+  /**
    * @brief Replaces the trading calendar (for runners and sources, not strategies).
    *
    * A strategy should only read `calendar()`: an order submitted in the same handler call that
@@ -596,6 +613,7 @@ private:
   std::size_t series_capacity_;
   std::chrono::system_clock::time_point now_{};
   MarketPhase phase_{MarketPhase::UNKNOWN};
+  SessionWindow session_{SessionWindow::krx()};
   TradingCalendar calendar_;
   Portfolio<BrokerTag> portfolio_;
   // Counted for `context_detail::PortfolioAccess`: replacements of the portfolio (by `set_portfolio` or by a

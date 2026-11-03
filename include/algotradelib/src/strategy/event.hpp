@@ -178,6 +178,16 @@ struct SessionWindow {
     return local_midnight(now) - utc_offset_ + open_;
   }
 
+  /**
+   * @brief Returns the instant the session closes on the local date of an instant.
+   *
+   * @param now Any instant on the date in question.
+   * @return The close of `local_date(now)`, whether or not that date trades.
+   */
+  std::chrono::system_clock::time_point closes_at(std::chrono::system_clock::time_point now) const {
+    return local_midnight(now) - utc_offset_ + close_;
+  }
+
 private:
   // The market's local midnight before `now`, as a UTC-shifted instant. floor rounds toward
   // negative infinity, so instants before the epoch work too. phase() and local_date() share it so
@@ -273,6 +283,93 @@ inline BarEvent make_bar_event(InstrumentId instrument, BarInterval interval, Ba
   event.bar_ = std::move(bar);
   return event;
 }
+
+/**
+ * @brief Returns when a bar's period began, where the bar says so.
+ *
+ * An open-stamped bar states it; an intraday close-stamped bar began one interval before its end; a
+ * close-stamped daily bar began at its session's open, so one stamped at the open is an empty period, a
+ * single price at the open. A close-stamped weekly, monthly or yearly bar does not say.
+ *
+ * @param event The bar.
+ * @param session The session window, for close-stamped daily bars.
+ * @return The start, or `std::nullopt` when the bar does not say.
+ */
+inline std::optional<std::chrono::system_clock::time_point> bar_period_start(
+  const BarEvent& event, const SessionWindow& session
+) {
+  if (event.stamp_ == BarStamp::OPEN) {
+    return event.bar_.timestamp_;
+  }
+  if (const auto duration = bar_interval_length(event.interval_)) {
+    return event.period_end_ - *duration;
+  }
+  if (event.interval_ == BarInterval::ONE_DAY) {
+    return session.opens_at(event.period_end_);
+  }
+  return std::nullopt;
+}
+
+/** @brief Whether a bar opens or closes its session, as `SessionEdges::next` decided it. */
+struct SessionEdge {
+  /**
+   * @brief The bar opens its session: the first bar of its market-local date that reaches into the session,
+   *   ending after the open (or a single price at it) and starting before the close.
+   */
+  bool opens_{false};
+  /**
+   * @brief The bar closes its session: the first bar of its date whose period holds the close, starting at or
+   *   before it and ending at or after it.
+   */
+  bool closes_{false};
+  /** @brief The bar's period is empty: it is one price at one instant, such as a daily bar stamped at the open. */
+  bool point_{false};
+};
+
+/**
+ * @brief Follows a strategy's bars and says which bar opens its session and which closes it, by the session
+ *   window, whatever the bar interval.
+ *
+ * Bar-driven: a bar is known at its period end, so the bar that opens a session is known at the end of its
+ * first period (a minute after the open on minute bars, at the close on a daily bar), and the bar that closes
+ * it at the close or after. A session with no bar reaching its close has no closing bar. A daily bar is both
+ * the opening and the closing bar of its session; a daily bar stamped at the open (a point) before one stamped
+ * at the close opens the session, and the second closes it.
+ *
+ * Feed it the bars of one series, or the first bar of each `BarSlice`, in time order.
+ */
+class SessionEdges {
+public:
+  /**
+   * @brief Decides whether the next bar opens or closes its session.
+   * @param event The bar, later than the previous one.
+   * @param session The session window.
+   * @return Its edges.
+   */
+  SessionEdge next(const BarEvent& event, const SessionWindow& session) {
+    SessionEdge edge;
+    const auto end = event.period_end_;
+    const auto start = bar_period_start(event, session).value_or(end);
+    const auto date = session.local_date(start);
+    const auto open = session.opens_at(start);
+    const auto close = session.closes_at(start);
+    edge.point_ = start == end;
+    const bool reaches = start < close && (open < end || (edge.point_ && end == open));
+    if (reaches && !(opened_ && *opened_ == date)) {
+      edge.opens_ = true;
+      opened_ = date;
+    }
+    if (start <= close && close <= end && !(closed_ && *closed_ == date)) {
+      edge.closes_ = true;
+      closed_ = date;
+    }
+    return edge;
+  }
+
+private:
+  std::optional<Date> opened_;
+  std::optional<Date> closed_;
+};
 
 struct BarSlice;
 

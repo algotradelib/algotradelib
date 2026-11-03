@@ -813,6 +813,7 @@ public:
       runner_.context().set_instrument(reference);
     }
     runner_.context().set_calendar(config_.calendar_);
+    runner_.context().set_session(config_.session_);
     // So a report can compare an execution's currency with the curve's.
     result_.currency_ = config_.currency_;
   }
@@ -1328,16 +1329,7 @@ private:
   // to be inferred from somewhere else either, but "this check cannot run -- allow the fill and
   // record that it was not checked".
   std::optional<std::chrono::system_clock::time_point> period_start_of(const strategy::BarEvent& event) const {
-    if (event.stamp_ == BarStamp::OPEN) {
-      return event.bar_.timestamp_;
-    }
-    if (const auto duration = interval_duration(event.interval_)) {
-      return event.period_end_ - *duration;
-    }
-    if (event.interval_ == BarInterval::ONE_DAY) {
-      return clock_.session().opens_at(event.period_end_);
-    }
-    return std::nullopt;
+    return strategy::bar_period_start(event, clock_.session());
   }
 
   // Calls `on_start` once, before the replay's first event, with the opening portfolio installed, and

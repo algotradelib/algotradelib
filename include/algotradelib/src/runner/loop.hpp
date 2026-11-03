@@ -985,7 +985,10 @@ public:
    * @param clock The clock.
    */
   PollingLoop(Runner& runner, Source& source, PollSchedule schedule = {}, Clock clock = {})
-  : runner_(&runner), source_(&source), schedule_(std::move(schedule)), clock_(std::move(clock)) {}
+  : runner_(&runner), source_(&source), schedule_(std::move(schedule)), clock_(std::move(clock)) {
+    // The strategy reads the window phases come from (`Context::session`); one window, the loop's.
+    runner_->context().set_session(session_window_);
+  }
 
   /**
    * @brief Returns the clock.
@@ -1224,10 +1227,12 @@ public:
   }
 
   /**
-   * @brief Sets the session window the market phase is derived from (KRX by default, as in a backtest).
+   * @brief Sets the session window the market phase is derived from (KRX by default, as in a backtest), and the
+   *   one the strategy reads (`Context::session`).
    * @param window The window.
    */
   void set_session_window(strategy::SessionWindow window) {
+    runner_->context().set_session(window);
     session_window_ = std::move(window);
   }
 

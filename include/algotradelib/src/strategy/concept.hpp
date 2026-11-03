@@ -540,7 +540,7 @@ struct ProbeBroker {
 /**
  * @brief A context for testing a strategy without a runner: it records what the strategy asks for.
  *
- * Set the public fields (`now_`, `phase_`, `calendar_`, `portfolio_`, `instruments_`), call a
+ * Set the public fields (`now_`, `phase_`, `session_`, `calendar_`, `portfolio_`, `instruments_`), call a
  * handler, then read `submitted()`, `targets()`, `canceled()` and `log().lines()`.
  * `ATL_ASSERT_STRATEGY(S, MinimalContext)` compiles a strategy's handlers against it.
  *
@@ -611,6 +611,14 @@ public:
    */
   MarketPhase phase() const noexcept {
     return phase_;
+  }
+
+  /**
+   * @brief Returns the session window.
+   * @return `session_`.
+   */
+  const SessionWindow& session() const noexcept {
+    return session_;
   }
 
   /**
@@ -702,6 +710,8 @@ public:
   std::chrono::system_clock::time_point now_{};
   /** @brief The phase `phase()` returns. */
   MarketPhase phase_{MarketPhase::OPEN};
+  /** @brief The window `session()` returns. */
+  SessionWindow session_{SessionWindow::krx()};
   /** @brief The calendar `calendar()` returns. */
   TradingCalendar calendar_;
   /** @brief The portfolio `portfolio()` returns. */

@@ -170,6 +170,81 @@ TEST_CASE("a bar event states when its period ended, whichever edge it is stampe
   REQUIRE(daily.instrument_.symbol_ == "005930");
 }
 
+TEST_CASE("session edges: the first and last bar of each session, whatever the interval") {
+  const auto krx = strategy::SessionWindow::krx();
+  REQUIRE(krx.closes_at(utc(2026, 3, 10, 2, 0)) == utc(2026, 3, 10, 6, 30));
+  Bar bar;
+  bar.open_ = Decimal64::parse("100");
+  bar.high_ = Decimal64::parse("100");
+  bar.low_ = Decimal64::parse("100");
+  bar.close_ = Decimal64::parse("100");
+  const auto at = [&bar](BarInterval interval, BarStamp stamp, std::chrono::system_clock::time_point when) {
+    auto b = bar;
+    b.timestamp_ = when;
+    return strategy::make_bar_event(samsung(), interval, stamp, b);
+  };
+  using strategy::SessionEdge;
+  const auto same = [](SessionEdge a, bool opens, bool closes, bool point) {
+    return a.opens_ == opens && a.closes_ == closes && a.point_ == point;
+  };
+
+  SECTION("minute bars stamped at their start: the 09:00 bar opens, the 15:30 closing print closes") {
+    strategy::SessionEdges edges;
+    // 09:00 KST is 00:00 UTC.
+    REQUIRE(
+      same(edges.next(at(BarInterval::ONE_MINUTE, BarStamp::OPEN, utc(2026, 3, 10, 0, 0)), krx), true, false, false)
+    );
+    REQUIRE(
+      same(edges.next(at(BarInterval::ONE_MINUTE, BarStamp::OPEN, utc(2026, 3, 10, 0, 1)), krx), false, false, false)
+    );
+    REQUIRE(
+      same(edges.next(at(BarInterval::ONE_MINUTE, BarStamp::OPEN, utc(2026, 3, 10, 6, 19)), krx), false, false, false)
+    );
+    REQUIRE(
+      same(edges.next(at(BarInterval::ONE_MINUTE, BarStamp::OPEN, utc(2026, 3, 10, 6, 30)), krx), false, true, false)
+    );
+    // After-hours bars close nothing more; the next day's first bar, even a late one, opens.
+    REQUIRE(
+      same(edges.next(at(BarInterval::ONE_MINUTE, BarStamp::OPEN, utc(2026, 3, 10, 7, 0)), krx), false, false, false)
+    );
+    REQUIRE(
+      same(edges.next(at(BarInterval::ONE_MINUTE, BarStamp::OPEN, utc(2026, 3, 11, 0, 2)), krx), true, false, false)
+    );
+  }
+  SECTION("a bar ending at the open is before the session; a 30-minute bar ending at the close closes it") {
+    strategy::SessionEdges edges;
+    REQUIRE(same(
+      edges.next(at(BarInterval::THIRTY_MINUTES, BarStamp::CLOSE, utc(2026, 3, 10, 0, 0)), krx), false, false, false
+    ));
+    REQUIRE(same(
+      edges.next(at(BarInterval::THIRTY_MINUTES, BarStamp::CLOSE, utc(2026, 3, 10, 0, 30)), krx), true, false, false
+    ));
+    REQUIRE(same(
+      edges.next(at(BarInterval::THIRTY_MINUTES, BarStamp::CLOSE, utc(2026, 3, 10, 6, 30)), krx), false, true, false
+    ));
+  }
+  SECTION("a daily bar is both; a daily point at the open, then the day at the close, is one of each") {
+    strategy::SessionEdges edges;
+    REQUIRE(
+      same(edges.next(at(BarInterval::ONE_DAY, BarStamp::CLOSE, utc(2026, 3, 10, 6, 30)), krx), true, true, false)
+    );
+    REQUIRE(
+      same(edges.next(at(BarInterval::ONE_DAY, BarStamp::OPEN, utc(2026, 3, 10, 15, 0)), krx), true, true, false)
+    );
+    REQUIRE(
+      same(edges.next(at(BarInterval::ONE_DAY, BarStamp::CLOSE, utc(2026, 3, 12, 0, 0)), krx), true, false, true)
+    );
+    REQUIRE(
+      same(edges.next(at(BarInterval::ONE_DAY, BarStamp::CLOSE, utc(2026, 3, 12, 6, 30)), krx), false, true, false)
+    );
+  }
+  SECTION("a replay hands its window to the strategy") {
+    // `Context::session` is what generated code and a user's strategy read; the probe context has it too.
+    strategy::MinimalContext probe;
+    REQUIRE(probe.session().open_ == krx.open_);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // The strategy surface, and what its conformance check catches
 // ---------------------------------------------------------------------------
