@@ -60,7 +60,7 @@ next bar, and inventing one would be inventing data.
 
 | | Behaviour | Why |
 | --- | --- | --- |
-| Market order | fills at the next bar's open | the only price the next bar states before trading |
+| Market order | fills at the next bar's open, or at your market-price rule's price (below) | the only price the next bar states before trading |
 | Buy limit | fills if the bar's low reached it | a bar that never touched the price is one the order sat through |
 | Sell limit | fills if the bar's high reached it | the same, mirrored |
 | Limit price | **the limit itself under `AT_LIMIT`** — or, when the limit was marketable through the whole bar, the bar's worst price instead (a buy its high, a sell its low), which is better than the limit but never better than anything the bar traded | see below; a price the bar never showed is not a fill |
@@ -72,6 +72,21 @@ next bar, and inventing one would be inventing data.
 before the auction *and* that volume existed at that level — neither of which a bar can tell you.
 Refusing it understates a result; claiming it overstates one, and a backtester that flatters is worse
 than one that disappoints.
+
+**A market order's price can be your own rule.**
+`NextBarFillModel::with_market_price` takes a name and a function of the order, the instrument's previous bar (the one the strategy saw), the bar it fills against and the price grid, and returns a price, or nothing (a DAY order then rests for its session):
+
+```cpp
+// The textbook convention: trade at the close the strategy decided on.
+const auto fills = backtest::NextBarFillModel{}.with_market_price("decision-close", [](const backtest::MarketPriceInput& in) {
+  return in.previous_ ? std::optional<Decimal64>(in.previous_->close_) : in.next_.bar_.open_;
+});
+```
+
+Slippage, commission and tax apply as to an open, limits and stops are untouched, and the fill is still stamped at the fill bar's end.
+Nothing checks the price against the bar (a close often lies outside the next bar's range after a gap), so a rule is as optimistic as you make it: the decision close above is a price a live order cannot have.
+`report.caveats_.market_price_rule_` names the rule and `market_fills_by_rule_` counts its fills.
+The mock market (`mock::MarketSettings::fills_`) applies the same rule, so a paper run and a backtest agree; a real broker's fills are the broker's.
 
 **A DAY order lives one session**, as it does at a broker. Its session is that of the first bar it can
 trade against: a decision at a daily bar's close trades in the next session, and so does a decision part
