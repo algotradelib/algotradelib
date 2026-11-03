@@ -329,6 +329,37 @@ TEST_CASE("a strategy defining one handler is driven without the others existing
   REQUIRE(dry.stop().quiet());
 }
 
+namespace {
+
+/** Counts its starts and asks for a position each time. */
+struct CountsStarts {
+  int starts_{0};
+
+  template <class Ctx>
+  void on_start(Ctx& ctx) {
+    ++starts_;
+    strategy::TargetPosition target;
+    target.instrument_ = samsung();
+    target.target_quantity_ = Decimal64::parse("10");
+    ctx.submit(target);
+  }
+};
+
+} // namespace
+
+TEST_CASE("a runner starts its strategy once") {
+  runner::DryRunner<CountsStarts> dry;
+  arrange(dry);
+  CHECK_FALSE(dry.started());
+
+  const auto first = dry.start();
+  CHECK(dry.started());
+  CHECK(first.would_place_.size() == 1);
+  // A second call calls nothing and settles nothing.
+  CHECK(dry.start().quiet());
+  CHECK(dry.strategy().starts_ == 1);
+}
+
 TEST_CASE("the probe does not learn the broker's convention from this runner's own reservation") {
   // Without this the probe would be worse than useless: with the sellable check
   // on, an accepted sell is kept as a row of ours so the next order cannot re-sell the same shares.

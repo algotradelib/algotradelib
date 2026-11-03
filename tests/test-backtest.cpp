@@ -5723,3 +5723,129 @@ TEST_CASE("a lot opened by a fill whose handler threw is still marked on later b
   REQUIRE(cash);
   CHECK(engine.ledger().equity_in(Currency{"KRW"}) == decimal_add(*cash, Decimal64::parse("73000")));
 }
+
+// --- `on_start` -------------------------------------------------------------------------------
+
+namespace {
+
+/** Records the order of its handlers, and can place a limit buy from `on_start`. */
+struct RecordsStart {
+  std::vector<std::string> calls_;
+  bool buy_on_start_{false};
+  std::vector<Decimal64> fill_prices_;
+
+  template <class Ctx>
+  void on_start(Ctx& ctx) {
+    calls_.emplace_back("start");
+    if (buy_on_start_) {
+      const auto limit = strategy::Price::checked(Decimal64::parse("71000"), krx_grid());
+      ctx.submit(
+        strategy::OrderIntent::limit(
+          samsung(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")), *limit
+        )
+          .with_tag("starts")
+      );
+    }
+  }
+
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {
+    calls_.emplace_back("bar");
+  }
+
+  template <class Ctx>
+  void on_quote(Ctx&, const strategy::QuoteEvent&) {
+    calls_.emplace_back("quote");
+  }
+
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill& fill) {
+    fill_prices_.push_back(fill.price_);
+  }
+
+  template <class Ctx>
+  void on_stop(Ctx&) {
+    calls_.emplace_back("stop");
+  }
+};
+
+/** The same record, for a strategy deciding on periods. */
+struct RecordsStartBySlice {
+  std::vector<std::string> calls_;
+
+  template <class Ctx>
+  void on_start(Ctx&) {
+    calls_.emplace_back("start");
+  }
+
+  template <class Ctx>
+  void on_bars(Ctx&, const strategy::BarSlice&) {
+    calls_.emplace_back("bars");
+  }
+};
+
+RecordsStart buying_at_start() {
+  RecordsStart strategy;
+  strategy.buy_on_start_ = true;
+  return strategy;
+}
+
+} // namespace
+
+TEST_CASE("a replay calls on_start once, before its first bar") {
+  backtest::Backtester<RecordsStart> engine(RecordsStart{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "72000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "72000"));
+  engine.finish();
+
+  CHECK(engine.strategy().calls_ == std::vector<std::string>{"start", "bar", "bar", "stop"});
+}
+
+TEST_CASE("a replay deciding on periods calls on_start before its first period") {
+  backtest::Backtester<RecordsStartBySlice> engine(RecordsStartBySlice{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "72000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "72000"));
+  engine.finish();
+
+  CHECK(engine.strategy().calls_ == std::vector<std::string>{"start", "bars", "bars"});
+}
+
+TEST_CASE("a replay given no event calls on_start before on_stop") {
+  backtest::Backtester<RecordsStart> engine(RecordsStart{}, replay_config());
+  engine.finish();
+
+  CHECK(engine.strategy().calls_ == std::vector<std::string>{"start", "stop"});
+}
+
+TEST_CASE("an order on_start places before the first bar fills against that bar") {
+  // Decided before anything was seen, so the first bar's open is from after the decision.
+  backtest::Backtester<RecordsStart> engine(buying_at_start(), replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "72000"));
+
+  CHECK(engine.strategy().fill_prices_ == std::vector<Decimal64>{Decimal64::parse("71000")});
+}
+
+TEST_CASE("an order on_start places at a first quote waits for a bar that began after it") {
+  // The day's bar began at 09:00, before the 10:30 quote that started the replay: filling against it
+  // would credit a price from before the decision.
+  backtest::Backtester<RecordsStart> engine(buying_at_start(), replay_config());
+  engine.feed(quote_at(utc(2026, 3, 10, 1, 30), "71000"));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "72000"));
+  CHECK(engine.strategy().fill_prices_.empty());
+
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "72000"));
+  CHECK(engine.strategy().fill_prices_.size() == 1);
+  CHECK(engine.strategy().calls_.front() == "start");
+  CHECK(engine.strategy().calls_[1] == "quote");
+}
+
+TEST_CASE("under the default risk limits a replay refuses an opening order from on_start") {
+  // The phase is unknown before the first event, and the default limits trade only while open.
+  backtest::Backtester<RecordsStart> engine(buying_at_start(), replay_config_with_default_phases());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "72000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "72000"));
+  engine.finish();
+
+  CHECK(engine.strategy().fill_prices_.empty());
+  CHECK(engine.result().refused_.size() == 1);
+}

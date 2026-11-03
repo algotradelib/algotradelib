@@ -1262,6 +1262,14 @@ public:
    * On a stop it honours the intent (cancelling and closing as asked) and calls the strategy's
    * `on_stop` under the `STOPPING` hold.
    *
+   * The first iteration of a runner not yet started calls `on_start` (`Runner::start`) before any
+   * read or poll, so before every other handler; it runs again in every new process, a restart
+   * included. It is the only handler that decides before the first holdings, buying-power and
+   * price-band polls: on a cold start an order intent it places is withheld and dropped, and a
+   * target is retained and placed after the first holdings read unless a later handler restates the
+   * instrument (with `allow_absent_portfolio`, both go out at once). A replay retains nothing, so
+   * state targets from `on_bar` rather than from `on_start`.
+   *
    * @param stop The stop source to poll (and that a signal handler may set).
    * @param max_iterations The most iterations to run; zero means unbounded.
    * @return The run's report.
@@ -1581,6 +1589,24 @@ private:
     // late, and on the very first iteration they would not be installed at all: a bar arriving
     // before the first order-list read could place an order against a position a predecessor may
     // have left, which is the exact hazard the startup gate exists for.
+    // **The strategy starts before anything this loop calls can feed it**, once per runner: before the
+    // order-list read below (a source's read may feed) and before every poll (a poll feeds `on_bar`,
+    // warm-up included, `on_quote` and `on_order_update`). Under a gate that does not read, so what
+    // `on_start` asks for meets the holds standing now: on a cold start the account is unread, an
+    // order intent is withheld and a target retained until a holdings read lets it through. The clock
+    // moves forwards to this reading, as it does for `on_phase`. The hold that stood before is put
+    // back afterwards, so the read below runs under the same hold as it does without `on_start`.
+    if (!runner_->started()) {
+      const auto before = held_;
+      hold(gate_for(stop, iteration.at_, report, /*may_read=*/false));
+      if (runner_->context().now() < iteration.at_) {
+        runner_->context().set_now(iteration.at_);
+      }
+      const auto watch = watch_phase(iteration);
+      runner_->start();
+      note_revised_phase("on_start handler", watch, report);
+      hold(before);
+    }
     hold(gate_for(stop, iteration.at_, report, /*may_read=*/true));
 
     for (const auto kind : all_poll_kinds) {

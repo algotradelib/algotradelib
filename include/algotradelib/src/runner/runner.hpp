@@ -1578,18 +1578,45 @@ public:
   }
 
   /**
-   * @brief Calls `on_start` and settles what it asked for.
+   * @brief Calls `on_start` and settles what it asked for, the first time it is called.
+   *
+   * A runner starts once: a later call calls nothing and returns an empty report, and a copy of a
+   * started runner is started. When `on_start` asks for nothing, nothing is settled. It is marked started before the handler runs, so a handler or a
+   * settlement that throws is not run again.
+   *
+   * `backtest::Backtester` and `PollingLoop` call it before their first event. A caller driving a
+   * runner directly calls it before the first `feed`, `feed_warmup` or `record`; otherwise the
+   * strategy decides before it was set up.
+   *
    * @return The pass's report.
    */
   Report start() {
+    if (started_) {
+      return Report{};
+    }
+    started_ = true;
     dispatch::start(strategy_, context_);
+    // A pass only for what `on_start` asked for: a settlement with nothing to place still observes
+    // and confirms, and moving that one step earlier would change a run whose `on_start` asks nothing.
+    if (context_.queued().empty()) {
+      return Report{};
+    }
     return settle();
+  }
+
+  /**
+   * @brief Tests whether `start` has been called.
+   * @return `true` once `start` has run.
+   */
+  bool started() const noexcept {
+    return started_;
   }
 
   /**
    * @brief Calls `on_stop` and settles what it asked for.
    *
    * For a caller driving a runner directly; `PollingLoop` uses `notify_stop` during a stop instead.
+   * It calls `on_stop` whether or not `start` was called.
    *
    * @return The pass's report.
    */
@@ -1625,7 +1652,7 @@ public:
    *   `on_bar`, and settles what the strategy asked for.
    *
    * Does not compile for a strategy declaring `on_bars` (`takes_bar_slices`): use `record` and
-   * `feed(const strategy::BarSlice&)`.
+   * `feed(const strategy::BarSlice&)`. Call `start` before the first feed.
    *
    * @param event The bar.
    * @return The pass's report.
@@ -1653,7 +1680,7 @@ public:
    * history too, or an order could be decided on a stale cross-section at today's price.
    *
    * Does not compile for a strategy declaring `on_bars`: use `record` and `feed_warmup(const
-   * strategy::BarSlice&)`.
+   * strategy::BarSlice&)`. Call `start` before the first feed.
    *
    * @param event The bar.
    * @throws std::invalid_argument (with a linear algebra backend) if the bar is not later than the
@@ -1672,7 +1699,7 @@ public:
    *   and the clock to the bar's period end, without calling a handler or settling.
    *
    * For a strategy declaring `on_bars`, a source records every bar of a period, then delivers the period
-   * with `feed(const strategy::BarSlice&)`.
+   * with `feed(const strategy::BarSlice&)`. Call `start` before the first `record`.
    *
    * @param event The bar.
    * @throws std::invalid_argument (with a linear algebra backend) if the bar is not later than the
@@ -4679,6 +4706,8 @@ private:
   // Plans held back whole, for any of three reasons; see `plans_withheld`.
   std::size_t plans_withheld_{0};
   std::size_t warmup_instructions_discarded_{0};
+  // Whether `start` has run; see `start`.
+  bool started_{false};
   // A stop a deferred target waits on, with the order time its listing showed (if any) to tell it from
   // another day's order under the same number.
   struct DeferredStop {

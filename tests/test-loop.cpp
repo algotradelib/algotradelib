@@ -2556,3 +2556,107 @@ TEST_CASE(
   CHECK(runner_instance.guard().halted(strategy::HaltReason::STOPPING));
   CHECK(runner_instance.executor().placed().size() == 1);
 }
+
+// --- `on_start`, live -------------------------------------------------------------------------
+
+namespace {
+
+/** Records the order of its handlers. */
+struct RecordsStartLive {
+  std::vector<std::string> calls_;
+
+  template <class Ctx>
+  void on_start(Ctx&) {
+    calls_.emplace_back("start");
+  }
+
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {
+    calls_.emplace_back("bar");
+  }
+};
+
+using StartRunner = runner::DryRunner<RecordsStartLive>;
+using StartSource = FeedingSourceFor<StartRunner>;
+
+/** A source whose order-list read feeds a bar, as a template parameter may. */
+struct FeedsOnRead : StartSource {
+  runner::PollOutcome read_order_list(StartRunner& runner_instance) {
+    runner_instance.feed(bar_at(100));
+    return runner::PollOutcome::UPDATED;
+  }
+};
+
+/** Asks for an order the moment it starts. */
+struct BuysAtStart {
+  template <class Ctx>
+  void on_start(Ctx& ctx) {
+    ctx.submit(
+      strategy::OrderIntent::market(
+        samsung(), algotradelib::OrderSide::BUY, strategy::SizeSpec::quantity(algotradelib::Decimal64::parse("10"))
+      )
+    );
+  }
+};
+
+using BuysAtStartRunner = runner::DryRunner<BuysAtStart>;
+
+} // namespace
+
+TEST_CASE("a loop calls on_start once per runner, before the first bar a poll feeds", "[loop][start]") {
+  StartRunner runner_instance;
+  StartSource source;
+  runner::PollSchedule schedule;
+  schedule.bars_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  runner::PollingLoop<StartRunner, StartSource, runner::ManualClock> loop(
+    runner_instance, source, schedule, test_clock()
+  );
+  not_about_the_portfolio(loop);
+  StopSource stop;
+
+  loop.run(stop, 2);
+  loop.run(stop, 2);
+
+  const auto& calls = runner_instance.strategy().calls_;
+  REQUIRE_FALSE(calls.empty());
+  CHECK(calls.front() == "start");
+  CHECK(std::count(calls.begin(), calls.end(), std::string("start")) == 1);
+  CHECK(std::count(calls.begin(), calls.end(), std::string("bar")) >= 2);
+}
+
+TEST_CASE("a source that feeds while reading the order list meets a started strategy", "[loop][start]") {
+  StartRunner runner_instance;
+  FeedsOnRead source;
+  runner::PollSchedule schedule;
+  schedule.tick_ = std::chrono::seconds(1);
+  runner::PollingLoop<StartRunner, FeedsOnRead, runner::ManualClock> loop(
+    runner_instance, source, schedule, test_clock()
+  );
+  not_about_the_portfolio(loop);
+  StopSource stop;
+
+  loop.run(stop, 1);
+
+  CHECK(runner_instance.strategy().calls_ == std::vector<std::string>{"start", "bar"});
+}
+
+TEST_CASE("an order on_start asks for on a cold start is not sent", "[loop][start]") {
+  // The account has not been read: what on_start decides meets the holds standing before any read.
+  BuysAtStartRunner runner_instance;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner::ManualSource<BuysAtStartRunner> source;
+  runner::PollSchedule schedule;
+  schedule.tick_ = std::chrono::seconds(1);
+  runner::PollingLoop<BuysAtStartRunner, runner::ManualSource<BuysAtStartRunner>, runner::ManualClock> loop(
+    runner_instance, source, schedule, test_clock()
+  );
+  loop.allow_unbounded_portfolio_age();
+  StopSource stop;
+
+  loop.run(stop, 3);
+
+  CHECK(runner_instance.started());
+  CHECK(runner_instance.executor().placed().empty());
+}

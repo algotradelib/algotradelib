@@ -853,7 +853,8 @@ public:
   /**
    * @brief Replays one bar.
    *
-   * In order: record the previous period's equity point if this bar begins another period
+   * In order: on the replay's first event, call `on_start` (`Runner::start`; its orders are eligible on
+   * this bar), record the previous period's equity point if this bar begins another period
    * (`EquityCurve::PER_PERIOD`), fill orders resting from earlier bars against this bar (and call `on_fill`),
    * mark positions at the close (recording this bar's point under `EquityCurve::PER_BAR`), advance the clock
    * to the bar's period end
@@ -900,6 +901,9 @@ public:
         }
       }
     }
+    // Before anything this bar changes, so an order `on_start` places is queued ahead of the first
+    // `open_bar`: eligible on this bar, undated, decided before anything was seen.
+    start_strategy();
     ++result_.bars_;
     if (previous_ && !ReplayClock::contiguous(previous_->first, previous_->second, event)) {
       // A gap is counted rather than interpolated across: nothing happened in it that a strategy
@@ -1022,6 +1026,9 @@ public:
    * @brief Replays one quote: moves the price and the clock to it, re-derives the phase (calling
    *   `on_phase` on a change), calls `on_quote`, and publishes order updates.
    *
+   * On the replay's first event, `on_start` is called first, after the quote's instant is taken as
+   * the decision instant: its orders cannot fill against a bar whose period began before the quote.
+   *
    * A quote does not mark the ledger, record an equity point or fill anything. An order placed from
    * `on_quote` fills against a later bar, not the quote (see `ReportCaveats::quotes_`). Compared
    * with a live loop, `on_phase` fires before `on_quote` here (live, after the iteration's polls),
@@ -1068,6 +1075,9 @@ public:
     // Dated before anything can place an order, so a decision made here is not credited a price from
     // earlier in the bar it will fill against. See `QueuedOrder::decided_at_`.
     runner_.executor().deciding_at(event.quote_.received_at_);
+    // After the dating, unlike the bar path: an order `on_start` places here carries the quote's
+    // instant, so a bar whose period began before it cannot fill it.
+    start_strategy();
 
     // **The phase is re-derived at the quote's own instant, before the handler runs.** Without this
     // a quote at 10:30 was shown the phase as it stood at the previous close, and the default
@@ -1107,7 +1117,8 @@ public:
    * @brief Ends the replay: calls `on_stop` (with the current portfolio, including orders from the
    *   last bar), settles what it asked for, and counts the orders still queued.
    *
-   * For a strategy declaring `on_bars`, the last period's bars are delivered first.
+   * For a strategy declaring `on_bars`, the last period's bars are delivered first. A replay given no
+   * event calls `on_start` before `on_stop`.
    *
    * After a halt it does nothing; `on_stop` is not called.
    */
@@ -1121,6 +1132,8 @@ public:
       pending_.clear();
       return;
     }
+    // A replay given no event still starts the strategy before stopping it.
+    start_strategy();
     if constexpr (Runner::takes_bar_slices) {
       // The last period has no later bar to deliver it: it goes before `on_stop` and before `unfilled_`
       // is counted, so both see what it placed.
@@ -1319,18 +1332,27 @@ private:
     return std::nullopt;
   }
 
+  // Calls `on_start` once, before the replay's first event, with the opening portfolio installed, and
+  // publishes what it placed. What it sees: no last price, the context's clock not yet set, phase
+  // `UNKNOWN` (so the default risk limits refuse an order that opens exposure).
+  void start_strategy() {
+    if (runner_.started()) {
+      return;
+    }
+    install_portfolio();
+    drain_reports(runner_.start());
+    publish_order_updates();
+  }
+
   // Returns whether `entry` may fill against `event`, and records where the question *could this be
   // credited a price from before it was decided* could not be answered at all.
   //
   // Three answers:
   //
-  // 1. **An undated order is eligible.** That is every order placed by a caller driving
-  //    `QueueingExecutor` directly, and this rule exists to defer fills rather than to invent them.
-  //    **No test can reach this branch through `Backtester`**, because the engine stamps the instant
-  //    before every dispatch that can place -- so a mutation removing it is not caught, and that is
-  //    a property of the branch rather than a weakness in the tests. It is kept because
-  //    `QueuedOrder::decided_at_` is an optional on a public type, and an undated one is a state the
-  //    type admits; nothing outside this class calls this function, so no caller exercises it today.
+  // 1. **An undated order is eligible.** That is an order `on_start` placed before a replay's first
+  //    bar (decided before anything was seen, so no bar's open can be from after the decision), and
+  //    every order placed by a caller driving `QueueingExecutor` directly. This rule exists to defer
+  //    fills rather than to invent them. Every other dispatch that can place is dated first.
   // 2. **Where `period_start_of` answers, the comparison is made**: the bar's period must have begun
   //    **at or after** the decision. A period that began before it contains the decision, and its
   //    open price -- which is what `NextBarFillModel` credits a market order with -- is from before
