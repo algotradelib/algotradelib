@@ -71,7 +71,8 @@ struct MarketSettings {
  *
  * A bar is applied when the clock passes its period end. Orders fill by the backtest's rule
  * (`backtest::NextBarFillModel`): an order trades against the first bar of its instrument whose
- * period began at or after the instant the market accepted it, a market order at that bar's open, a
+ * period began at or after the instant the market accepted it, a market order at that bar's open (or at the
+ * price of the fill model's market-price rule, given the series' bar before it), a
  * limit order if the bar's range reaches the limit, never partly; the fill is stamped at the bar's
  * period end. A `DAY` order lives in the session of that first bar, and expires as a backtest's does:
  * after a daily bar of its session, after an intraday bar ending at or after the session's close, or
@@ -757,8 +758,10 @@ private:
       planned.time_in_force_ = snapshot.time_in_force_;
       planned.quantity_ = snapshot.quantity_;
       planned.price_ = snapshot.price_;
-      const auto decision =
-        settings_.fills_.decide(planned, event, listing.reference_.price_rule_, fill_date, open_date);
+      const auto decision = settings_.fills_.decide(
+        planned, event, listing.reference_.price_rule_, fill_date, open_date, false,
+        at == 0 ? nullptr : &series.bars_[at - 1]
+      );
       if (decision.costing_error_) {
         halted_ = "the mock market halted: order " + snapshot.order_id_ + "'s fill could not be costed (" +
           decision.costing_error_->message_ + ")";

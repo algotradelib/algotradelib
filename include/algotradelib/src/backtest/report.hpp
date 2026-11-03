@@ -168,6 +168,16 @@ struct ReportCaveats {
    */
   std::size_t limit_fills_bounded_{0};
   /**
+   * @brief The fill model's market-price rule (`NextBarFillModel::with_market_price`), or empty when market orders
+   *   took the next bar's open.
+   *
+   * A rule's price is not checked against the bar it fills against; a rule that trades at the close the strategy
+   * decided on is optimistic, since a live order cannot use a close and still trade at it.
+   */
+  std::string market_price_rule_;
+  /** @brief How many fills the market-price rule priced. */
+  std::size_t market_fills_by_rule_{0};
+  /**
    * @brief Bars that closed with cash below zero in the replay's currency: the replay borrowed, which
    *   the default limits allow.
    *
@@ -348,6 +358,8 @@ inline Report summarize(
   report.caveats_.stop_releases_ = result.stop_releases_;
   report.caveats_.stop_fills_intrabar_ = result.stop_fills_intrabar_;
   report.caveats_.limit_fills_bounded_ = result.limit_fills_bounded_;
+  report.caveats_.market_price_rule_ = fills.market_price_rule();
+  report.caveats_.market_fills_by_rule_ = result.market_fills_by_rule_;
   report.caveats_.quotes_ = result.quotes_;
   report.caveats_.unchecked_fill_causality_ = result.unchecked_fill_causality_;
   report.caveats_.unvalued_bars_ = result.unvalued_bars_;

@@ -221,6 +221,24 @@ TEST_CASE("a mock market order fills at the open of the next bar", "[mock]") {
   CHECK(market.buying_power(Currency{"KRW"}).value().cash_.amount_ == dec("999940"));
 }
 
+TEST_CASE("a mock market order takes the fill model's market-price rule, given the bar before it", "[mock]") {
+  auto settings = cash("1000000", utc(2026, 3, 2, 6, 30));
+  settings.fills_ = settings.fills_.with_market_price("decision-close", [](const backtest::MarketPriceInput& in) {
+    return in.previous_ ? std::optional<Decimal64>(in.previous_->close_) : std::nullopt;
+  });
+  mock::Market market({three_days()}, settings);
+  REQUIRE(market.place(market_order(OrderSide::BUY, "10")));
+  // A limit is priced by its limit, never by the rule.
+  REQUIRE(market.place(limit_buy("1", "108")));
+  market.advance_to(utc(2026, 3, 3, 6, 30));
+  const auto page = market.order_history({});
+  REQUIRE(page.orders_.size() == 2);
+  // Day 1's close, which day 2's range (105 to 115) does not hold: no range check.
+  CHECK(page.orders_[0].execution_.average_filled_price_ == dec("105"));
+  CHECK(page.orders_[0].execution_.filled_at_ == utc(2026, 3, 3, 6, 30));
+  CHECK(page.orders_[1].execution_.average_filled_price_ == dec("108"));
+}
+
 TEST_CASE("a mock limit fills only when its bar reaches it and a day order expires after its session", "[mock]") {
   mock::Market market({three_days()}, cash("1000000", utc(2026, 3, 2, 6, 30)));
   REQUIRE(market.place(limit_buy("1", "104"))); // day 2's low is 105

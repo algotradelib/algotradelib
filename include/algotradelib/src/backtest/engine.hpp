@@ -707,6 +707,8 @@ struct ReplayResult {
   std::size_t stop_fills_intrabar_{0};
   /** @brief Limit-type fills moved to stay in range; see `ReportCaveats::limit_fills_bounded_`. */
   std::size_t limit_fills_bounded_{0};
+  /** @brief Fills priced by the fill model's market-price rule; see `ReportCaveats::market_fills_by_rule_`. */
+  std::size_t market_fills_by_rule_{0};
   /**
    * @brief Bars that closed with cash below zero in `currency_` (counted per bar fed, so two
    *   instruments count both).
@@ -934,6 +936,10 @@ public:
       record_point(*period_point_);
     }
     settle_queued_against(event, slot);
+    if (fills_.has_market_price_rule()) {
+      // The bar a later fill's rule sees as the one before it; kept only when a rule reads it.
+      slot.previous_bar_ = event.bar_;
+    }
     // **The halt stops this bar too, not merely the next one.** Returning only from settlement left
     // `feed` to mark the book, record an equity point, advance the clock and call `on_phase` and
     // `on_bar` on the very bar whose fill could not be costed -- so the strategy decided once more
@@ -1183,6 +1189,8 @@ private:
     std::optional<std::size_t> lot_;
     /** @brief The context's last-price entry, once set. */
     Decimal64* price_{nullptr};
+    /** @brief The instrument's last bar fed, for the fill model's market-price rule; kept only when one is set. */
+    std::optional<Bar> previous_bar_;
     /** @brief One entry per interval seen. */
     std::vector<ByInterval> intervals_;
 
@@ -1471,8 +1479,10 @@ private:
       const auto open_date = event.stamp_ == BarStamp::OPEN ?
         std::optional<Date>(clock_.session().local_date(event.bar_.timestamp_)) :
         std::nullopt;
-      auto decision =
-        fills_.decide(order, event, rule, clock_.session().local_date(event.period_end_), open_date, entry->released_);
+      auto decision = fills_.decide(
+        order, event, rule, clock_.session().local_date(event.period_end_), open_date, entry->released_,
+        slot.previous_bar_ ? &*slot.previous_bar_ : nullptr
+      );
       if (decision.released_) {
         // Recorded before anything below can withdraw the order, and whether or not it filled: a stop
         // that released and still rests is a limit from the next bar on.
@@ -1535,6 +1545,9 @@ private:
       }
       if (decision.bounded_) {
         ++result_.limit_fills_bounded_;
+      }
+      if (decision.priced_by_rule_) {
+        ++result_.market_fills_by_rule_;
       }
       // Moved, not copied: the result is the only record of a replay's executions. Nothing below adds to
       // `result_.executions_` before `on_fill` returns, so the reference stays valid.

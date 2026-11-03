@@ -8,8 +8,10 @@
 
 #include <algotradelib/core>
 
+#include <functional>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace algotradelib {
@@ -48,7 +50,33 @@ struct FillDecision {
    *   counted by the report.
    */
   bool bounded_{false};
+  /** @brief Whether the price was chosen by the model's market-price rule; counted by the report. */
+  bool priced_by_rule_{false};
 };
+
+/** @brief What a market-price rule is given (see `NextBarFillModel::with_market_price`). */
+struct MarketPriceInput {
+  /** @brief The order to price: a market order, or any other type the model does not price against a limit. */
+  const strategy::PlannedOrder& order_;
+  /**
+   * @brief The instrument's bar before `next`: the last bar the strategy could have seen when it decided, or null
+   *   when the instrument has no earlier bar.
+   */
+  const Bar* previous_;
+  /** @brief The bar the order fills against. */
+  const strategy::BarEvent& next_;
+  /** @brief The instrument's price grid. */
+  const PriceRule& rule_;
+};
+
+/**
+ * @brief A market-price rule: the price a market order trades at against `next_`, before slippage, or nothing when
+ *   it does not trade against that bar.
+ *
+ * Nothing checks the price against `next_`'s range: a rule may name any price (the decision bar's close lies
+ * outside the next bar's range after a gap). The report names the rule and counts the fills it priced.
+ */
+using MarketPriceFunction = std::function<std::optional<Decimal64>(const MarketPriceInput&)>;
 
 /** @brief A tax on sales, stated by the caller; see `NextBarFillModel::with_sell_tax`. */
 struct SellTax {
@@ -147,6 +175,49 @@ public:
   }
 
   /**
+   * @brief Returns a copy of this model that prices market orders by a rule instead of the next bar's open.
+   *
+   * The rule is called for every order the model does not price against a limit (`limit_priced` false), with the
+   * order, the instrument's previous bar and the bar it fills against. Its price is then slipped, costed and taxed
+   * as an open would be, and the fill is stamped at `next.period_end_` and charged on the fill bar's date. When it
+   * returns nothing, a `DAY` order rests for a later bar of its session and any other order is withdrawn.
+   * Limit and stop-limit orders are untouched.
+   *
+   * The rule may look at `next_` beyond its open (its close, high or low): that is a choice the rule makes, not one
+   * the model can check, and the report names the rule so a reader can judge it.
+   *
+   * @param name A name for the report (`ReportCaveats::market_price_rule_`).
+   * @param price The rule.
+   * @return The new model.
+   * @throws std::invalid_argument if the name is empty or the rule is empty.
+   */
+  NextBarFillModel with_market_price(std::string name, MarketPriceFunction price) const {
+    if (name.empty() || !price) {
+      throw std::invalid_argument("a market-price rule needs a name and a function");
+    }
+    auto model = *this;
+    model.market_price_name_ = std::move(name);
+    model.market_price_ = std::move(price);
+    return model;
+  }
+
+  /**
+   * @brief Returns the market-price rule's name.
+   * @return The name, or empty when market orders take the next bar's open.
+   */
+  const std::string& market_price_rule() const noexcept {
+    return market_price_name_;
+  }
+
+  /**
+   * @brief Tests whether a market-price rule is set.
+   * @return `true` if one is.
+   */
+  bool has_market_price_rule() const noexcept {
+    return static_cast<bool>(market_price_);
+  }
+
+  /**
    * @brief Tests whether the model prices an order type against its limit (a limit order, and a stop-limit
    *   once released).
    * @param type The order type.
@@ -196,7 +267,8 @@ public:
   /**
    * @brief Decides whether an order trades against a bar, and at what price and cost.
    *
-   * - **Market**: the bar's open (its close if it has no open).
+   * - **Market**: the bar's open (its close if it has no open), or the market-price rule's price when one is set
+   *   (`with_market_price`).
    * - **Limit**: only if the bar reached the limit (low at or below a buy limit, high at or above a
    *   sell limit). Credited the limit, or under `AT_OPEN_IF_BETTER` the open if better; the credit is
    *   kept within the bar's range and never through the limit, even after slippage.
@@ -218,17 +290,28 @@ public:
    *   fill priced at the open. For a fill inside a multi-day bar `date` is used, which can be a later
    *   day than the fill.
    * @param released Whether an earlier bar already released this stop-limit order.
+   * @param previous The instrument's bar before `next`, for a market-price rule; null when there is none.
    * @return The decision. A stop-limit order not yet released without both a trigger and a limit
    *   price neither trades nor rests (a released stop must still have its limit price).
    */
   FillDecision decide(
     const strategy::PlannedOrder& order, const strategy::BarEvent& next, const PriceRule& rule, const Date& date,
-    const std::optional<Date>& open_date = std::nullopt, bool released = false
+    const std::optional<Date>& open_date = std::nullopt, bool released = false, const Bar* previous = nullptr
   ) const {
     FillDecision decision;
     bool at_open = false;
     std::optional<Decimal64> reference;
-    if (carries_trigger_price(order.type_) && !released) {
+    if (market_price_ && !limit_priced(order.type_)) {
+      reference = market_price_(MarketPriceInput{order, previous, next, rule});
+      if (!reference) {
+        // Not this bar: a DAY order rests for the rest of its session; any other is withdrawn.
+        decision.still_working_ = order.time_in_force_ == TimeInForce::DAY;
+        return decision;
+      }
+      decision.priced_by_rule_ = true;
+      // Charged on the fill bar's own day, as an open's fill is.
+      at_open = true;
+    } else if (carries_trigger_price(order.type_) && !released) {
       if (!order.trigger_price_ || !order.price_) {
         // Not a stop this model can release (a caller driving the model directly).
         return decision;
@@ -512,6 +595,8 @@ private:
   SlippageModel slippage_;
   LimitFillPrice limit_price_;
   std::optional<SellTax> sell_tax_;
+  std::string market_price_name_;
+  MarketPriceFunction market_price_;
 };
 
 } // namespace backtest

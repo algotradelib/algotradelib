@@ -1585,6 +1585,70 @@ TEST_CASE("a sell tax rate outside zero to one is refused", "[sell-tax]") {
   CHECK_NOTHROW(model.with_sell_tax(backtest::SellTax{Decimal64::parse("0"), Country::KR}));
 }
 
+TEST_CASE("a market-price rule prices market orders from the bar before the fill bar", "[market-price]") {
+  std::vector<std::pair<std::optional<Decimal64>, Decimal64>> seen;
+  const auto model =
+    backtest::NextBarFillModel{}.with_market_price("decision-close", [&seen](const backtest::MarketPriceInput& in) {
+      seen.emplace_back(
+        in.previous_ ? std::optional<Decimal64>(in.previous_->close_) : std::nullopt, in.next_.bar_.close_
+      );
+      return in.previous_ ? std::optional<Decimal64>(in.previous_->close_) : std::nullopt;
+    });
+  CHECK(model.market_price_rule() == "decision-close");
+  backtest::Backtester<BuysThenSells> engine(BuysThenSells{}, replay_config(), model);
+  engine.feed(moving_bar(utc(2026, 3, 9, 6, 30), BarInterval::ONE_DAY, "60000", "61000"));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "71000", "72000"));
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "65000", "66000"));
+  engine.finish();
+  const auto& executions = engine.result().executions_;
+  REQUIRE(executions.size() == 2);
+  // Bought on the first close, outside the second bar's range, and sold on the third close: no range check.
+  CHECK(executions[0].fill_.price_ == Decimal64::parse("61000"));
+  CHECK(executions[0].fill_.at_ == utc(2026, 3, 10, 6, 30));
+  CHECK(executions[1].fill_.side_ == OrderSide::SELL);
+  CHECK(executions[1].fill_.price_ == Decimal64::parse("72000"));
+  CHECK(engine.result().market_fills_by_rule_ == 2);
+  // Called with the instrument's previous bar and the fill bar, never the fill bar as its own previous.
+  REQUIRE(seen.size() == 2);
+  CHECK(seen[0].first == std::optional<Decimal64>(Decimal64::parse("61000")));
+  CHECK(seen[0].second == Decimal64::parse("70000"));
+#if defined(ATL_HAS_EIGEN)
+  const auto report = backtest::summarize(engine.result(), engine.fills());
+  CHECK(report.caveats_.market_price_rule_ == "decision-close");
+  CHECK(report.caveats_.market_fills_by_rule_ == 2);
+#endif
+}
+
+TEST_CASE("a market-price rule that names no price leaves a day order resting for its session", "[market-price]") {
+  // Prices only a bar closing at 70,000 or more, at its open.
+  const auto model = backtest::NextBarFillModel{}.with_market_price("late", [](const backtest::MarketPriceInput& in) {
+    return decimal_less(in.next_.bar_.close_, Decimal64::parse("70000")) ? std::nullopt : in.next_.bar_.open_;
+  });
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config(), model);
+  engine.feed(moving_bar(utc(2026, 3, 9, 6, 30), BarInterval::ONE_DAY, "60000", "61000"));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "65000", "66000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.finish();
+  const auto& executions = engine.result().executions_;
+  REQUIRE(executions.size() == 1);
+  CHECK(executions[0].fill_.price_ == Decimal64::parse("69000"));
+  // The first order rested through the second bar, whose session then ended.
+  CHECK(engine.result().expired_day_orders_ == 1);
+}
+
+TEST_CASE("a market-price rule needs a name and a function", "[market-price]") {
+  const backtest::NextBarFillModel model;
+  CHECK_FALSE(model.has_market_price_rule());
+  CHECK(model.market_price_rule().empty());
+  const auto open = [](const backtest::MarketPriceInput& in) {
+    return in.next_.bar_.open_;
+  };
+  CHECK_THROWS_AS(model.with_market_price("", open), std::invalid_argument);
+  CHECK_THROWS_AS(model.with_market_price("open", backtest::MarketPriceFunction{}), std::invalid_argument);
+  CHECK(model.with_market_price("open", open).has_market_price_rule());
+}
+
 #if defined(ATL_HAS_EIGEN)
 TEST_CASE("a stated tax with nothing executed reports no tax figure", "[sell-tax]") {
   backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config(), taxed(Country::KR));
