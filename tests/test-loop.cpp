@@ -2659,4 +2659,28 @@ TEST_CASE("an order on_start asks for on a cold start is not sent", "[loop][star
 
   CHECK(runner_instance.started());
   CHECK(runner_instance.executor().placed().empty());
+  // Withheld for the account never read, before the guard is asked.
+  CHECK(runner_instance.plans_withheld() == 1);
+  CHECK(runner_instance.orders_guard_refused() == 0);
+}
+
+TEST_CASE("an order on_start asks for without an account read is refused under the order-list hold", "[loop][start]") {
+  // With the absence opt-out nothing withholds it, and the hold for an order list not yet read refuses it.
+  BuysAtStartRunner runner_instance;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner::ManualSource<BuysAtStartRunner> source;
+  runner::PollSchedule schedule;
+  schedule.tick_ = std::chrono::seconds(1);
+  runner::PollingLoop<BuysAtStartRunner, runner::ManualSource<BuysAtStartRunner>, runner::ManualClock> loop(
+    runner_instance, source, schedule, test_clock()
+  );
+  not_about_the_portfolio(loop);
+  StopSource stop;
+
+  loop.run(stop, 3);
+
+  CHECK(runner_instance.executor().placed().empty());
+  CHECK(runner_instance.plans_withheld() == 0);
+  CHECK(runner_instance.orders_guard_refused() == 1);
 }

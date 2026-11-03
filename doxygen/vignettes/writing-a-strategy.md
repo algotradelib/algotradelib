@@ -51,10 +51,12 @@ only `on_bar` and costs nothing for the rest.
 
 **`on_start` is for setting up, not for trading.** It runs once per runner: a backtest calls it
 before its first bar or quote, a live loop on its first iteration, before any read or poll. It sees
-no prices and, in a backtest, the phase `UNKNOWN`, so the default risk limits refuse an order that
-opens exposure. Live, it decides before the account has been read: an order it places is withheld,
-while a target is kept and placed after the first holdings read. The two modes differ there, so
-state targets from `on_bar`. A live program runs it again after every restart.
+no prices. In a backtest its clock is not set yet and the phase is `UNKNOWN`, so the default risk
+limits refuse an order that opens exposure. Live, it decides before the broker's order list and
+account have been read: while the account has never been read, an order it places is withheld and
+dropped, while a target is kept and placed after the first holdings read; otherwise what it places
+is refused. The two modes differ there, so state targets from `on_bar`. A live program runs it
+again after every restart.
 
 **`on_fill` does not fire live, and this is the one difference between the two modes that can cost
 money.** A fill is discovered live by polling: positions are replaced and working orders are

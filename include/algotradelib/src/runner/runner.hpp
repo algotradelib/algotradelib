@@ -1581,8 +1581,8 @@ public:
    * @brief Calls `on_start` and settles what it asked for, the first time it is called.
    *
    * A runner starts once: a later call calls nothing and returns an empty report, and a copy of a
-   * started runner is started. When `on_start` asks for nothing, nothing is settled. It is marked started before the handler runs, so a handler or a
-   * settlement that throws is not run again.
+   * started runner is started. It is marked started before the handler runs, so a handler or a
+   * settlement that throws is not run again. When `on_start` asks for nothing, nothing is settled.
    *
    * `backtest::Backtester` and `PollingLoop` call it before their first event. A caller driving a
    * runner directly calls it before the first `feed`, `feed_warmup` or `record`; otherwise the

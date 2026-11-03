@@ -1264,10 +1264,12 @@ public:
    *
    * The first iteration of a runner not yet started calls `on_start` (`Runner::start`) before any
    * read or poll, so before every other handler; it runs again in every new process, a restart
-   * included. It is the only handler that decides before the first holdings, buying-power and
-   * price-band polls: on a cold start an order intent it places is withheld and dropped, and a
-   * target is retained and placed after the first holdings read unless a later handler restates the
-   * instrument (with `allow_absent_portfolio`, both go out at once). A replay retains nothing, so
+   * included. It is the first handler, and it decides before the first holdings, buying-power and
+   * price-band polls, under the hold for an order list not yet read. While the account has never
+   * been read, an order intent it places is withheld and dropped, and a target is retained and placed
+   * after the first holdings read, unless a later handler restates the instrument or a stop is
+   * pending. Otherwise (with `allow_absent_portfolio`, or a portfolio installed before the run),
+   * everything it places is refused under that hold and dropped. A replay retains nothing either, so
    * state targets from `on_bar` rather than from `on_start`.
    *
    * @param stop The stop source to poll (and that a signal handler may set).

@@ -153,6 +153,8 @@ int drive(
 
   const auto& last = state.bars_.bars_.back();
   live_runner.context().set_last_price(instrument, last.close_);
+  // A runner driven by hand starts its strategy before the first feed.
+  live_runner.start();
   const auto report =
     live_runner.feed(strategy::make_bar_event(instrument, state.bars_.interval_, state.bars_.stamp_, last));
 
@@ -353,6 +355,7 @@ int trade_dry(const std::string& symbol) {
   bar.close_ = Decimal64::parse("70000");
   bar.volume_ = Decimal64::parse("1200000");
 
+  dry.start();
   const auto report =
     dry.feed(strategy::make_bar_event(instrument, BarInterval::ONE_DAY, algotradelib::BarStamp::CLOSE, bar));
   for (const auto& order : report.would_place_) {

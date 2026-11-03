@@ -169,6 +169,8 @@ void run(const char* title, Strategy instance, const strategy::RiskLimits& limit
   dry.context().set_instrument(samsung_reference());
   dry.context().set_phase(strategy::MarketPhase::OPEN);
   dry.set_portfolio_value(Decimal64::parse("100000000"));
+  // A runner driven by hand starts its strategy before the first feed.
+  dry.start();
 
   Decimal64 held = Decimal64::parse("0");
   RefusalTally refusals;
