@@ -60,7 +60,8 @@ struct MarketPriceInput {
   const strategy::PlannedOrder& order_;
   /**
    * @brief The instrument's last price when the strategy decided the order (the close of the bar it decided on,
-   *   or the quote it decided on), or empty when it had none yet.
+   *   or the quote it decided on; for an order placed in `on_fill`, the close before the fill bar), or empty when it
+   *   had none yet.
    */
   const std::optional<Decimal64>& decision_price_;
   /**

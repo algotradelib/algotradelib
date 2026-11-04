@@ -188,7 +188,7 @@ TEST_CASE("session edges: the first and last bar of each session, whatever the i
     return a.opens_ == opens && a.closes_ == closes && a.point_ == point;
   };
 
-  SECTION("minute bars stamped at their start: the 09:00 bar opens, the 15:30 closing print closes") {
+  SECTION("minute bars stamped at their start: the 09:00 bar opens, the 15:29 bar closes, the 15:30 print does not") {
     strategy::SessionEdges edges;
     // 09:00 KST is 00:00 UTC.
     REQUIRE(
@@ -200,8 +200,12 @@ TEST_CASE("session edges: the first and last bar of each session, whatever the i
     REQUIRE(
       same(edges.next(at(BarInterval::ONE_MINUTE, BarStamp::OPEN, utc(2026, 3, 10, 6, 19)), krx), false, false, false)
     );
+    // The 15:29 bar's period, 15:29 to 15:30, holds the close; the 15:30 auction bar after it closes nothing more.
     REQUIRE(
-      same(edges.next(at(BarInterval::ONE_MINUTE, BarStamp::OPEN, utc(2026, 3, 10, 6, 30)), krx), false, true, false)
+      same(edges.next(at(BarInterval::ONE_MINUTE, BarStamp::OPEN, utc(2026, 3, 10, 6, 29)), krx), false, true, false)
+    );
+    REQUIRE(
+      same(edges.next(at(BarInterval::ONE_MINUTE, BarStamp::OPEN, utc(2026, 3, 10, 6, 30)), krx), false, false, false)
     );
     // After-hours bars close nothing more; the next day's first bar, even a late one, opens.
     REQUIRE(

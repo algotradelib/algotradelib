@@ -75,7 +75,8 @@ struct QueuedOrder {
   bool released_{false};
   /**
    * @brief The order's instrument's last price when the strategy decided it, for a market-price rule
-   *   (`NextBarFillModel::with_market_price`); stamped by `Backtester` after the pass that placed it.
+   *   (`NextBarFillModel::with_market_price`); stamped by `Backtester` after the pass that placed it. For an order
+   *   placed in `on_fill` it is the close before the fill bar, which is priced only after settlement.
    */
   std::optional<Decimal64> decision_price_;
   /**
