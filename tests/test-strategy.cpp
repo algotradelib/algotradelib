@@ -210,9 +210,10 @@ TEST_CASE("session edges: the first and last bar of each session, whatever the i
     REQUIRE(
       same(edges.next(at(BarInterval::ONE_MINUTE, BarStamp::OPEN, utc(2026, 3, 11, 0, 2)), krx), true, false, false)
     );
-    // Two sessions opened, one closed.
+    // Two sessions opened, one closed; the 16:00 after-hours bar lay outside its session.
     CHECK(edges.opened() == 2);
     CHECK(edges.closed() == 1);
+    CHECK(edges.outside() == 1);
   }
   SECTION("a bar ending at the open is before the session; a 30-minute bar ending at the close closes it") {
     strategy::SessionEdges edges;

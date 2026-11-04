@@ -356,12 +356,17 @@ public:
     const auto close = session.closes_at(start);
     edge.point_ = start == end;
     const bool reaches = start < close && (open < end || (edge.point_ && end == open));
+    const bool holds_close = start <= close && close <= end;
+    if (!reaches && !holds_close) {
+      // Before the open or after the close: pre-market or after-hours data, which still enters a strategy's series.
+      ++outside_count_;
+    }
     if (reaches && !(opened_ && *opened_ == date)) {
       edge.opens_ = true;
       opened_ = date;
       ++opened_count_;
     }
-    if (start <= close && close <= end && !(closed_ && *closed_ == date)) {
+    if (holds_close && !(closed_ && *closed_ == date)) {
       edge.closes_ = true;
       closed_ = date;
       ++closed_count_;
@@ -385,11 +390,20 @@ public:
     return closed_count_;
   }
 
+  /**
+   * @brief Returns how many bars lay wholly outside their session (before its open or after its close).
+   * @return The count; above zero, pre-market or after-hours bars are in the data.
+   */
+  std::size_t outside() const noexcept {
+    return outside_count_;
+  }
+
 private:
   std::optional<Date> opened_;
   std::optional<Date> closed_;
   std::size_t opened_count_{0};
   std::size_t closed_count_{0};
+  std::size_t outside_count_{0};
 };
 
 struct BarSlice;
