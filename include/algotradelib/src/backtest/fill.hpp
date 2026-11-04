@@ -63,6 +63,11 @@ struct MarketPriceInput {
    *   or the quote it decided on), or empty when it had none yet.
    */
   const std::optional<Decimal64>& decision_price_;
+  /**
+   * @brief When `decision_price_` was observed (the bar's period end, or the quote's time); older than
+   *   `decided_at_`'s bar when the instrument had no newer price, as after a halt.
+   */
+  const std::optional<std::chrono::system_clock::time_point>& decision_price_at_;
   /** @brief When the strategy decided the order, if known. */
   const std::optional<std::chrono::system_clock::time_point>& decided_at_;
   /** @brief The bar the order fills against. */
@@ -293,6 +298,7 @@ public:
    *   day than the fill.
    * @param released Whether an earlier bar already released this stop-limit order.
    * @param decision_price The instrument's last price when the order was decided, for a market-price rule.
+   * @param decision_price_at When that price was observed, for a market-price rule.
    * @param decided_at When the order was decided, for a market-price rule.
    * @return The decision. A market-price rule's price that is not positive is a costing error (code
    *   `market_price_not_positive`), so the replay halts. A stop-limit order not yet released without both a trigger and a limit
@@ -302,13 +308,14 @@ public:
     const strategy::PlannedOrder& order, const strategy::BarEvent& next, const PriceRule& rule, const Date& date,
     const std::optional<Date>& open_date = std::nullopt, bool released = false,
     const std::optional<Decimal64>& decision_price = std::nullopt,
+    const std::optional<std::chrono::system_clock::time_point>& decision_price_at = std::nullopt,
     const std::optional<std::chrono::system_clock::time_point>& decided_at = std::nullopt
   ) const {
     FillDecision decision;
     bool at_open = false;
     std::optional<Decimal64> reference;
     if (market_price_ && !limit_priced(order.type_)) {
-      reference = market_price_(MarketPriceInput{order, decision_price, decided_at, next, rule});
+      reference = market_price_(MarketPriceInput{order, decision_price, decision_price_at, decided_at, next, rule});
       if (!reference) {
         // Not this bar: a DAY order rests for the rest of its session; any other is withdrawn.
         decision.still_working_ = order.time_in_force_ == TimeInForce::DAY;

@@ -470,6 +470,7 @@ public:
     accepted.reserve_price_ = reserve_price;
     if (const auto last = last_closed(*listing)) {
       accepted.decision_price_ = listing->series_.bars_[*last].close_;
+      accepted.decision_price_at_ = period_end(*listing, *last);
     }
     orders_.push_back(std::move(accepted));
     PlacedOrder<Broker> placed;
@@ -563,6 +564,8 @@ private:
     std::optional<Decimal64> reserve_price_;
     /** The instrument's last close when the order was placed, for the fill model's market-price rule. */
     std::optional<Decimal64> decision_price_;
+    /** The period end of the bar that close came from. */
+    std::optional<std::chrono::system_clock::time_point> decision_price_at_;
     /** The local date of the first bar it was eligible against, which a `DAY` order lives in. */
     std::optional<Date> session_;
   };
@@ -765,7 +768,7 @@ private:
       planned.price_ = snapshot.price_;
       const auto decision = settings_.fills_.decide(
         planned, event, listing.reference_.price_rule_, fill_date, open_date, false, order.decision_price_,
-        snapshot.ordered_at_
+        order.decision_price_at_, snapshot.ordered_at_
       );
       if (decision.costing_error_) {
         halted_ = "the mock market halted: order " + snapshot.order_id_ + "'s fill could not be costed (" +

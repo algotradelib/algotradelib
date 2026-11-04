@@ -1652,6 +1652,63 @@ TEST_CASE("a decision on a quote is priced at the quote, not at the bar before t
   CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("71000"));
 }
 
+TEST_CASE("a market-price rule is told when the decision price was observed", "[market-price]") {
+  // The order is decided on day 11's bar; its instrument's price then is day 11's close, observed at that bar's end.
+  std::vector<std::pair<std::optional<Clock::time_point>, std::optional<Clock::time_point>>> seen;
+  const auto model =
+    backtest::NextBarFillModel{}.with_market_price("observed", [&seen](const backtest::MarketPriceInput& in) {
+      seen.emplace_back(in.decision_price_at_, in.decided_at_);
+      return in.decision_price_;
+    });
+  backtest::Backtester<BuysThenSells> engine(BuysThenSells{}, replay_config(), model);
+  engine.feed(moving_bar(utc(2026, 3, 9, 6, 30), BarInterval::ONE_DAY, "60000", "61000"));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  REQUIRE(seen.size() == 1);
+  CHECK(seen[0].first == std::optional<Clock::time_point>(utc(2026, 3, 9, 6, 30)));
+  CHECK(seen[0].second == std::optional<Clock::time_point>(utc(2026, 3, 9, 6, 30)));
+}
+
+namespace {
+
+/** Buys once on its first period, and records its fills. */
+struct BuysOnFirstSlice {
+  bool done_{false};
+  std::vector<Decimal64> fill_prices_;
+
+  template <class Ctx>
+  void on_bars(Ctx& ctx, const strategy::BarSlice&) {
+    if (done_) {
+      return;
+    }
+    done_ = true;
+    ctx.submit(
+      strategy::OrderIntent::market(samsung(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")))
+    );
+  }
+
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill& fill) {
+    fill_prices_.push_back(fill.price_);
+  }
+};
+
+} // namespace
+
+TEST_CASE("a period delivered by a quote stamps its orders before the quote moves the price", "[market-price]") {
+  // Day 10's period is delivered when the 10:30 quote of day 11 arrives; its order was decided at day 10's close.
+  const auto model =
+    backtest::NextBarFillModel{}.with_market_price("decision-price", [](const backtest::MarketPriceInput& in) {
+      return in.decision_price_;
+    });
+  backtest::Backtester<BuysOnFirstSlice> engine(BuysOnFirstSlice{}, replay_config(), model);
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(quote_at(utc(2026, 3, 11, 1, 30), "75000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "74000", "76000"));
+  engine.finish();
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("70000"));
+}
+
 TEST_CASE("a market-price rule's price that is not positive halts the replay", "[market-price]") {
   const auto model = backtest::NextBarFillModel{}.with_market_price("broken", [](const backtest::MarketPriceInput&) {
     return std::optional<Decimal64>(Decimal64::parse("-1"));

@@ -79,6 +79,11 @@ struct QueuedOrder {
    */
   std::optional<Decimal64> decision_price_;
   /**
+   * @brief When `decision_price_` was observed: the period end of the bar, or the time of the quote, it came from.
+   *   Older than the decision when the instrument had no newer price, as after a halt.
+   */
+  std::optional<std::chrono::system_clock::time_point> decision_price_at_;
+  /**
    * @brief The market-local date of the session a `DAY` order lives in, once known (the date of the
    *   first bar it could trade against); `Backtester` withdraws it when that session ends.
    */
@@ -526,15 +531,17 @@ public:
   }
 
   /**
-   * @brief Stamps the orders accepted since the last call with their instrument's price now.
-   * @tparam PriceOf A callable from an `InstrumentId` to an optional price.
+   * @brief Stamps the orders accepted since the last call with their instrument's price now, and when it was observed.
+   * @tparam PriceOf A callable from an `InstrumentId` to a pair of an optional price and an optional instant.
    * @param price_of The price lookup.
    */
   template <typename PriceOf>
   void stamp_decision_prices(PriceOf&& price_of) {
     for (auto slot = slots_.rbegin(); slot != slots_.rend() && !slot->priced_; ++slot) {
       slot->priced_ = true;
-      slot->entry_.decision_price_ = price_of(slot->entry_.order_.instrument_);
+      auto [price, at] = price_of(slot->entry_.order_.instrument_);
+      slot->entry_.decision_price_ = std::move(price);
+      slot->entry_.decision_price_at_ = at;
     }
   }
 
@@ -1098,6 +1105,8 @@ public:
       }
     }
     ++result_.quotes_;
+    // The runner prices the instrument at this quote before any handler runs on it.
+    slot_for(event.quote_.instrument_).priced_at_ = event.quote_.received_at_;
     // Dated before anything can place an order, so a decision made here is not credited a price from
     // earlier in the bar it will fill against. See `QueuedOrder::decided_at_`.
     runner_.executor().deciding_at(event.quote_.received_at_);
@@ -1209,6 +1218,8 @@ private:
     std::optional<std::size_t> lot_;
     /** @brief The context's last-price entry, once set. */
     Decimal64* price_{nullptr};
+    /** @brief When the context's last price of it was observed (a bar's period end, a quote's time). */
+    std::optional<std::chrono::system_clock::time_point> priced_at_;
     /** @brief One entry per interval seen. */
     std::vector<ByInterval> intervals_;
 
@@ -1490,7 +1501,7 @@ private:
         std::nullopt;
       auto decision = fills_.decide(
         order, event, rule, clock_.session().local_date(event.period_end_), open_date, entry->released_,
-        entry->decision_price_, entry->decided_at_
+        entry->decision_price_, entry->decision_price_at_, entry->decided_at_
       );
       if (decision.released_) {
         // Recorded before anything below can withdraw the order, and whether or not it filled: a stop
@@ -1870,6 +1881,7 @@ private:
   // Sets the bar's close as its instrument's last price, through the slot once the context's entry is known.
   void set_price(InstrumentSlot& slot, const strategy::BarEvent& event) {
     forget_pointers_if_replaced();
+    slot.priced_at_ = event.period_end_;
     if (slot.price_ != nullptr) {
       *slot.price_ = event.bar_.close_;
     } else {
@@ -2083,7 +2095,7 @@ private:
     // decided; only a market-price rule reads it.
     if (fills_.has_market_price_rule()) {
       runner_.executor().stamp_decision_prices([this](const InstrumentId& id) {
-        return runner_.context().last_price(id);
+        return std::make_pair(runner_.context().last_price(id), slot_for(id).priced_at_);
       });
     }
     collect(report);

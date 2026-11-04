@@ -83,6 +83,16 @@ const auto fills = backtest::NextBarFillModel{}.with_market_price("decision-clos
 });
 ```
 
+The decision price is the last price the strategy had for the instrument, which after a halt is days old; `decision_price_at_` says when it was observed, so a rule can refuse a stale one:
+
+```cpp
+// The decision close only when it is the decision bar's own; otherwise the next open.
+[](const backtest::MarketPriceInput& in) {
+  const bool fresh = in.decision_price_at_ && in.decided_at_ && !(*in.decision_price_at_ < *in.decided_at_);
+  return fresh ? in.decision_price_ : in.next_.bar_.open_;
+}
+```
+
 Slippage, commission and tax apply as to an open, limits and stops are untouched, and the fill is still stamped at the fill bar's end.
 Nothing checks the price against the bar (a close often lies outside the next bar's range after a gap), so a rule is as optimistic as you make it: the decision close above is a price a live order cannot have.
 `report.caveats_.market_price_rule_` names the rule and `market_fills_by_rule_` counts its fills.
