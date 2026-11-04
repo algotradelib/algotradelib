@@ -337,7 +337,13 @@ struct SessionEdge {
  * the opening and the closing bar of its session; a daily bar stamped at the open (a point) before one stamped
  * at the close opens the session, and the second closes it.
  *
- * Feed it the bars of one series, or the first bar of each `BarSlice`, in time order.
+ * Which minute bar closes depends on its stamp: of start-stamped KRX minute bars, the 15:29 bar (its period, 15:29 to
+ * 15:30, holds the close), and the 15:30 auction bar after it closes nothing more; of end-stamped ones, the bar stamped
+ * 15:30. Bars wholly before the open or after the close count in `outside()` and close nothing. Under the KRX window
+ * a close-stamped daily bar at midnight UTC is a point at the open (09:00 KST), which opens the session and closes
+ * nothing; one at midnight KST ends before its session opens and is neither edge.
+ *
+ * Feed it the bars of one series, or the first bar of each `BarSlice` (one interval), in time order.
  */
 class SessionEdges {
 public:
