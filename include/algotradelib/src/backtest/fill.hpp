@@ -59,10 +59,12 @@ struct MarketPriceInput {
   /** @brief The order to price: a market order, or any other type the model does not price against a limit. */
   const strategy::PlannedOrder& order_;
   /**
-   * @brief The instrument's bar before `next`: the last bar the strategy could have seen when it decided, or null
-   *   when the instrument has no earlier bar.
+   * @brief The instrument's last price when the strategy decided the order (the close of the bar it decided on,
+   *   or the quote it decided on), or empty when it had none yet.
    */
-  const Bar* previous_;
+  const std::optional<Decimal64>& decision_price_;
+  /** @brief When the strategy decided the order, if known. */
+  const std::optional<std::chrono::system_clock::time_point>& decided_at_;
   /** @brief The bar the order fills against. */
   const strategy::BarEvent& next_;
   /** @brief The instrument's price grid. */
@@ -290,22 +292,36 @@ public:
    *   fill priced at the open. For a fill inside a multi-day bar `date` is used, which can be a later
    *   day than the fill.
    * @param released Whether an earlier bar already released this stop-limit order.
-   * @param previous The instrument's bar before `next`, for a market-price rule; null when there is none.
-   * @return The decision. A stop-limit order not yet released without both a trigger and a limit
+   * @param decision_price The instrument's last price when the order was decided, for a market-price rule.
+   * @param decided_at When the order was decided, for a market-price rule.
+   * @return The decision. A market-price rule's price that is not positive is a costing error (code
+   *   `market_price_not_positive`), so the replay halts. A stop-limit order not yet released without both a trigger and a limit
    *   price neither trades nor rests (a released stop must still have its limit price).
    */
   FillDecision decide(
     const strategy::PlannedOrder& order, const strategy::BarEvent& next, const PriceRule& rule, const Date& date,
-    const std::optional<Date>& open_date = std::nullopt, bool released = false, const Bar* previous = nullptr
+    const std::optional<Date>& open_date = std::nullopt, bool released = false,
+    const std::optional<Decimal64>& decision_price = std::nullopt,
+    const std::optional<std::chrono::system_clock::time_point>& decided_at = std::nullopt
   ) const {
     FillDecision decision;
     bool at_open = false;
     std::optional<Decimal64> reference;
     if (market_price_ && !limit_priced(order.type_)) {
-      reference = market_price_(MarketPriceInput{order, previous, next, rule});
+      reference = market_price_(MarketPriceInput{order, decision_price, decided_at, next, rule});
       if (!reference) {
         // Not this bar: a DAY order rests for the rest of its session; any other is withdrawn.
         decision.still_working_ = order.time_in_force_ == TimeInForce::DAY;
+        return decision;
+      }
+      if (reference->coefficient() <= 0) {
+        // A defect in the rule, not a price: filling at it would book a trade no market made.
+        BrokerError error;
+        error.category_ = ErrorCategory::INVALID_ARGUMENT;
+        error.reached_broker_ = false;
+        error.broker_code_ = "market_price_not_positive";
+        error.message_ = "the market-price rule '" + market_price_name_ + "' named a price that is not positive";
+        decision.costing_error_ = std::move(error);
         return decision;
       }
       decision.priced_by_rule_ = true;

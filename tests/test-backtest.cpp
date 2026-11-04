@@ -1585,14 +1585,12 @@ TEST_CASE("a sell tax rate outside zero to one is refused", "[sell-tax]") {
   CHECK_NOTHROW(model.with_sell_tax(backtest::SellTax{Decimal64::parse("0"), Country::KR}));
 }
 
-TEST_CASE("a market-price rule prices market orders from the bar before the fill bar", "[market-price]") {
+TEST_CASE("a market-price rule prices market orders at the price they were decided on", "[market-price]") {
   std::vector<std::pair<std::optional<Decimal64>, Decimal64>> seen;
   const auto model =
     backtest::NextBarFillModel{}.with_market_price("decision-close", [&seen](const backtest::MarketPriceInput& in) {
-      seen.emplace_back(
-        in.previous_ ? std::optional<Decimal64>(in.previous_->close_) : std::nullopt, in.next_.bar_.close_
-      );
-      return in.previous_ ? std::optional<Decimal64>(in.previous_->close_) : std::nullopt;
+      seen.emplace_back(in.decision_price_, in.next_.bar_.close_);
+      return in.decision_price_;
     });
   CHECK(model.market_price_rule() == "decision-close");
   backtest::Backtester<BuysThenSells> engine(BuysThenSells{}, replay_config(), model);
@@ -1609,7 +1607,7 @@ TEST_CASE("a market-price rule prices market orders from the bar before the fill
   CHECK(executions[1].fill_.side_ == OrderSide::SELL);
   CHECK(executions[1].fill_.price_ == Decimal64::parse("72000"));
   CHECK(engine.result().market_fills_by_rule_ == 2);
-  // Called with the instrument's previous bar and the fill bar, never the fill bar as its own previous.
+  // Called with the close the order was decided on and the fill bar, never the fill bar's own close.
   REQUIRE(seen.size() == 2);
   CHECK(seen[0].first == std::optional<Decimal64>(Decimal64::parse("61000")));
   CHECK(seen[0].second == Decimal64::parse("70000"));
@@ -1635,6 +1633,36 @@ TEST_CASE("a market-price rule that names no price leaves a day order resting fo
   CHECK(executions[0].fill_.price_ == Decimal64::parse("69000"));
   // The first order rested through the second bar, whose session then ended.
   CHECK(engine.result().expired_day_orders_ == 1);
+}
+
+TEST_CASE("a decision on a quote is priced at the quote, not at the bar before the fill", "[market-price]") {
+  // Decided at 10:30 on day 11 at 71,000: day 11's bar began before it, so day 12's fills it, at the quote's
+  // price; day 11's close (72,000), the instrument's bar before the fill, is not the price decided on.
+  const auto model =
+    backtest::NextBarFillModel{}.with_market_price("decision-price", [](const backtest::MarketPriceInput& in) {
+      return in.decision_price_;
+    });
+  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config(), model);
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(quote_at(utc(2026, 3, 11, 1, 30), "71000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70500", "72000"));
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "73000", "74000"));
+  engine.finish();
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("71000"));
+}
+
+TEST_CASE("a market-price rule's price that is not positive halts the replay", "[market-price]") {
+  const auto model = backtest::NextBarFillModel{}.with_market_price("broken", [](const backtest::MarketPriceInput&) {
+    return std::optional<Decimal64>(Decimal64::parse("-1"));
+  });
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config(), model);
+  engine.feed(moving_bar(utc(2026, 3, 9, 6, 30), BarInterval::ONE_DAY, "60000", "61000"));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "65000", "66000"));
+  engine.finish();
+  CHECK(engine.result().executions_.empty());
+  REQUIRE(engine.result().halted_.has_value());
+  CHECK(engine.result().halted_->broker_code_ == "market_price_not_positive");
 }
 
 TEST_CASE("a market-price rule needs a name and a function", "[market-price]") {

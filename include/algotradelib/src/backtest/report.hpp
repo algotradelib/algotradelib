@@ -358,7 +358,7 @@ inline Report summarize(
   report.caveats_.stop_releases_ = result.stop_releases_;
   report.caveats_.stop_fills_intrabar_ = result.stop_fills_intrabar_;
   report.caveats_.limit_fills_bounded_ = result.limit_fills_bounded_;
-  report.caveats_.market_price_rule_ = fills.market_price_rule();
+  report.caveats_.market_price_rule_ = result.market_price_rule_;
   report.caveats_.market_fills_by_rule_ = result.market_fills_by_rule_;
   report.caveats_.quotes_ = result.quotes_;
   report.caveats_.unchecked_fill_causality_ = result.unchecked_fill_causality_;

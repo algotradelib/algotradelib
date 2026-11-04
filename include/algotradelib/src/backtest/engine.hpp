@@ -74,6 +74,11 @@ struct QueuedOrder {
    */
   bool released_{false};
   /**
+   * @brief The order's instrument's last price when the strategy decided it, for a market-price rule
+   *   (`NextBarFillModel::with_market_price`); stamped by `Backtester` after the pass that placed it.
+   */
+  std::optional<Decimal64> decision_price_;
+  /**
    * @brief The market-local date of the session a `DAY` order lives in, once known (the date of the
    *   first bar it could trade against); `Backtester` withdraws it when that session ends.
    */
@@ -521,6 +526,19 @@ public:
   }
 
   /**
+   * @brief Stamps the orders accepted since the last call with their instrument's price now.
+   * @tparam PriceOf A callable from an `InstrumentId` to an optional price.
+   * @param price_of The price lookup.
+   */
+  template <typename PriceOf>
+  void stamp_decision_prices(PriceOf&& price_of) {
+    for (auto slot = slots_.rbegin(); slot != slots_.rend() && !slot->priced_; ++slot) {
+      slot->priced_ = true;
+      slot->entry_.decision_price_ = price_of(slot->entry_.order_.instrument_);
+    }
+  }
+
+  /**
    * @brief Sets the decision instant stamped on orders accepted from now on.
    * @param at The instant.
    * @param exact Whether `at` is exact or only an upper bound; see `QueuedOrder::decision_is_exact_`.
@@ -537,6 +555,8 @@ private:
     QueuedOrder<BrokerTag> entry_;
     std::uint64_t serial_{0};
     bool live_{true};
+    // Whether `stamp_decision_prices` has seen it.
+    bool priced_{false};
   };
 
   // Where the order with `serial` is in `slots_`. Serials rise in placement order, which compaction keeps.
@@ -707,6 +727,8 @@ struct ReplayResult {
   std::size_t stop_fills_intrabar_{0};
   /** @brief Limit-type fills moved to stay in range; see `ReportCaveats::limit_fills_bounded_`. */
   std::size_t limit_fills_bounded_{0};
+  /** @brief The fill model's market-price rule, or empty; see `ReportCaveats::market_price_rule_`. */
+  std::string market_price_rule_;
   /** @brief Fills priced by the fill model's market-price rule; see `ReportCaveats::market_fills_by_rule_`. */
   std::size_t market_fills_by_rule_{0};
   /**
@@ -816,6 +838,7 @@ public:
     runner_.context().set_session(config_.session_);
     // So a report can compare an execution's currency with the curve's.
     result_.currency_ = config_.currency_;
+    result_.market_price_rule_ = fills_.market_price_rule();
   }
 
   /**
@@ -937,10 +960,6 @@ public:
       record_point(*period_point_);
     }
     settle_queued_against(event, slot);
-    if (fills_.has_market_price_rule()) {
-      // The bar a later fill's rule sees as the one before it; kept only when a rule reads it.
-      slot.previous_bar_ = event.bar_;
-    }
     // **The halt stops this bar too, not merely the next one.** Returning only from settlement left
     // `feed` to mark the book, record an equity point, advance the clock and call `on_phase` and
     // `on_bar` on the very bar whose fill could not be costed -- so the strategy decided once more
@@ -1190,8 +1209,6 @@ private:
     std::optional<std::size_t> lot_;
     /** @brief The context's last-price entry, once set. */
     Decimal64* price_{nullptr};
-    /** @brief The instrument's last bar fed, for the fill model's market-price rule; kept only when one is set. */
-    std::optional<Bar> previous_bar_;
     /** @brief One entry per interval seen. */
     std::vector<ByInterval> intervals_;
 
@@ -1473,7 +1490,7 @@ private:
         std::nullopt;
       auto decision = fills_.decide(
         order, event, rule, clock_.session().local_date(event.period_end_), open_date, entry->released_,
-        slot.previous_bar_ ? &*slot.previous_bar_ : nullptr
+        entry->decision_price_, entry->decided_at_
       );
       if (decision.released_) {
         // Recorded before anything below can withdraw the order, and whether or not it filled: a stop
@@ -2062,6 +2079,13 @@ private:
   // Collects what a runner pass reported, so a replay ends with the whole picture.
   template <typename Report>
   void drain_reports(const Report& report) {
+    // Every pass that can place ends here, so each new order is stamped with its instrument's price as it was
+    // decided; only a market-price rule reads it.
+    if (fills_.has_market_price_rule()) {
+      runner_.executor().stamp_decision_prices([this](const InstrumentId& id) {
+        return runner_.context().last_price(id);
+      });
+    }
     collect(report);
   }
 

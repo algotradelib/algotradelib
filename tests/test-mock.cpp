@@ -221,10 +221,10 @@ TEST_CASE("a mock market order fills at the open of the next bar", "[mock]") {
   CHECK(market.buying_power(Currency{"KRW"}).value().cash_.amount_ == dec("999940"));
 }
 
-TEST_CASE("a mock market order takes the fill model's market-price rule, given the bar before it", "[mock]") {
+TEST_CASE("a mock market order takes the fill model's market-price rule, given the price it was placed at", "[mock]") {
   auto settings = cash("1000000", utc(2026, 3, 2, 6, 30));
   settings.fills_ = settings.fills_.with_market_price("decision-close", [](const backtest::MarketPriceInput& in) {
-    return in.previous_ ? std::optional<Decimal64>(in.previous_->close_) : std::nullopt;
+    return in.decision_price_;
   });
   mock::Market market({three_days()}, settings);
   REQUIRE(market.place(market_order(OrderSide::BUY, "10")));

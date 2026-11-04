@@ -74,12 +74,12 @@ Refusing it understates a result; claiming it overstates one, and a backtester t
 than one that disappoints.
 
 **A market order's price can be your own rule.**
-`NextBarFillModel::with_market_price` takes a name and a function of the order, the instrument's previous bar (the one the strategy saw), the bar it fills against and the price grid, and returns a price, or nothing (a DAY order then rests for its session):
+`NextBarFillModel::with_market_price` takes a name and a function of the order, the price it was decided on (`decision_price_`: the close of the bar, or the quote, the strategy decided on), when it was decided, the bar it fills against and the price grid, and returns a price, or nothing (a DAY order then rests for its session); a price that is not positive halts the replay:
 
 ```cpp
 // The textbook convention: trade at the close the strategy decided on.
 const auto fills = backtest::NextBarFillModel{}.with_market_price("decision-close", [](const backtest::MarketPriceInput& in) {
-  return in.previous_ ? std::optional<Decimal64>(in.previous_->close_) : in.next_.bar_.open_;
+  return in.decision_price_ ? in.decision_price_ : in.next_.bar_.open_;
 });
 ```
 
