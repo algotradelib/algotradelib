@@ -4,6 +4,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <ratio>
@@ -358,17 +359,37 @@ public:
     if (reaches && !(opened_ && *opened_ == date)) {
       edge.opens_ = true;
       opened_ = date;
+      ++opened_count_;
     }
     if (start <= close && close <= end && !(closed_ && *closed_ == date)) {
       edge.closes_ = true;
       closed_ = date;
+      ++closed_count_;
     }
     return edge;
+  }
+
+  /**
+   * @brief Returns how many sessions a bar has opened so far.
+   * @return The count; zero tells a tool that the bars never reached into a session.
+   */
+  std::size_t opened() const noexcept {
+    return opened_count_;
+  }
+
+  /**
+   * @brief Returns how many sessions a bar has closed so far.
+   * @return The count; zero tells a tool that no bar's period held a session's close.
+   */
+  std::size_t closed() const noexcept {
+    return closed_count_;
   }
 
 private:
   std::optional<Date> opened_;
   std::optional<Date> closed_;
+  std::size_t opened_count_{0};
+  std::size_t closed_count_{0};
 };
 
 struct BarSlice;
