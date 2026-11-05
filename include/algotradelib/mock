@@ -21,9 +21,13 @@
  * // Bind it as any session (live::bind_journaled, live::SessionSource), and give the polling loop and
  * // the journal mock::MarketClock(market): each wait moves the market, and fills what it passes.
  * @endcode
+ *
+ * `mock::DataFeed` is the mock vendor: records released as that clock passes their time, installed as the
+ * loop's data poll for a strategy's `on_data`.
  */
 
 #include "src/brokers/mock/client.hpp"
 #include "src/brokers/mock/clock.hpp"
+#include "src/brokers/mock/data.hpp"
 #include "src/brokers/mock/market.hpp"
 #include "src/brokers/mock/traits.hpp"

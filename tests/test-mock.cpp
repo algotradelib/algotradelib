@@ -703,6 +703,21 @@ TEST_CASE("the mock clock moves the market as a loop waits", "[mock]") {
   CHECK(only_order(market).status_ == OrderStatus::FILLED);
 }
 
+TEST_CASE("the mock vendor releases each record once, when its clock reaches the time it was published", "[mock]") {
+  // Given out of order; two at one instant keep their order.
+  mock::DataFeed<int> feed({{utc(2026, 3, 3, 0, 0), 3}, {utc(2026, 3, 2, 0, 0), 1}, {utc(2026, 3, 2, 0, 0), 2}});
+  mock::Market market({three_days()}, cash("1000000", utc(2026, 3, 1, 6, 30)));
+  mock::MarketClock clock(market);
+  CHECK(feed(clock.now()) == std::optional<std::vector<int>>(std::vector<int>{}));
+  clock.wait_for(std::chrono::hours(24));
+  CHECK(feed(clock.now()) == std::optional<std::vector<int>>(std::vector<int>{1, 2}));
+  CHECK(feed(clock.now()) == std::optional<std::vector<int>>(std::vector<int>{}));
+  CHECK(feed.remaining() == 1);
+  clock.wait_for(std::chrono::hours(48));
+  CHECK(feed(clock.now()) == std::optional<std::vector<int>>(std::vector<int>{3}));
+  CHECK(feed.remaining() == 0);
+}
+
 namespace {
 
 /** Holds 10 shares on the first three days of each six, nothing on the others, with limits 2% through the close. */
