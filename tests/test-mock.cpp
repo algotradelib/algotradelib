@@ -703,7 +703,7 @@ TEST_CASE("the mock clock moves the market as a loop waits", "[mock]") {
   CHECK(only_order(market).status_ == OrderStatus::FILLED);
 }
 
-TEST_CASE("the mock vendor releases each record once, when its clock reaches the time it was published", "[mock]") {
+TEST_CASE("the mock vendor releases each record once when its clock reaches the time it was published", "[mock]") {
   // Given out of order; two at one instant keep their order.
   mock::DataFeed<int> feed({{utc(2026, 3, 3, 0, 0), 3}, {utc(2026, 3, 2, 0, 0), 1}, {utc(2026, 3, 2, 0, 0), 2}});
   mock::Market market({three_days()}, cash("1000000", utc(2026, 3, 1, 6, 30)));

@@ -2870,7 +2870,7 @@ TEST_CASE("a record and a bar read in one iteration reach the strategy record fi
   CHECK(runner_instance.strategy().seen_at_bar_ == std::vector<std::optional<int>>{1, 2});
 }
 
-TEST_CASE("a data poll with nothing new is unchanged, and one that failed counts as a failure", "[loop][data]") {
+TEST_CASE("a data poll with nothing new is unchanged and one that failed counts as a failure", "[loop][data]") {
   RecordsRunner runner_instance;
   BarPerPoll source;
   runner::PollSchedule schedule;
@@ -2893,7 +2893,7 @@ TEST_CASE("a data poll with nothing new is unchanged, and one that failed counts
   CHECK(runner_instance.strategy().events_.empty());
 }
 
-TEST_CASE("without a data poll no record is read, whatever the schedule says", "[loop][data]") {
+TEST_CASE("without a data poll no record is read whatever the schedule says", "[loop][data]") {
   RecordsRunner runner_instance;
   BarPerPoll source;
   runner::PollSchedule schedule;

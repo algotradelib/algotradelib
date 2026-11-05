@@ -370,7 +370,7 @@ TEST_CASE("a handler is found by the name it is declared under") {
   STATIC_REQUIRE_FALSE(detail::declares_on_data<BarOnly>);
 }
 
-TEST_CASE("a record handler is found by name, takes the strategy's data_type, and is called through dispatch") {
+TEST_CASE("a record handler is found by name and takes the strategy's data_type through dispatch") {
   namespace detail = strategy::strategy_detail;
   STATIC_REQUIRE(detail::declares_any_handler<DataOnly>);
   STATIC_REQUIRE(std::is_same_v<detail::data_record_t<DataOnly>, int>);

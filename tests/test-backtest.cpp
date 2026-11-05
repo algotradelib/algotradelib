@@ -6070,7 +6070,7 @@ strategy::DataEvent<Flag> flag_at(Clock::time_point at, int value) {
 
 } // namespace
 
-TEST_CASE("a record reaches on_data when it became known, before the bars of its instant") {
+TEST_CASE("a record reaches on_data when it became known and before the bars of its instant") {
   backtest::Backtester<ReadsRecords> engine(ReadsRecords{}, replay_config());
   const auto day11 = utc(2026, 3, 11, 6, 30);
   engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
@@ -6122,7 +6122,7 @@ TEST_CASE("a bar that ended before a record already fed is refused before anythi
   CHECK(engine.strategy().seen_at_bar_.size() == 1);
 }
 
-TEST_CASE("with on_bars, a record at a buffered period's instant is in that period's slice, a later one is not") {
+TEST_CASE("with on_bars a record at a buffered period's instant is in that period's slice and a later one is not") {
   const auto t10 = utc(2026, 3, 10, 6, 30);
   const auto t11 = utc(2026, 3, 11, 6, 30);
 
