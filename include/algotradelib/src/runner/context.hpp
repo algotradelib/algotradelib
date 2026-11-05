@@ -28,6 +28,7 @@ namespace runner {
 // The strategy types a runner speaks in, imported from `strategy`.
 using strategy::BarEvent;
 using strategy::CancelIntent;
+using strategy::DataEvent;
 using strategy::Fill;
 using strategy::MarketPhase;
 using strategy::OrderIntent;

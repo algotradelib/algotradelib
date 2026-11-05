@@ -742,6 +742,29 @@ struct QuoteEvent {
 };
 
 /**
+ * @brief A record of data from outside the broker, delivered to `on_data`.
+ *
+ * What the record holds is the strategy's own type: its source, the instrument it is about, the date it
+ * describes and its values are whatever the strategy decides to use. The library reads only when the record
+ * became known, to order it with the bars and to date what the strategy decides on it.
+ *
+ * @tparam T The record type, the strategy's `data_type`.
+ */
+template <typename T>
+struct DataEvent {
+  /**
+   * @brief When the record became known: the earliest moment a strategy may see it, as `BarEvent::period_end_`
+   *   is for a bar.
+   *
+   * In a backtest it is the caller's statement of when the record was available; in a live run
+   * (`runner::PollingLoop::set_data_poll`) it is when the loop received it, never earlier.
+   */
+  std::chrono::system_clock::time_point known_at_{};
+  /** @brief The record. */
+  T record_;
+};
+
+/**
  * @brief One execution of an order the strategy placed, delivered to `on_fill`.
  *
  * Each execution is its own event, so a partial fill arrives as several; `quantity_` is this

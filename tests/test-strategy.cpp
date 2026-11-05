@@ -274,8 +274,15 @@ struct BarOnly {
   }
 };
 
+/** A record type with no default constructor: the check passes events by reference, so it needs none. */
+struct NoDefaultRecord {
+  explicit NoDefaultRecord(int value) : value_(value) {}
+  int value_;
+};
+
 /** A strategy using every handler, to prove the detection covers all of them. */
 struct EveryHandler {
+  using data_type = NoDefaultRecord;
   template <class Ctx>
   void on_start(Ctx&) {}
   template <class Ctx>
@@ -290,6 +297,18 @@ struct EveryHandler {
   void on_order_update(Ctx&, const OrderSnapshot&) {}
   template <class Ctx>
   void on_phase(Ctx&, strategy::MarketPhase) {}
+  template <class Ctx>
+  void on_data(Ctx&, const strategy::DataEvent<NoDefaultRecord>&) {}
+};
+
+/** Decides on records only, counting them. */
+struct DataOnly {
+  using data_type = int;
+  int sum_{0};
+  template <class Ctx>
+  void on_data(Ctx&, const strategy::DataEvent<int>& event) {
+    sum_ += event.record_;
+  }
 };
 
 /** Not a strategy: no handler the runner can call. */
@@ -329,6 +348,8 @@ struct CapabilityGated {
 ATL_ASSERT_STRATEGY(BarOnly, MinimalContext);
 ATL_ASSERT_STRATEGY(BarOnly, FullContext);
 ATL_ASSERT_STRATEGY(EveryHandler, MinimalContext);
+ATL_ASSERT_STRATEGY(DataOnly, MinimalContext);
+ATL_ASSERT_STRATEGY(DataOnly, FullContext);
 ATL_ASSERT_STRATEGY(CapabilityGated, MinimalContext);
 ATL_ASSERT_STRATEGY(CapabilityGated, FullContext);
 
@@ -345,6 +366,23 @@ TEST_CASE("a handler is found by the name it is declared under") {
   STATIC_REQUIRE(detail::declares_on_fill<EveryHandler>);
   STATIC_REQUIRE(detail::declares_on_order_update<EveryHandler>);
   STATIC_REQUIRE(detail::declares_on_phase<EveryHandler>);
+  STATIC_REQUIRE(detail::declares_on_data<EveryHandler>);
+  STATIC_REQUIRE_FALSE(detail::declares_on_data<BarOnly>);
+}
+
+TEST_CASE("a record handler is found by name, takes the strategy's data_type, and is called through dispatch") {
+  namespace detail = strategy::strategy_detail;
+  STATIC_REQUIRE(detail::declares_any_handler<DataOnly>);
+  STATIC_REQUIRE(std::is_same_v<detail::data_record_t<DataOnly>, int>);
+  STATIC_REQUIRE(std::is_same_v<detail::data_record_t<EveryHandler>, NoDefaultRecord>);
+  // A strategy without `on_data` takes a placeholder no caller can build.
+  STATIC_REQUIRE_FALSE(std::is_default_constructible_v<detail::data_record_t<BarOnly>>);
+
+  DataOnly strategy;
+  MinimalContext context;
+  strategy::dispatch::data(strategy, context, strategy::DataEvent<int>{{}, 3});
+  strategy::dispatch::data(strategy, context, strategy::DataEvent<int>{{}, 4});
+  CHECK(strategy.sum_ == 7);
 }
 
 TEST_CASE("a type with no handler is rejected") {
@@ -434,6 +472,9 @@ struct MalformedEach {
   void on_order_update(Ctx&, const strategy::QuoteEvent&) {}
   template <class Ctx>
   void on_phase(Ctx&) {}
+  using data_type = int;
+  template <class Ctx>
+  void on_data(Ctx&, const strategy::DataEvent<double>&) {}
 };
 
 /** Events by value: callable, since a copy of a `const` event is a valid argument. */
@@ -548,6 +589,7 @@ TEST_CASE("each malformed handler is still declared, so the runner calls it") {
   STATIC_REQUIRE(detail::declares_on_fill<MalformedEach>);
   STATIC_REQUIRE(detail::declares_on_order_update<MalformedEach>);
   STATIC_REQUIRE(detail::declares_on_phase<MalformedEach>);
+  STATIC_REQUIRE(detail::declares_on_data<MalformedEach>);
 }
 
 // The probe contexts are not copyable either, so a by-value handler is rejected as the runner rejects it.

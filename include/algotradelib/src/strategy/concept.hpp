@@ -33,6 +33,7 @@ namespace strategy {
  *   template <class Ctx> void on_fill(Ctx& ctx, const Fill& fill);
  *   template <class Ctx> void on_order_update(Ctx& ctx, const OrderSnapshot& order);
  *   template <class Ctx> void on_phase(Ctx& ctx, const MarketPhase& phase);
+ *   template <class Ctx> void on_data(Ctx& ctx, const DataEvent<data_type>& record); // with `using data_type`
  *   template <class Ctx> void on_stop(Ctx& ctx);
  * };
  * ```
@@ -94,6 +95,7 @@ ATL_DETECT_DECLARED(on_quote);
 ATL_DETECT_DECLARED(on_fill);
 ATL_DETECT_DECLARED(on_order_update);
 ATL_DETECT_DECLARED(on_phase);
+ATL_DETECT_DECLARED(on_data);
 ATL_DETECT_DECLARED(reads_bar_history);
 
 #undef ATL_DETECT_DECLARED
@@ -133,11 +135,59 @@ struct bar_history_policy<S, true> {
 template <typename S>
 constexpr bool reads_bar_history = bar_history_policy<S>::value;
 
+// Whether `S` names a member type `data_type`.
+template <typename S, typename = void>
+struct names_data_type : std::false_type {};
+template <typename S>
+struct names_data_type<S, std::void_t<typename S::data_type>> : std::true_type {};
+
+/** The record type of a strategy that declares no `on_data`: never constructed, never fed. */
+struct NoDataRecord {
+  NoDataRecord() = delete;
+};
+
+template <typename S, bool Names = names_data_type<S>::value>
+struct named_data_type {
+  using type = NoDataRecord;
+};
+
+template <typename S>
+struct named_data_type<S, true> {
+  using type = typename S::data_type;
+};
+
+template <typename S, bool Declared = declares_on_data<S>>
+struct data_policy {
+  static_assert(
+    !names_data_type<S>::value,
+    "`data_type` names the record type on_data takes, but this strategy declares no on_data, so no record "
+    "would reach it: declare on_data, or remove data_type"
+  );
+  using type = NoDataRecord;
+};
+
+template <typename S>
+struct data_policy<S, true> {
+  static_assert(
+    names_data_type<S>::value,
+    "a strategy declaring on_data names the record type it takes: `using data_type = ...;` (a std::variant "
+    "for several kinds of record)"
+  );
+  using type = typename named_data_type<S>::type;
+};
+
+/**
+ * The record type `on_data` takes: `S::data_type` for a strategy declaring `on_data`, a placeholder that is
+ * never fed otherwise.
+ */
+template <typename S>
+using data_record_t = typename data_policy<S>::type;
+
 /** Whether `S` declares any handler at all. */
 template <typename S>
 constexpr bool declares_any_handler =
   declares_on_start<S> || declares_on_stop<S> || declares_on_bar<S> || declares_on_bars<S> || declares_on_quote<S> ||
-  declares_on_fill<S> || declares_on_order_update<S> || declares_on_phase<S>;
+  declares_on_fill<S> || declares_on_order_update<S> || declares_on_phase<S> || declares_on_data<S>;
 
 /** Whether `S`'s handler names can be looked up: a class, and not `final`. */
 template <typename S>
@@ -353,6 +403,27 @@ void phase(S& strategy, Ctx& context, const MarketPhase& event) {
   }
 }
 
+/**
+ * @brief Calls `strategy.on_data(context, event)` if the strategy declares `on_data`; otherwise does nothing.
+ *
+ * @tparam S The strategy type; a class that is not `final`.
+ * @tparam Ctx The context type.
+ * @param strategy The strategy.
+ * @param context The context passed to the handler.
+ * @param event The record, of the strategy's `data_type`.
+ */
+template <typename S, typename Ctx>
+void data(S& strategy, Ctx& context, const DataEvent<strategy_detail::data_record_t<S>>& event) {
+  strategy_detail::require_readable_names<S>();
+  if constexpr (strategy_detail::declares_on_data<S>) {
+    strategy.on_data(context, event);
+  } else {
+    static_cast<void>(strategy);
+    static_cast<void>(context);
+    static_cast<void>(event);
+  }
+}
+
 } // namespace dispatch
 
 namespace strategy_detail {
@@ -361,7 +432,7 @@ namespace strategy_detail {
 template <typename S, typename Ctx>
 void call_every_handler(
   S& strategy, Ctx& context, const BarEvent& bar, const BarSlice& slice, const QuoteEvent& quote, const Fill& fill,
-  const OrderSnapshot& order, const MarketPhase& phase
+  const OrderSnapshot& order, const MarketPhase& phase, const DataEvent<data_record_t<S>>& data
 ) {
   dispatch::start(strategy, context);
   dispatch::stop(strategy, context);
@@ -377,6 +448,7 @@ void call_every_handler(
   dispatch::fill(strategy, context, fill);
   dispatch::order_update(strategy, context, order);
   dispatch::phase(strategy, context, phase);
+  dispatch::data(strategy, context, data);
 }
 
 /**
@@ -758,7 +830,7 @@ struct StrategyConformance {
   static_assert(
     strategy_detail::declares_any_handler<S>,
     "This type declares no strategy handler. Expected at least one of on_start, on_bar, on_bars, "
-    "on_quote, on_fill, on_order_update, on_phase, or on_stop"
+    "on_quote, on_fill, on_order_update, on_phase, on_data, or on_stop"
   );
   static_assert(
     !(strategy_detail::declares_on_bar<S> && strategy_detail::declares_on_bars<S>),

@@ -18,6 +18,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <variant>
@@ -292,6 +293,12 @@ public:
   using Report = DryRunReport<BrokerTag>;
 
   ATL_ASSERT_STRATEGY(Strategy, Context);
+
+  /** @brief The record type `on_data` takes (the strategy's `data_type`); a placeholder for a strategy without it. */
+  using DataRecord = strategy::strategy_detail::data_record_t<Strategy>;
+
+  /** @brief `true` when the strategy declares `on_data`, so records may be fed (`feed(const DataEvent&)`). */
+  static constexpr bool takes_records = strategy::strategy_detail::declares_on_data<Strategy>;
 
   /**
    * @brief `true` when this runner sends to a broker and the strategy defines `on_fill`, which then
@@ -1774,6 +1781,29 @@ public:
     context_.set_now(event.quote_.received_at_);
     confirm_reservations();
     dispatch::quote(strategy_, context_, event);
+    return settle();
+  }
+
+  /**
+   * @brief Feeds one record: sets the clock to when it became known, calls `on_data`, and settles.
+   *
+   * Only for a strategy declaring `on_data`, with a record of its `data_type`: a record fed to any other does
+   * not compile, rather than vanish.
+   *
+   * @tparam T The record type.
+   * @param event The record.
+   * @return The pass's report.
+   */
+  template <typename T>
+  Report feed(const strategy::DataEvent<T>& event) {
+    static_assert(
+      strategy::strategy_detail::declares_on_data<Strategy>,
+      "a record fed to a strategy that declares no on_data would vanish: declare on_data, or feed no records"
+    );
+    static_assert(std::is_same_v<T, DataRecord>, "a record must be of the strategy's data_type");
+    context_.set_now(event.known_at_);
+    confirm_reservations();
+    dispatch::data(strategy_, context_, event);
     return settle();
   }
 

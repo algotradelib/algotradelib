@@ -1,7 +1,7 @@
 // expect: no member named 'no_such_member'
-// variants: 1 2 3 4 5 6 7 8
+// variants: 1 2 3 4 5 6 7 8 9
 // Deliberately does not compile. `strategy-compiles-handler-body-<n>` builds this file with
-// ATL_PROBE_VARIANT = n (1 to 8) and passes only when the diagnostic is the error in that one handler's
+// ATL_PROBE_VARIANT = n (1 to 9) and passes only when the diagnostic is the error in that one handler's
 // body. The handler's signature is valid and nothing feeds it an event: only the assertion's compiling of
 // every handler call reaches the body, so dropping that handler's call from the assertion lets this build.
 #include <algotradelib/strategy>
@@ -47,6 +47,12 @@ struct Probe {
 #elif ATL_PROBE_VARIANT == 8
   template <class Ctx>
   void on_bars(Ctx& ctx, const strategy::BarSlice&) {
+    ctx.no_such_member();
+  }
+#elif ATL_PROBE_VARIANT == 9
+  using data_type = int;
+  template <class Ctx>
+  void on_data(Ctx& ctx, const strategy::DataEvent<int>&) {
     ctx.no_such_member();
   }
 #endif
