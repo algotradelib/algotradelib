@@ -53,6 +53,14 @@ const auto report = loop.run(stop);
 stop has been requested, so it is also the floor on how quickly an operator gets a response. A loop
 trading daily bars with a one-second tick wakes 86,400 times a day and polls once — which is the point.
 
+**Data from outside the broker** reaches a strategy declaring `on_data` through a data poll the program
+installs, `loop.set_data_poll(poll)`, on its own cadence, `schedule.data_`: a function given the loop's clock
+reading that returns the records received since its last call (`std::nullopt` for a failed read, counted like
+any other poll).
+It runs before the bars of the same iteration, and each record is known when the loop received it, never
+earlier, whatever the vendor's own stamp says (keep that in the record). `mock::DataFeed` is one, over records
+you give it.
+
 ## The three stops, and what each leaves you holding
 
 | Intent | Stops sending | Cancels resting orders | Closes positions |
@@ -197,7 +205,7 @@ every ceiling and to every target subtraction, so a run that has never read the 
 otherwise size an entry as though it were flat. `allow_absent_portfolio` is the deliberate way out
 for a run that genuinely has no holdings to read.
 
-**Within an iteration, the loop polls the order list, then holdings, then bars and quotes** — whichever
+**Within an iteration, the loop polls the order list, then holdings, then data, bars and quotes** — whichever
 of them are due. A resting buy that fills
 between the two account reads is the reason. Read holdings first and the listing second, and the fill
 lands in neither: holdings still flat, the order already gone, and a target strategy buys again on the

@@ -224,6 +224,22 @@ reaches it too.
 periods do not overlap, the fills were causal whatever this figure says. The engine simply could not
 prove it from the events it was handed.
 
+## Records of external data
+
+`Backtester::feed` also takes a `strategy::DataEvent`, a record for a strategy declaring `on_data`; its type is
+the strategy's own, and the engine reads only `known_at_`, when it became known.
+Feed records in time order with the bars and a record before the bars of its instant: a bar's handler then
+sees what was known by the bar's end, and with `on_bars` a record at a buffered period's own instant is in that
+period's slice.
+A bar that ended before a record already fed is refused, since it would be decided on with that record in
+view, and so is a record earlier than a record or a bar already fed.
+An order placed from `on_data` follows the quote's rule above: dated at `known_at_`, it fills against a later
+bar, one that began at or after the record wherever a bar's start can be established, and is counted in
+`unchecked_fill_causality_` where it cannot.
+A record prices nothing, marks nothing and fills nothing; `ReplayResult::records_` counts them.
+`known_at_` is your statement of when the record was available: a date with no time of publication is an
+assumption, which the replay cannot check.
+
 ## What it does not model at all
 
 `ReportCaveats::volume_ignored` is always true, and present so you are told rather than left to assume:

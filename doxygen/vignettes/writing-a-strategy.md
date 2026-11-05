@@ -47,6 +47,7 @@ only `on_bar` and costs nothing for the rest.
 | `on_fill(Ctx&, const Fill&)` | one execution happened against an order of yours — **in a backtest only**, see below |
 | `on_order_update(Ctx&, const OrderSnapshot&)` | an order the broker is still listing changed — see below |
 | `on_phase(Ctx&, MarketPhase)` | the session moved between phases |
+| `on_data(Ctx&, const DataEvent<data_type>&)` | a record of data from outside the broker arrived — see [below](#external-data) |
 | `on_stop(Ctx&)` | after the last event — see below, it cannot trade |
 
 **`on_start` is for setting up, not for trading.** It runs once per runner: a backtest calls it
@@ -204,6 +205,21 @@ boundary, where `vanilla::TimedLiquidation` flattens from `on_phase`.
 A runner driven directly, without the loop, gets different behaviour from `Runner::stop()`:
 `on_stop` runs and what it asks for is settled. The difference is the loop, because the loop is
 where an operator's stop exists.
+
+<a id="external-data"></a>
+**`on_data` takes data from outside the broker**: whatever the strategy decides to use, from a file or a
+vendor, delivered beside the bars.
+The record is the strategy's own type, named once with `using data_type = ...;` (a `std::variant` for several
+kinds); the library reads only `DataEvent::known_at_`, when the record became known.
+In a backtest, feed records with `Backtester::feed` in time order with the bars, a record before the bars of
+its instant, so a bar's handler sees what was known by the bar's end; an order placed from `on_data` fills
+against a later bar, as one from `on_quote` does.
+Live, `PollingLoop::set_data_poll` reads records on their own cadence (`PollSchedule::data_`), before the
+bars of the same iteration, and stamps each with when the loop received it.
+A bar can be delivered after a record that became known later (a live backlog, warm-up history): a strategy
+that keeps each record's `known_at_` and reads, for a bar, only what was known by its `period_end_` decides
+the same live and in a backtest.
+A record fed to a strategy without `on_data` does not compile.
 
 **Declare each as a template on the context, taking it by reference and the event as `const&`.**
 The runner calls every handler whose name your strategy declares, and nothing else. So a handler the call
