@@ -709,6 +709,8 @@ struct ReplayResult {
   std::size_t aborted_{0};
   /** @brief The quotes fed; see `ReportCaveats::quotes_` for what quote-driven orders mean in a replay. */
   std::size_t quotes_{0};
+  /** @brief The records fed to `on_data`. */
+  std::size_t records_{0};
   /**
    * @brief How many fill decisions could not be checked for causality; see
    *   `ReportCaveats::unchecked_fill_causality_`.
@@ -919,6 +921,16 @@ public:
     if (result_.halted_) {
       pending_.clear();
       return;
+    }
+    if constexpr (Runner::takes_records) {
+      // A bar that ended before a record already fed would be decided on with that record in view: data from
+      // after the bar. Refused before anything changes, rather than replayed with a look-ahead.
+      if (latest_record_at_ && event.period_end_ < *latest_record_at_) {
+        throw std::invalid_argument(
+          "a bar that ended before a record already fed: feed records and bars in time order, a record before "
+          "the bars of its instant"
+        );
+      }
     }
     // **One lookup of the instrument per bar**: its slot says where its lot, its last price and its series are,
     // and whether it already has a bar in the period being collected.
@@ -1146,6 +1158,86 @@ public:
     // call and false of the loop it sits in: an order placed from `on_quote` can be listed by a later
     // working-order poll and announced. Publishing here is the closer parity, and it also
     // announces an order that would otherwise fill and be gone before any later observation point.
+    publish_order_updates();
+  }
+
+  /**
+   * @brief Replays one record: moves the clock to when it became known, re-derives the phase (calling
+   *   `on_phase` on a change), calls `on_data`, and publishes order updates.
+   *
+   * Only for a strategy declaring `on_data`, with a record of its `data_type`. Feed records in time order with
+   * the bars, and a record before the bars of its instant, so that a bar's handler sees what was known by the
+   * bar's end. With `on_bars`, a buffered period that ended before the record is delivered first; one that ends
+   * at the record's instant stays buffered, so its slice sees the record.
+   *
+   * An order placed from `on_data` is dated at `known_at_`: it fills against a bar whose period began at or
+   * after the record, never at an earlier bar's open. Where a bar's start is not derivable (a close-stamped
+   * weekly, monthly or yearly bar) the fill is allowed and counted in `ReplayResult::unchecked_fill_causality_`,
+   * as for a quote. A record does not price an instrument, mark the ledger, record an equity point or fill
+   * anything. On the replay's first event, `on_start` is called first, dated at the record.
+   *
+   * @tparam T The record type.
+   * @param event The record.
+   * @param trading_day Whether the record's date trades; empty gives `UNKNOWN`.
+   * @throws std::invalid_argument if the record is earlier than a record or a bar already fed, or, for a strategy
+   *   declaring `on_bars`, than a period already delivered.
+   */
+  template <typename T>
+  void feed(const strategy::DataEvent<T>& event, std::optional<bool> trading_day = true) {
+    static_assert(
+      strategy::strategy_detail::declares_on_data<Strategy>,
+      "a record fed to a strategy that declares no on_data would vanish: declare on_data, or feed no records"
+    );
+    static_assert(std::is_same_v<T, typename Runner::DataRecord>, "a record must be of the strategy's data_type");
+    if (result_.halted_) {
+      pending_.clear();
+      return;
+    }
+    const auto at = event.known_at_;
+    // Records come in time order, with each other and with the bars: one earlier than either was fed out of
+    // order, and is refused before anything changes.
+    if (latest_record_at_ && at < *latest_record_at_) {
+      throw std::invalid_argument("a record earlier than a record already fed: feed records in time order");
+    }
+    if (previous_ && at < previous_->second) {
+      throw std::invalid_argument(
+        "a record earlier than a bar already fed: feed records and bars in time order, a record before the bars "
+        "of its instant"
+      );
+    }
+    if constexpr (Runner::takes_bar_slices) {
+      if (!pending_.empty() && at < pending_.period_end()) {
+        throw std::invalid_argument(
+          "a record earlier than bars already fed: with on_bars, feed records and bars in time order"
+        );
+      }
+      if (pending_.empty() && delivered_through_ && at < *delivered_through_) {
+        throw std::invalid_argument(
+          "a record earlier than a period already delivered: with on_bars, feed records and bars in time order"
+        );
+      }
+      // Only a period that ended before the record: one ending at its instant is delivered after it, so that
+      // period's slice sees what was known by its end.
+      if (!pending_.empty() && pending_.period_end() < at) {
+        deliver_pending();
+        if (result_.halted_) {
+          return;
+        }
+      }
+    }
+    ++result_.records_;
+    latest_record_at_ = at;
+    runner_.executor().deciding_at(at);
+    start_strategy();
+    const bool phase_changed = clock_.advance_to(at, trading_day);
+    runner_.context().set_phase(clock_.phase());
+    if (phase_changed) {
+      runner_.context().set_now(at);
+      install_portfolio();
+      drain_reports(runner_.feed(clock_.phase()));
+    }
+    install_portfolio();
+    drain_reports(runner_.feed(event));
     publish_order_updates();
   }
 
@@ -2163,6 +2255,8 @@ private:
   // the last one delivered. A later bar may not join a delivered period, so nothing is decided twice.
   strategy::slice_detail::Bucket pending_;
   std::optional<std::chrono::system_clock::time_point> delivered_through_;
+  // When the last record fed became known; a bar that ended before it is refused.
+  std::optional<std::chrono::system_clock::time_point> latest_record_at_;
 };
 
 } // namespace backtest

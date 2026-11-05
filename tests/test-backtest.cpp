@@ -5998,3 +5998,198 @@ TEST_CASE("under the default risk limits a replay refuses an opening order from 
   CHECK(engine.strategy().fill_prices_.empty());
   CHECK(engine.result().refused_.size() == 1);
 }
+
+namespace {
+
+/** A record of external data, as a strategy might define one. */
+struct Flag {
+  int value_{0};
+};
+
+/** Keeps the latest record, notes what each handler saw, and buys ten from a record when asked. */
+struct ReadsRecords {
+  using data_type = Flag;
+
+  bool buy_on_record_{false};
+  bool bought_{false};
+  std::optional<int> latest_;
+  std::vector<std::string> events_;
+  std::vector<std::optional<int>> seen_at_bar_;
+  std::vector<Clock::time_point> now_at_record_;
+  std::vector<Decimal64> fill_prices_;
+
+  template <class Ctx>
+  void on_data(Ctx& ctx, const strategy::DataEvent<Flag>& event) {
+    events_.push_back("data");
+    latest_ = event.record_.value_;
+    now_at_record_.push_back(ctx.now());
+    if (buy_on_record_ && !bought_) {
+      bought_ = true;
+      ctx.submit(
+        strategy::OrderIntent::market(samsung(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")))
+      );
+    }
+  }
+
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {
+    events_.push_back("bar");
+    seen_at_bar_.push_back(latest_);
+  }
+
+  template <class Ctx>
+  void on_fill(Ctx&, const strategy::Fill& fill) {
+    fill_prices_.push_back(fill.price_);
+  }
+};
+
+/** The same, deciding on slices. */
+struct ReadsRecordsInSlices {
+  using data_type = Flag;
+
+  std::optional<int> latest_;
+  std::vector<std::string> events_;
+  std::vector<std::optional<int>> seen_at_slice_;
+
+  template <class Ctx>
+  void on_data(Ctx&, const strategy::DataEvent<Flag>& event) {
+    events_.push_back("data");
+    latest_ = event.record_.value_;
+  }
+
+  template <class Ctx>
+  void on_bars(Ctx&, const strategy::BarSlice&) {
+    events_.push_back("bars");
+    seen_at_slice_.push_back(latest_);
+  }
+};
+
+strategy::DataEvent<Flag> flag_at(Clock::time_point at, int value) {
+  return strategy::DataEvent<Flag>{at, Flag{value}};
+}
+
+} // namespace
+
+TEST_CASE("a record reaches on_data when it became known, before the bars of its instant") {
+  backtest::Backtester<ReadsRecords> engine(ReadsRecords{}, replay_config());
+  const auto day11 = utc(2026, 3, 11, 6, 30);
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(flag_at(day11, 1));
+  engine.feed(moving_bar(day11, BarInterval::ONE_DAY, "70500", "72000"));
+  engine.finish();
+
+  CHECK(engine.strategy().events_ == std::vector<std::string>{"bar", "data", "bar"});
+  CHECK(engine.strategy().seen_at_bar_ == std::vector<std::optional<int>>{std::nullopt, 1});
+  CHECK(engine.strategy().now_at_record_ == std::vector<Clock::time_point>{day11});
+  CHECK(engine.result().records_ == 1);
+  CHECK(engine.result().quotes_ == 0);
+}
+
+TEST_CASE("an order placed on a record fills at the open of the first bar that began after it") {
+  // Known at 10:30 on day 11: day 11's bar began at 09:00 and cannot fill it; day 12's open does.
+  ReadsRecords strategy;
+  strategy.buy_on_record_ = true;
+  backtest::Backtester<ReadsRecords> engine(std::move(strategy), replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(flag_at(utc(2026, 3, 11, 1, 30), 1));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70500", "72000"));
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "73000", "74000"));
+  engine.finish();
+
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("73000"));
+  CHECK(engine.result().unchecked_fill_causality_ == 0);
+}
+
+TEST_CASE("a record earlier than a record or a bar already fed is refused before anything changes") {
+  backtest::Backtester<ReadsRecords> engine(ReadsRecords{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  CHECK_THROWS_AS(engine.feed(flag_at(utc(2026, 3, 10, 6, 0), 1)), std::invalid_argument);
+  engine.feed(flag_at(utc(2026, 3, 11, 1, 0), 2));
+  CHECK_THROWS_AS(engine.feed(flag_at(utc(2026, 3, 11, 0, 59), 3)), std::invalid_argument);
+  CHECK(engine.result().records_ == 1);
+  CHECK(engine.strategy().latest_ == std::optional<int>(2));
+}
+
+TEST_CASE("a bar that ended before a record already fed is refused before anything changes") {
+  backtest::Backtester<ReadsRecords> engine(ReadsRecords{}, replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(flag_at(utc(2026, 3, 12, 0, 0), 1));
+  CHECK_THROWS_AS(
+    engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70500", "72000")), std::invalid_argument
+  );
+  CHECK(engine.result().bars_ == 1);
+  CHECK(engine.strategy().seen_at_bar_.size() == 1);
+}
+
+TEST_CASE("with on_bars, a record at a buffered period's instant is in that period's slice, a later one is not") {
+  const auto t10 = utc(2026, 3, 10, 6, 30);
+  const auto t11 = utc(2026, 3, 11, 6, 30);
+
+  SECTION("an equal instant keeps the period buffered; a later record delivers it first") {
+    backtest::Backtester<ReadsRecordsInSlices> engine(ReadsRecordsInSlices{}, replay_config());
+    engine.feed(slice_bar(samsung(), t10, BarInterval::ONE_DAY, "100", "101"));
+    engine.feed(flag_at(t10, 1));
+    engine.feed(flag_at(t10 + std::chrono::hours(1), 2));
+    engine.feed(slice_bar(samsung(), t11, BarInterval::ONE_DAY, "102", "103"));
+    engine.finish();
+    CHECK(engine.strategy().events_ == std::vector<std::string>{"data", "bars", "data", "bars"});
+    CHECK(engine.strategy().seen_at_slice_ == std::vector<std::optional<int>>{1, 2});
+  }
+
+  SECTION("a record earlier than bars already fed is refused") {
+    backtest::Backtester<ReadsRecordsInSlices> engine(ReadsRecordsInSlices{}, replay_config());
+    engine.feed(slice_bar(samsung(), t11, BarInterval::ONE_DAY, "100", "101"));
+    CHECK_THROWS_AS(engine.feed(flag_at(t10, 1)), std::invalid_argument);
+    CHECK(engine.result().records_ == 0);
+  }
+
+  SECTION("a record earlier than a period already delivered is refused") {
+    backtest::Backtester<ReadsRecordsInSlices> engine(ReadsRecordsInSlices{}, replay_config());
+    engine.feed(slice_bar(samsung(), t10, BarInterval::ONE_DAY, "100", "101"));
+    engine.feed(flag_at(t11, 1));
+    CHECK_THROWS_AS(engine.feed(flag_at(t10, 2)), std::invalid_argument);
+    CHECK(engine.result().records_ == 1);
+  }
+}
+
+TEST_CASE("records of any frequency are ordered with the bars by when they became known") {
+  SECTION("several records between two daily bars: the bar sees the last") {
+    backtest::Backtester<ReadsRecords> engine(ReadsRecords{}, replay_config());
+    engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+    engine.feed(flag_at(utc(2026, 3, 11, 0, 5), 1));
+    engine.feed(flag_at(utc(2026, 3, 11, 0, 7), 2));
+    // Irregular, and stamped on another market's clock (a New York evening is a Seoul morning).
+    engine.feed(flag_at(utc(2026, 3, 11, 1, 13), 3));
+    engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70500", "72000"));
+    engine.finish();
+    CHECK(engine.strategy().seen_at_bar_ == std::vector<std::optional<int>>{std::nullopt, 3});
+    CHECK(engine.result().records_ == 3);
+  }
+
+  SECTION("one record under minute bars: every later bar sees it, no earlier one") {
+    backtest::Backtester<ReadsRecords> engine(ReadsRecords{}, replay_config());
+    engine.feed(moving_bar(session_minute(1), BarInterval::ONE_MINUTE, "70000", "70100"));
+    engine.feed(flag_at(session_minute(1) + std::chrono::seconds(30), 7));
+    engine.feed(moving_bar(session_minute(2), BarInterval::ONE_MINUTE, "70100", "70200"));
+    engine.feed(moving_bar(session_minute(3), BarInterval::ONE_MINUTE, "70200", "70300"));
+    engine.finish();
+    CHECK(engine.strategy().seen_at_bar_ == std::vector<std::optional<int>>{std::nullopt, 7, 7});
+  }
+}
+
+#if defined(ATL_HAS_EIGEN)
+TEST_CASE("an order from a record against a close-stamped weekly bar is allowed and counted unchecked") {
+  // The quote's rule, unchanged: a weekly bar's start is not derivable, so the fill is allowed and counted.
+  ReadsRecords strategy;
+  strategy.buy_on_record_ = true;
+  backtest::Backtester<ReadsRecords> engine(std::move(strategy), replay_config());
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "69000", "70000"));
+  engine.feed(flag_at(utc(2026, 3, 17, 1, 0), 1));
+  engine.feed(moving_bar(utc(2026, 3, 20, 6, 30), BarInterval::ONE_WEEK, "75000", "76000"));
+  engine.finish();
+  REQUIRE(engine.strategy().fill_prices_.size() == 1);
+  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("75000"));
+  CHECK(engine.result().unchecked_fill_causality_ > 0);
+}
+#endif
