@@ -231,6 +231,8 @@ the strategy's own, and the engine reads only `known_at_`, when it became known.
 Feed records in time order with the bars and a record before the bars of its instant: a bar's handler then
 sees what was known by the bar's end, and with `on_bars` a record at a buffered period's own instant is in that
 period's slice.
+Feed a record before a quote of the same instant too: a quote delivers a buffered period first, so a record fed
+after it would miss that period's slice.
 A bar that ended before a record already fed is refused, since it would be decided on with that record in
 view, and so is a record earlier than a record or a bar already fed.
 An order placed from `on_data` follows the quote's rule above: dated at `known_at_`, it fills against a later
