@@ -376,6 +376,9 @@ public:
         return poll_buying_power(runner_instance);
       case runner::PollKind::PRICE_LIMITS:
         return poll_price_limits(runner_instance);
+      case runner::PollKind::DATA:
+        // Records come from the loop's data poll (`PollingLoop::set_data_poll`), never from a session.
+        return runner::PollOutcome::FAILED;
     }
     return runner::PollOutcome::UNCHANGED;
   }

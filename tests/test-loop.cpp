@@ -2769,3 +2769,141 @@ TEST_CASE("a target on_start states while a stop waits is not kept", "[loop][sta
   CHECK(runner_instance.targets_retained() == 0);
   CHECK(runner_instance.executor().placed().empty());
 }
+
+namespace {
+
+/** Keeps the latest record and notes, in order, each record (with the clock) and what each bar saw. */
+struct ReadsRecords {
+  using data_type = int;
+  std::optional<int> latest_;
+  std::vector<std::string> events_;
+  std::vector<std::optional<int>> seen_at_bar_;
+  std::vector<std::chrono::system_clock::time_point> now_at_record_;
+
+  template <class Ctx>
+  void on_data(Ctx& ctx, const strategy::DataEvent<int>& event) {
+    events_.push_back("data");
+    latest_ = event.record_;
+    now_at_record_.push_back(ctx.now());
+  }
+
+  template <class Ctx>
+  void on_bar(Ctx&, const strategy::BarEvent&) {
+    events_.push_back("bar");
+    seen_at_bar_.push_back(latest_);
+  }
+};
+
+using RecordsRunner = runner::DryRunner<ReadsRecords>;
+
+/** Feeds one minute bar per bars poll, each a second after the last, ending before the loop's clock. */
+class BarPerPoll {
+public:
+  runner::PollOutcome poll(runner::PollKind kind, RecordsRunner& runner_instance) {
+    if (kind != runner::PollKind::BARS) {
+      return runner::PollOutcome::UNCHANGED;
+    }
+    algotradelib::Bar bar;
+    bar.timestamp_ = base_time() - std::chrono::hours(1) + std::chrono::seconds(++bars_);
+    bar.open_ = algotradelib::Decimal64::parse("100");
+    bar.high_ = algotradelib::Decimal64::parse("100");
+    bar.low_ = algotradelib::Decimal64::parse("100");
+    bar.close_ = algotradelib::Decimal64::parse("100");
+    bar.volume_ = algotradelib::Decimal64::parse("1");
+    runner_instance.feed(
+      strategy::make_bar_event(samsung(), algotradelib::BarInterval::ONE_MINUTE, algotradelib::BarStamp::CLOSE, bar)
+    );
+    return runner::PollOutcome::UPDATED;
+  }
+
+  runner::PollOutcome read_order_list(RecordsRunner&) {
+    return runner::PollOutcome::UPDATED;
+  }
+
+private:
+  int bars_{0};
+};
+
+using RecordsLoop = runner::PollingLoop<RecordsRunner, BarPerPoll, runner::ManualClock>;
+
+} // namespace
+
+TEST_CASE("the data poll has its own cadence and each record is known when the loop received it", "[loop][data]") {
+  RecordsRunner runner_instance;
+  BarPerPoll source;
+  runner::PollSchedule schedule;
+  schedule.data_ = std::chrono::seconds(2);
+  schedule.tick_ = std::chrono::seconds(1);
+  RecordsLoop loop(runner_instance, source, schedule, test_clock());
+  std::vector<std::chrono::system_clock::time_point> asked;
+  int next = 0;
+  loop.set_data_poll([&](std::chrono::system_clock::time_point now) -> std::optional<std::vector<int>> {
+    asked.push_back(now);
+    return std::vector<int>{++next};
+  });
+  StopSource stop;
+
+  const auto report = loop.run(stop, 4);
+  CHECK(report.attempted(runner::PollKind::DATA) == 2);
+  CHECK(asked == std::vector<std::chrono::system_clock::time_point>{base_time(), base_time() + 2s});
+  // Stamped at the loop's reading, whatever the source knew.
+  CHECK(runner_instance.strategy().now_at_record_ == asked);
+  CHECK(runner_instance.strategy().latest_ == std::optional<int>(2));
+}
+
+TEST_CASE("a record and a bar read in one iteration reach the strategy record first", "[loop][data]") {
+  RecordsRunner runner_instance;
+  BarPerPoll source;
+  runner::PollSchedule schedule;
+  schedule.bars_ = std::chrono::seconds(1);
+  schedule.data_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  RecordsLoop loop(runner_instance, source, schedule, test_clock());
+  int next = 0;
+  loop.set_data_poll([&](std::chrono::system_clock::time_point) -> std::optional<std::vector<int>> {
+    return std::vector<int>{++next};
+  });
+  StopSource stop;
+
+  loop.run(stop, 2);
+  CHECK(runner_instance.strategy().events_ == std::vector<std::string>{"data", "bar", "data", "bar"});
+  CHECK(runner_instance.strategy().seen_at_bar_ == std::vector<std::optional<int>>{1, 2});
+}
+
+TEST_CASE("a data poll with nothing new is unchanged, and one that failed counts as a failure", "[loop][data]") {
+  RecordsRunner runner_instance;
+  BarPerPoll source;
+  runner::PollSchedule schedule;
+  schedule.data_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  RecordsLoop loop(runner_instance, source, schedule, test_clock());
+  int calls = 0;
+  loop.set_data_poll([&](std::chrono::system_clock::time_point) -> std::optional<std::vector<int>> {
+    ++calls;
+    if (calls == 1) {
+      return std::vector<int>{};
+    }
+    return std::nullopt;
+  });
+  StopSource stop;
+
+  const auto report = loop.run(stop, 2);
+  CHECK(report.attempted(runner::PollKind::DATA) == 2);
+  CHECK(report.failed(runner::PollKind::DATA) == 1);
+  CHECK(runner_instance.strategy().events_.empty());
+}
+
+TEST_CASE("without a data poll no record is read, whatever the schedule says", "[loop][data]") {
+  RecordsRunner runner_instance;
+  BarPerPoll source;
+  runner::PollSchedule schedule;
+  schedule.bars_ = std::chrono::seconds(1);
+  schedule.data_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  RecordsLoop loop(runner_instance, source, schedule, test_clock());
+  StopSource stop;
+
+  const auto report = loop.run(stop, 2);
+  CHECK(report.attempted(runner::PollKind::DATA) == 0);
+  CHECK(runner_instance.strategy().events_ == std::vector<std::string>{"bar", "bar"});
+}

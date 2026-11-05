@@ -11,6 +11,7 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -25,7 +26,7 @@ namespace runner {
  * @brief What a `PollingLoop` polls for; each has a cadence in `PollSchedule`.
  *
  * Each iteration polls in the order of `all_poll_kinds`: calendar, price limits, working orders,
- * holdings, buying power, bars, quotes.
+ * holdings, buying power, data, bars, quotes.
  */
 enum class PollKind {
   /** @brief Completed bars. */
@@ -56,6 +57,13 @@ enum class PollKind {
    * the polls) would use the previous iteration's.
    */
   PRICE_LIMITS,
+  /**
+   * @brief Records for a strategy's `on_data`, from the data poll `PollingLoop::set_data_poll` installs; never
+   *   from the source.
+   *
+   * Polled before bars, so a record and a bar read in one iteration reach the strategy record first.
+   */
+  DATA,
 };
 
 /**
@@ -79,6 +87,8 @@ inline constexpr std::string_view poll_kind_name(PollKind kind) noexcept {
       return "buying_power";
     case PollKind::PRICE_LIMITS:
       return "price_limits";
+    case PollKind::DATA:
+      return "data";
   }
   return "";
 }
@@ -95,6 +105,8 @@ inline constexpr PollKind all_poll_kinds[] = {
   PollKind::HOLDINGS,
   // After holdings, so money and positions are equally fresh.
   PollKind::BUYING_POWER,
+  // Before bars, so a bar read in the same iteration sees the records received with it.
+  PollKind::DATA,
   PollKind::BARS,
   PollKind::QUOTES,
 };
@@ -219,6 +231,11 @@ struct PollSchedule {
    */
   std::optional<std::chrono::nanoseconds> price_limits_;
   /**
+   * @brief How often to call the data poll (`PollingLoop::set_data_poll`); without it, or without a data poll,
+   *   no record is read.
+   */
+  std::optional<std::chrono::nanoseconds> data_;
+  /**
    * @brief Returns the interval for a poll kind.
    * @param kind The kind.
    * @return The interval, or `std::nullopt` if that poll is disabled.
@@ -239,6 +256,8 @@ struct PollSchedule {
         return buying_power_;
       case PollKind::PRICE_LIMITS:
         return price_limits_;
+      case PollKind::DATA:
+        return data_;
     }
     return std::nullopt;
   }
@@ -1253,6 +1272,32 @@ public:
   }
 
   /**
+   * @brief Installs the data poll that reads records for the strategy's `on_data`, called on
+   *   `PollSchedule::data_`'s cadence, before the bars of the same iteration.
+   *
+   * The poll is given the loop's clock reading and returns the records received since its last call: an empty
+   * vector when nothing is new (`UNCHANGED`), `std::nullopt` when the read failed (`FAILED`, counted and given
+   * up on as any other kind under `FailurePolicy`). Each record is fed as a `strategy::DataEvent` known at that
+   * clock reading: live, a record is known when it is received, never earlier, whatever its source says (keep a
+   * source's own time in the record). An exception from the poll or from `on_data` ends the run, as a throwing
+   * source does.
+   *
+   * Only for a strategy declaring `on_data`. Without a data poll, or without `PollSchedule::data_`, no record
+   * is read and nothing else changes.
+   *
+   * @param poll The data poll (`mock::DataFeed` is one).
+   */
+  void set_data_poll(
+    std::function<std::optional<std::vector<typename Runner::DataRecord>>(std::chrono::system_clock::time_point)> poll
+  ) {
+    static_assert(
+      Runner::takes_records,
+      "a data poll for a strategy that declares no on_data would read records that vanish: declare on_data"
+    );
+    data_poll_ = std::move(poll);
+  }
+
+  /**
    * @brief Sets the control file an operator writes a stop intent into.
    * @param channel The channel.
    */
@@ -1648,7 +1693,7 @@ private:
       // then approve a flatten against a picture missing a resting order. The count taken here is
       // the one that was true when the listing was read.
       const auto placements_before_poll = runner_->placements_at_broker();
-      const auto outcome = source_->poll(kind, *runner_);
+      const auto outcome = kind == PollKind::DATA ? poll_data(iteration.at_) : source_->poll(kind, *runner_);
       if (kind == PollKind::WORKING_ORDERS) {
         working_asked_at_ = clock_.monotonic_now();
       } else if (kind == PollKind::HOLDINGS) {
@@ -2885,6 +2930,26 @@ private:
     return "the holdings snapshot is older than the configured maximum";
   }
 
+  // Calls the data poll and feeds each record it returns, known at `at`.
+  PollOutcome poll_data(std::chrono::system_clock::time_point at) {
+    if constexpr (Runner::takes_records) {
+      auto records = data_poll_(at);
+      if (!records) {
+        return PollOutcome::FAILED;
+      }
+      if (records->empty()) {
+        return PollOutcome::UNCHANGED;
+      }
+      for (auto& record : *records) {
+        runner_->feed(strategy::DataEvent<typename Runner::DataRecord>{at, std::move(record)});
+      }
+      return PollOutcome::UPDATED;
+    } else {
+      static_cast<void>(at);
+      return PollOutcome::FAILED;
+    }
+  }
+
   // Returns whether `kind` is due at `at`.
   bool is_due(PollKind kind, std::chrono::system_clock::time_point at) const {
     // A waiting stop reads the two closing kinds on its own floor, whatever their cadence (a disabled
@@ -2894,7 +2959,7 @@ private:
       return closing_read_due(kind);
     }
     const auto interval = schedule_.interval_for(kind);
-    if (!interval) {
+    if (!interval || (kind == PollKind::DATA && !data_poll_)) {
       return false;
     }
     const auto& due = next_due_[static_cast<int>(kind)];
@@ -2932,6 +2997,9 @@ private:
 
   Runner* runner_;
   Source* source_;
+  // The data poll, if installed; see `set_data_poll`.
+  std::function<std::optional<std::vector<typename Runner::DataRecord>>(std::chrono::system_clock::time_point)>
+    data_poll_;
   PollSchedule schedule_;
   Clock clock_;
   FileStopChannel control_;
