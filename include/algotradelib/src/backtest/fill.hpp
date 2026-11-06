@@ -86,6 +86,26 @@ struct MarketPriceInput {
  */
 using MarketPriceFunction = std::function<std::optional<Decimal64>(const MarketPriceInput&)>;
 
+/** @brief A market-price rule the library ships; see `NextBarFillModel::with_market_price(MarketPrice)`. */
+enum class MarketPrice {
+  /** @brief The default: a market order fills at the next bar's open (its close if it has no open). */
+  NEXT_OPEN,
+  /**
+   * @brief A market order fills at the price it was decided on, named `decision-close` in the report.
+   *
+   * The price is the instrument's last price when the strategy decided the order (`MarketPriceInput::decision_price_`):
+   * the close of the bar it decided on, the open of an open point, or the quote it decided on. That price is the
+   * instrument's own last one, so it can be days old after a gap in that instrument's data; an order placed in
+   * `on_fill` gets the price before the fill bar. With no price known yet (the first bar's fill of an order placed in
+   * `on_start`) the order fills at the fill bar's open, and with neither it does not trade against that bar.
+   *
+   * This is the textbook convention of backtests that trade on close; it is optimistic. The strategy trades at a
+   * price it has already seen, which a market cannot give: a real closing-auction order is sent before the final
+   * price is known.
+   */
+  DECISION_CLOSE,
+};
+
 /** @brief A tax on sales, stated by the caller; see `NextBarFillModel::with_sell_tax`. */
 struct SellTax {
   /** @brief The fraction of a sale's value charged, such as `0.0020` for 0.20%. */
@@ -206,6 +226,32 @@ public:
     auto model = *this;
     model.market_price_name_ = std::move(name);
     model.market_price_ = std::move(price);
+    return model;
+  }
+
+  /**
+   * @brief Returns a copy of this model that prices market orders by a rule the library ships.
+   *
+   * `MarketPrice::NEXT_OPEN` removes any rule set before; `MarketPrice::DECISION_CLOSE` sets the rule named
+   * `decision-close`, priced, costed and dated as `with_market_price(std::string, MarketPriceFunction)` describes.
+   *
+   * @param price The rule.
+   * @return The new model.
+   */
+  NextBarFillModel with_market_price(MarketPrice price) const {
+    auto model = *this;
+    switch (price) {
+      case MarketPrice::NEXT_OPEN:
+        model.market_price_name_.clear();
+        model.market_price_ = nullptr;
+        break;
+      case MarketPrice::DECISION_CLOSE:
+        model.market_price_name_ = "decision-close";
+        model.market_price_ = [](const MarketPriceInput& in) {
+          return in.decision_price_ ? in.decision_price_ : in.next_.bar_.open_;
+        };
+        break;
+    }
     return model;
   }
 

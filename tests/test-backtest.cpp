@@ -1734,6 +1734,82 @@ TEST_CASE("a market-price rule needs a name and a function", "[market-price]") {
   CHECK(model.with_market_price("open", open).has_market_price_rule());
 }
 
+namespace {
+
+/** Buys ten from `on_start` and on its first bar, and sells twenty from `on_fill` after the second fill, at market. */
+struct DecidesEverywhere {
+  bool bought_{false};
+  std::vector<Decimal64> fill_prices_;
+
+  template <class Ctx>
+  void buy(Ctx& ctx) {
+    ctx.submit(
+      strategy::OrderIntent::market(samsung(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")))
+    );
+  }
+
+  template <class Ctx>
+  void on_start(Ctx& ctx) {
+    buy(ctx);
+  }
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent&) {
+    if (!bought_) {
+      bought_ = true;
+      buy(ctx);
+    }
+  }
+
+  template <class Ctx>
+  void on_fill(Ctx& ctx, const strategy::Fill& fill) {
+    fill_prices_.push_back(fill.price_);
+    if (fill_prices_.size() == 2) {
+      ctx.submit(
+        strategy::OrderIntent::market(samsung(), OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("20")))
+      );
+    }
+  }
+};
+
+std::vector<Decimal64> decides_everywhere(const backtest::NextBarFillModel& model) {
+  backtest::Backtester<DecidesEverywhere> engine(DecidesEverywhere{}, replay_config(), model);
+  engine.feed(moving_bar(utc(2026, 3, 9, 6, 30), BarInterval::ONE_DAY, "60000", "61000"));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "71000", "72000"));
+  engine.finish();
+  return engine.strategy().fill_prices_;
+}
+
+} // namespace
+
+TEST_CASE("the decision-close preset fills as the hand-written rule does", "[market-price]") {
+  const auto preset = backtest::NextBarFillModel{}.with_market_price(backtest::MarketPrice::DECISION_CLOSE);
+  CHECK(preset.market_price_rule() == "decision-close");
+  const auto by_hand =
+    backtest::NextBarFillModel{}.with_market_price("by-hand", [](const backtest::MarketPriceInput& in) {
+      return in.decision_price_ ? in.decision_price_ : in.next_.bar_.open_;
+    });
+  const auto prices = decides_everywhere(preset);
+  CHECK(prices == decides_everywhere(by_hand));
+  // The order from on_start had no price yet: the first bar's open. The one from on_bar: the first bar's close,
+  // outside the second bar's range. The one from on_fill on the second bar: the price before that bar, the first
+  // bar's close again, not the second bar's (70,000).
+  CHECK(
+    prices == std::vector<Decimal64>{Decimal64::parse("60000"), Decimal64::parse("61000"), Decimal64::parse("61000")}
+  );
+}
+
+TEST_CASE("the next-open preset removes a market-price rule", "[market-price]") {
+  const auto model =
+    backtest::NextBarFillModel{}
+      .with_market_price(backtest::MarketPrice::DECISION_CLOSE)
+      .with_market_price(backtest::MarketPrice::NEXT_OPEN);
+  CHECK_FALSE(model.has_market_price_rule());
+  CHECK(model.market_price_rule().empty());
+  CHECK(decides_everywhere(model) == decides_everywhere(backtest::NextBarFillModel{}));
+}
+
 #if defined(ATL_HAS_EIGEN)
 TEST_CASE("a stated tax with nothing executed reports no tax figure", "[sell-tax]") {
   backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config(), taxed(Country::KR));
