@@ -146,8 +146,8 @@ enum class KiwoomSellableScope {
  * @brief Kiwoom credentials (app key and secret key), demo or real account, the market-data tape,
  *   and the holdings settings an account must state before trading.
  *
- * Load with `from_env()` (`KIWOOM_APP_KEY`, `KIWOOM_SECRET_KEY`, `KIWOOM_DEMO`) or
- * `from_json(filename)`. Holdings cannot be read until `holdings_venue_` is set. Orders cannot be
+ * Load with `from_env()` (`KIWOOM_APP_KEY`, `KIWOOM_SECRET_KEY`, `KIWOOM_DEMO`), `from_json(filename)`
+ * or `from_json_text(text, origin)`. Holdings cannot be read until `holdings_venue_` is set. Orders cannot be
  * placed or amended, and the session (so a runner) reads no holdings, until `holdings_position_scope_`
  * is set; a checked sell also needs `holdings_sellable_scope_`.
  */
@@ -236,11 +236,23 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
       throw std::runtime_error("Cannot open Kiwoom credential file: " + filename);
     }
     const std::string content(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>{});
+    from_json_text_impl(content, "file " + filename);
+  }
+
+  /**
+   * @brief Reads the credentials from JSON text in the file's format; called by `from_json_text`.
+   *   Nothing changes if it throws.
+   * @param text The JSON document.
+   * @param origin What error messages call the source (`"file creds.json"`); not a secret.
+   * @throws std::runtime_error if the text cannot be parsed, a key is missing or not a string, or
+   *   `"demo"` is not a boolean.
+   */
+  void from_json_text_impl(std::string_view text, const std::string& origin) {
     boost::system::error_code ec;
-    const auto jv = json::parse(content, ec);
+    const auto jv = json::parse(text, ec);
     if (ec || !jv.is_object()) {
       throw std::runtime_error(
-        "Failed to parse Kiwoom credentials file: " + filename +
+        "Failed to parse Kiwoom credentials " + origin +
         (ec ? " — " + ec.message() : std::string(" — not a JSON object"))
       );
     }
@@ -248,11 +260,11 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
     const json::value* key = doc.if_contains("appkey");
     const json::value* secret = doc.if_contains("secretkey");
     if (!key || !secret || !key->is_string() || !secret->is_string()) {
-      throw std::runtime_error("Credential file should contain appkey and secretkey as strings");
+      throw std::runtime_error("Kiwoom credential " + origin + " should contain appkey and secretkey as strings");
     }
-    // Everything is read and checked before anything is assigned, so a refused file leaves this
+    // Everything is read and checked before anything is assigned, so a refused document leaves this
     // config -- and the endpoint it already selected -- exactly as it was.
-    const bool demo = demo_from_json(doc, filename);
+    const bool demo = demo_from_json(doc, origin);
     key_ = key->get_string().c_str();
     secret_ = secret->get_string().c_str();
     is_demo_ = demo;
@@ -279,20 +291,20 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
   }
 
   /**
-   * @brief Reads a credential file's `"demo"`.
-   * @param doc The file's contents.
-   * @param filename The file, for the error message.
+   * @brief Reads a credential document's `"demo"`.
+   * @param doc The document.
+   * @param origin What the error message calls the source (`"file creds.json"`).
    * @return `true` if absent, otherwise its value.
    * @throws std::runtime_error if it is not a boolean.
    */
-  static bool demo_from_json(const json::object& doc, const std::string& filename) {
+  static bool demo_from_json(const json::object& doc, const std::string& origin) {
     const json::value* demo = doc.if_contains("demo");
     if (!demo) {
       return true;
     }
     if (!demo->is_bool()) {
       throw std::runtime_error(
-        "Kiwoom credential file " + filename +
+        "Kiwoom credential " + origin +
         " has a \"demo\" that is not true or false; write "
         "true for the demo endpoints or false to trade live, or leave it out for demo."
       );

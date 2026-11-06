@@ -28,7 +28,8 @@ namespace network {
  *   class.
  *
  * The broker class derives from it (CRTP) and provides `from_env_impl()`, `from_json_impl(filename)`,
- * and the static `key_field()` and `secret_field()` naming the token request's JSON fields.
+ * `from_json_text_impl(text, origin)`, and the static `key_field()` and `secret_field()` naming the token
+ * request's JSON fields.
  *
  * @tparam BrokerType The derived broker credentials class.
  */
@@ -55,6 +56,19 @@ public:
    */
   void from_json(const std::string& filename) {
     static_cast<BrokerType*>(this)->from_json_impl(filename);
+  }
+
+  /**
+   * @brief Loads the credentials from JSON text in the broker's format, as `from_json` reads a file's
+   *   contents, for credentials kept somewhere other than a file (a system credential store).
+   * @param text The JSON document.
+   * @param origin What error messages call the source, after the broker's name and "credential", such as
+   *   `"stored login kis/demo"`; never put a secret in it.
+   * @throws std::runtime_error (from the broker's implementation) if the text is not valid JSON, or a field
+   *   is missing, of the wrong type or invalid; the message names the field, never its value.
+   */
+  void from_json_text(std::string_view text, const std::string& origin) {
+    static_cast<BrokerType*>(this)->from_json_text_impl(text, origin);
   }
 
   /**

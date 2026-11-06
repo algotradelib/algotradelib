@@ -64,10 +64,23 @@ struct KisAccount {
       throw std::runtime_error("Cannot open KIS credential file: " + filename);
     }
     const std::string content(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>{});
+    from_json_text(content, "file " + filename);
+  }
+
+  /**
+   * @brief Loads the account from JSON text in the credential file's format, the same document
+   *   `KisConfig::from_json_text` reads. Nothing changes if it throws.
+   * @param text The JSON document.
+   * @param origin What error messages call the source, after "KIS credential", such as
+   *   `"stored login kis/demo"`; never put a secret in it. Messages name the field, never a value.
+   * @throws std::runtime_error if the text cannot be parsed, `account_number` is missing, or a field is
+   *   not a string of the right number of digits.
+   */
+  void from_json_text(std::string_view text, const std::string& origin) {
     boost::system::error_code ec;
-    const auto document = boost::json::parse(content, ec);
+    const auto document = boost::json::parse(text, ec);
     if (ec || !document.is_object()) {
-      throw std::runtime_error("Failed to parse KIS credentials file: " + filename);
+      throw std::runtime_error("Failed to parse KIS credentials " + origin);
     }
     const auto field = [&](const char* name, std::size_t digits) -> std::optional<std::string> {
       const auto* value = document.as_object().if_contains(name);
@@ -76,7 +89,7 @@ struct KisAccount {
       }
       if (!value->is_string() || !broker_detail::decimal_digits(value->get_string(), digits)) {
         throw std::runtime_error(
-          "KIS credential file " + filename + " has a " + name + " that is not " + std::to_string(digits) +
+          "KIS credential " + origin + " has a " + name + " that is not " + std::to_string(digits) +
           " digits in a string"
         );
       }
@@ -84,7 +97,7 @@ struct KisAccount {
     };
     auto number = field("account_number", 8);
     if (!number) {
-      throw std::runtime_error("KIS credential file " + filename + " has no account_number");
+      throw std::runtime_error("KIS credential " + origin + " has no account_number");
     }
     const auto product = field("account_product_code", 2);
     account_number_ = std::move(*number);

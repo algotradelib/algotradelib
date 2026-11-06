@@ -76,7 +76,8 @@ static inline std::chrono::system_clock::time_point parse_expiry(const char* s) 
 /**
  * @brief KIS credentials (app key and secret), demo or real account, and the market-data tape.
  *
- * Load with `from_env()` (`KIS_APP_KEY`, `KIS_APP_SECRET`, `KIS_DEMO`) or `from_json(filename)`.
+ * Load with `from_env()` (`KIS_APP_KEY`, `KIS_APP_SECRET`, `KIS_DEMO`), `from_json(filename)` or
+ * `from_json_text(text, origin)`.
  */
 struct KisConfig : public network::ClientCredentials<KisConfig> {
   // std::string grant_type = "client_credentials"; // length = 18
@@ -134,23 +135,35 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
       throw std::runtime_error("Cannot open KIS credential file: " + filename);
     }
     const std::string content(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>{});
+    from_json_text_impl(content, "file " + filename);
+  }
+
+  /**
+   * @brief Reads the credentials from JSON text in the file's format; called by `from_json_text`.
+   *   Nothing changes if it throws.
+   * @param text The JSON document.
+   * @param origin What error messages call the source (`"file creds.json"`); not a secret.
+   * @throws std::runtime_error if the text cannot be parsed, a key is missing or not a string, or
+   *   `"demo"` is not a boolean.
+   */
+  void from_json_text_impl(std::string_view text, const std::string& origin) {
     boost::system::error_code ec;
-    const auto jv = json::parse(content, ec);
+    const auto jv = json::parse(text, ec);
     if (ec) {
-      throw std::runtime_error("Failed to parse KIS credentials file: " + filename + " — " + ec.message());
+      throw std::runtime_error("Failed to parse KIS credentials " + origin + " — " + ec.message());
     }
     if (!jv.is_object()) {
-      throw std::runtime_error("Failed to parse KIS credentials file: " + filename + " — not a JSON object");
+      throw std::runtime_error("Failed to parse KIS credentials " + origin + " — not a JSON object");
     }
     const auto& doc = jv.as_object();
     const json::value* key = doc.if_contains("app_key");
     const json::value* secret = doc.if_contains("app_secret");
     if (!key || !secret || !key->is_string() || !secret->is_string()) {
-      throw std::runtime_error("Credential file should contain app_key and app_secret as strings");
+      throw std::runtime_error("KIS credential " + origin + " should contain app_key and app_secret as strings");
     }
-    // Everything is read and checked before anything is assigned, so a refused file leaves this
+    // Everything is read and checked before anything is assigned, so a refused document leaves this
     // config -- and the endpoint it already selected -- exactly as it was.
-    const bool demo = demo_from_json(doc, filename);
+    const bool demo = demo_from_json(doc, origin);
     key_ = key->get_string().c_str();
     secret_ = secret->get_string().c_str();
     is_demo_ = demo;
@@ -177,20 +190,20 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
   }
 
   /**
-   * @brief Reads a credential file's `"demo"`.
-   * @param doc The file's contents.
-   * @param filename The file, for the error message.
+   * @brief Reads a credential document's `"demo"`.
+   * @param doc The document.
+   * @param origin What the error message calls the source (`"file creds.json"`).
    * @return `true` if absent, otherwise its value.
    * @throws std::runtime_error if it is not a boolean.
    */
-  static bool demo_from_json(const json::object& doc, const std::string& filename) {
+  static bool demo_from_json(const json::object& doc, const std::string& origin) {
     const json::value* demo = doc.if_contains("demo");
     if (!demo) {
       return true;
     }
     if (!demo->is_bool()) {
       throw std::runtime_error(
-        "KIS credential file " + filename +
+        "KIS credential " + origin +
         " has a \"demo\" that is not true or false; write "
         "true for the demo endpoints or false to trade live, or leave it out for demo."
       );

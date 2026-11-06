@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include "../../network/oauth.hpp"
 
@@ -19,7 +20,8 @@ struct TossWebsocket;
 /**
  * @brief Toss Securities credentials (client id and secret). Toss has no demo environment.
  *
- * Load with `from_env()` (`TOSS_CLIENT_ID`, `TOSS_CLIENT_SECRET`) or `from_json(filename)`.
+ * Load with `from_env()` (`TOSS_CLIENT_ID`, `TOSS_CLIENT_SECRET`), `from_json(filename)` or
+ * `from_json_text(text, origin)`.
  */
 struct TossConfig : public network::ClientCredentials<TossConfig> {
   // std::string grant_type = "client_credentials"; // length = 18
@@ -43,7 +45,7 @@ struct TossConfig : public network::ClientCredentials<TossConfig> {
 
   /**
    * @brief Reads the credentials from a JSON file, `{ "client_id": "...", "client_secret": "..." }`;
-   *   called by `from_json(filename)`.
+   *   called by `from_json(filename)`. Nothing changes if it throws.
    * @param filename The file.
    * @throws std::runtime_error if the file cannot be read, is not a JSON object, or lacks either
    *   field or has one that is not a string.
@@ -54,17 +56,38 @@ struct TossConfig : public network::ClientCredentials<TossConfig> {
       throw std::runtime_error("Cannot open Toss Invest credential file: " + filename);
     }
     const std::string content(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>{});
+    from_json_text_impl(content, "file " + filename);
+  }
+
+  /**
+   * @brief Reads the credentials from JSON text in the file's format; called by `from_json_text`.
+   *   Nothing changes if it throws.
+   * @param text The JSON document.
+   * @param origin What error messages call the source (`"file creds.json"`); not a secret.
+   * @throws std::runtime_error if the text cannot be parsed, is not a JSON object, or lacks either field
+   *   or has one that is not a string.
+   */
+  void from_json_text_impl(std::string_view text, const std::string& origin) {
     boost::system::error_code ec;
-    const auto jv = json::parse(content, ec);
-    if (ec) {
-      throw std::runtime_error("Failed to parse Toss Invest credentials file: " + filename + " — " + ec.message());
+    const auto jv = json::parse(text, ec);
+    if (ec || !jv.is_object()) {
+      throw std::runtime_error(
+        "Failed to parse Toss Invest credentials " + origin +
+        (ec ? " — " + ec.message() : std::string(" — not a JSON object"))
+      );
     }
     const auto& doc = jv.as_object();
-    if (!doc.contains("client_id") || !doc.contains("client_secret")) {
-      throw std::runtime_error("Credential file should contain client_id and client_secret");
+    const json::value* key = doc.if_contains("client_id");
+    const json::value* secret = doc.if_contains("client_secret");
+    if (!key || !secret || !key->is_string() || !secret->is_string()) {
+      throw std::runtime_error(
+        "Toss Invest credential " + origin + " should contain client_id and client_secret as strings"
+      );
     }
-    key_ = doc.at("client_id").as_string().c_str();
-    secret_ = doc.at("client_secret").as_string().c_str();
+    // Both are checked before either is assigned, so a refused document leaves these credentials as they
+    // were.
+    key_ = key->get_string().c_str();
+    secret_ = secret->get_string().c_str();
   }
 
   /**
