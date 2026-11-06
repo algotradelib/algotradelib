@@ -22,6 +22,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <type_traits>
 #include <vector>
@@ -942,6 +943,123 @@ TEST_CASE("A Kiwoom credential file is demo unless its demo key says false", "[b
     INFO("\"demo\": " << demo);
     REQUIRE(message.find("not true or false") != std::string::npos);
     REQUIRE(refused.key().empty());
+  }
+}
+
+TEST_CASE("Credentials load from JSON text as from a file", "[broker][config][json]") {
+  const std::string kis_text =
+    R"({"app_key":"app-key","app_secret":"app-secret","demo":false,"account_number":"12345678","account_product_code":"22"})";
+  const TempCredentialFile kis_file("kis-text", kis_text);
+  kis::KisConfig kis_from_file;
+  kis_from_file.from_json(kis_file.str());
+  kis::KisConfig kis_from_text;
+  kis_from_text.from_json_text(kis_text, "stored login kis/real");
+  CHECK(kis_from_text.key() == kis_from_file.key());
+  CHECK(kis_from_text.secret() == kis_from_file.secret());
+  CHECK(kis_from_text.is_demo_ == kis_from_file.is_demo_);
+  CHECK(std::string_view(kis_from_text.rest_host()) == kis_from_file.rest_host());
+  kis::KisAccount account_from_file;
+  account_from_file.from_json(kis_file.str());
+  kis::KisAccount account_from_text;
+  account_from_text.from_json_text(kis_text, "stored login kis/real");
+  CHECK(account_from_text.account_number_ == account_from_file.account_number_);
+  CHECK(account_from_text.product_code_ == account_from_file.product_code_);
+
+  const std::string kiwoom_text = R"({"appkey":"app-key","secretkey":"secret-key"})";
+  const TempCredentialFile kiwoom_file("kiwoom-text", kiwoom_text);
+  kiwoom::KiwoomConfig kiwoom_from_file;
+  kiwoom_from_file.from_json(kiwoom_file.str());
+  kiwoom::KiwoomConfig kiwoom_from_text;
+  kiwoom_from_text.from_json_text(kiwoom_text, "stored login kiwoom/demo");
+  CHECK(kiwoom_from_text.key() == kiwoom_from_file.key());
+  CHECK(kiwoom_from_text.secret() == kiwoom_from_file.secret());
+  CHECK(kiwoom_from_text.is_demo_);
+  CHECK(kiwoom_from_file.is_demo_);
+
+  const std::string toss_text = R"({"client_id":"client-id","client_secret":"client-secret"})";
+  const TempCredentialFile toss_file("toss-text", toss_text);
+  tossinvest::TossConfig toss_from_file;
+  toss_from_file.from_json(toss_file.str());
+  tossinvest::TossConfig toss_from_text;
+  toss_from_text.from_json_text(toss_text, "stored login toss/real");
+  CHECK(toss_from_text.key() == toss_from_file.key());
+  CHECK(toss_from_text.secret() == toss_from_file.secret());
+
+  // A refusal names the source as the caller named it.
+  kis::KisConfig refused;
+  const auto message = refusal_of([&] {
+    refused.from_json_text("[]", "stored login kis/demo");
+  });
+  CHECK(message.find("stored login kis/demo") != std::string::npos);
+}
+
+TEST_CASE("A refused Toss credential document leaves the credentials as they were", "[broker][toss][config][json]") {
+  tossinvest::TossConfig config;
+  config.from_json_text(R"({"client_id":"old-id","client_secret":"old-secret"})", "stored login toss/real");
+  for (
+    const char* body :
+    {R"({"client_id":"new-id","client_secret":7})", R"({"client_id":"new-id"})", R"(["client_id"])", R"({"client_id":)"}
+  ) {
+    INFO(body);
+    CHECK_FALSE(refusal_of([&] {
+      config.from_json_text(body, "stored login toss/real");
+    }).empty());
+    CHECK(config.key() == "old-id");
+    CHECK(config.secret() == "old-secret");
+  }
+}
+
+TEST_CASE("No credential refusal repeats a key or a secret", "[broker][config][json]") {
+  const std::string key = "KEY-0123456789";
+  const std::string secret = "SECRET-9876543210";
+  const auto check = [&](const std::string& message) {
+    REQUIRE_FALSE(message.empty());
+    CHECK(message.find(key) == std::string::npos);
+    CHECK(message.find(secret) == std::string::npos);
+  };
+  for (
+    const std::string& body :
+    {R"({"app_key":")" + key + R"(","app_secret":")" + secret + R"(","demo":"yes"})",
+      R"({"app_key":")" + key + R"(","app_secret":5})",
+      R"({"app_key":")" + key + R"(","app_secret":")" + secret + R"(",)"}
+  ) {
+    INFO(body);
+    kis::KisConfig config;
+    check(refusal_of([&] {
+      config.from_json_text(body, "stored login kis/demo");
+    }));
+  }
+  for (
+    const std::string& body :
+    {R"({"app_key":")" + key + R"(","app_secret":")" + secret + R"(","account_number":"1234"})",
+      R"({"app_key":")" + key + R"(","app_secret":")" + secret + R"("})"}
+  ) {
+    INFO(body);
+    kis::KisAccount account;
+    check(refusal_of([&] {
+      account.from_json_text(body, "stored login kis/demo");
+    }));
+  }
+  for (
+    const std::string& body :
+    {R"({"appkey":")" + key + R"(","secretkey":")" + secret + R"(","demo":0})",
+      R"({"appkey":")" + key + R"(","secretkey":null})"}
+  ) {
+    INFO(body);
+    kiwoom::KiwoomConfig config;
+    check(refusal_of([&] {
+      config.from_json_text(body, "stored login kiwoom/demo");
+    }));
+  }
+  for (
+    const std::string& body :
+    {R"({"client_id":")" + key + R"(","client_secret":[")" + secret + R"("]})", R"({"client_id":")" + key + R"("})"}
+  ) {
+    INFO(body);
+    tossinvest::TossConfig config;
+    check(refusal_of([&] {
+      config.from_json_text(body, "stored login toss/real");
+    }));
   }
 }
 
