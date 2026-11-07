@@ -104,6 +104,22 @@ enum class MarketPrice {
    * price is known.
    */
   DECISION_CLOSE,
+  /**
+   * @brief A market order fills at the close of the bar it fills against, named `next-close` in the report.
+   *
+   * The bar is the next eligible one, as for any rule: the same instrument's next bar whose period starts at or after
+   * the decision, so an order decided on a quote inside a bar's period waits for a later bar. This is the price basis
+   * of backtests that trade on the next bar's close; it is a price convention, not a closing-order simulation.
+   *
+   * The fill keeps the model's timing: it is stamped at the bar's period end, charged on the bar's trading date (its
+   * open's date when known), and a `DAY` order expires with the session of the bar it was queued for. That holds for
+   * intraday bars inside one session and for daily trading-date bars; a daily bar stamped at its close from a date
+   * alone is taken at its literal instant, and a bar crossing the session's close or local midnight is not detected.
+   *
+   * On a weekly, monthly or yearly bar the close's date and session are not known, so an order this rule would price
+   * there is not priced: a costing error (code `next_close_bar_too_long`) halts the replay.
+   */
+  NEXT_CLOSE,
 };
 
 /** @brief A tax on sales, stated by the caller; see `NextBarFillModel::with_sell_tax`. */
@@ -226,20 +242,23 @@ public:
     auto model = *this;
     model.market_price_name_ = std::move(name);
     model.market_price_ = std::move(price);
+    model.next_close_ = false;
     return model;
   }
 
   /**
    * @brief Returns a copy of this model that prices market orders by a rule the library ships.
    *
-   * `MarketPrice::NEXT_OPEN` removes any rule set before; `MarketPrice::DECISION_CLOSE` sets the rule named
-   * `decision-close`, priced, costed and dated as `with_market_price(std::string, MarketPriceFunction)` describes.
+   * `MarketPrice::NEXT_OPEN` removes any rule set before; `MarketPrice::DECISION_CLOSE` and `MarketPrice::NEXT_CLOSE`
+   * set the rules named `decision-close` and `next-close`, priced, costed and dated as
+   * `with_market_price(std::string, MarketPriceFunction)` describes.
    *
    * @param price The rule.
    * @return The new model.
    */
   NextBarFillModel with_market_price(MarketPrice price) const {
     auto model = *this;
+    model.next_close_ = false;
     switch (price) {
       case MarketPrice::NEXT_OPEN:
         model.market_price_name_.clear();
@@ -250,6 +269,13 @@ public:
         model.market_price_ = [](const MarketPriceInput& in) {
           return in.decision_price_ ? in.decision_price_ : in.next_.bar_.open_;
         };
+        break;
+      case MarketPrice::NEXT_CLOSE:
+        model.market_price_name_ = "next-close";
+        model.market_price_ = [](const MarketPriceInput& in) {
+          return std::optional<Decimal64>(in.next_.bar_.close_);
+        };
+        model.next_close_ = true;
         break;
     }
     return model;
@@ -362,6 +388,18 @@ public:
     bool at_open = false;
     std::optional<Decimal64> reference;
     if (market_price_ && !limit_priced(order.type_)) {
+      if (next_close_ && longer_than_a_day(next.interval_)) {
+        // The close of a calendar bar has no known date or session to charge and expire it by.
+        BrokerError error;
+        error.category_ = ErrorCategory::INVALID_ARGUMENT;
+        error.reached_broker_ = false;
+        error.broker_code_ = "next_close_bar_too_long";
+        error.message_ =
+          "the market-price rule 'next-close' prices bars of a day or less, not a weekly, monthly or "
+          "yearly bar";
+        decision.costing_error_ = std::move(error);
+        return decision;
+      }
       reference = market_price_(MarketPriceInput{order, decision_price, decision_price_at, decided_at, next, rule});
       if (!reference) {
         // Not this bar: a DAY order rests for the rest of its session; any other is withdrawn.
@@ -607,6 +645,24 @@ private:
     return std::nullopt;
   }
 
+  // Whether a bar spans more than one trading day (a week, a month, a year).
+  static bool longer_than_a_day(BarInterval interval) noexcept {
+    switch (interval) {
+      case BarInterval::ONE_WEEK:
+      case BarInterval::ONE_MONTH:
+      case BarInterval::ONE_YEAR:
+        return true;
+      case BarInterval::ONE_MINUTE:
+      case BarInterval::FIVE_MINUTES:
+      case BarInterval::FIFTEEN_MINUTES:
+      case BarInterval::THIRTY_MINUTES:
+      case BarInterval::ONE_HOUR:
+      case BarInterval::ONE_DAY:
+        return false;
+    }
+    return true;
+  }
+
   // Returns the price before slippage, or nothing when the order does not trade against this bar.
   //
   // A market order takes the open. A limit trades only if the bar's range reached it — a buy needs the
@@ -667,6 +723,8 @@ private:
   std::optional<SellTax> sell_tax_;
   std::string market_price_name_;
   MarketPriceFunction market_price_;
+  // Set only by `MarketPrice::NEXT_CLOSE`: refuse to price a bar longer than a day.
+  bool next_close_{false};
 };
 
 } // namespace backtest

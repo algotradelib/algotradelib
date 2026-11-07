@@ -2430,6 +2430,96 @@ TEST_CASE("one replay spanning a rate change charges each rate on its own dates"
 }
 #endif
 
+TEST_CASE("next-close charges an open-stamped daily row at its own session's rate", "[market-price]") {
+  // The 11th's row (00:00 KST, ending at the 12th's midnight) is the fill bar: its close is the 11th's, so the
+  // 11th's rate (0.002), not the 12th's (0.001) that its nominal end would name.
+  auto policy = backtest::CommissionPolicy::scheduled(
+    operator_tariff({
+      venue_rate(Venue::KRX, "0.002", "0", std::nullopt, Date{2026, 3, 11}),
+      venue_rate(Venue::KRX, "0.001", "0", Date{2026, 3, 12}, std::nullopt),
+    }),
+    *VenueKey::normalized(Venue::KRX), Country::KR
+  );
+  REQUIRE(policy);
+  const auto model =
+    backtest::NextBarFillModel(std::move(policy.value())).with_market_price(backtest::MarketPrice::NEXT_CLOSE);
+  CHECK(model.market_price_rule() == "next-close");
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config(), model);
+  engine.feed(open_stamped(utc(2026, 3, 9, 15, 0), BarInterval::ONE_DAY, "60000", "61000"));
+  engine.feed(open_stamped(utc(2026, 3, 10, 15, 0), BarInterval::ONE_DAY, "70000", "71000"));
+  engine.finish();
+  const auto& executions = engine.result().executions_;
+  REQUIRE(executions.size() == 1);
+  CHECK(executions[0].fill_.price_ == Decimal64::parse("71000"));
+  CHECK(executions[0].fill_.at_ == utc(2026, 3, 11, 15, 0));
+  CHECK(executions[0].commission_ == Decimal64::parse("1420"));
+  CHECK(engine.result().market_fills_by_rule_ == 1);
+}
+
+TEST_CASE("next-close fills a close-stamped daily bar and a minute bar at their closes", "[market-price]") {
+  const auto model = backtest::NextBarFillModel{}.with_market_price(backtest::MarketPrice::NEXT_CLOSE);
+  {
+    backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config(), model);
+    engine.feed(moving_bar(utc(2026, 3, 9, 6, 30), BarInterval::ONE_DAY, "60000", "61000"));
+    engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
+    engine.finish();
+    const auto& executions = engine.result().executions_;
+    REQUIRE(executions.size() == 1);
+    CHECK(executions[0].fill_.price_ == Decimal64::parse("70000"));
+    CHECK(executions[0].fill_.at_ == utc(2026, 3, 10, 6, 30));
+  }
+  {
+    backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config(), model);
+    engine.feed(moving_bar(session_minute(1), BarInterval::ONE_MINUTE, "70000", "70100"));
+    engine.feed(moving_bar(session_minute(2), BarInterval::ONE_MINUTE, "70200", "70300"));
+    engine.finish();
+    const auto& executions = engine.result().executions_;
+    REQUIRE(executions.size() == 1);
+    CHECK(executions[0].fill_.price_ == Decimal64::parse("70300"));
+    CHECK(executions[0].fill_.at_ == session_minute(2));
+  }
+}
+
+TEST_CASE("next-close halts on a weekly bar only for an order it would price", "[market-price]") {
+  const auto model = backtest::NextBarFillModel{}.with_market_price(backtest::MarketPrice::NEXT_CLOSE);
+  {
+    backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config(), model);
+    engine.feed(moving_bar(utc(2026, 3, 6, 6, 30), BarInterval::ONE_WEEK, "60000", "61000"));
+    engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "69000", "70000"));
+    engine.finish();
+    CHECK(engine.result().executions_.empty());
+    REQUIRE(engine.result().halted_.has_value());
+    CHECK(engine.result().halted_->broker_code_ == "next_close_bar_too_long");
+  }
+  {
+    // A limit order is priced against its limit, never by the rule.
+    backtest::Backtester<RestsOneLimit> engine(RestsOneLimit{}, replay_config(), model);
+    engine.feed(moving_bar(utc(2026, 3, 6, 6, 30), BarInterval::ONE_WEEK, "60000", "61000"));
+    engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "69000", "70000"));
+    engine.finish();
+    CHECK_FALSE(engine.result().halted_.has_value());
+  }
+}
+
+TEST_CASE("any other rule replaces next-close's refusal of weekly bars", "[market-price]") {
+  const auto next_close = backtest::NextBarFillModel{}.with_market_price(backtest::MarketPrice::NEXT_CLOSE);
+  const auto open = [](const backtest::MarketPriceInput& in) {
+    return in.next_.bar_.open_;
+  };
+  for (
+    const auto& model :
+    {next_close.with_market_price(backtest::MarketPrice::NEXT_OPEN),
+      next_close.with_market_price(backtest::MarketPrice::DECISION_CLOSE), next_close.with_market_price("open", open)}
+  ) {
+    backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config(), model);
+    engine.feed(moving_bar(utc(2026, 3, 6, 6, 30), BarInterval::ONE_WEEK, "60000", "61000"));
+    engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "69000", "70000"));
+    engine.finish();
+    CHECK_FALSE(engine.result().halted_.has_value());
+    CHECK(engine.result().executions_.size() == 1);
+  }
+}
+
 TEST_CASE("COMBINED cannot be asserted as the venue a fill happened at") {
   // It is what KIS's `SOR` normalizes to: consolidated routing, not a venue an order matched on.
   // A rate row may still be keyed to it, which the core tests assert.
