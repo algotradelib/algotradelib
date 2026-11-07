@@ -107,9 +107,11 @@ enum class MarketPrice {
   /**
    * @brief A market order fills at the close of the bar it fills against, named `next-close` in the report.
    *
-   * The bar is the next eligible one, as for any rule: the same instrument's next bar whose period starts at or after
-   * the decision, so an order decided on a quote inside a bar's period waits for a later bar. This is the price basis
-   * of backtests that trade on the next bar's close; it is a price convention, not a closing-order simulation.
+   * The bar is the next eligible one under the engine's existing causality rules, as for any rule: the same
+   * instrument's next bar whose period starts at or after the decision, so an order decided on a quote inside a bar's
+   * period waits for a later bar; where the decision's instant is nominal, the engine admits the bar and counts it
+   * (`ReplayResult::unchecked_fill_causality_`). This is the price basis of backtests that trade on the next bar's
+   * close; it is a price convention, not a closing-order simulation.
    *
    * The fill keeps the model's timing: it is stamped at the bar's period end, charged on the bar's trading date (its
    * open's date when known), and a `DAY` order expires with the session of the bar it was queued for. That holds for
