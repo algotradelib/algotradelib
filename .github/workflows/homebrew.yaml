@@ -1,0 +1,26 @@
+# Points the Homebrew formula (Formula/algotradelib.rb in algotradelib/homebrew-atls) at a commit of main once
+# cmake-check passed on it, so `brew upgrade` follows the latest tested main until the first release.
+# It runs after cmake-check, never on a push of its own.
+# The token must be able to push to the tap.
+
+name: homebrew
+
+on:
+  workflow_run:
+    workflows: [cmake-check]
+    types: [completed]
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  tap:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: algotradelib/.github/actions/update-tap@main
+        with:
+          formula: algotradelib
+          token: ${{ secrets.ALGOTRADELIB_PAGE_PAT }}
+          commit: ${{ github.event.workflow_run.head_sha }}
+          committed-at: ${{ github.event.workflow_run.head_commit.timestamp }}
