@@ -1,4 +1,5 @@
 #include <algotradelib/backtest>
+#include <algotradelib/krx>
 #include <algotradelib/runner>
 #include <algotradelib/vanilla>
 
@@ -52,7 +53,7 @@ Instrument reference_for(const InstrumentId& id) {
   reference.type_ = SecurityType::STOCK;
   reference.currency_ = Currency{"KRW"};
   reference.lot_size_ = Decimal64::parse("1");
-  reference.price_rule_ = PriceRule::krx_equity();
+  reference.price_rule_ = krx::equity_price_rule();
   return reference;
 }
 

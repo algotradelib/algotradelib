@@ -20,6 +20,7 @@
 //   example-backtest-compare
 
 #include <algotradelib/backtest>
+#include <algotradelib/krx>
 #include <algotradelib/vanilla>
 
 #include <chrono>
@@ -46,7 +47,6 @@ using algotradelib::Currency;
 using algotradelib::Decimal64;
 using algotradelib::Instrument;
 using algotradelib::InstrumentId;
-using algotradelib::PriceRule;
 using algotradelib::SecurityType;
 using algotradelib::Venue;
 
@@ -136,7 +136,7 @@ Instrument reference() {
   // The tick ladder is this library's own versioned table, because neither broker publishes one.
   // An unknown ladder refuses every price rather than guessing, since a guessed tick is an order the
   // exchange rejects.
-  instrument.price_rule_ = PriceRule::krx_equity();
+  instrument.price_rule_ = algotradelib::krx::equity_price_rule();
   return instrument;
 }
 

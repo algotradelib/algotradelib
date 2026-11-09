@@ -1,3 +1,4 @@
+#include <algotradelib/krx>
 #include <algotradelib/src/runner/dispatch.hpp>
 #include <algotradelib/strategy>
 
@@ -24,8 +25,8 @@ using strategy::SizeSpec;
 namespace {
 
 /** The KRX cash-equity ladder, the grid both adapters attach to a Korean share. */
-const PriceRule& krx() {
-  static const PriceRule rule = PriceRule::krx_equity();
+const PriceRule& krx_grid() {
+  static const PriceRule rule = algotradelib::krx::equity_price_rule();
   return rule;
 }
 
@@ -820,7 +821,7 @@ Instrument samsung_reference(const char* lot = "1") {
   reference.type_ = SecurityType::STOCK;
   reference.currency_ = Currency{"KRW"};
   reference.lot_size_ = Decimal64::parse(lot);
-  reference.price_rule_ = PriceRule::krx_equity();
+  reference.price_rule_ = algotradelib::krx::equity_price_rule();
   return reference;
 }
 
@@ -1005,7 +1006,7 @@ TEST_CASE("an unknown tick grid refuses a limit order outright") {
 
   // The price has to come from somewhere the grid was known, so build it against KRX and then
   // reconcile against an instrument whose grid is not.
-  const auto limit = strategy::Price::checked(Decimal64::parse("70000"), krx());
+  const auto limit = strategy::Price::checked(Decimal64::parse("70000"), krx_grid());
   REQUIRE(limit);
   const auto plan = strategy::reconcile(target("10", limit), portfolio, inputs);
   REQUIRE(plan.place_.empty());
@@ -1025,7 +1026,7 @@ TEST_CASE("a band with no tick on the cautious side of a clamped limit refuses i
   limits.upper_ = Decimal64::parse("2004");
   inputs.limits_ = limits;
   const auto price = [](const char* value) {
-    auto checked = strategy::Price::checked(Decimal64::parse(value), krx());
+    auto checked = strategy::Price::checked(Decimal64::parse(value), krx_grid());
     REQUIRE(checked);
     return *checked;
   };
@@ -1184,8 +1185,8 @@ TEST_CASE("a weight states a holding, and what a holding cannot state is refused
   CHECK(refused(OrderIntent::market(samsung(), OrderSide::SELL, quarter)));
   CHECK(refused(OrderIntent::market(samsung(), OrderSide::BUY, SizeSpec::target_weight(Decimal64::parse("-0.25")))));
   CHECK(refused(OrderIntent::market(samsung(), OrderSide::BUY, quarter).with_client_order_id("k-1")));
-  const auto trigger = strategy::Price::checked(Decimal64::parse("69000"), krx());
-  const auto limit = strategy::Price::checked(Decimal64::parse("68900"), krx());
+  const auto trigger = strategy::Price::checked(Decimal64::parse("69000"), krx_grid());
+  const auto limit = strategy::Price::checked(Decimal64::parse("68900"), krx_grid());
   REQUIRE(trigger);
   REQUIRE(limit);
   CHECK(refused(OrderIntent::stop_limit(samsung(), OrderSide::BUY, quarter, *trigger, *limit)));
@@ -1938,8 +1939,8 @@ TEST_CASE("a fractional floor keys on the queue position being given up") {
 }
 
 TEST_CASE("a stop-limit intent carries both prices and nothing else carries a trigger", "[trigger]") {
-  const auto trigger = Price::checked(Decimal64::parse("69500"), krx());
-  const auto limit = Price::checked(Decimal64::parse("69000"), krx());
+  const auto trigger = Price::checked(Decimal64::parse("69500"), krx_grid());
+  const auto limit = Price::checked(Decimal64::parse("69000"), krx_grid());
   REQUIRE(trigger);
   REQUIRE(limit);
   const auto stop =
@@ -1962,7 +1963,7 @@ TEST_CASE("a stop intent reconciles into a stop-limit order with its trigger unt
   SECTION("the limit sizes a notional and the trigger is carried exactly") {
     const auto intent = OrderIntent::stop_limit(
       samsung(), OrderSide::SELL, SizeSpec::notional(Money{Decimal64::parse("1380000"), Currency{"KRW"}}),
-      *Price::checked(Decimal64::parse("69500"), krx()), *Price::checked(Decimal64::parse("69000"), krx())
+      *Price::checked(Decimal64::parse("69500"), krx_grid()), *Price::checked(Decimal64::parse("69000"), krx_grid())
     );
     const auto plan = strategy::reconcile(intent, portfolio, inputs);
     REQUIRE(plan.rejected_.empty());
@@ -1982,7 +1983,7 @@ TEST_CASE("a stop intent reconciles into a stop-limit order with its trigger unt
     REQUIRE(off);
     const auto intent = OrderIntent::stop_limit(
       samsung(), OrderSide::SELL, SizeSpec::quantity(Decimal64::parse("10")), *off,
-      *Price::checked(Decimal64::parse("69000"), krx())
+      *Price::checked(Decimal64::parse("69000"), krx_grid())
     );
     const auto plan = strategy::reconcile(intent, portfolio, inputs);
     CHECK(plan.place_.empty());

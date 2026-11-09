@@ -34,6 +34,7 @@
 #include "kis_credentials.hpp"
 
 #include <algotradelib/kis>
+#include <algotradelib/krx>
 #include <algotradelib/live>
 #include <algotradelib/tossinvest>
 #include <algotradelib/vanilla>
@@ -343,7 +344,7 @@ int trade_dry(const std::string& symbol) {
   reference.type_ = algotradelib::SecurityType::STOCK;
   reference.currency_ = algotradelib::Currency{"KRW"};
   reference.lot_size_ = Decimal64::parse("1");
-  reference.price_rule_ = algotradelib::PriceRule::krx_equity();
+  reference.price_rule_ = algotradelib::krx::equity_price_rule();
   dry.context().set_instrument(reference);
   dry.context().set_phase(strategy::MarketPhase::OPEN);
   dry.context().set_last_price(instrument, Decimal64::parse("70000"));

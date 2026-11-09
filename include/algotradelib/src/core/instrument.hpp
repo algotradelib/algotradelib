@@ -142,10 +142,10 @@ struct TickBand {
 /**
  * @brief The price grid (tick sizes) an instrument's order prices must sit on.
  *
- * A broker states at most the tick at one price, not the ladder, so the library maintains these
- * tables (`source_` names the table and its revision); replace a rule if the exchange revises its grid. A rule of kind
- * `UNKNOWN` refuses to check or round a price. A custom table needs positive ticks and bands
- * sorted by `from_`.
+ * A broker states at most the tick at one price, not the ladder, so the library maintains the tables, beside the adapters that attach them (`source_` names the table and its revision).
+ * Replace a rule if the exchange revises its grid.
+ * A rule of kind `UNKNOWN` refuses to check or round a price.
+ * A custom table needs positive ticks and bands sorted by `from_`.
  */
 struct PriceRule {
   /** @brief Whether the rule states a grid, imposes none, or does not know it. */
@@ -155,8 +155,7 @@ struct PriceRule {
     /** @brief The market imposes no grid (free decimals). */
     UNCONSTRAINED,
     /**
-     * @brief The library has no grid for this instrument (for example a KRX warrant) and will not
-     *   guess one.
+     * @brief The library has no grid for this instrument and will not guess one.
      */
     UNKNOWN,
   };
@@ -225,9 +224,8 @@ struct PriceRule {
   /**
    * @brief Rounds a price to its band's tick in the order's favour: a buy rounds down, a sell up.
    *
-   * The tick is the one at `price`; a rounded price that crosses into the next band is not
-   * re-rounded. That is correct for the KRX tables; with a custom table whose band boundaries are not
-   * multiples of both ticks, check the result with `on_tick`.
+   * The tick is the one at `price`; a rounded price that crosses into the next band is not re-rounded.
+   * That is correct when every band boundary is a multiple of the ticks on both sides of it; with a custom table that is not, check the result with `on_tick`.
    *
    * @param price The price.
    * @param side The side of the order.
@@ -257,41 +255,6 @@ struct PriceRule {
       return floor_price;
     }
     return decimal_add(*floor_price, *tick);
-  }
-
-  /**
-   * @brief Returns the KRX cash-equity tick table (January 2023 revision).
-   * @return The rule.
-   */
-  static PriceRule krx_equity() {
-    PriceRule rule;
-    rule.kind_ = Kind::STATED;
-    rule.source_ = "KRX cash equity tick table, 2023-01 revision (library-maintained)";
-    rule.bands_ = {
-      TickBand{Decimal64::parse("0"), Decimal64::parse("1")},
-      TickBand{Decimal64::parse("2000"), Decimal64::parse("5")},
-      TickBand{Decimal64::parse("5000"), Decimal64::parse("10")},
-      TickBand{Decimal64::parse("20000"), Decimal64::parse("50")},
-      TickBand{Decimal64::parse("50000"), Decimal64::parse("100")},
-      TickBand{Decimal64::parse("200000"), Decimal64::parse("500")},
-      TickBand{Decimal64::parse("500000"), Decimal64::parse("1000")},
-    };
-    return rule;
-  }
-
-  /**
-   * @brief Returns the KRX tick table for ETFs and ETNs (December 2023 revision).
-   * @return The rule.
-   */
-  static PriceRule krx_etp() {
-    PriceRule rule;
-    rule.kind_ = Kind::STATED;
-    rule.source_ = "KRX ETF and ETN tick table, 2023-12 revision (library-maintained)";
-    rule.bands_ = {
-      TickBand{Decimal64::parse("0"), Decimal64::parse("1")},
-      TickBand{Decimal64::parse("2000"), Decimal64::parse("5")},
-    };
-    return rule;
   }
 
   /**
@@ -333,48 +296,6 @@ private:
     return Decimal64(rest, scale);
   }
 };
-
-/**
- * @brief Returns the library's price grid for a kind of security in a country.
- *
- * KRX stocks, foreign stocks, depositary receipts, infrastructure funds and REITs get the equity
- * table, and KRX ETFs and ETNs the ETF and ETN table.
- * Foreign ETFs, warrants and unknown types get an `UNKNOWN` rule.
- * US listings are unconstrained, whatever their type.
- *
- * @param country The listing country.
- * @param type The security type.
- * @return The rule.
- */
-inline PriceRule price_rule_for(Country country, SecurityType type) {
-  switch (country) {
-    case Country::US:
-      return PriceRule::unconstrained();
-    case Country::KR:
-      break;
-  }
-  if (country != Country::KR) {
-    // Not a `Country` (a cast): no grid is known.
-    return PriceRule::unknown("no price grid is known for this market");
-  }
-  switch (type) {
-    case SecurityType::STOCK:
-    case SecurityType::FOREIGN_STOCK:
-    case SecurityType::DEPOSITARY_RECEIPT:
-    case SecurityType::INFRASTRUCTURE_FUND:
-    case SecurityType::REIT:
-      return PriceRule::krx_equity();
-    case SecurityType::ETF:
-    case SecurityType::ETN:
-      return PriceRule::krx_etp();
-    case SecurityType::FOREIGN_ETF:
-      return PriceRule::unknown("no price grid is confirmed for this foreign ETF class");
-    case SecurityType::STOCK_WARRANT:
-    case SecurityType::UNKNOWN:
-      break;
-  }
-  return PriceRule::unknown("no price grid is known for this security type");
-}
 
 /**
  * @brief A date a broker stated, did not state, or stated in a form that could not be read.
@@ -493,8 +414,8 @@ enum class DateExclusion {
 /**
  * @brief Reference data for one instrument.
  *
- * Fields a broker may omit are optional or empty. `price_rule_` is the library's grid, chosen by
- * `price_rule_for` from the security type.
+ * Fields a broker may omit are optional or empty.
+ * `price_rule_` is set by the adapter that read the instrument, or by the caller who builds the reference data, and is `UNKNOWN` where it has no table.
  */
 struct Instrument {
   /** @brief The instrument. */
@@ -507,7 +428,7 @@ struct Instrument {
   std::string isin_;
   /** @brief The market segment. */
   MarketSegment segment_;
-  /** @brief The kind of security, which selects the price grid. */
+  /** @brief The kind of security. */
   SecurityType type_{SecurityType::UNKNOWN};
   /** @brief Listed, awaiting listing, or delisted. */
   InstrumentStatus status_{InstrumentStatus::UNKNOWN};
@@ -527,7 +448,7 @@ struct Instrument {
   std::optional<Decimal64> shares_outstanding_;
   /** @brief The order quantity increment, if the broker publishes one. */
   std::optional<Decimal64> lot_size_;
-  /** @brief The price grid; kind `UNKNOWN` where the library has no table. */
+  /** @brief The price grid, set by the adapter or the caller; kind `UNKNOWN` where it has no table. */
   PriceRule price_rule_;
 
   /**

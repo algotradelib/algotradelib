@@ -1,5 +1,6 @@
 #include <algotradelib/backtest>
 #include <algotradelib/kis>
+#include <algotradelib/krx>
 #include <algotradelib/live>
 #include <algotradelib/tossinvest>
 #include <algotradelib/vanilla>
@@ -694,7 +695,7 @@ Instrument samsung_reference() {
   reference.type_ = SecurityType::STOCK;
   reference.currency_ = Currency{"KRW"};
   reference.lot_size_ = Decimal64::parse("1");
-  reference.price_rule_ = PriceRule::krx_equity();
+  reference.price_rule_ = krx::equity_price_rule();
   return reference;
 }
 
@@ -2998,8 +2999,8 @@ struct StopsWhatItHolds {
     if (!held || held->coefficient() <= 0) {
       return;
     }
-    const auto trigger = strategy::Price::checked(Decimal64::parse("65000"), PriceRule::krx_equity());
-    const auto limit = strategy::Price::checked(Decimal64::parse("64900"), PriceRule::krx_equity());
+    const auto trigger = strategy::Price::checked(Decimal64::parse("65000"), krx::equity_price_rule());
+    const auto limit = strategy::Price::checked(Decimal64::parse("64900"), krx::equity_price_rule());
     auto intent = strategy::OrderIntent::stop_limit(
       bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(*held), *trigger, *limit
     );
@@ -3132,7 +3133,7 @@ struct TargetStopAndTakeProfit {
     if (!held || held->coefficient() <= 0) {
       return;
     }
-    const auto rule = PriceRule::krx_equity();
+    const auto rule = krx::equity_price_rule();
     ctx.submit(
       strategy::OrderIntent::stop_limit(
         bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("5")),
@@ -5924,7 +5925,7 @@ strategy::OrderIntent sell(const char* quantity) {
 
 strategy::TargetPosition limit_target(const char* quantity, const char* limit) {
   auto target = target_of(quantity);
-  target.limit_ = strategy::Price::checked(Decimal64::parse(limit), PriceRule::krx_equity());
+  target.limit_ = strategy::Price::checked(Decimal64::parse(limit), krx::equity_price_rule());
   return target;
 }
 

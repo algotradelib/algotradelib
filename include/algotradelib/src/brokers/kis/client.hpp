@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../common/adapter.hpp"
+#include "../common/krx.hpp"
 #include "./config.hpp"
 
 #include <boost/asio/any_completion_handler.hpp>
@@ -1356,7 +1357,7 @@ private:
       instrument.shares_outstanding_ = positive_decimal(row, "lstg_stqt");
       instrument.listed_on_ = compact_date_field(row, listing_date_field(market));
       instrument.delisted_on_ = compact_date_field(row, delisting_date_field(market));
-      instrument.price_rule_ = price_rule_for(instrument.id_.country_, instrument.type_);
+      instrument.price_rule_ = krx::price_rule_for(instrument.type_);
       return Result<Instrument>(std::move(instrument));
     } catch (const std::exception& exception) {
       BrokerError error;

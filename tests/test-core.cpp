@@ -630,8 +630,14 @@ TEST_CASE("decimal arithmetic at the edges of the coefficient", "[core][decimal]
 
   // A remainder that does not fit says "cannot tell", as `round_to_tick` does, not "off the grid".
   const Decimal64 unrepresentable(std::numeric_limits<std::int64_t>::max(), 19);
-  REQUIRE_FALSE(PriceRule::krx_equity().on_tick(unrepresentable).has_value());
-  REQUIRE_FALSE(PriceRule::krx_equity().round_to_tick(unrepresentable, OrderSide::BUY).has_value());
+  PriceRule rule;
+  rule.kind_ = PriceRule::Kind::STATED;
+  rule.bands_ = {
+    TickBand{Decimal64::parse("0"), Decimal64::parse("1")},
+    TickBand{Decimal64::parse("2000"), Decimal64::parse("5")},
+  };
+  REQUIRE_FALSE(rule.on_tick(unrepresentable).has_value());
+  REQUIRE_FALSE(rule.round_to_tick(unrepresentable, OrderSide::BUY).has_value());
 }
 
 TEST_CASE(
@@ -5655,6 +5661,18 @@ TEST_CASE("a KRX ETF or ETN gets the fund ladder rather than the equity one", "[
   REQUIRE(toss_foreign);
   REQUIRE(toss_foreign.value().type_ == SecurityType::FOREIGN_ETF);
   REQUIRE(toss_foreign.value().price_rule_.kind_ == PriceRule::Kind::UNKNOWN);
+
+  // A Toss US listing is quoted in free decimals.
+  auto toss_us = tossinvest::TossClientTestAccess::parse_instrument(
+    InstrumentId{Country::US, Venue::UNSPECIFIED, "AAPL"},
+    json_response(
+      R"({"result":[{"symbol":"AAPL","name":"x","englishName":"Apple",)"
+      R"("isinCode":"US0378331005","market":"NASDAQ","securityType":"STOCK",)"
+      R"("status":"ACTIVE","currency":"USD"}]})"
+    )
+  );
+  REQUIRE(toss_us);
+  REQUIRE(toss_us.value().price_rule_.kind_ == PriceRule::Kind::UNCONSTRAINED);
 }
 
 // ---------------------------------------------------------------------------

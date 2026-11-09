@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../common/adapter.hpp"
+#include "../common/krx.hpp"
 #include "./config.hpp"
 
 #include <boost/asio/any_completion_handler.hpp>
@@ -996,7 +997,16 @@ private:
       instrument.listed_on_ = stated_calendar_date(row, "listDate");
       instrument.delisted_on_ = stated_calendar_date(row, "delistDate");
       instrument.shares_outstanding_ = nullable_decimal(row, "sharesOutstanding");
-      instrument.price_rule_ = price_rule_for(instrument.id_.country_, instrument.type_);
+      // A cast country keeps the unknown rule.
+      instrument.price_rule_ = PriceRule::unknown("no price grid is known for this market");
+      switch (instrument.id_.country_) {
+        case Country::KR:
+          instrument.price_rule_ = krx::price_rule_for(instrument.type_);
+          break;
+        case Country::US:
+          instrument.price_rule_ = PriceRule::unconstrained();
+          break;
+      }
       return Result<Instrument>(std::move(instrument));
     } catch (const std::exception& exception) {
       return Result<Instrument>(market_error("invalid_reference_response", exception));

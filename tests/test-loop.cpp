@@ -1,3 +1,4 @@
+#include <algotradelib/krx>
 #include <algotradelib/runner>
 #include <algotradelib/vanilla>
 
@@ -124,7 +125,7 @@ algotradelib::Instrument samsung_reference() {
   reference.type_ = algotradelib::SecurityType::STOCK;
   reference.currency_ = algotradelib::Currency{"KRW"};
   reference.lot_size_ = algotradelib::Decimal64::parse("1");
-  reference.price_rule_ = algotradelib::PriceRule::krx_equity();
+  reference.price_rule_ = algotradelib::krx::equity_price_rule();
   return reference;
 }
 

@@ -1,3 +1,4 @@
+#include <algotradelib/krx>
 #include <algotradelib/runner>
 
 #include <catch2/catch_test_macros.hpp>
@@ -46,7 +47,7 @@ Instrument samsung_reference() {
   reference.type_ = SecurityType::STOCK;
   reference.currency_ = Currency{"KRW"};
   reference.lot_size_ = Decimal64::parse("1");
-  reference.price_rule_ = PriceRule::krx_equity();
+  reference.price_rule_ = krx::equity_price_rule();
   return reference;
 }
 

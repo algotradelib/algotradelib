@@ -14,6 +14,7 @@
 //   example-backtest-offline
 
 #include <algotradelib/backtest>
+#include <algotradelib/krx>
 #include <algotradelib/vanilla>
 
 #include <chrono>
@@ -50,7 +51,6 @@ using algotradelib::Currency;
 using algotradelib::Decimal64;
 using algotradelib::Instrument;
 using algotradelib::InstrumentId;
-using algotradelib::PriceRule;
 using algotradelib::SecurityType;
 using algotradelib::Venue;
 
@@ -65,7 +65,7 @@ Instrument samsung_reference() {
   reference.type_ = SecurityType::STOCK;
   reference.currency_ = Currency{"KRW"};
   reference.lot_size_ = Decimal64::parse("1");
-  reference.price_rule_ = PriceRule::krx_equity();
+  reference.price_rule_ = algotradelib::krx::equity_price_rule();
   return reference;
 }
 

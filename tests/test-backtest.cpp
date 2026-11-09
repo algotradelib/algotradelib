@@ -13,6 +13,7 @@ void equity(const Equity& running, const Equity& summed);
 #define ATL_REPLAY_CHECK_EQUITY ::replay_check::equity
 
 #include <algotradelib/backtest>
+#include <algotradelib/krx>
 #include <algotradelib/vanilla>
 
 #include <catch2/catch_approx.hpp>
@@ -629,7 +630,7 @@ TEST_CASE("an instrument does not change currency underneath an open position") 
 namespace {
 
 const PriceRule& krx_grid() {
-  static const PriceRule rule = PriceRule::krx_equity();
+  static const PriceRule rule = krx::equity_price_rule();
   return rule;
 }
 
@@ -777,7 +778,7 @@ Instrument samsung_reference() {
   reference.type_ = SecurityType::STOCK;
   reference.currency_ = Currency{"KRW"};
   reference.lot_size_ = Decimal64::parse("1");
-  reference.price_rule_ = PriceRule::krx_equity();
+  reference.price_rule_ = krx::equity_price_rule();
   return reference;
 }
 
@@ -2848,7 +2849,7 @@ Instrument apple_reference() {
   reference.type_ = SecurityType::STOCK;
   reference.currency_ = Currency::usd();
   reference.lot_size_ = Decimal64::parse("1");
-  reference.price_rule_ = PriceRule::krx_equity();
+  reference.price_rule_ = krx::equity_price_rule();
   return reference;
 }
 
@@ -3174,8 +3175,8 @@ struct PlacesAStop {
     ctx.submit(
       strategy::OrderIntent::stop_limit(
         bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
-        *strategy::Price::checked(Decimal64::parse("69500"), PriceRule::krx_equity()),
-        *strategy::Price::checked(Decimal64::parse("69000"), PriceRule::krx_equity())
+        *strategy::Price::checked(Decimal64::parse("69500"), krx::equity_price_rule()),
+        *strategy::Price::checked(Decimal64::parse("69000"), krx::equity_price_rule())
       )
         .with_tag("stop")
     );
@@ -3304,8 +3305,8 @@ struct StopsThenTargetsFlat {
       ctx.submit(
         strategy::OrderIntent::stop_limit(
           bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
-          *strategy::Price::checked(Decimal64::parse("66500"), PriceRule::krx_equity()),
-          *strategy::Price::checked(Decimal64::parse("66000"), PriceRule::krx_equity())
+          *strategy::Price::checked(Decimal64::parse("66500"), krx::equity_price_rule()),
+          *strategy::Price::checked(Decimal64::parse("66000"), krx::equity_price_rule())
         )
           .with_tag("stop")
       );
@@ -3437,8 +3438,8 @@ struct PlacesStopAt {
     ctx.submit(
       strategy::OrderIntent::stop_limit(
         bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
-        *strategy::Price::checked(Decimal64::parse(trigger_), PriceRule::krx_equity()),
-        *strategy::Price::checked(Decimal64::parse(limit_), PriceRule::krx_equity())
+        *strategy::Price::checked(Decimal64::parse(trigger_), krx::equity_price_rule()),
+        *strategy::Price::checked(Decimal64::parse(limit_), krx::equity_price_rule())
       )
     );
   }
@@ -3534,14 +3535,14 @@ struct ChangesItsMindInOneBatch {
       ctx.submit(
         strategy::OrderIntent::stop_limit(
           bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
-          *strategy::Price::checked(Decimal64::parse("66500"), PriceRule::krx_equity()),
-          *strategy::Price::checked(Decimal64::parse("66000"), PriceRule::krx_equity())
+          *strategy::Price::checked(Decimal64::parse("66500"), krx::equity_price_rule()),
+          *strategy::Price::checked(Decimal64::parse("66000"), krx::equity_price_rule())
         )
       );
       ctx.submit(
         strategy::OrderIntent::limit(
           bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")),
-          *strategy::Price::checked(Decimal64::parse("60000"), PriceRule::krx_equity())
+          *strategy::Price::checked(Decimal64::parse("60000"), krx::equity_price_rule())
         )
       );
     }
@@ -3559,7 +3560,7 @@ struct ChangesItsMindInOneBatch {
       ctx.submit(
         strategy::OrderIntent::limit(
           order.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")),
-          *strategy::Price::checked(Decimal64::parse("60000"), PriceRule::krx_equity())
+          *strategy::Price::checked(Decimal64::parse("60000"), krx::equity_price_rule())
         )
       );
     }
@@ -4736,7 +4737,7 @@ struct WanderBase {
   }
 
   static strategy::Price at(long price) {
-    return *strategy::Price::checked(Decimal64(price, 0), PriceRule::krx_equity());
+    return *strategy::Price::checked(Decimal64(price, 0), krx::equity_price_rule());
   }
 
   template <class Ctx>
@@ -5056,8 +5057,8 @@ struct FlatOnceBehindAStop {
       ctx.submit(
         strategy::OrderIntent::stop_limit(
           bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
-          *strategy::Price::checked(Decimal64::parse("66500"), PriceRule::krx_equity()),
-          *strategy::Price::checked(Decimal64::parse("66000"), PriceRule::krx_equity())
+          *strategy::Price::checked(Decimal64::parse("66500"), krx::equity_price_rule()),
+          *strategy::Price::checked(Decimal64::parse("66000"), krx::equity_price_rule())
         )
           .with_tag("stop")
       );

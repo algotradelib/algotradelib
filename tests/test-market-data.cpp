@@ -1,4 +1,5 @@
 #include <algotradelib/core>
+#include <algotradelib/krx>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -108,7 +109,7 @@ TEST_CASE("an empty side of the book yields no price rather than zero") {
 }
 
 TEST_CASE("the KRX grid selects the right tick at every band boundary") {
-  const auto rule = PriceRule::krx_equity();
+  const auto rule = krx::equity_price_rule();
   REQUIRE_FALSE(rule.source_.empty());
   REQUIRE(rule.kind_ == PriceRule::Kind::STATED);
 
@@ -142,7 +143,13 @@ TEST_CASE("the KRX grid selects the right tick at every band boundary") {
 }
 
 TEST_CASE("rounding to the grid never improves a price past the instruction") {
-  const auto rule = PriceRule::krx_equity();
+  PriceRule rule;
+  rule.kind_ = PriceRule::Kind::STATED;
+  rule.bands_ = {
+    TickBand{Decimal64::parse("0"), Decimal64::parse("1")},
+    TickBand{Decimal64::parse("2000"), Decimal64::parse("5")},
+    TickBand{Decimal64::parse("50000"), Decimal64::parse("100")},
+  };
 
   // A buy rounds down: rounding up would pay more than the caller instructed.
   const auto buy = rule.round_to_tick(Decimal64::parse("70123"), OrderSide::BUY);
@@ -165,7 +172,7 @@ TEST_CASE("rounding to the grid never improves a price past the instruction") {
 
 TEST_CASE("the KRX ETP grid ticks 1 below 2000 and 5 from 2000") {
   // KRX's ETF and ETN table since 2023-12-11: 1 KRW below 2,000 KRW, 5 KRW from 2,000 KRW.
-  const auto rule = PriceRule::krx_etp();
+  const auto rule = krx::fund_price_rule();
   REQUIRE(rule.kind_ == PriceRule::Kind::STATED);
 
   struct Case {
@@ -202,28 +209,25 @@ TEST_CASE("the KRX ETP grid ticks 1 below 2000 and 5 from 2000") {
   REQUIRE(rule.on_tick(Decimal64::parse("2005")) == true);
 }
 
-TEST_CASE("the grid an instrument gets depends on what it is, not only where") {
+TEST_CASE("the KRX grid an instrument gets depends on its security type") {
   // KRX prices ETFs and ETNs on their own ladder, finer than the equity one from 5,000 KRW.
   // Foreign ETFs, warrants and unknown types have no confirmed ladder, so they get none rather than a guess.
-  REQUIRE(price_rule_for(Country::KR, SecurityType::STOCK).kind_ == PriceRule::Kind::STATED);
-  REQUIRE(price_rule_for(Country::KR, SecurityType::REIT).kind_ == PriceRule::Kind::STATED);
-  REQUIRE(price_rule_for(Country::KR, SecurityType::DEPOSITARY_RECEIPT).kind_ == PriceRule::Kind::STATED);
+  REQUIRE(krx::price_rule_for(SecurityType::STOCK).kind_ == PriceRule::Kind::STATED);
+  REQUIRE(krx::price_rule_for(SecurityType::REIT).kind_ == PriceRule::Kind::STATED);
+  REQUIRE(krx::price_rule_for(SecurityType::DEPOSITARY_RECEIPT).kind_ == PriceRule::Kind::STATED);
 
   for (const auto type : {SecurityType::ETF, SecurityType::ETN}) {
-    const auto rule = price_rule_for(Country::KR, type);
+    const auto rule = krx::price_rule_for(type);
     REQUIRE(rule.kind_ == PriceRule::Kind::STATED);
     REQUIRE(rule.tick_at(Decimal64::parse("1999"))->str() == "1");
     REQUIRE(rule.tick_at(Decimal64::parse("2000"))->str() == "5");
     REQUIRE(rule.tick_at(Decimal64::parse("30000"))->str() == "5");
   }
-  REQUIRE(price_rule_for(Country::KR, SecurityType::STOCK).tick_at(Decimal64::parse("30000"))->str() == "50");
+  REQUIRE(krx::price_rule_for(SecurityType::STOCK).tick_at(Decimal64::parse("30000"))->str() == "50");
 
-  REQUIRE(price_rule_for(Country::KR, SecurityType::FOREIGN_ETF).kind_ == PriceRule::Kind::UNKNOWN);
-  REQUIRE(price_rule_for(Country::KR, SecurityType::STOCK_WARRANT).kind_ == PriceRule::Kind::UNKNOWN);
-  REQUIRE(price_rule_for(Country::KR, SecurityType::UNKNOWN).kind_ == PriceRule::Kind::UNKNOWN);
-
-  // A market quoted in free decimals is unconstrained, which is a different answer.
-  REQUIRE(price_rule_for(Country::US, SecurityType::STOCK).kind_ == PriceRule::Kind::UNCONSTRAINED);
+  REQUIRE(krx::price_rule_for(SecurityType::FOREIGN_ETF).kind_ == PriceRule::Kind::UNKNOWN);
+  REQUIRE(krx::price_rule_for(SecurityType::STOCK_WARRANT).kind_ == PriceRule::Kind::UNKNOWN);
+  REQUIRE(krx::price_rule_for(SecurityType::UNKNOWN).kind_ == PriceRule::Kind::UNKNOWN);
 }
 
 TEST_CASE("a market segment normalizes what it knows and preserves what it does not") {

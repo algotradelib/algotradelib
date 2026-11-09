@@ -1,4 +1,5 @@
 #include <algotradelib/backtest>
+#include <algotradelib/krx>
 #include <algotradelib/live>
 #include <algotradelib/mock>
 
@@ -412,7 +413,7 @@ TEST_CASE("the mock market answers the reference data it was given or its defaul
   given.id_ = samsung();
   given.name_ = "Samsung";
   given.lot_size_ = dec("10");
-  given.price_rule_ = PriceRule::krx_equity();
+  given.price_rule_ = krx::equity_price_rule();
   mock::Market market({three_days()}, cash("1", {}), {given});
   CHECK(market.instrument(samsung()).value().lot_size_ == dec("10"));
   mock::Market plain({three_days()}, cash("1", {}));

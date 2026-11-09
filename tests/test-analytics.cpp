@@ -1,4 +1,5 @@
 #include <algotradelib/analytics>
+#include <algotradelib/krx>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -73,7 +74,7 @@ TEST_CASE("a decimal converts to the nearest double, as its text parses") {
 }
 
 TEST_CASE("the route from a computed value to an order price is narrow") {
-  const auto rule = PriceRule::krx_equity();
+  const auto rule = krx::equity_price_rule();
 
   // A buy rounds down onto the grid, a sell rounds up: rounding never improves a price
   // past the instruction.
@@ -88,7 +89,7 @@ TEST_CASE("the route from a computed value to an order price is narrow") {
 
   // Nor can a value the library has no grid for.
   // A KRX warrant is the real case: the library carries no ladder for it, so a computed price cannot be sent.
-  const auto warrant = price_rule_for(Country::KR, SecurityType::STOCK_WARRANT);
+  const auto warrant = krx::price_rule_for(SecurityType::STOCK_WARRANT);
   REQUIRE_FALSE(round_scalar_to_tick(34567.8, warrant, OrderSide::BUY).has_value());
 
   // A market quoting in free decimals rounds to the requested scale, in the order's favour.
@@ -99,7 +100,7 @@ TEST_CASE("the route from a computed value to an order price is narrow") {
 }
 
 TEST_CASE("a computed price never crosses its value on the way to the grid") {
-  const auto rule = PriceRule::krx_equity();
+  const auto rule = krx::equity_price_rule();
   // Rounding to the nearest won first made these 2000: above the buy, below the sell.
   REQUIRE(round_scalar_to_tick(1999.8, rule, OrderSide::BUY)->str() == "1999");
   REQUIRE(round_scalar_to_tick(2000.2, rule, OrderSide::SELL)->str() == "2005");

@@ -7,6 +7,7 @@
 #include "../../core/market_data.hpp"
 #include "../../core/types.hpp"
 #include "../common/adapter.hpp"
+#include "../common/krx.hpp"
 
 #include <boost/asio/any_completion_handler.hpp>
 #include <boost/asio/any_io_executor.hpp>
@@ -1905,7 +1906,7 @@ private:
       subject.status_ = kiwoom_status(detail::text_field(row, "auditInfo"));
       subject.shares_outstanding_ = positive(detail::magnitude(row, "listCount"));
       subject.listed_on_ = detail::stated_compact_date(row, "regDay");
-      subject.price_rule_ = price_rule_for(subject.id_.country_, subject.type_);
+      subject.price_rule_ = krx::price_rule_for(subject.type_);
       return Result<Instrument>(std::move(subject));
     } catch (const std::exception& exception) {
       return Result<Instrument>(protocol_error("invalid_instrument_response", exception));

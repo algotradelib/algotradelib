@@ -66,6 +66,11 @@
  */
 
 /**
+ * @namespace algotradelib::krx
+ * @brief The KRX tick tables that the Korean adapters attach to instruments, in `<algotradelib/krx>`.
+ */
+
+/**
  * @namespace algotradelib::mock
  * @brief The mock broker: an in-memory market over bars the caller gives, bound like any broker.
  */

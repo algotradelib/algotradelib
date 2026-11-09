@@ -3,6 +3,7 @@
 // walks n from the first allocation to the last one the operation makes.
 
 #include <algotradelib/backtest>
+#include <algotradelib/krx>
 #include <algotradelib/runner>
 
 #include <catch2/catch_test_macros.hpp>
@@ -333,7 +334,7 @@ TEST_CASE("a reservation that cannot be recorded leaves the rows and the buying 
   reference.type_ = SecurityType::STOCK;
   reference.currency_ = krw();
   reference.lot_size_ = Decimal64::parse("1");
-  reference.price_rule_ = PriceRule::krx_equity();
+  reference.price_rule_ = krx::equity_price_rule();
   dry.context().set_instrument(reference);
   dry.context().set_phase(strategy::MarketPhase::OPEN);
   // Each attempt a day later, since a bar must be later than the last one fed.

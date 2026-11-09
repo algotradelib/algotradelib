@@ -17,6 +17,7 @@
 
 #include <algotradelib/analytics>
 #include <algotradelib/core>
+#include <algotradelib/krx>
 
 #include <chrono>
 #include <cstddef>
@@ -206,7 +207,7 @@ int main() {
 
   // The one sanctioned route back to something a broker will accept. Two deviations above the
   // average is a computed scalar; an order needs an exact decimal on the instrument's own tick grid.
-  const auto rule = algotradelib::price_rule_for(bars.instrument_.country_, SecurityType::STOCK);
+  const auto rule = algotradelib::krx::equity_price_rule();
   const auto limit = analytics::round_scalar_to_tick(average[last] + 2.0 * spread[last], rule, OrderSide::SELL);
   std::cout
     << "\nA sell limit two deviations above the average, rounded onto the KRX tick grid: "
