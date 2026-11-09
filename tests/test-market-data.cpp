@@ -163,16 +163,63 @@ TEST_CASE("rounding to the grid never improves a price past the instruction") {
   REQUIRE(rule.round_to_tick(Decimal64::parse("2003"), OrderSide::SELL)->str() == "2005");
 }
 
+TEST_CASE("the KRX ETP grid ticks 1 below 2000 and 5 from 2000") {
+  // KRX's ETF and ETN table since 2023-12-11: 1 KRW below 2,000 KRW, 5 KRW from 2,000 KRW.
+  const auto rule = PriceRule::krx_etp();
+  REQUIRE(rule.kind_ == PriceRule::Kind::STATED);
+
+  struct Case {
+    const char* price;
+    const char* tick;
+  };
+  const Case cases[] = {
+    {"1", "1"},
+    {"1999", "1"},
+    {"2000", "5"},
+    {"34567", "5"},
+    {"1000000", "5"},
+  };
+  for (const auto& entry : cases) {
+    const auto tick = rule.tick_at(Decimal64::parse(entry.price));
+    REQUIRE(tick.has_value());
+    REQUIRE(tick->str() == entry.tick);
+  }
+
+  REQUIRE(rule.round_to_tick(Decimal64::parse("1999"), OrderSide::BUY)->str() == "1999");
+  REQUIRE(rule.round_to_tick(Decimal64::parse("1999"), OrderSide::SELL)->str() == "1999");
+  REQUIRE(rule.round_to_tick(Decimal64::parse("1999.5"), OrderSide::BUY)->str() == "1999");
+  REQUIRE(rule.round_to_tick(Decimal64::parse("1999.5"), OrderSide::SELL)->str() == "2000");
+  REQUIRE(rule.round_to_tick(Decimal64::parse("2000"), OrderSide::BUY)->str() == "2000");
+  REQUIRE(rule.round_to_tick(Decimal64::parse("2000"), OrderSide::SELL)->str() == "2000");
+  REQUIRE(rule.round_to_tick(Decimal64::parse("2003"), OrderSide::BUY)->str() == "2000");
+  REQUIRE(rule.round_to_tick(Decimal64::parse("2003"), OrderSide::SELL)->str() == "2005");
+  REQUIRE(rule.round_to_tick(Decimal64::parse("34567"), OrderSide::BUY)->str() == "34565");
+  REQUIRE(rule.round_to_tick(Decimal64::parse("34567"), OrderSide::SELL)->str() == "34570");
+
+  REQUIRE(rule.on_tick(Decimal64::parse("1999")) == true);
+  REQUIRE(rule.on_tick(Decimal64::parse("2000")) == true);
+  REQUIRE(rule.on_tick(Decimal64::parse("2001")) == false);
+  REQUIRE(rule.on_tick(Decimal64::parse("2005")) == true);
+}
+
 TEST_CASE("the grid an instrument gets depends on what it is, not only where") {
-  // KRX prices funds and notes on a different ladder from cash equities, and neither
-  // broker publishes either, so attaching the equity table to an ETF would round a
-  // price onto a ladder the exchange does not use.
+  // KRX prices ETFs and ETNs on their own ladder, finer than the equity one from 5,000 KRW.
+  // Foreign ETFs, warrants and unknown types have no confirmed ladder, so they get none rather than a guess.
   REQUIRE(price_rule_for(Country::KR, SecurityType::STOCK).kind_ == PriceRule::Kind::STATED);
   REQUIRE(price_rule_for(Country::KR, SecurityType::REIT).kind_ == PriceRule::Kind::STATED);
   REQUIRE(price_rule_for(Country::KR, SecurityType::DEPOSITARY_RECEIPT).kind_ == PriceRule::Kind::STATED);
 
-  REQUIRE(price_rule_for(Country::KR, SecurityType::ETF).kind_ == PriceRule::Kind::UNKNOWN);
-  REQUIRE(price_rule_for(Country::KR, SecurityType::ETN).kind_ == PriceRule::Kind::UNKNOWN);
+  for (const auto type : {SecurityType::ETF, SecurityType::ETN}) {
+    const auto rule = price_rule_for(Country::KR, type);
+    REQUIRE(rule.kind_ == PriceRule::Kind::STATED);
+    REQUIRE(rule.tick_at(Decimal64::parse("1999"))->str() == "1");
+    REQUIRE(rule.tick_at(Decimal64::parse("2000"))->str() == "5");
+    REQUIRE(rule.tick_at(Decimal64::parse("30000"))->str() == "5");
+  }
+  REQUIRE(price_rule_for(Country::KR, SecurityType::STOCK).tick_at(Decimal64::parse("30000"))->str() == "50");
+
+  REQUIRE(price_rule_for(Country::KR, SecurityType::FOREIGN_ETF).kind_ == PriceRule::Kind::UNKNOWN);
+  REQUIRE(price_rule_for(Country::KR, SecurityType::STOCK_WARRANT).kind_ == PriceRule::Kind::UNKNOWN);
   REQUIRE(price_rule_for(Country::KR, SecurityType::UNKNOWN).kind_ == PriceRule::Kind::UNKNOWN);
 
   // A market quoted in free decimals is unconstrained, which is a different answer.

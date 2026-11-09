@@ -5593,11 +5593,9 @@ TEST_CASE("instrument reference data normalizes from both brokers") {
   }
 }
 
-TEST_CASE("an ETF gets no price grid rather than the equity one", "[broker][reference]") {
-  // KRX prices funds on a different ladder from cash equities, and neither broker
-  // publishes either. Attaching the equity table would round a price onto a ladder the
-  // exchange does not use, and the order would be rejected with the library having
-  // confidently produced the price.
+TEST_CASE("a KRX ETF or ETN gets the fund ladder rather than the equity one", "[broker][reference]") {
+  // KRX prices ETFs and ETNs on their own ladder, and no broker publishes it, so the adapter attaches the library's table.
+  // A foreign ETF class has no confirmed ladder and gets none.
   auto result = tossinvest::TossClientTestAccess::parse_instrument(
     InstrumentId{Country::KR, Venue::COMBINED, "069500"},
     json_response(
@@ -5608,8 +5606,8 @@ TEST_CASE("an ETF gets no price grid rather than the equity one", "[broker][refe
   );
   REQUIRE(result);
   REQUIRE(result.value().type_ == SecurityType::ETF);
-  REQUIRE(result.value().price_rule_.kind_ == PriceRule::Kind::UNKNOWN);
-  REQUIRE_FALSE(result.value().price_rule_.round_to_tick(Decimal64::parse("34567"), OrderSide::BUY).has_value());
+  REQUIRE(result.value().price_rule_.kind_ == PriceRule::Kind::STATED);
+  REQUIRE(result.value().price_rule_.round_to_tick(Decimal64::parse("34567"), OrderSide::BUY)->str() == "34565");
 
   // The same instrument's cash-equity neighbour does get the ladder.
   auto equity = kis::KisClientTestAccess::parse_instrument(
@@ -5622,7 +5620,7 @@ TEST_CASE("an ETF gets no price grid rather than the equity one", "[broker][refe
   REQUIRE(equity);
   REQUIRE(equity.value().price_rule_.kind_ == PriceRule::Kind::STATED);
 
-  // And a KIS ETN, whose security group is EN, is unknown for the same reason.
+  // A KIS ETN, whose security group is EN, gets the same fund ladder.
   auto note = kis::KisClientTestAccess::parse_instrument(
     InstrumentId{Country::KR, Venue::COMBINED, "550011"},
     json_response(
@@ -5632,7 +5630,31 @@ TEST_CASE("an ETF gets no price grid rather than the equity one", "[broker][refe
   );
   REQUIRE(note);
   REQUIRE(note.value().type_ == SecurityType::ETN);
-  REQUIRE(note.value().price_rule_.kind_ == PriceRule::Kind::UNKNOWN);
+  REQUIRE(note.value().price_rule_.kind_ == PriceRule::Kind::STATED);
+
+  // A KIS foreign ETF, group FE, and a Toss FOREIGN_ETF keep their type and get no grid.
+  auto kis_foreign = kis::KisClientTestAccess::parse_instrument(
+    InstrumentId{Country::KR, Venue::COMBINED, "133690"},
+    json_response(
+      R"({"rt_cd":"0","output":{"mket_id_cd":"STK","scty_grp_id_cd":"FE","std_pdno":"x",)"
+      R"("prdt_name":"x","prdt_eng_name":"x"}})"
+    )
+  );
+  REQUIRE(kis_foreign);
+  REQUIRE(kis_foreign.value().type_ == SecurityType::FOREIGN_ETF);
+  REQUIRE(kis_foreign.value().price_rule_.kind_ == PriceRule::Kind::UNKNOWN);
+
+  auto toss_foreign = tossinvest::TossClientTestAccess::parse_instrument(
+    InstrumentId{Country::KR, Venue::COMBINED, "133690"},
+    json_response(
+      R"({"result":[{"symbol":"133690","name":"x","englishName":"x",)"
+      R"("isinCode":"KR7133690008","market":"KOSPI","securityType":"FOREIGN_ETF",)"
+      R"("status":"ACTIVE","currency":"KRW"}]})"
+    )
+  );
+  REQUIRE(toss_foreign);
+  REQUIRE(toss_foreign.value().type_ == SecurityType::FOREIGN_ETF);
+  REQUIRE(toss_foreign.value().price_rule_.kind_ == PriceRule::Kind::UNKNOWN);
 }
 
 // ---------------------------------------------------------------------------

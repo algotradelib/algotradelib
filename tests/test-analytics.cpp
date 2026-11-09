@@ -86,10 +86,10 @@ TEST_CASE("the route from a computed value to an order price is narrow") {
   // The warm-up region cannot become a price.
   REQUIRE_FALSE(round_scalar_to_tick(missing(), rule, OrderSide::BUY).has_value());
 
-  // Nor can a value the library has no grid for. An ETF is the real case: KRX prices
-  // funds on a ladder this library does not carry, so a computed price cannot be sent.
-  const auto fund = price_rule_for(Country::KR, SecurityType::ETF);
-  REQUIRE_FALSE(round_scalar_to_tick(34567.8, fund, OrderSide::BUY).has_value());
+  // Nor can a value the library has no grid for.
+  // A KRX warrant is the real case: the library carries no ladder for it, so a computed price cannot be sent.
+  const auto warrant = price_rule_for(Country::KR, SecurityType::STOCK_WARRANT);
+  REQUIRE_FALSE(round_scalar_to_tick(34567.8, warrant, OrderSide::BUY).has_value());
 
   // A market quoting in free decimals rounds to the requested scale, in the order's favour.
   const auto free = PriceRule::unconstrained();

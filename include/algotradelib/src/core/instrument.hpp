@@ -155,8 +155,8 @@ struct PriceRule {
     /** @brief The market imposes no grid (free decimals). */
     UNCONSTRAINED,
     /**
-     * @brief The library has no grid for this instrument (for example a KRX ETF or ETN) and will
-     *   not guess one.
+     * @brief The library has no grid for this instrument (for example a KRX warrant) and will not
+     *   guess one.
      */
     UNKNOWN,
   };
@@ -226,7 +226,7 @@ struct PriceRule {
    * @brief Rounds a price to its band's tick in the order's favour: a buy rounds down, a sell up.
    *
    * The tick is the one at `price`; a rounded price that crosses into the next band is not
-   * re-rounded. That is correct for the KRX table; with a custom table whose band boundaries are not
+   * re-rounded. That is correct for the KRX tables; with a custom table whose band boundaries are not
    * multiples of both ticks, check the result with `on_tick`.
    *
    * @param price The price.
@@ -280,6 +280,21 @@ struct PriceRule {
   }
 
   /**
+   * @brief Returns the KRX tick table for ETFs and ETNs (December 2023 revision).
+   * @return The rule.
+   */
+  static PriceRule krx_etp() {
+    PriceRule rule;
+    rule.kind_ = Kind::STATED;
+    rule.source_ = "KRX ETF and ETN tick table, 2023-12 revision (library-maintained)";
+    rule.bands_ = {
+      TickBand{Decimal64::parse("0"), Decimal64::parse("1")},
+      TickBand{Decimal64::parse("2000"), Decimal64::parse("5")},
+    };
+    return rule;
+  }
+
+  /**
    * @brief Returns a rule with no grid, for a market quoted in free decimals.
    * @return The rule, of kind `UNCONSTRAINED`.
    */
@@ -323,8 +338,9 @@ private:
  * @brief Returns the library's price grid for a kind of security in a country.
  *
  * KRX stocks, foreign stocks, depositary receipts, infrastructure funds and REITs get the equity
- * table; ETFs, ETNs, warrants and unknown types get an `UNKNOWN` rule. US listings are unconstrained,
- * whatever their type.
+ * table, and KRX ETFs and ETNs the ETF and ETN table.
+ * Foreign ETFs, warrants and unknown types get an `UNKNOWN` rule.
+ * US listings are unconstrained, whatever their type.
  *
  * @param country The listing country.
  * @param type The security type.
@@ -349,9 +365,10 @@ inline PriceRule price_rule_for(Country country, SecurityType type) {
     case SecurityType::REIT:
       return PriceRule::krx_equity();
     case SecurityType::ETF:
-    case SecurityType::FOREIGN_ETF:
     case SecurityType::ETN:
-      return PriceRule::unknown("KRX prices funds and notes on a ladder this library does not carry");
+      return PriceRule::krx_etp();
+    case SecurityType::FOREIGN_ETF:
+      return PriceRule::unknown("no price grid is confirmed for this foreign ETF class");
     case SecurityType::STOCK_WARRANT:
     case SecurityType::UNKNOWN:
       break;
