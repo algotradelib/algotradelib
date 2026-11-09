@@ -6,7 +6,7 @@
 #include "../../core/instrument.hpp"
 #include "../../core/market_data.hpp"
 #include "../../core/types.hpp"
-#include "../common.hpp"
+#include "../common/adapter.hpp"
 
 #include <boost/asio/any_completion_handler.hpp>
 #include <boost/asio/any_io_executor.hpp>

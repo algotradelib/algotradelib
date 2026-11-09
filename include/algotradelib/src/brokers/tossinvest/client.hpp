@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../common.hpp"
+#include "../common/adapter.hpp"
 #include "./config.hpp"
 
 #include <boost/asio/any_completion_handler.hpp>
