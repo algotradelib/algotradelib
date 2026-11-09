@@ -299,10 +299,8 @@ Analytics needs a float, so it gets one — and the two meet at three named, tes
 The only routes in validate against the instrument's `PriceRule`, so an indicator value cannot reach the wire as an off-tick limit price.
 An instrument whose ladder the library does not know gets *no answer* rather than a guess, because a guessed ladder finer than the exchange's would send an off-tick price, which the broker should refuse, with the library having confidently produced the price.
 
-That is also why the tick rule lives in market data rather than in the strategy layer, and why
-`PriceRule` records its own `source_`: no adapter builds the grid from a broker's reply (a broker
-states at most the tick at one price), so the table is this library's own and a stale one has to be
-visible rather than assumed.
+The rule's type lives in core and its tables live with the brokers (`<algotradelib/krx>`), because the broker decides the venue whose grid applies.
+`PriceRule` records its own `source_`: no adapter builds the grid from a broker's reply (a broker states at most the tick at one price), so the table is this library's own and a stale one has to be visible rather than assumed.
 
 ## Where to go next
 

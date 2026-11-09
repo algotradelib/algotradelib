@@ -82,8 +82,9 @@ three states:
 | `UNCONSTRAINED` | the market quotes in free decimals | returns the price unchanged |
 | `UNKNOWN` | this library has no table for the instrument | **returns nothing** |
 
-KRX ETFs and ETNs get `PriceRule::krx_etp()`, KRX's own table for them: 1 KRW below 2,000 KRW and 5 KRW from 2,000 KRW.
-Foreign ETFs, warrants and unknown types arrive with `UNKNOWN` rather than a guessed table.
+The Korean adapters attach `krx::price_rule_for(type)` from `<algotradelib/krx>`: the stock table for stocks, REITs and the like, the ETF and ETN table (1 KRW below 2,000 KRW and 5 KRW from 2,000 KRW) for ETFs and ETNs, and `UNKNOWN` for foreign ETFs, warrants and unknown types.
+Toss's US listings are `UNCONSTRAINED`.
+A caller that builds its own reference data, as a backtest does, includes `<algotradelib/krx>` and sets the rule itself.
 Attaching a guessed grid would be worse than attaching none: a ladder finer than the exchange's would send an off-tick price, which the broker should refuse, with the library having confidently produced the price.
 A default-constructed rule is `UNKNOWN` too, so a rule that was never set cannot silently approve anything.
 

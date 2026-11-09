@@ -21,7 +21,7 @@ const auto average = analytics::sma(close, 20);
 const auto strength = analytics::rsi(close, 14);
 
 // And the one route back to something a broker will accept.
-const auto rule = algotradelib::price_rule_for(bars.instrument_.country_, algotradelib::SecurityType::STOCK);
+const auto rule = algotradelib::krx::equity_price_rule();
 const auto limit = analytics::round_scalar_to_tick(
   average[close.size() - 1], rule, algotradelib::OrderSide::SELL
 );
@@ -83,8 +83,8 @@ out, a computation can produce an infinity, a `NaN`, or a magnitude no decimal c
 holds, and each of those has to be refused rather than truncated into something plausible.
 
 `PriceRule::Kind::UNKNOWN` refuses to round at all.
-An instrument whose tick ladder the library does not know — a KRX warrant or a foreign ETF — gets no answer rather than a guess, because a guessed tick is an order the exchange will reject at best and fill at the wrong price at worst.
-A listing outside Korea gets `UNCONSTRAINED` instead: its price is only rounded to the `scale` passed, which defaults to 0, so pass the market's (2 for US dollars).
+An instrument whose tick ladder the library does not know (a warrant or a foreign ETF in the KRX tables) gets no answer rather than a guess, because a guessed tick is an order the exchange will reject at best and fill at the wrong price at worst.
+An `UNCONSTRAINED` rule (Toss's US listings, the mock broker) is different: its price is only rounded to the `scale` passed, which defaults to 0, so pass the market's (2 for US dollars).
 
 ## Convention 2: two kinds of absence, and every reduction masks both
 
