@@ -82,11 +82,9 @@ The asymmetry is deliberate. Going in, a broker's number is always representable
 out, a computation can produce an infinity, a `NaN`, or a magnitude no decimal coefficient
 holds, and each of those has to be refused rather than truncated into something plausible.
 
-`PriceRule::Kind::UNKNOWN` refuses to round at all. An instrument whose tick ladder the
-library does not know — a KRX ETF, ETN or warrant — gets no answer rather than a guess, because a
-guessed tick is an order the exchange will reject at best and fill at the wrong price at worst. A
-listing outside Korea gets `UNCONSTRAINED` instead: its price is only rounded to the `scale` passed,
-which defaults to 0, so pass the market's (2 for US dollars).
+`PriceRule::Kind::UNKNOWN` refuses to round at all.
+An instrument whose tick ladder the library does not know — a KRX warrant or a foreign ETF — gets no answer rather than a guess, because a guessed tick is an order the exchange will reject at best and fill at the wrong price at worst.
+A listing outside Korea gets `UNCONSTRAINED` instead: its price is only rounded to the `scale` passed, which defaults to 0, so pass the market's (2 for US dollars).
 
 ## Convention 2: two kinds of absence, and every reduction masks both
 

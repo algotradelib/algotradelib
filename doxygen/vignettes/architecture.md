@@ -295,11 +295,9 @@ Analytics needs a float, so it gets one — and the two meet at three named, tes
 `analytics/conversion.hpp`: `to_scalar` one way, and `to_decimal` (for a computed quantity or weight) and
 `round_scalar_to_tick` (for a price, whose result still goes through `Price::checked`) back.
 
-**The return path is the narrow one.** `strategy::Price` has no public constructor. The only routes in
-validate against the instrument's `PriceRule`, so an indicator value cannot reach the wire as an
-off-tick limit price. An instrument whose ladder the library does not know gets *no answer* rather
-than a guess, because attaching the equity grid to an ETF would round onto a ladder the exchange does
-not use and the order would be rejected — with the library having confidently produced the price.
+**The return path is the narrow one.** `strategy::Price` has no public constructor.
+The only routes in validate against the instrument's `PriceRule`, so an indicator value cannot reach the wire as an off-tick limit price.
+An instrument whose ladder the library does not know gets *no answer* rather than a guess, because a guessed ladder finer than the exchange's would send an off-tick price, which the broker should refuse, with the library having confidently produced the price.
 
 That is also why the tick rule lives in market data rather than in the strategy layer, and why
 `PriceRule` records its own `source_`: no adapter builds the grid from a broker's reply (a broker

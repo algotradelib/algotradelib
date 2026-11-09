@@ -193,9 +193,8 @@ int report(BlockingSession<Client>& session, const InstrumentId& subject) {
       // A computed price has to sit on the exchange's grid, and the grid is the
       // library's own because no broker publishes one.
       if (const auto mid = book.value().mid()) {
-        // The grid comes from the instrument, because it depends on what the
-        // instrument is: KRX prices funds and notes on a ladder this library does not
-        // carry, and those refuse to round rather than rounding onto the wrong one.
+        // The grid comes from the instrument, because it depends on what the instrument is.
+        // KRX prices ETFs and ETNs on their own ladder, and a type whose ladder the library does not know refuses to round rather than guessing one.
         const auto rule = reference_rule;
         const auto buy = rule.round_to_tick(*mid, OrderSide::BUY);
         std::cout

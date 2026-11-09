@@ -82,12 +82,10 @@ three states:
 | `UNCONSTRAINED` | the market quotes in free decimals | returns the price unchanged |
 | `UNKNOWN` | this library has no table for the instrument | **returns nothing** |
 
-KRX prices funds and notes on a different ladder from cash equities and this library
-carries no table for it, so an ETF or ETN arrives with `UNKNOWN` rather than the equity table.
-Attaching the equity grid would be worse than attaching none: it would round onto a
-ladder the exchange does not use and the order would be rejected, with the library
-having confidently produced the price. A default-constructed rule is `UNKNOWN` too, so
-a rule that was never set cannot silently approve anything.
+KRX ETFs and ETNs get `PriceRule::krx_etp()`, KRX's own table for them: 1 KRW below 2,000 KRW and 5 KRW from 2,000 KRW.
+Foreign ETFs, warrants and unknown types arrive with `UNKNOWN` rather than a guessed table.
+Attaching a guessed grid would be worse than attaching none: a ladder finer than the exchange's would send an off-tick price, which the broker should refuse, with the library having confidently produced the price.
+A default-constructed rule is `UNKNOWN` too, so a rule that was never set cannot silently approve anything.
 
 ## What differs between the brokers
 
