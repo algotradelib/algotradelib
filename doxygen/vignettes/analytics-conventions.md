@@ -10,6 +10,7 @@ something a broker will accept.
 
 ```cpp
 #include <algotradelib/analytics>
+#include <algotradelib/krx>
 
 namespace analytics = algotradelib::analytics;
 
