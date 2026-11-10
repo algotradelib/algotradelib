@@ -1,4 +1,4 @@
-# Render doxygen to github page repo
+# Render doxygen into the pages repository: cpp/ from main, cpp/dev/ from develop
 on:
   workflow_dispatch:
   push:
@@ -40,6 +40,6 @@ jobs:
           repository-name: algotradelib/algotradelib.github.io
           folder: doxygen/docs/html
           branch: main
-          target-folder: ${{ github.ref_name == 'develop' && 'docs/dev' || 'docs' }}
+          target-folder: ${{ github.ref_name == 'develop' && 'cpp/dev' || 'cpp' }}
           clean: true
           clean-exclude: dev
