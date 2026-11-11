@@ -199,6 +199,10 @@ struct KiwoomClientTestAccess {
     }
     return Result<BarSeries>(KiwoomClient::compose_bars(operation));
   }
+
+  static void forget_refused_token(KiwoomClient& client, const std::string& authorization) {
+    client.forget_refused_token(authorization);
+  }
 };
 
 } // namespace algotradelib::kiwoom
@@ -1562,6 +1566,258 @@ TEST_CASE(
     REQUIRE_FALSE(amend);
     CHECK(amend.error().category_ == ErrorCategory::PROTOCOL);
   }
+}
+
+// A token handed from one Kiwoom client to another, and a token Kiwoom refuses (`return_code` 8005,
+// "Token이 유효하지 않습니다" in the published error list), through the clients' own request path.
+namespace {
+
+constexpr const char* KIWOOM_TOKEN = "/oauth2/token";
+constexpr const char* KIWOOM_ACCOUNT = "/api/dostk/acnt";
+constexpr const char* KIWOOM_ACCOUNTS_REPLY = R"({"acctNo":"0123456789","return_code":0,"return_msg":"ok"})";
+
+/** A Kiwoom token reply issuing `token`. */
+std::string kiwoom_token_body(const std::string& token) {
+  return R"({"expires_dt":"20991231235959","token_type":"bearer","token":")" + token +
+    R"(","return_code":0,"return_msg":"ok"})";
+}
+
+/** A token valid for the next twenty hours. */
+kiwoom::KiwoomRest kiwoom_live_token(const std::string& token) {
+  kiwoom::KiwoomRest rest;
+  rest.access_token_ = token;
+  rest.expires_at_ = std::chrono::system_clock::now() + std::chrono::hours(20);
+  return rest;
+}
+
+/** A real-server client pointed at `server`, with the holdings setting an order needs. */
+std::shared_ptr<kiwoom::KiwoomClient> scripted_kiwoom(
+  net::io_context& ioc, ssl::context& context, const test::LocalHttpsServer& server
+) {
+  kiwoom::KiwoomConfig config;
+  config.is_demo_ = false;
+  config.holdings_position_scope_ = kiwoom::KiwoomPositionScope::VALUATION_ONLY;
+  auto client = std::make_shared<kiwoom::KiwoomClient>(ioc.get_executor(), context, std::move(config));
+  kiwoom::KiwoomClientTestAccess::connect(*client, context, server.port());
+  return client;
+}
+
+/** Asks `client` for its accounts and runs the exchange to completion. */
+Result<std::vector<kiwoom::KiwoomAccountInfo>> kiwoom_accounts_from(
+  net::io_context& ioc, kiwoom::KiwoomClient& client
+) {
+  auto result = client.async_accounts(net::use_future);
+  ioc.restart();
+  ioc.run();
+  return result.get();
+}
+
+/** A reply with `status` and `body`. */
+network::HttpResponse kiwoom_reply(unsigned status, std::string body) {
+  network::HttpResponse response{static_cast<http::status>(status), 11};
+  response.body() = std::move(body);
+  return response;
+}
+
+/** Checks that a client returned the error a parser reads from the same reply, field by field. */
+void check_same_error(const BrokerError& returned, const BrokerError& read) {
+  CHECK(returned.category_ == read.category_);
+  CHECK(returned.broker_code_ == read.broker_code_);
+  CHECK(returned.http_status_ == read.http_status_);
+  CHECK(returned.message_ == read.message_);
+  CHECK(returned.reached_broker_ == read.reached_broker_);
+}
+
+/** A token refusal as Kiwoom may send it: the reply's status and body. */
+struct KiwoomTokenRefusal {
+  unsigned status_;
+  const char* body_;
+};
+
+constexpr KiwoomTokenRefusal KIWOOM_TOKEN_REFUSALS[] = {
+  {200, R"({"return_code":8005,"return_msg":"Token이 유효하지 않습니다"})"},
+  {200, R"({"return_code":"8005","return_msg":"Token이 유효하지 않습니다"})"},
+  {500, R"({"return_code":8005,"return_msg":"Token이 유효하지 않습니다"})"},
+};
+
+} // namespace
+
+TEST_CASE("a Kiwoom client carries a token another client obtained and asks for none", "[kiwoom][auth]") {
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  server.script(KIWOOM_TOKEN, 200, kiwoom_token_body("issued"));
+  server.script(KIWOOM_ACCOUNT, 200, KIWOOM_ACCOUNTS_REPLY);
+
+  auto first = scripted_kiwoom(ioc, context, server);
+  REQUIRE(kiwoom_accounts_from(ioc, *first));
+  REQUIRE(server.scriptedCount(KIWOOM_TOKEN) == 1);
+  const auto handed = first->token();
+  REQUIRE(handed.access_token_ == "issued");
+  // The loopback server serves one connection at a time: the first client lets go of its own.
+  first->close();
+  ioc.restart();
+  ioc.run();
+
+  auto second = scripted_kiwoom(ioc, context, server);
+  REQUIRE(second->adopt_token(handed));
+  REQUIRE(kiwoom_accounts_from(ioc, *second));
+  CHECK(server.scriptedCount(KIWOOM_TOKEN) == 1);
+  CHECK(server.scriptedCount(KIWOOM_ACCOUNT) == 2);
+  CHECK(server.lastHeader(KIWOOM_ACCOUNT, "authorization") == "Bearer issued");
+}
+
+TEST_CASE("a Kiwoom client hands its token on and adopts only a live one", "[kiwoom][auth]") {
+  ssl::context tls(ssl::context::tls_client);
+  kiwoom::KiwoomBlockingClient client(tls, kiwoom::KiwoomConfig{});
+  REQUIRE(client.token().access_token_.empty());
+
+  kiwoom::KiwoomRest expired;
+  expired.access_token_ = "expired-token";
+  expired.expires_at_ = std::chrono::system_clock::now() - std::chrono::minutes(1);
+  CHECK_FALSE(client.adopt_token(expired));
+  kiwoom::KiwoomRest empty;
+  empty.expires_at_ = std::chrono::system_clock::now() + std::chrono::hours(20);
+  CHECK_FALSE(client.adopt_token(empty));
+  // Inside the five-minute margin every other validity check uses.
+  kiwoom::KiwoomRest ending;
+  ending.access_token_ = "ending-token";
+  ending.expires_at_ = std::chrono::system_clock::now() + std::chrono::minutes(2);
+  CHECK_FALSE(client.adopt_token(ending));
+  CHECK(client.token().access_token_.empty());
+
+  const auto live = kiwoom_live_token("kept-token");
+  REQUIRE(client.adopt_token(live));
+  CHECK(client.token().access_token_ == "kept-token");
+  CHECK(client.token().expires_at_ == live.expires_at_);
+  CHECK(client.token().valid());
+}
+
+TEST_CASE("a Kiwoom client drops a token Kiwoom refuses and takes a new one on the next request", "[kiwoom][auth]") {
+  for (const auto& refusal : KIWOOM_TOKEN_REFUSALS) {
+    CAPTURE(refusal.status_, refusal.body_);
+    test::LocalHttpsServer server;
+    net::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    test::trustLocalhostCertificate(context);
+    server.script(KIWOOM_TOKEN, 200, kiwoom_token_body("fresh"));
+    server.scriptSequence(KIWOOM_ACCOUNT, {{refusal.status_, refusal.body_, {}}, {200, KIWOOM_ACCOUNTS_REPLY, {}}});
+    auto client = scripted_kiwoom(ioc, context, server);
+    REQUIRE(client->adopt_token(kiwoom_live_token("adopted")));
+
+    const auto refused = kiwoom_accounts_from(ioc, *client);
+    REQUIRE_FALSE(refused);
+    CHECK(refused.error().broker_code_ == "8005");
+    const auto read = kiwoom::KiwoomClientTestAccess::accounts(kiwoom_reply(refusal.status_, refusal.body_));
+    REQUIRE_FALSE(read);
+    check_same_error(refused.error(), read.error());
+    CHECK(server.scriptedCount(KIWOOM_TOKEN) == 0);
+    CHECK(server.scriptedCount(KIWOOM_ACCOUNT) == 1);
+    CHECK(server.lastHeader(KIWOOM_ACCOUNT, "authorization") == "Bearer adopted");
+    CHECK(client->token().access_token_.empty());
+
+    REQUIRE(kiwoom_accounts_from(ioc, *client));
+    CHECK(server.scriptedCount(KIWOOM_TOKEN) == 1);
+    CHECK(server.scriptedCount(KIWOOM_ACCOUNT) == 2);
+    CHECK(server.lastHeader(KIWOOM_ACCOUNT, "authorization") == "Bearer fresh");
+    CHECK(client->token().access_token_ == "fresh");
+  }
+}
+
+TEST_CASE("a Kiwoom order refused for its token is reported as before and not sent again", "[kiwoom][auth]") {
+  for (const auto& refusal : KIWOOM_TOKEN_REFUSALS) {
+    CAPTURE(refusal.status_, refusal.body_);
+    test::LocalHttpsServer server;
+    net::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    test::trustLocalhostCertificate(context);
+    server.script(KIWOOM_TOKEN, 200, kiwoom_token_body("fresh"));
+    server.script(KIWOOM_ORDER, refusal.status_, refusal.body_);
+    server.script(KIWOOM_ACCOUNT, 200, KIWOOM_ACCOUNTS_REPLY);
+    auto client = scripted_kiwoom(ioc, context, server);
+    REQUIRE(client->adopt_token(kiwoom_live_token("adopted")));
+
+    OrderRequest order;
+    order.instrument_ = samsung();
+    order.side_ = OrderSide::BUY;
+    order.type_ = OrderType::LIMIT;
+    order.time_in_force_ = TimeInForce::DAY;
+    order.session_ = OrderSession::REGULAR;
+    order.venue_ = Venue::KRX;
+    order.quantity_ = Decimal64(1, 0);
+    order.price_ = Decimal64(70000, 0);
+    auto placed = client->async_place_order(kiwoom::KiwoomAccount{}, order, net::use_future);
+    ioc.run();
+    const auto refused = placed.get();
+    // The same reply read by the order parser alone: forgetting the token changes nothing the caller sees.
+    const auto read = kiwoom::KiwoomClientTestAccess::order_ack(
+      kiwoom_reply(refusal.status_, refusal.body_), KiwoomOrderOperation::PLACE, false
+    );
+    REQUIRE_FALSE(refused);
+    REQUIRE_FALSE(read);
+    check_same_error(refused.error(), read.error());
+    CHECK(runner::outcome_of(refused.error()) == runner::outcome_of(read.error()));
+    CHECK(server.scriptedCount(KIWOOM_ORDER) == 1);
+    CHECK(server.lastHeader(KIWOOM_ORDER, "authorization") == "Bearer adopted");
+    CHECK(client->token().access_token_.empty());
+
+    REQUIRE(kiwoom_accounts_from(ioc, *client));
+    CHECK(server.scriptedCount(KIWOOM_TOKEN) == 1);
+    CHECK(server.lastHeader(KIWOOM_ACCOUNT, "authorization") == "Bearer fresh");
+    CHECK(server.scriptedCount(KIWOOM_ORDER) == 1);
+  }
+}
+
+TEST_CASE("a Kiwoom client keeps its token through a refusal that is not about the token", "[kiwoom][auth]") {
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  server.script(KIWOOM_TOKEN, 200, kiwoom_token_body("fresh"));
+  // Other authentication codes (8010 and 8050 are the IP, 8031 the other environment) and a code that
+  // names 8005 only in its message keep the token: only 8005 says the token itself is refused.
+  const std::vector<std::string> others = {
+    R"({"return_code":8010,"return_msg":"Token을 발급받은 IP와 서비스를 요청한 IP가 동일하지 않습니다"})",
+    R"({"return_code":8031,"return_msg":"투자구분(실전/모의)이 달라서 Token를 사용할수가 없습니다"})",
+    R"({"return_code":8050,"return_msg":"IP가 등록되지 않았습니다"})",
+    R"({"return_code":1999,"return_msg":"예기치 못한 에러가 발생했습니다. 실패사유=8005"})",
+  };
+  std::vector<test::LocalHttpsServer::Scripted> replies;
+  for (const auto& body : others) {
+    replies.push_back({200, body, {}});
+  }
+  replies.push_back({200, KIWOOM_ACCOUNTS_REPLY, {}});
+  server.scriptSequence(KIWOOM_ACCOUNT, replies);
+  auto client = scripted_kiwoom(ioc, context, server);
+  REQUIRE(client->adopt_token(kiwoom_live_token("adopted")));
+
+  for (const auto& body : others) {
+    CAPTURE(body);
+    const auto refused = kiwoom_accounts_from(ioc, *client);
+    REQUIRE_FALSE(refused);
+    const auto read = kiwoom::KiwoomClientTestAccess::accounts(kiwoom_reply(200, body));
+    REQUIRE_FALSE(read);
+    check_same_error(refused.error(), read.error());
+    CHECK(client->token().access_token_ == "adopted");
+  }
+  REQUIRE(kiwoom_accounts_from(ioc, *client));
+  CHECK(server.scriptedCount(KIWOOM_ACCOUNT) == others.size() + 1);
+  CHECK(server.scriptedCount(KIWOOM_TOKEN) == 0);
+  CHECK(server.lastHeader(KIWOOM_ACCOUNT, "authorization") == "Bearer adopted");
+}
+
+TEST_CASE("a Kiwoom client keeps a newer token when a request carrying an older one is refused", "[kiwoom][auth]") {
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  auto client = std::make_shared<kiwoom::KiwoomClient>(ioc.get_executor(), context, kiwoom::KiwoomConfig{});
+  REQUIRE(client->adopt_token(kiwoom_live_token("second")));
+
+  kiwoom::KiwoomClientTestAccess::forget_refused_token(*client, "Bearer first");
+  CHECK(client->token().access_token_ == "second");
+
+  kiwoom::KiwoomClientTestAccess::forget_refused_token(*client, "Bearer second");
+  CHECK(client->token().access_token_.empty());
 }
 
 TEST_CASE("a Kiwoom reply whose body is not a JSON object keeps its HTTP status", "[kiwoom][orders]") {

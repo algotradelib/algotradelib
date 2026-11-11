@@ -871,7 +871,8 @@ struct KiwoomOrderableAmount {
  * @brief The asynchronous Kiwoom REST client: market data, account inquiries and orders for domestic
  *   stocks.
  *
- * It requests an access token when first needed and shares one refresh among concurrent requests.
+ * It requests an access token when first needed, and again after Kiwoom refuses the one it holds;
+ * one refresh is shared among concurrent requests, and a refused request is not sent again.
  * Create it with `std::make_shared`. Each completion runs on the handler's associated executor, or on
  * the client's strand if it has none. Before trading, state the holdings settings in `KiwoomConfig`.
  * A blocking wrapper is `KiwoomBlockingClient`.
@@ -1338,6 +1339,43 @@ public:
   }
 
   /**
+   * @brief Returns the access token the client holds, to reuse in another client or a later process
+   *   (`adopt_token`).
+   *
+   * **The token is a bearer credential**: store it as carefully as the key and secret.
+   *
+   * Read it on the client's strand or before any request; on the blocking client, between calls.
+   *
+   * @return The token, empty until a request has obtained one.
+   */
+  KiwoomRest token() const {
+    return token_;
+  }
+
+  /**
+   * @brief Uses a token issued earlier for the same app key and environment instead of requesting
+   *   one.
+   *
+   * When Kiwoom refuses the token a request carried (`return_code` `8005`), that request fails with
+   * Kiwoom's code and is not sent again, and the client drops the token: the next request asks for a
+   * new one, which `token()` then returns. The token does not identify its key, so key stored tokens
+   * by environment and app key, and discard one Kiwoom refused. **The token is a bearer credential**:
+   * store it as carefully as the key and secret.
+   *
+   * Call it on the client's strand or before any request; on the blocking client, between calls.
+   *
+   * @param token The token.
+   * @return `false` (nothing adopted) if the token is empty or expires within five minutes.
+   */
+  bool adopt_token(KiwoomRest token) {
+    if (!token.valid()) {
+      return false;
+    }
+    token_ = std::move(token);
+    return true;
+  }
+
+  /**
    * @brief Closes the client for good: pending requests, and later ones that would send, complete
    *   with `CANCELLED`. A request already being sent has `reached_broker_` set and an unknown outcome.
    *   A request refused before sending is still refused.
@@ -1512,6 +1550,63 @@ private:
     return error;
   }
 
+  // Sends a request that carries the access token, and forgets that token if Kiwoom refuses it.
+  //
+  // Kiwoom refuses a token with `return_code` `8005` ("Token이 유효하지 않습니다"), read here whatever
+  // the HTTP status, as `kiwoom_declared_error` and `kiwoom_http_error` both read the code. Kept,
+  // the token would be sent until its stated expiry and every request would fail; forgotten, the next
+  // request asks for a new one. The refused request is not sent again and its result reaches the
+  // caller unchanged. Only the token the request carried is forgotten: a late refusal of an older token
+  // leaves a newer one alone.
+  template <typename Handler>
+  void send(network::HttpRequest request, Handler handler) {
+    std::string authorization;
+    for (const auto& [name, value] : request.headers_) {
+      if (name == "authorization") {
+        authorization = value;
+      }
+    }
+    http_->async_request(
+      std::move(request),
+      [self = shared_from_this(), authorization = std::move(authorization),
+        handler = std::move(handler)](Result<network::HttpResponse> result) mutable {
+        if (result && refuses_token(result.value())) {
+          // Queued before the handler runs; every operation starts with a post to the strand, so
+          // the next one finds the token gone.
+          net::post(self->strand_, [self, authorization = std::move(authorization)] {
+            self->forget_refused_token(authorization);
+          });
+        }
+        std::move(handler)(std::move(result));
+      }
+    );
+  }
+
+  // Tests whether a reply, of any status, states `return_code` `8005`, as a number or as text.
+  static bool refuses_token(const network::HttpResponse& response) {
+    if (response.body().find("8005") == std::string::npos) {
+      return false;
+    }
+    boost::system::error_code ec;
+    const auto document = json::parse(response.body(), ec);
+    if (ec || !document.is_object()) {
+      return false;
+    }
+    const auto* code = document.as_object().if_contains("return_code");
+    if (!code) {
+      return false;
+    }
+    return (code->is_int64() && code->as_int64() == 8005) || (code->is_uint64() && code->as_uint64() == 8005) ||
+      (code->is_string() && code->as_string() == "8005");
+  }
+
+  // Forgets the held token if it is the one a refused request carried (its `authorization` value).
+  void forget_refused_token(const std::string& authorization) {
+    if (!token_.access_token_.empty() && authorization == "Bearer " + token_.access_token_) {
+      token_ = KiwoomRest{};
+    }
+  }
+
   // Returns a response's declared payload, or the error ending it.
   //
   // Applies the HTTP status check, the JSON parse, and Kiwoom's own `return_code` before a parser
@@ -1585,7 +1680,7 @@ private:
         }
         auto request =
           self->make_request(api_id, path, self->symbol_body(instrument), network::RateLimitGroup::MARKET_DATA);
-        self->http_->async_request(
+        self->send(
           std::move(request),
           [self, instrument = std::move(instrument), completion = std::move(completion),
             parse](Result<network::HttpResponse> result) mutable {
@@ -1804,7 +1899,7 @@ private:
         auto request = self->make_request(
           "ka10003", "/api/dostk/stkinfo", self->symbol_body(instrument), network::RateLimitGroup::MARKET_DATA
         );
-        self->http_->async_request(
+        self->send(
           std::move(request),
           [self, count, completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
             self->deliver(std::move(completion), parse_trades(std::move(result), count));
@@ -1878,7 +1973,7 @@ private:
         auto request = self->make_request(
           "ka10100", "/api/dostk/stkinfo", json::serialize(body), network::RateLimitGroup::REFERENCE
         );
-        self->http_->async_request(
+        self->send(
           std::move(request),
           [self, instrument = std::move(instrument),
             completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
@@ -2024,7 +2119,7 @@ private:
         chart_api_id(operation->query_.interval_), "/api/dostk/chart", json::serialize(body),
         network::RateLimitGroup::MARKET_DATA, operation->next_key_
       );
-      self->http_->async_request(std::move(request), [self, operation](Result<network::HttpResponse> result) mutable {
+      self->send(std::move(request), [self, operation](Result<network::HttpResponse> result) mutable {
         net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
           self->handle_bars_page(operation, std::move(result));
         });
@@ -2338,7 +2433,7 @@ private:
       auto request = self->make_request(
         "kt00018", "/api/dostk/acnt", self->holdings_body(), network::RateLimitGroup::ACCOUNT, operation->next_key_
       );
-      self->http_->async_request(std::move(request), [self, operation](Result<network::HttpResponse> result) mutable {
+      self->send(std::move(request), [self, operation](Result<network::HttpResponse> result) mutable {
         net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
           self->handle_holdings_page(operation, std::move(result));
         });
@@ -2527,7 +2622,7 @@ private:
         body["qry_tp"] = "3";
         auto request =
           self->make_request("kt00001", "/api/dostk/acnt", json::serialize(body), network::RateLimitGroup::ACCOUNT);
-        self->http_->async_request(
+        self->send(
           std::move(request), [self, completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
             self->deliver(std::move(completion), parse_deposit(std::move(result)));
           }
@@ -2584,7 +2679,7 @@ private:
         body["uv"] = price ? price->str() : "";
         auto request =
           self->make_request("kt00010", "/api/dostk/acnt", json::serialize(body), network::RateLimitGroup::ACCOUNT);
-        self->http_->async_request(
+        self->send(
           std::move(request), [self, completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
             self->deliver(std::move(completion), parse_orderable_amount(std::move(result)));
           }
@@ -2641,7 +2736,7 @@ private:
           return;
         }
         auto request = self->make_request("ka00001", "/api/dostk/acnt", "{}", network::RateLimitGroup::ACCOUNT);
-        self->http_->async_request(
+        self->send(
           std::move(request), [self, completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
             self->deliver(std::move(completion), parse_accounts(std::move(result)));
           }
@@ -2923,7 +3018,7 @@ private:
         }
         auto request = place_order_request(*self, order, division);
         const std::string symbol = order.instrument_.symbol_;
-        self->http_->async_request(
+        self->send(
           std::move(request),
           [self, symbol, demo = self->config_.is_demo_,
             completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
@@ -2952,7 +3047,7 @@ private:
         auto request = amend_order_request(*self, amendment, cancel);
         const std::string symbol = amendment.order_.symbol_;
         const auto operation = cancel ? KiwoomOrderOperation::CANCEL : KiwoomOrderOperation::AMEND;
-        self->http_->async_request(
+        self->send(
           std::move(request),
           [self, symbol, operation, demo = self->config_.is_demo_,
             completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
@@ -3033,7 +3128,7 @@ private:
       auto request = self->make_request(
         "ka10075", "/api/dostk/acnt", json::serialize(body), network::RateLimitGroup::ACCOUNT, operation->next_key_
       );
-      self->http_->async_request(std::move(request), [self, operation](Result<network::HttpResponse> result) mutable {
+      self->send(std::move(request), [self, operation](Result<network::HttpResponse> result) mutable {
         net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
           self->handle_open_orders_page(operation, std::move(result));
         });
@@ -3276,7 +3371,7 @@ private:
       auto request = self->make_request(
         "kt00007", "/api/dostk/acnt", json::serialize(body), network::RateLimitGroup::ACCOUNT, operation->next_key_
       );
-      self->http_->async_request(std::move(request), [self, operation](Result<network::HttpResponse> result) mutable {
+      self->send(std::move(request), [self, operation](Result<network::HttpResponse> result) mutable {
         net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
           self->handle_order_history_page(operation, std::move(result));
         });
@@ -3738,6 +3833,23 @@ public:
    */
   const network::RateLimitStats* rate_limit_stats() const {
     return client_->rate_limit_stats();
+  }
+
+  /**
+   * @brief Returns the access token; see `KiwoomClient::token`.
+   * @return The token, empty until a request has obtained one.
+   */
+  KiwoomRest token() const {
+    return client_->token();
+  }
+
+  /**
+   * @brief Uses a token issued earlier; see `KiwoomClient::adopt_token`.
+   * @param token The token.
+   * @return `false` if the token is empty or expires within five minutes.
+   */
+  bool adopt_token(KiwoomRest token) {
+    return client_->adopt_token(std::move(token));
   }
 
 private:
