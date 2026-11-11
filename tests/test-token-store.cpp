@@ -896,6 +896,35 @@ TEST_CASE("a shared token near its expiry is replaced by one token request for b
   CHECK(fixture.stored_token(identity) == "new");
 }
 
+TEST_CASE("a token response read only in part is not kept and the next call prepares again", "[network][token]") {
+  Fixture fixture;
+  const auto identity = identity_of<KisBroker>();
+  // The token and its relative lifetime are read before the absolute expiry, which is not a string here.
+  fixture.server_.scriptSequence(
+    KisBroker::TOKEN,
+    {
+      {200, R"({"access_token":"LEAK-partial","expires_in":86400,"access_token_token_expired":42})", {}},
+      {200, KisBroker::token_body("prepared", hours(24)), {}},
+    }
+  );
+  fixture.server_.scriptSequence(KisBroker::READ, {KisBroker::read_reply()});
+  auto client = KisBroker::make(fixture.context_, fixture.server_, fixture.store_);
+
+  const auto failed = KisBroker::read(*client);
+  REQUIRE_FALSE(failed);
+  CHECK(failed.error().broker_code_ == "invalid_token_response");
+  CHECK_FALSE(failed.error().reached_broker_);
+  CHECK(failed.error().message_.find("LEAK") == std::string::npos);
+  CHECK(client->token().access_token_.empty());
+  CHECK(fixture.stored_token(identity).empty());
+  CHECK(fixture.server_.scriptedCount(KisBroker::READ) == 0);
+
+  REQUIRE(KisBroker::read(*client));
+  CHECK(fixture.server_.scriptedCount(KisBroker::TOKEN) == 2);
+  CHECK(fixture.server_.lastHeader(KisBroker::READ, "authorization") == "Bearer prepared");
+  CHECK(fixture.stored_token(identity) == "prepared");
+}
+
 TEST_CASE("a failed token request stores nothing and a failed publish sends nothing", "[network][token]") {
   Fixture fixture;
   const auto identity = identity_of<KisBroker>();

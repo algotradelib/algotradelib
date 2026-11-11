@@ -32,9 +32,10 @@ struct StoredToken {
  * store, if the store still holds that token.
  *
  * Each identity (a broker configuration's `token_identity()`) has its own lock. Call `load`, `publish`,
- * `discard` and `remove` while holding the object `lock` returned for that identity. No function throws: each
- * returns its failure as an `AUTHENTICATION` error with `reached_broker_` false, broker code `token_store` and
- * a fixed message. An implementation must allow calls from several threads at once.
+ * `discard` and `remove` while holding the object `lock` returned for that identity. Each function returns
+ * filesystem and parse failures, rather than throwing them, as an `AUTHENTICATION` error with
+ * `reached_broker_` false, broker code `token_store` and a fixed message (an allocation can still throw). An
+ * implementation must allow calls from several threads at once.
  */
 class TokenStore {
 public:
@@ -175,6 +176,8 @@ std::optional<BrokerError> prepare(TokenStore& store, const std::string& identit
   }
   auto issued = request();
   if (!issued) {
+    // A token response read only in part can leave a token that looks valid; it was never published.
+    client.forget_token();
     return std::move(issued.error());
   }
   if (auto error = store.publish(identity, StoredToken{issued.value().access_token_, issued.value().expires_at_})) {
