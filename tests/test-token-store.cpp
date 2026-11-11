@@ -45,6 +45,22 @@ struct KisClientTestAccess {
     client.client_->http_ =
       std::make_shared<network::AsyncHttpClient>(client.client_->strand_, context, "localhost", port, options);
   }
+  /** Runs `ensure_token` on `client`, with or without a store managing its token; the outcome if it completed. */
+  template <typename Client>
+  static std::optional<std::optional<BrokerError>> ensure(Client& client, bool managed) {
+    client.store_managed_ = managed;
+    std::optional<std::optional<BrokerError>> outcome;
+    client.ensure_token(typename Client::TokenHandler([&outcome](std::optional<BrokerError> error) {
+      outcome.emplace(std::move(error));
+    }));
+    return outcome;
+  }
+
+  /** Whether `client` has started a token request. */
+  template <typename Client>
+  static bool requesting(const Client& client) {
+    return client.refreshing_;
+  }
 };
 } // namespace algotradelib::kis
 
@@ -57,6 +73,22 @@ struct KiwoomClientTestAccess {
     client.client_->http_ =
       std::make_shared<network::AsyncHttpClient>(client.client_->strand_, context, "localhost", port, options);
   }
+  /** Runs `ensure_token` on `client`, with or without a store managing its token; the outcome if it completed. */
+  template <typename Client>
+  static std::optional<std::optional<BrokerError>> ensure(Client& client, bool managed) {
+    client.store_managed_ = managed;
+    std::optional<std::optional<BrokerError>> outcome;
+    client.ensure_token(typename Client::TokenHandler([&outcome](std::optional<BrokerError> error) {
+      outcome.emplace(std::move(error));
+    }));
+    return outcome;
+  }
+
+  /** Whether `client` has started a token request. */
+  template <typename Client>
+  static bool requesting(const Client& client) {
+    return client.refreshing_;
+  }
 };
 } // namespace algotradelib::kiwoom
 
@@ -68,6 +100,22 @@ struct TossClientTestAccess {
     options.unreplayed_idle_limit_ = std::chrono::milliseconds(0);
     client.client_->http_ =
       std::make_shared<network::AsyncHttpClient>(client.client_->strand_, context, "localhost", port, options);
+  }
+  /** Runs `ensure_token` on `client`, with or without a store managing its token; the outcome if it completed. */
+  template <typename Client>
+  static std::optional<std::optional<BrokerError>> ensure(Client& client, bool managed) {
+    client.store_managed_ = managed;
+    std::optional<std::optional<BrokerError>> outcome;
+    client.ensure_token(typename Client::TokenHandler([&outcome](std::optional<BrokerError> error) {
+      outcome.emplace(std::move(error));
+    }));
+    return outcome;
+  }
+
+  /** Whether `client` has started a token request. */
+  template <typename Client>
+  static bool requesting(const Client& client) {
+    return client.refreshing_;
   }
 };
 } // namespace algotradelib::tossinvest
@@ -94,6 +142,54 @@ TEST_CASE("a token identity names the broker and the environment and hides the k
   // SHA-256 of "KEY-ONE"; the key itself never appears.
   CHECK(real.token_identity() == network::token_identity("kis", "real", "KEY-ONE"));
   CHECK(real.token_identity().find("KEY-ONE") == std::string::npos);
+}
+
+namespace {
+
+/** Runs the managed and unmanaged `ensure_token` of one asynchronous client with a valid and with no token. */
+template <typename Access, typename Client, typename Config, typename Token>
+void check_managed_ensure_token(const char* name) {
+  CAPTURE(name);
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+
+  // Managed, valid: completes at once with success and starts no token request.
+  auto valid = std::make_shared<Client>(ioc.get_executor(), context, Config{});
+  Token token;
+  token.access_token_ = "held";
+  token.expires_at_ = std::chrono::system_clock::now() + std::chrono::hours(20);
+  REQUIRE(valid->adopt_token(token));
+  const auto passed = Access::ensure(*valid, true);
+  REQUIRE(passed);
+  CHECK_FALSE(passed->has_value());
+  CHECK_FALSE(Access::requesting(*valid));
+
+  // Managed, no token: completes at once with `token_unusable` and starts no token request.
+  auto empty = std::make_shared<Client>(ioc.get_executor(), context, Config{});
+  const auto refused = Access::ensure(*empty, true);
+  REQUIRE(refused);
+  REQUIRE(refused->has_value());
+  CHECK((*refused)->broker_code_ == "token_unusable");
+  CHECK((*refused)->category_ == ErrorCategory::AUTHENTICATION);
+  CHECK_FALSE((*refused)->reached_broker_);
+  CHECK_FALSE(Access::requesting(*empty));
+
+  // Unmanaged, no token: the same probe sees today's token request start (the loop is never run).
+  auto unmanaged = std::make_shared<Client>(ioc.get_executor(), context, Config{});
+  CHECK_FALSE(Access::ensure(*unmanaged, false));
+  CHECK(Access::requesting(*unmanaged));
+}
+
+} // namespace
+
+TEST_CASE("a managed client completes ensure_token at once and never requests a token", "[network][token]") {
+  check_managed_ensure_token<kis::KisClientTestAccess, kis::KisClient, kis::KisConfig, kis::KisRest>("kis");
+  check_managed_ensure_token<
+    kiwoom::KiwoomClientTestAccess, kiwoom::KiwoomClient, kiwoom::KiwoomConfig, kiwoom::KiwoomRest
+  >("kiwoom");
+  check_managed_ensure_token<
+    tossinvest::TossClientTestAccess, tossinvest::TossClient, tossinvest::TossConfig, tossinvest::TossRest
+  >("toss");
 }
 
 #if !defined(_WIN32)

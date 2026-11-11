@@ -1495,9 +1495,14 @@ private:
 
   // Lets a request through with a valid token, and otherwise requests one, unless a store manages the
   // token: one requested here, mid-call, would bypass the store's lock, so the call fails locally instead.
+  // With a store, the token's validity is read once and nothing past this branch reads it again.
   void ensure_token(TokenHandler handler) {
-    if (store_managed_ && !token_.valid()) {
-      std::move(handler)(network::token_unusable_error());
+    if (store_managed_) {
+      if (token_.valid()) {
+        std::move(handler)(std::nullopt);
+      } else {
+        std::move(handler)(network::token_unusable_error());
+      }
       return;
     }
     request_token(std::move(handler));
