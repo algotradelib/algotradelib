@@ -174,6 +174,8 @@ public:
     unsigned status_;
     std::string body_;
     std::map<std::string, std::string> headers_;
+    // How long the server waits before writing it; set by `delayReplies`.
+    std::chrono::milliseconds delay_{0};
   };
 
   /**
@@ -201,6 +203,15 @@ public:
     std::lock_guard<std::mutex> lock(mutex_);
     const auto found = positions_.find(std::string(target));
     return found == positions_.end() ? std::vector<std::size_t>{} : found->second;
+  }
+
+  /**
+   * Holds every later scripted reply for `target` (the path, without a query) for `delay` before writing it;
+   * zero, the default, writes at once. For a client behaviour that depends on time passing between requests.
+   */
+  void delayReplies(std::string target, std::chrono::milliseconds delay) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    delays_[std::move(target)] = delay;
   }
 
   /** The body of the last request for `target`, or empty. */
@@ -235,6 +246,7 @@ private:
   std::map<std::string, std::map<std::string, std::string>> last_headers_;
   std::map<std::string, std::string> last_bodies_;
   std::map<std::string, std::vector<std::size_t>> positions_;
+  std::map<std::string, std::chrono::milliseconds> delays_;
   std::thread thread_;
 
   void run() noexcept {
@@ -306,6 +318,7 @@ private:
       }
 
       if (const auto scripted = scriptFor(request)) {
+        std::this_thread::sleep_for(scripted->delay_);
         http::response<http::string_body> reply(static_cast<http::status>(scripted->status_), request.version());
         reply.set(http::field::server, "algotradelib-test");
         reply.set(http::field::content_type, "application/json;charset=UTF-8");
@@ -372,7 +385,11 @@ private:
       headers[std::string(field.name_string())] = std::string(field.value());
     }
     last_bodies_[path] = request.body();
-    return found->second[std::min(served, found->second.size() - 1)];
+    auto reply = found->second[std::min(served, found->second.size() - 1)];
+    if (const auto delay = delays_.find(path); delay != delays_.end()) {
+      reply.delay_ = delay->second;
+    }
+    return reply;
   }
 
   std::size_t recordRequest(const std::string& target) {
