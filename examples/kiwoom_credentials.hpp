@@ -102,8 +102,9 @@ inline void refuse_unknown_flags(int argc, char** argv) {
  * first (`1700`, "허용된 요청 개수를 초과하였습니다", with the API's id): a quote and a price-limit read
  * are both `ka10007`, so a loop reading both back to back loses one. Requests to different APIs back to
  * back, and to the same API 300 ms apart, were served (measured 2026-10-07). Kiwoom publishes 1 a
- * second for each API on a demo account, and 5 a second (3 for the balance inquiry `kt00018` from
- * 2026-10-29) on a real one. The library paces nothing unless asked (`HttpClientOptions::rate_limit_`),
+ * second for each API on a demo account. On a real one it publishes 5 a second, and from 2026-11-12
+ * 1 a second for the account inquiries behind holdings, buying power and order history (`kt00018`,
+ * `kt00001`, `kt00007`). The library paces nothing unless asked (`HttpClientOptions::rate_limit_`),
  * so these examples ask, at one request a second, inside every published limit.
  *
  * @return The options.
