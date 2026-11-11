@@ -812,7 +812,8 @@ public:
    * key stored tokens by environment and app key, and discard one KIS refused. **The token is a bearer
    * credential**: store it as carefully as the key and secret.
    *
-   * Call it on the client's strand or before any request; on the blocking client, between calls.
+   * Call it on the client's strand or before any request; on the blocking client, between calls. A blocking client given a
+   * `network::TokenStore` shares its token with other clients and programs without this call.
    *
    * @param token The token.
    * @return `false` (nothing adopted) if the token is empty or expires within five minutes.
