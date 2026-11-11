@@ -6,13 +6,6 @@
 [![Release](https://img.shields.io/github/v/release/algotradelib/algotradelib)](https://github.com/algotradelib/algotradelib/releases/latest)
 <!-- badges: end -->
 
-<!-- multilingual: start -->
-<p align="left">
-  <b>English</b> &middot;
-  <a href="README.ko-kr.md">한국어</a>
-</p>
-<!-- multilingual: end -->
-
 A C++ library for algorithmic trading through Korean broker APIs
 — currently Korea Investment & Securities (KIS), Kiwoom Securities and Toss Securities.
 
