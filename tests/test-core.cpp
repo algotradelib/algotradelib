@@ -5719,17 +5719,23 @@ test::LocalHttpsServer::Scripted kis_open_day() {
   return kis_calendar_page("T1", false, R"({"bass_dt":"20260901","opnd_yn":"Y"})");
 }
 
-/** A token refusal as KIS may send it: the code, and the HTTP status it comes with. */
+/** A token refusal as KIS may send it: the code it states, the HTTP status and the body. */
 struct KisTokenRefusal {
   const char* code_;
   unsigned status_;
+  const char* body_;
 };
 
+// The 200 replies are the shape KIS's own sample code checks for an expired token; the 500 replies are
+// constructed, not observed, in both fields `kis_http_error` reads. The escaped codes decode to the same code.
 constexpr KisTokenRefusal KIS_TOKEN_REFUSALS[] = {
-  {"EGW00121", 200},
-  {"EGW00123", 200},
-  {"EGW00121", 500},
-  {"EGW00123", 500},
+  {"EGW00121", 200, R"({"rt_cd":"1","msg_cd":"EGW00121","msg1":"token"})"},
+  {"EGW00123", 200, R"({"rt_cd":"1","msg_cd":"EGW00123","msg1":"token"})"},
+  {"EGW00121", 500, R"({"rt_cd":"1","msg_cd":"EGW00121","msg1":"token"})"},
+  {"EGW00123", 500, R"({"rt_cd":"1","msg_cd":"EGW00123","msg1":"token"})"},
+  {"EGW00121", 500, R"({"error_code":"EGW00121","error_description":"invalid"})"},
+  {"EGW00123", 200, R"({"rt_cd":"1","msg_cd":"\u0045GW00123","msg1":"expired"})"},
+  {"EGW00121", 500, R"({"error_code":"\u0045GW00121","error_description":"invalid"})"},
 };
 
 /** The error the calendar parser alone reads from a reply: what a calendar request returns for it. */
@@ -5783,15 +5789,13 @@ TEST_CASE("a KIS client carries a token another client obtained and asks for non
 
 TEST_CASE("a KIS client drops a token KIS refuses and takes a new one on the next request", "[broker][kis][auth]") {
   for (const auto& refusal : KIS_TOKEN_REFUSALS) {
-    CAPTURE(refusal.code_, refusal.status_);
+    CAPTURE(refusal.code_, refusal.status_, refusal.body_);
     test::LocalHttpsServer server;
     net::io_context ioc;
     ssl::context context(ssl::context::tls_client);
     test::trustLocalhostCertificate(context);
     server.script(KIS_TOKEN, 200, kis_token_body("fresh"));
-    server.scriptSequence(
-      KIS_CALENDAR, {{refusal.status_, kis_refusal_body(refusal.code_, "token"), {}}, kis_open_day()}
-    );
+    server.scriptSequence(KIS_CALENDAR, {{refusal.status_, refusal.body_, {}}, kis_open_day()});
     auto client = scripted_kis(ioc, context, server, false);
     REQUIRE(client->adopt_token(kis_live_token("adopted")));
 
@@ -5800,7 +5804,7 @@ TEST_CASE("a KIS client drops a token KIS refuses and takes a new one on the nex
     REQUIRE_FALSE(refused);
     CHECK(refused.error().category_ == (refusal.status_ == 200 ? ErrorCategory::PROTOCOL : ErrorCategory::HTTP));
     CHECK(refused.error().broker_code_ == refusal.code_);
-    check_same_error(refused.error(), kis_calendar_reading(kis_refusal_body(refusal.code_, "token"), refusal.status_));
+    check_same_error(refused.error(), kis_calendar_reading(refusal.body_, refusal.status_));
     CHECK(server.scriptedCount(KIS_TOKEN) == 0);
     CHECK(server.scriptedCount(KIS_CALENDAR) == 1);
     CHECK(server.lastHeader(KIS_CALENDAR, "authorization") == "Bearer adopted");
@@ -5818,12 +5822,12 @@ TEST_CASE("a KIS client drops a token KIS refuses and takes a new one on the nex
 TEST_CASE("a KIS order refused for its token is reported as before and not sent again", "[broker][kis][auth]") {
   const kis::KisAccount account{"12345678", "01"};
   for (const auto& refusal : KIS_TOKEN_REFUSALS) {
-    CAPTURE(refusal.code_, refusal.status_);
+    CAPTURE(refusal.code_, refusal.status_, refusal.body_);
     test::LocalHttpsServer server;
     net::io_context ioc;
     ssl::context context(ssl::context::tls_client);
     test::trustLocalhostCertificate(context);
-    const std::string body = kis_refusal_body(refusal.code_, "token");
+    const std::string body = refusal.body_;
     server.script(KIS_TOKEN, 200, kis_token_body("fresh"));
     server.script(KIS_ORDER_CASH, refusal.status_, body);
     server.scriptSequence(KIS_CALENDAR, {kis_open_day()});

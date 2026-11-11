@@ -1638,6 +1638,8 @@ constexpr KiwoomTokenRefusal KIWOOM_TOKEN_REFUSALS[] = {
   {200, R"({"return_code":8005,"return_msg":"Token이 유효하지 않습니다"})"},
   {200, R"({"return_code":"8005","return_msg":"Token이 유효하지 않습니다"})"},
   {500, R"({"return_code":8005,"return_msg":"Token이 유효하지 않습니다"})"},
+  // The same code with each digit escaped.
+  {200, R"({"return_code":"\u0038\u0030\u0030\u0035","return_msg":"invalid"})"},
 };
 
 } // namespace

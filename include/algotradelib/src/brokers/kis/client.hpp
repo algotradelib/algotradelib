@@ -3183,13 +3183,15 @@ private:
   }
 
   // Tests whether a reply, of any status, states `EGW00121` or `EGW00123` in the field
-  // `kis_http_error` reads its code from.
+  // `kis_http_error` reads its code from. The body is parsed only if it holds the codes' prefix or a
+  // backslash, which may escape it.
   static bool refuses_token(const network::HttpResponse& response) {
-    if (response.body().find("EGW0012") == std::string::npos) {
+    const auto& body = response.body();
+    if (body.find("EGW0012") == std::string::npos && body.find('\\') == std::string::npos) {
       return false;
     }
     boost::system::error_code ec;
-    const auto document = json::parse(response.body(), ec);
+    const auto document = json::parse(body, ec);
     if (ec || !document.is_object()) {
       return false;
     }

@@ -1582,13 +1582,15 @@ private:
     );
   }
 
-  // Tests whether a reply, of any status, states `return_code` `8005`, as a number or as text.
+  // Tests whether a reply, of any status, states `return_code` `8005`, as a number or as text. The
+  // body is parsed only if it holds `8005` or a backslash, which may escape it.
   static bool refuses_token(const network::HttpResponse& response) {
-    if (response.body().find("8005") == std::string::npos) {
+    const auto& body = response.body();
+    if (body.find("8005") == std::string::npos && body.find('\\') == std::string::npos) {
       return false;
     }
     boost::system::error_code ec;
-    const auto document = json::parse(response.body(), ec);
+    const auto document = json::parse(body, ec);
     if (ec || !document.is_object()) {
       return false;
     }
