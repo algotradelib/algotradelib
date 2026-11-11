@@ -230,6 +230,10 @@ struct KisClientTestAccess {
   ) {
     return KisClient::derive_order_status(ordered, filled, remaining, rejected, canceled);
   }
+
+  static void forget_refused_token(KisClient& client, const std::string& authorization) {
+    client.forget_refused_token(authorization);
+  }
 };
 } // namespace algotradelib::kis
 
@@ -5475,6 +5479,211 @@ TEST_CASE(
   const auto again = kis_calendar_from(ioc, *client, Date{2026, 9, 2});
   REQUIRE(again);
   CHECK(server.scriptedCount(KIS_CALENDAR) == 2);
+}
+
+// A token handed from one KIS client to another, and a token KIS refuses (`EGW00121` invalid,
+// `EGW00123` expired), through the clients' own request path.
+namespace {
+
+constexpr const char* KIS_TOKEN = "/oauth2/tokenP";
+
+/** A KIS token reply issuing `token`. */
+std::string kis_token_body(const std::string& token) {
+  return R"({"access_token":")" + token +
+    R"(","token_type":"Bearer","expires_in":86400,)"
+    R"("access_token_token_expired":"2099-12-31 23:59:59"})";
+}
+
+/** A token valid for the next twenty hours. */
+kis::KisRest kis_live_token(const std::string& token) {
+  kis::KisRest rest;
+  rest.access_token_ = token;
+  rest.expires_at_ = std::chrono::system_clock::now() + std::chrono::hours(20);
+  return rest;
+}
+
+/** A calendar page with one open day: what a read is answered once its token is accepted. */
+test::LocalHttpsServer::Scripted kis_open_day() {
+  return kis_calendar_page("T1", false, R"({"bass_dt":"20260901","opnd_yn":"Y"})");
+}
+
+/** A token refusal as KIS may send it: the code, and the HTTP status it comes with. */
+struct KisTokenRefusal {
+  const char* code_;
+  unsigned status_;
+};
+
+constexpr KisTokenRefusal KIS_TOKEN_REFUSALS[] = {
+  {"EGW00121", 200},
+  {"EGW00123", 200},
+  {"EGW00121", 500},
+  {"EGW00123", 500},
+};
+
+/** The error the calendar parser alone reads from a reply: what a calendar request returns for it. */
+BrokerError kis_calendar_reading(const std::string& body, unsigned status) {
+  TradingCalendar calendar;
+  std::string search;
+  std::string next;
+  auto error = kis::KisClientTestAccess::parse_calendar_page(
+    json_response(body, static_cast<int>(status)), calendar, search, next
+  );
+  REQUIRE(error);
+  return *error;
+}
+
+/** Checks that a client returned the error a parser reads from the same reply, field by field. */
+void check_same_error(const BrokerError& returned, const BrokerError& read) {
+  CHECK(returned.category_ == read.category_);
+  CHECK(returned.broker_code_ == read.broker_code_);
+  CHECK(returned.http_status_ == read.http_status_);
+  CHECK(returned.message_ == read.message_);
+  CHECK(returned.reached_broker_ == read.reached_broker_);
+}
+
+} // namespace
+
+TEST_CASE("a KIS client carries a token another client obtained and asks for none", "[broker][kis][auth]") {
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  server.script(KIS_TOKEN, 200, kis_token_body("issued"));
+  server.scriptSequence(KIS_CALENDAR, {kis_open_day()});
+
+  auto first = scripted_kis(ioc, context, server, false);
+  REQUIRE(kis_calendar_from(ioc, *first, Date{2026, 9, 1}));
+  REQUIRE(server.scriptedCount(KIS_TOKEN) == 1);
+  const auto handed = first->token();
+  REQUIRE(handed.access_token_ == "issued");
+  // The loopback server serves one connection at a time: the first client lets go of its own.
+  first->close();
+  ioc.restart();
+  ioc.run();
+
+  auto second = scripted_kis(ioc, context, server, false);
+  REQUIRE(second->adopt_token(handed));
+  REQUIRE(kis_calendar_from(ioc, *second, Date{2026, 9, 1}));
+  CHECK(server.scriptedCount(KIS_TOKEN) == 1);
+  CHECK(server.scriptedCount(KIS_CALENDAR) == 2);
+  CHECK(server.lastHeader(KIS_CALENDAR, "authorization") == "Bearer issued");
+}
+
+TEST_CASE("a KIS client drops a token KIS refuses and takes a new one on the next request", "[broker][kis][auth]") {
+  for (const auto& refusal : KIS_TOKEN_REFUSALS) {
+    CAPTURE(refusal.code_, refusal.status_);
+    test::LocalHttpsServer server;
+    net::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    test::trustLocalhostCertificate(context);
+    server.script(KIS_TOKEN, 200, kis_token_body("fresh"));
+    server.scriptSequence(
+      KIS_CALENDAR, {{refusal.status_, kis_refusal_body(refusal.code_, "token"), {}}, kis_open_day()}
+    );
+    auto client = scripted_kis(ioc, context, server, false);
+    REQUIRE(client->adopt_token(kis_live_token("adopted")));
+
+    // The refusal is returned as the reply states it: a declared failure on 200, an HTTP one otherwise.
+    const auto refused = kis_calendar_from(ioc, *client, Date{2026, 9, 1});
+    REQUIRE_FALSE(refused);
+    CHECK(refused.error().category_ == (refusal.status_ == 200 ? ErrorCategory::PROTOCOL : ErrorCategory::HTTP));
+    CHECK(refused.error().broker_code_ == refusal.code_);
+    check_same_error(refused.error(), kis_calendar_reading(kis_refusal_body(refusal.code_, "token"), refusal.status_));
+    CHECK(server.scriptedCount(KIS_TOKEN) == 0);
+    CHECK(server.scriptedCount(KIS_CALENDAR) == 1);
+    CHECK(server.lastHeader(KIS_CALENDAR, "authorization") == "Bearer adopted");
+    CHECK(client->token().access_token_.empty());
+
+    const auto read = kis_calendar_from(ioc, *client, Date{2026, 9, 1});
+    REQUIRE(read);
+    CHECK(server.scriptedCount(KIS_TOKEN) == 1);
+    CHECK(server.scriptedCount(KIS_CALENDAR) == 2);
+    CHECK(server.lastHeader(KIS_CALENDAR, "authorization") == "Bearer fresh");
+    CHECK(client->token().access_token_ == "fresh");
+  }
+}
+
+TEST_CASE("a KIS order refused for its token is reported as before and not sent again", "[broker][kis][auth]") {
+  const kis::KisAccount account{"12345678", "01"};
+  for (const auto& refusal : KIS_TOKEN_REFUSALS) {
+    CAPTURE(refusal.code_, refusal.status_);
+    test::LocalHttpsServer server;
+    net::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    test::trustLocalhostCertificate(context);
+    const std::string body = kis_refusal_body(refusal.code_, "token");
+    server.script(KIS_TOKEN, 200, kis_token_body("fresh"));
+    server.script(KIS_ORDER_CASH, refusal.status_, body);
+    server.scriptSequence(KIS_CALENDAR, {kis_open_day()});
+    auto client = scripted_kis(ioc, context, server, false);
+    REQUIRE(client->adopt_token(kis_live_token("adopted")));
+
+    auto placed = client->async_place_order(account, kis_scripted_order(OrderSide::BUY), net::use_future);
+    ioc.run();
+    const auto refused = placed.get();
+    // The same reply read by the order parser alone: forgetting the token changes nothing the caller sees.
+    const auto parsed = kis::KisClientTestAccess::parse_order_ack(
+      json_response(body, static_cast<int>(refusal.status_)), KisOperation::PLACE, false
+    );
+    REQUIRE_FALSE(refused);
+    REQUIRE_FALSE(parsed);
+    check_same_error(refused.error(), parsed.error());
+    CHECK(runner::outcome_of(refused.error()) == runner::outcome_of(parsed.error()));
+    CHECK(server.scriptedCount(KIS_ORDER_CASH) == 1);
+    CHECK(server.lastHeader(KIS_ORDER_CASH, "authorization") == "Bearer adopted");
+    CHECK(client->token().access_token_.empty());
+
+    REQUIRE(kis_calendar_from(ioc, *client, Date{2026, 9, 1}));
+    CHECK(server.scriptedCount(KIS_TOKEN) == 1);
+    CHECK(server.lastHeader(KIS_CALENDAR, "authorization") == "Bearer fresh");
+    CHECK(server.scriptedCount(KIS_ORDER_CASH) == 1);
+  }
+}
+
+TEST_CASE("a KIS client keeps its token through a refusal that is not about the token", "[broker][kis][auth]") {
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  server.script(KIS_TOKEN, 200, kis_token_body("fresh"));
+  // Each names a token code only in its message: the code KIS states is what counts.
+  server.scriptSequence(
+    KIS_CALENDAR,
+    {
+      {200, kis_refusal_body("OPSQ0001", "EGW00123"), {}},
+      {500, kis_refusal_body("OPSQ0002", "EGW00121"), {}},
+      kis_open_day(),
+    }
+  );
+  auto client = scripted_kis(ioc, context, server, false);
+  REQUIRE(client->adopt_token(kis_live_token("adopted")));
+
+  const auto declared = kis_calendar_from(ioc, *client, Date{2026, 9, 1});
+  REQUIRE_FALSE(declared);
+  CHECK(declared.error().broker_code_ == "OPSQ0001");
+  check_same_error(declared.error(), kis_calendar_reading(kis_refusal_body("OPSQ0001", "EGW00123"), 200));
+  const auto http = kis_calendar_from(ioc, *client, Date{2026, 9, 1});
+  REQUIRE_FALSE(http);
+  CHECK(http.error().broker_code_ == "OPSQ0002");
+  check_same_error(http.error(), kis_calendar_reading(kis_refusal_body("OPSQ0002", "EGW00121"), 500));
+  REQUIRE(kis_calendar_from(ioc, *client, Date{2026, 9, 1}));
+  CHECK(server.scriptedCount(KIS_CALENDAR) == 3);
+  CHECK(server.scriptedCount(KIS_TOKEN) == 0);
+  CHECK(server.lastHeader(KIS_CALENDAR, "authorization") == "Bearer adopted");
+  CHECK(client->token().access_token_ == "adopted");
+}
+
+TEST_CASE("a KIS client keeps a newer token when a request carrying an older one is refused", "[broker][kis][auth]") {
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  auto client = std::make_shared<kis::KisClient>(ioc.get_executor(), context, kis::KisConfig{});
+  REQUIRE(client->adopt_token(kis_live_token("second")));
+
+  kis::KisClientTestAccess::forget_refused_token(*client, "Bearer first");
+  CHECK(client->token().access_token_ == "second");
+
+  kis::KisClientTestAccess::forget_refused_token(*client, "Bearer second");
+  CHECK(client->token().access_token_.empty());
 }
 
 TEST_CASE("instrument reference data normalizes from both brokers") {

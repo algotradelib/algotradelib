@@ -324,7 +324,8 @@ inline std::optional<BrokerError> unsupported_bar_interval(BarInterval interval)
  * @brief The asynchronous KIS REST client: market data, account inquiries and orders for domestic
  *   stocks.
  *
- * It requests an access token when first needed and shares one refresh among concurrent requests.
+ * It requests an access token when first needed, and again after KIS refuses the one it holds; one
+ * refresh is shared among concurrent requests, and a refused request is not sent again.
  * Sends `custtype P`. KIS's field reference reads `B : 법인 / P : 개인`, and its token guide
  * (접근토큰발급) groups 일반개인고객 and 일반법인고객 under the one-day client-credentials token, apart
  * from 제휴법인 (a three-month token by authorization code, and `personalseckey`, 제휴사 회원 관리를 위한
@@ -800,9 +801,11 @@ public:
    * @brief Uses a token issued earlier for the same app key and environment instead of requesting
    *   one.
    *
-   * The client does not request a new token when KIS refuses the adopted one: each request fails
-   * with KIS's code until five minutes before the adopted expiry. The token does not identify its key,
-   * so key stored tokens by environment and app key, and discard one KIS refused.
+   * When KIS refuses the token a request carried (`EGW00121` invalid, `EGW00123` expired), that
+   * request fails with KIS's code and is not sent again, and the client drops the token: the next
+   * request asks for a new one, which `token()` then returns. The token does not identify its key, so
+   * key stored tokens by environment and app key, and discard one KIS refused. **The token is a bearer
+   * credential**: store it as carefully as the key and secret.
    *
    * Call it on the client's strand or before any request; on the blocking client, between calls.
    *
@@ -1085,11 +1088,9 @@ private:
     };
 
     ++operation->pages_;
-    http_->async_request(
-      std::move(request), [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
-        self->handle_bars_page(operation, std::move(result));
-      }
-    );
+    send(std::move(request), [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
+      self->handle_bars_page(operation, std::move(result));
+    });
   }
 
   // Returns whether `date` is today in Seoul, which decides the minute endpoint.
@@ -1304,7 +1305,7 @@ private:
           {"custtype", "P"},
           {"content-type", "application/json; charset=utf-8"},
         };
-        self->http_->async_request(
+        self->send(
           std::move(request),
           [self, instrument = std::move(instrument),
             completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
@@ -1553,11 +1554,9 @@ private:
     };
 
     ++operation->pages_;
-    http_->async_request(
-      std::move(request), [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
-        self->handle_calendar_page(operation, std::move(result));
-      }
-    );
+    send(std::move(request), [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
+      self->handle_calendar_page(operation, std::move(result));
+    });
   }
 
   // Accumulates one page and either continues or finishes and caches.
@@ -1701,7 +1700,7 @@ private:
           {"custtype", "P"},
           {"content-type", "application/json; charset=utf-8"},
         };
-        self->http_->async_request(
+        self->send(
           std::move(request),
           [self, instrument = std::move(instrument), completion = std::move(completion),
             parse](Result<network::HttpResponse> result) mutable {
@@ -1880,7 +1879,7 @@ private:
           {"custtype", "P"},
           {"content-type", "application/json; charset=utf-8"},
         };
-        self->http_->async_request(
+        self->send(
           std::move(request),
           [self, instrument = std::move(instrument),
             completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
@@ -2028,7 +2027,7 @@ private:
   }
 
   void request_buying_power(KisAccount account, BuyingPowerHandler completion) {
-    http_->async_request(
+    send(
       buying_power_request(config_, token_.access_token_, account),
       [self = shared_from_this(), completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
         net::post(self->strand_, [self, completion = std::move(completion), result = std::move(result)]() mutable {
@@ -2238,7 +2237,7 @@ private:
       {"custtype", "P"},
       {"content-type", "application/json; charset=utf-8"},
     };
-    http_->async_request(
+    send(
       std::move(request),
       [self = shared_from_this(), instrument = std::move(instrument),
         completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
@@ -2258,13 +2257,11 @@ private:
       operation->account_, config_, token_.access_token_, operation->foreign_cursor_, operation->domestic_cursor_,
       operation->page_count_ > 0
     );
-    http_->async_request(
-      std::move(request), [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
-        net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
-          self->handle_holdings_page(operation, std::move(result));
-        });
-      }
-    );
+    send(std::move(request), [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
+      net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
+        self->handle_holdings_page(operation, std::move(result));
+      });
+    });
   }
 
   static network::HttpRequest make_holdings_request(
@@ -3154,6 +3151,63 @@ private:
     return error;
   }
 
+  // Sends a request that carries the access token, and forgets that token if KIS refuses it.
+  //
+  // KIS refuses an invalid token with `EGW00121` and an expired one with `EGW00123`, in a 2xx body
+  // (`kis_declared_error`) or a non-2xx one (`kis_http_error`). Kept, the token would be sent until
+  // its stated expiry and every request would fail; forgotten, the next request asks for a new one.
+  // The refused request is not sent again and its result reaches the caller unchanged. Only the token
+  // the request carried is forgotten: a late refusal of an older token leaves a newer one alone.
+  template <typename Handler>
+  void send(network::HttpRequest request, Handler handler) {
+    std::string authorization;
+    for (const auto& [name, value] : request.headers_) {
+      if (name == "authorization") {
+        authorization = value;
+      }
+    }
+    http_->async_request(
+      std::move(request),
+      [self = shared_from_this(), authorization = std::move(authorization),
+        handler = std::move(handler)](Result<network::HttpResponse> result) mutable {
+        if (result && refuses_token(result.value())) {
+          // Queued before the handler runs; every operation starts with a post to the strand, so
+          // the next one finds the token gone.
+          net::post(self->strand_, [self, authorization = std::move(authorization)] {
+            self->forget_refused_token(authorization);
+          });
+        }
+        std::move(handler)(std::move(result));
+      }
+    );
+  }
+
+  // Tests whether a reply, of any status, states `EGW00121` or `EGW00123` in the field
+  // `kis_http_error` reads its code from.
+  static bool refuses_token(const network::HttpResponse& response) {
+    if (response.body().find("EGW0012") == std::string::npos) {
+      return false;
+    }
+    boost::system::error_code ec;
+    const auto document = json::parse(response.body(), ec);
+    if (ec || !document.is_object()) {
+      return false;
+    }
+    for (const char* field : {"msg_cd", "error_code"}) {
+      if (const auto* code = document.as_object().if_contains(field); code && code->is_string()) {
+        return code->as_string() == "EGW00121" || code->as_string() == "EGW00123";
+      }
+    }
+    return false;
+  }
+
+  // Forgets the held token if it is the one a refused request carried (its `authorization` value).
+  void forget_refused_token(const std::string& authorization) {
+    if (!token_.access_token_.empty() && authorization == "Bearer " + token_.access_token_) {
+      token_ = KisRest{};
+    }
+  }
+
   // Which order instruction a reply answers. Known where the request is built and carried to the
   // parser with it; never recovered from the reply.
   enum class OrderOperation { UNCLASSIFIED, PLACE, AMEND, CANCEL };
@@ -3354,7 +3408,7 @@ private:
   // Sends an order-writing request and dispatches its parsed acknowledgement. The operation and the
   // environment are fixed here, with the request, and travel with its reply.
   void request_order_ack(network::HttpRequest request, OrderOperation operation, OrderAckHandler completion) {
-    http_->async_request(
+    send(
       std::move(request),
       [self = shared_from_this(), operation, demo = config_.is_demo_,
         completion = std::move(completion)](Result<network::HttpResponse> result) mutable {
@@ -3432,13 +3486,11 @@ private:
       operation->account_, config_, token_.access_token_, operation->foreign_cursor_, operation->domestic_cursor_,
       operation->page_count_ > 0
     );
-    http_->async_request(
-      std::move(request), [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
-        net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
-          self->handle_open_orders_page(operation, std::move(result));
-        });
-      }
-    );
+    send(std::move(request), [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
+      net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
+        self->handle_open_orders_page(operation, std::move(result));
+      });
+    });
   }
 
   // Accumulates one modifiable-order page and advances its continuation.
@@ -3633,13 +3685,11 @@ private:
       operation->account_, config_, token_.access_token_, operation->range_, operation->foreign_cursor_,
       operation->domestic_cursor_, operation->page_count_ > 0
     );
-    http_->async_request(
-      std::move(request), [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
-        net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
-          self->handle_order_history_page(operation, std::move(result));
-        });
-      }
-    );
+    send(std::move(request), [self = shared_from_this(), operation](Result<network::HttpResponse> result) mutable {
+      net::post(self->strand_, [self, operation, result = std::move(result)]() mutable {
+        self->handle_order_history_page(operation, std::move(result));
+      });
+    });
   }
 
   // Accumulates one order-history page and advances its continuation.
