@@ -345,7 +345,7 @@ TEST_CASE(
 
   const auto token_file = folder.file(std::string(ID) + ".token");
   for (
-    const std::string text :
+    const auto& text :
     {std::string("LEAK not json"), std::string(R"({"access_token":"LEAK"})"),
       std::string(R"({"access_token":"","expires_at_ns":1})"),
       std::string(R"({"access_token":"LEAK","expires_at_ns":"1"})"), std::string(R"(["LEAK"])"),
