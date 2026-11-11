@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../network/oauth.hpp"
+#include "../../network/token_store.hpp"
 
 #include "../../core/types.hpp"
 
@@ -326,6 +327,14 @@ struct KiwoomConfig : public network::ClientCredentials<KiwoomConfig> {
    */
   static constexpr std::string_view secret_field() noexcept {
     return "secretkey";
+  }
+
+  /**
+   * @brief Names what a token of these credentials may not outlive, for a `network::TokenStore`.
+   * @return `kiwoom-demo-` or `kiwoom-real-`, then the app key's SHA-256 digest.
+   */
+  std::string token_identity() const {
+    return network::token_identity("kiwoom", is_demo_ ? "demo" : "real", key_);
   }
 
   /**

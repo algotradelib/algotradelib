@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 #include "../../network/oauth.hpp"
+#include "../../network/token_store.hpp"
 
 namespace algotradelib {
 namespace tossinvest {
@@ -104,6 +105,14 @@ struct TossConfig : public network::ClientCredentials<TossConfig> {
    */
   static constexpr std::string_view secret_field() noexcept {
     return "client_secret";
+  }
+
+  /**
+   * @brief Names what a token of these credentials may not outlive, for a `network::TokenStore`.
+   * @return `toss-real-`, then the client id's SHA-256 digest (Toss has no demo environment).
+   */
+  std::string token_identity() const {
+    return network::token_identity("toss", "real", key_);
   }
 };
 

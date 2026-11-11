@@ -135,6 +135,8 @@ inline std::optional<BrokerError> unsupported_bar_interval(BarInterval interval)
   return error;
 }
 
+class TossBlockingClient;
+
 /**
  * @brief The asynchronous Toss Securities REST client: market data, accounts and orders.
  *
@@ -192,6 +194,9 @@ public:
 
   /** @brief Internal completion handler for a shared access-token refresh. */
   using TokenHandler = net::any_completion_handler<void(std::optional<BrokerError>)>;
+
+  /** @brief The completion handler type of `async_ensure_token`. */
+  using TokenResultHandler = net::any_completion_handler<void(Result<TossRest>)>;
 
   /**
    * @brief Constructs a client; nothing is sent until the first request.
@@ -713,6 +718,41 @@ public:
     return true;
   }
 
+  /**
+   * @brief Requests an access token unless the held one stays valid for five more minutes, as any request
+   *   does first, and reports the token held afterwards.
+   * @tparam CompletionToken An Asio completion token.
+   * @param token The completion token, called with `Result<TossRest>`: a bearer credential, never to be logged.
+   * @return Whatever the completion token returns.
+   */
+  template <typename CompletionToken>
+  auto async_ensure_token(CompletionToken&& token) {
+    return net::async_initiate<CompletionToken, void(Result<TossRest>)>(
+      [self = shared_from_this()](auto&& handler) mutable {
+        auto completion = TokenResultHandler(std::forward<decltype(handler)>(handler));
+        net::post(self->strand_, [self, completion = std::move(completion)]() mutable {
+          self->request_token(
+            TokenHandler([self, completion = std::move(completion)](std::optional<BrokerError> error) mutable {
+              self->deliver(
+                std::move(completion), error ? Result<TossRest>(std::move(*error)) : Result<TossRest>(self->token_)
+              );
+            })
+          );
+        });
+      },
+      token
+    );
+  }
+
+  /**
+   * @brief Drops the held token: the next request asks for one.
+   *
+   * Call it on the client's strand or before any request; on the blocking client, between calls.
+   */
+  void forget_token() {
+    token_ = TossRest{};
+  }
+
   /** @brief Cancels transport work and queued HTTP operations. */
   void close() {
     http_->close();
@@ -720,6 +760,7 @@ public:
 
 private:
   friend struct TossClientTestAccess;
+  friend class TossBlockingClient;
 
   net::strand<net::any_io_executor> strand_;
   TossConfig config_;
@@ -727,6 +768,8 @@ private:
   TossRest token_;
   bool refreshing_{false};
   std::deque<TokenHandler> token_waiters_;
+  // Set by a blocking client with a token store, which prepares every token under the store's lock.
+  bool store_managed_{false};
 
   // One bar request spanning however many pages Toss needs to answer it.
   //
@@ -1802,7 +1845,18 @@ private:
     ));
   }
 
+  // Lets a request through with a valid token, and otherwise requests one, unless a store manages the
+  // token: one requested here, mid-call, would bypass the store's lock, so the call fails locally instead.
   void ensure_token(TokenHandler handler) {
+    if (store_managed_ && !token_.valid()) {
+      std::move(handler)(network::token_unusable_error());
+      return;
+    }
+    request_token(std::move(handler));
+  }
+
+  // Requests a token unless the held one is valid, coalescing concurrent waiters.
+  void request_token(TokenHandler handler) {
     if (token_.valid()) {
       std::move(handler)(std::nullopt);
       return;
@@ -3616,7 +3670,17 @@ private:
   }
 };
 
-/** @brief Blocking facade that drives `TossClient` on a private event loop. */
+/**
+ * @brief Blocking facade that drives `TossClient` on a private event loop.
+ *
+ * With a token store, clients on one key share one token, in this process or others
+ * (`network::TokenStore`): issuing a token revokes the one issued before it with the same key. Every token
+ * is then requested under the store's lock before a call, and none during it: a call whose token stops
+ * being usable while it runs returns `token_unusable` (`AUTHENTICATION`, not sent), and the next call
+ * prepares one. A request authorized just before another program replaced the token can still be refused
+ * (Toss answers 401 `token-revoked`); it is not sent again. A program stopped after Toss issued a token and
+ * before it was stored leaves the old one stored until Toss refuses it.
+ */
 class TossBlockingClient {
 public:
   /**
@@ -3624,9 +3688,17 @@ public:
    * @param context The TLS context; borrowed, and must outlive the client.
    * @param config The credentials.
    * @param options HTTP options.
+   * @param store Where to share the access token (`network::TokenStore`), or null to keep it to this client.
    */
-  TossBlockingClient(ssl::context& context, TossConfig config, network::HttpClientOptions options = {})
-  : client_(std::make_shared<TossClient>(ioc_.get_executor(), context, std::move(config), options)) {}
+  TossBlockingClient(
+    ssl::context& context, TossConfig config, network::HttpClientOptions options = {},
+    std::shared_ptr<network::TokenStore> store = nullptr
+  )
+  : store_(std::move(store)),
+    identity_(store_ ? config.token_identity() : std::string()),
+    client_(std::make_shared<TossClient>(ioc_.get_executor(), context, std::move(config), options)) {
+    client_->store_managed_ = store_ != nullptr;
+  }
 
   /**
    * @brief Returns a quote for a Korean instrument (a US instrument is refused; use `prices`).
@@ -3920,9 +3992,34 @@ public:
   }
 
 private:
-  // Drives one asynchronous operation to completion on the private loop.
+  friend struct TossClientTestAccess;
+
+  // Runs one call: with a store, prepares the token first and discards one Toss refused during the call.
   template <typename T, typename Start>
   Result<T> run(Start start, std::string_view operation) {
+    if (!store_) {
+      return drive<T>(std::move(start), operation);
+    }
+    const auto request = [this] {
+      return drive<TossRest>(
+        [this](auto&& sink) {
+          client_->async_ensure_token(std::move(sink));
+        },
+        "token request"
+      );
+    };
+    if (auto error = network::token_store_detail::prepare(*store_, identity_, *client_, request)) {
+      return Result<T>(std::move(*error));
+    }
+    const auto carried = client_->token();
+    auto result = drive<T>(std::move(start), operation);
+    network::token_store_detail::discard_refused(*store_, identity_, carried, client_->token());
+    return result;
+  }
+
+  // Drives one asynchronous operation to completion on the private loop.
+  template <typename T, typename Start>
+  Result<T> drive(Start start, std::string_view operation) {
     std::optional<Result<T>> result;
     ioc_.restart();
     start([&result](Result<T> value) {
@@ -3939,6 +4036,8 @@ private:
     return std::move(*result);
   }
 
+  std::shared_ptr<network::TokenStore> store_;
+  std::string identity_;
   net::io_context ioc_;
   std::shared_ptr<TossClient> client_;
 };

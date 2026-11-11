@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include "../../network/oauth.hpp"
+#include "../../network/token_store.hpp"
 
 namespace algotradelib {
 namespace kis {
@@ -225,6 +226,14 @@ struct KisConfig : public network::ClientCredentials<KisConfig> {
    */
   static constexpr std::string_view secret_field() noexcept {
     return "appsecret";
+  }
+
+  /**
+   * @brief Names what a token of these credentials may not outlive, for a `network::TokenStore`.
+   * @return `kis-demo-` or `kis-real-`, then the app key's SHA-256 digest.
+   */
+  std::string token_identity() const {
+    return network::token_identity("kis", is_demo_ ? "demo" : "real", key_);
   }
 
   /**
