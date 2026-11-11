@@ -36,7 +36,8 @@ namespace network {
  * file's is not followed. Descriptors are closed on `exec`. A token file that is not well formed reads as no
  * token.
  *
- * Keep the folder on a local disk: `flock` over a network file system is unreliable.
+ * Keep the folder on a local disk: `flock` over a network file system is unreliable. A lock held when the
+ * process forks without `exec` is held by the child too, until the child closes the descriptor or exits.
  * The token is a bearer credential; the folder is as sensitive as the app secret.
  */
 class FileTokenStore : public TokenStore {
@@ -63,7 +64,7 @@ public:
     const auto name = identity + ".lock";
     Descriptor file(::openat(folder.get(), name.c_str(), FILE_FLAGS | O_RDWR | O_CREAT, 0600));
     if (file.get() < 0 && errno == ENOENT) {
-      // Two callers creating the lock file at once: macOS has answered one of them so, the file existing by then.
+      // A concurrent create that answers no-such-file is retried once.
       file.reset(::openat(folder.get(), name.c_str(), FILE_FLAGS | O_RDWR | O_CREAT, 0600));
     }
     if (auto error = check_file(file)) {
