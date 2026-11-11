@@ -675,6 +675,44 @@ public:
     return limiter ? &limiter->stats() : nullptr;
   }
 
+  /**
+   * @brief Returns the access token the client holds, to reuse in another client or a later process
+   *   (`adopt_token`).
+   *
+   * Toss keeps one valid token per key: issuing a token revokes the one issued before it, so programs
+   * running with the same key share one token rather than each requesting its own. **The token is a
+   * bearer credential**: store it as carefully as the key and secret.
+   *
+   * Read it on the client's strand or before any request; on the blocking client, between calls.
+   *
+   * @return The token, empty until a request has obtained one.
+   */
+  TossRest token() const {
+    return token_;
+  }
+
+  /**
+   * @brief Uses a token issued earlier for the same key instead of requesting one.
+   *
+   * When Toss refuses the token a request carried (HTTP 401), that request fails with Toss's code and
+   * is not sent again, and the client drops the token: the next request asks for a new one, which
+   * revokes the token every other holder of it has and which `token()` then returns. The token does
+   * not identify its key, so key stored tokens by key, and discard one Toss refused. **The token is a
+   * bearer credential**: store it as carefully as the key and secret.
+   *
+   * Call it on the client's strand or before any request; on the blocking client, between calls.
+   *
+   * @param token The token.
+   * @return `false` (nothing adopted) if the token is empty or expires within five minutes.
+   */
+  bool adopt_token(TossRest token) {
+    if (!token.valid()) {
+      return false;
+    }
+    token_ = std::move(token);
+    return true;
+  }
+
   /** @brief Cancels transport work and queued HTTP operations. */
   void close() {
     http_->close();
@@ -3862,6 +3900,23 @@ public:
    */
   const network::RateLimitStats* rate_limit_stats() const {
     return client_->rate_limit_stats();
+  }
+
+  /**
+   * @brief Returns the access token; see `TossClient::token`.
+   * @return The token, empty until a request has obtained one.
+   */
+  TossRest token() const {
+    return client_->token();
+  }
+
+  /**
+   * @brief Uses a token issued earlier; see `TossClient::adopt_token`.
+   * @param token The token.
+   * @return `false` if the token is empty or expires within five minutes.
+   */
+  bool adopt_token(TossRest token) {
+    return client_->adopt_token(std::move(token));
   }
 
 private:

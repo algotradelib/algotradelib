@@ -136,6 +136,7 @@ A Toss key holds one access token at a time: issuing a token revokes the one iss
 programs running with the same key therefore revoke each other's token. When Toss refuses a token
 (HTTP 401), the request fails, and `TossClient` asks for a new token on the next request. The refused
 request is not sent again.
+To run two programs on one key, take `token()` from one client and `adopt_token()` it in the other; the KIS and Kiwoom clients have the same pair.
 
 ## Order clients
 

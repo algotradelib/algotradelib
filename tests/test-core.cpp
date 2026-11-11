@@ -25,6 +25,7 @@
 #include <string_view>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 using namespace algotradelib;
@@ -5479,6 +5480,217 @@ TEST_CASE(
   const auto again = kis_calendar_from(ioc, *client, Date{2026, 9, 2});
   REQUIRE(again);
   CHECK(server.scriptedCount(KIS_CALENDAR) == 2);
+}
+
+// A token handed from one Toss client to another, and a token Toss refuses (HTTP 401), through the
+// clients' own request path. The codes are the ones Toss's error table lists for 401.
+namespace {
+
+constexpr const char* TOSS_TOKEN = "/oauth2/token";
+constexpr const char* TOSS_ACCOUNTS = "/api/v1/accounts";
+constexpr const char* TOSS_ORDERS = "/api/v1/orders";
+constexpr const char* TOSS_ACCOUNTS_REPLY =
+  R"({"result":[{"accountNo":"12345678901","accountSeq":1,"accountType":"BROKERAGE"}]})";
+
+/** A Toss token reply issuing `token`. */
+std::string toss_token_body(const std::string& token) {
+  return R"({"access_token":")" + token + R"(","token_type":"Bearer","expires_in":86400})";
+}
+
+/** A Toss error reply body with `code`. */
+std::string toss_error_body(const std::string& code) {
+  return R"({"error":{"requestId":"r1","code":")" + code + R"(","message":"refused"}})";
+}
+
+/** A token valid for the next twenty hours. */
+tossinvest::TossRest toss_live_token(const std::string& token) {
+  tossinvest::TossRest rest;
+  rest.access_token_ = token;
+  rest.expires_at_ = std::chrono::system_clock::now() + std::chrono::hours(20);
+  return rest;
+}
+
+/** A client pointed at `server`. */
+std::shared_ptr<tossinvest::TossClient> scripted_toss(
+  net::io_context& ioc, ssl::context& context, const test::LocalHttpsServer& server
+) {
+  auto client = std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
+  tossinvest::TossClientTestAccess::connect(*client, context, server.port());
+  return client;
+}
+
+/** Asks `client` for its accounts and runs the exchange to completion. */
+Result<std::vector<tossinvest::TossAccount>> toss_accounts_from(net::io_context& ioc, tossinvest::TossClient& client) {
+  auto result = client.async_accounts(net::use_future);
+  ioc.restart();
+  ioc.run();
+  return result.get();
+}
+
+/** Checks that a client returned the error a parser reads from the same reply, field by field. */
+void check_same_toss_error(const BrokerError& returned, const BrokerError& read) {
+  CHECK(returned.category_ == read.category_);
+  CHECK(returned.broker_code_ == read.broker_code_);
+  CHECK(returned.http_status_ == read.http_status_);
+  CHECK(returned.message_ == read.message_);
+  CHECK(returned.reached_broker_ == read.reached_broker_);
+}
+
+constexpr const char* TOSS_TOKEN_REFUSALS[] = {"token-revoked", "expired-token", "invalid-token"};
+
+} // namespace
+
+TEST_CASE("a Toss client carries a token another client obtained and asks for none", "[broker][toss][auth]") {
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  server.script(TOSS_TOKEN, 200, toss_token_body("issued"));
+  server.script(TOSS_ACCOUNTS, 200, TOSS_ACCOUNTS_REPLY);
+
+  auto first = scripted_toss(ioc, context, server);
+  REQUIRE(toss_accounts_from(ioc, *first));
+  REQUIRE(server.scriptedCount(TOSS_TOKEN) == 1);
+  const auto handed = first->token();
+  REQUIRE(handed.access_token_ == "issued");
+  // The loopback server serves one connection at a time: the first client lets go of its own.
+  first->close();
+  ioc.restart();
+  ioc.run();
+
+  auto second = scripted_toss(ioc, context, server);
+  REQUIRE(second->adopt_token(handed));
+  REQUIRE(toss_accounts_from(ioc, *second));
+  CHECK(server.scriptedCount(TOSS_TOKEN) == 1);
+  CHECK(server.scriptedCount(TOSS_ACCOUNTS) == 2);
+  CHECK(server.lastHeader(TOSS_ACCOUNTS, "Authorization") == "Bearer issued");
+}
+
+TEST_CASE("a Toss client hands its token on and adopts only a live one", "[broker][toss][auth]") {
+  ssl::context tls(ssl::context::tls_client);
+  tossinvest::TossBlockingClient client(tls, tossinvest::TossConfig{});
+  REQUIRE(client.token().access_token_.empty());
+
+  tossinvest::TossRest expired;
+  expired.access_token_ = "expired-token";
+  expired.expires_at_ = std::chrono::system_clock::now() - std::chrono::minutes(1);
+  CHECK_FALSE(client.adopt_token(expired));
+  tossinvest::TossRest empty;
+  empty.expires_at_ = std::chrono::system_clock::now() + std::chrono::hours(20);
+  CHECK_FALSE(client.adopt_token(empty));
+  // Inside the five-minute margin every other validity check uses.
+  tossinvest::TossRest ending;
+  ending.access_token_ = "ending-token";
+  ending.expires_at_ = std::chrono::system_clock::now() + std::chrono::minutes(2);
+  CHECK_FALSE(client.adopt_token(ending));
+  CHECK(client.token().access_token_.empty());
+
+  const auto live = toss_live_token("kept-token");
+  REQUIRE(client.adopt_token(live));
+  CHECK(client.token().access_token_ == "kept-token");
+  CHECK(client.token().expires_at_ == live.expires_at_);
+  CHECK(client.token().valid());
+}
+
+TEST_CASE(
+  "a Toss client drops an adopted token Toss refuses and takes a new one on the next request", "[broker][toss][auth]"
+) {
+  for (const auto* code : TOSS_TOKEN_REFUSALS) {
+    CAPTURE(code);
+    test::LocalHttpsServer server;
+    net::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    test::trustLocalhostCertificate(context);
+    server.script(TOSS_TOKEN, 200, toss_token_body("fresh"));
+    server.scriptSequence(TOSS_ACCOUNTS, {{401, toss_error_body(code), {}}, {200, TOSS_ACCOUNTS_REPLY, {}}});
+    auto client = scripted_toss(ioc, context, server);
+    REQUIRE(client->adopt_token(toss_live_token("adopted")));
+
+    const auto refused = toss_accounts_from(ioc, *client);
+    REQUIRE_FALSE(refused);
+    CHECK(refused.error().http_status_ == 401);
+    CHECK(refused.error().broker_code_ == code);
+    const auto read = tossinvest::TossClientTestAccess::parse_accounts(json_response(toss_error_body(code), 401));
+    REQUIRE_FALSE(read);
+    check_same_toss_error(refused.error(), read.error());
+    CHECK(server.scriptedCount(TOSS_TOKEN) == 0);
+    CHECK(server.scriptedCount(TOSS_ACCOUNTS) == 1);
+    CHECK(server.lastHeader(TOSS_ACCOUNTS, "Authorization") == "Bearer adopted");
+    CHECK(client->token().access_token_.empty());
+
+    REQUIRE(toss_accounts_from(ioc, *client));
+    CHECK(server.scriptedCount(TOSS_TOKEN) == 1);
+    CHECK(server.scriptedCount(TOSS_ACCOUNTS) == 2);
+    CHECK(server.lastHeader(TOSS_ACCOUNTS, "Authorization") == "Bearer fresh");
+    CHECK(client->token().access_token_ == "fresh");
+  }
+}
+
+TEST_CASE("a Toss order refused for its token is reported as before and not sent again", "[broker][toss][auth]") {
+  for (const auto* code : TOSS_TOKEN_REFUSALS) {
+    CAPTURE(code);
+    test::LocalHttpsServer server;
+    net::io_context ioc;
+    ssl::context context(ssl::context::tls_client);
+    test::trustLocalhostCertificate(context);
+    server.script(TOSS_TOKEN, 200, toss_token_body("fresh"));
+    server.script(TOSS_ORDERS, 401, toss_error_body(code));
+    server.script(TOSS_ACCOUNTS, 200, TOSS_ACCOUNTS_REPLY);
+    auto client = scripted_toss(ioc, context, server);
+    REQUIRE(client->adopt_token(toss_live_token("adopted")));
+
+    auto placed = client->async_place_order(7, korean_limit_buy(), net::use_future);
+    ioc.run();
+    const auto refused = placed.get();
+    // The same reply read by the order parser alone: forgetting the token changes nothing the caller sees.
+    const auto read = tossinvest::TossClientTestAccess::parse_order_ack(json_response(toss_error_body(code), 401));
+    REQUIRE_FALSE(refused);
+    REQUIRE_FALSE(read);
+    check_same_toss_error(refused.error(), read.error());
+    CHECK(runner::outcome_of(refused.error()) == runner::outcome_of(read.error()));
+    CHECK(server.scriptedCount(TOSS_ORDERS) == 1);
+    CHECK(server.lastHeader(TOSS_ORDERS, "Authorization") == "Bearer adopted");
+    CHECK(client->token().access_token_.empty());
+
+    REQUIRE(toss_accounts_from(ioc, *client));
+    CHECK(server.scriptedCount(TOSS_TOKEN) == 1);
+    CHECK(server.lastHeader(TOSS_ACCOUNTS, "Authorization") == "Bearer fresh");
+    CHECK(server.scriptedCount(TOSS_ORDERS) == 1);
+  }
+}
+
+TEST_CASE("a Toss client keeps an adopted token through a refusal that is not a 401", "[broker][toss][auth]") {
+  test::LocalHttpsServer server;
+  net::io_context ioc;
+  ssl::context context(ssl::context::tls_client);
+  test::trustLocalhostCertificate(context);
+  server.script(TOSS_TOKEN, 200, toss_token_body("fresh"));
+  server.scriptSequence(
+    TOSS_ACCOUNTS,
+    {
+      {403, toss_error_body("ip-not-allowed"), {}},
+      {400, toss_error_body("account-header-required"), {}},
+      {200, TOSS_ACCOUNTS_REPLY, {}},
+    }
+  );
+  auto client = scripted_toss(ioc, context, server);
+  REQUIRE(client->adopt_token(toss_live_token("adopted")));
+
+  for (
+    const auto& [status, code] : {std::pair<int, const char*>{403, "ip-not-allowed"}, {400, "account-header-required"}}
+  ) {
+    CAPTURE(status, code);
+    const auto refused = toss_accounts_from(ioc, *client);
+    REQUIRE_FALSE(refused);
+    const auto read = tossinvest::TossClientTestAccess::parse_accounts(json_response(toss_error_body(code), status));
+    REQUIRE_FALSE(read);
+    check_same_toss_error(refused.error(), read.error());
+    CHECK(client->token().access_token_ == "adopted");
+  }
+  REQUIRE(toss_accounts_from(ioc, *client));
+  CHECK(server.scriptedCount(TOSS_ACCOUNTS) == 3);
+  CHECK(server.scriptedCount(TOSS_TOKEN) == 0);
+  CHECK(server.lastHeader(TOSS_ACCOUNTS, "Authorization") == "Bearer adopted");
 }
 
 // A token handed from one KIS client to another, and a token KIS refuses (`EGW00121` invalid,
