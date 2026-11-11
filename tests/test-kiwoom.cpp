@@ -1569,7 +1569,8 @@ TEST_CASE(
 }
 
 // A token handed from one Kiwoom client to another, and a token Kiwoom refuses (`return_code` 8005,
-// "Token이 유효하지 않습니다" in the published error list), through the clients' own request path.
+// "Token이 유효하지 않습니다", and 8010, "Token을 발급받은 IP와 서비스를 요청한 IP가 동일하지 않습니다", in the
+// published error list), through the clients' own request path.
 namespace {
 
 constexpr const char* KIWOOM_TOKEN = "/oauth2/token";
@@ -1628,18 +1629,23 @@ void check_same_error(const BrokerError& returned, const BrokerError& read) {
   CHECK(returned.reached_broker_ == read.reached_broker_);
 }
 
-/** A token refusal as Kiwoom may send it: the reply's status and body. */
+/** A token refusal as Kiwoom may send it: the reply's status and body, and the code it states. */
 struct KiwoomTokenRefusal {
   unsigned status_;
   const char* body_;
+  const char* code_;
 };
 
 constexpr KiwoomTokenRefusal KIWOOM_TOKEN_REFUSALS[] = {
-  {200, R"({"return_code":8005,"return_msg":"Token이 유효하지 않습니다"})"},
-  {200, R"({"return_code":"8005","return_msg":"Token이 유효하지 않습니다"})"},
-  {500, R"({"return_code":8005,"return_msg":"Token이 유효하지 않습니다"})"},
+  {200, R"({"return_code":8005,"return_msg":"Token이 유효하지 않습니다"})", "8005"},
+  {200, R"({"return_code":"8005","return_msg":"Token이 유효하지 않습니다"})", "8005"},
+  {500, R"({"return_code":8005,"return_msg":"Token이 유효하지 않습니다"})", "8005"},
   // The same code with each digit escaped.
-  {200, R"({"return_code":"\u0038\u0030\u0030\u0035","return_msg":"invalid"})"},
+  {200, R"({"return_code":"\u0038\u0030\u0030\u0035","return_msg":"invalid"})", "8005"},
+  // A token issued to another address, as after the machine changes network.
+  {200, R"({"return_code":8010,"return_msg":"Token을 발급받은 IP와 서비스를 요청한 IP가 동일하지 않습니다"})", "8010"},
+  {200, R"({"return_code":"8010","return_msg":"Token을 발급받은 IP와 서비스를 요청한 IP가 동일하지 않습니다"})",
+    "8010"},
 };
 
 } // namespace
@@ -1710,7 +1716,7 @@ TEST_CASE("a Kiwoom client drops a token Kiwoom refuses and takes a new one on t
 
     const auto refused = kiwoom_accounts_from(ioc, *client);
     REQUIRE_FALSE(refused);
-    CHECK(refused.error().broker_code_ == "8005");
+    CHECK(refused.error().broker_code_ == refusal.code_);
     const auto read = kiwoom::KiwoomClientTestAccess::accounts(kiwoom_reply(refusal.status_, refusal.body_));
     REQUIRE_FALSE(read);
     check_same_error(refused.error(), read.error());
@@ -1777,10 +1783,9 @@ TEST_CASE("a Kiwoom client keeps its token through a refusal that is not about t
   ssl::context context(ssl::context::tls_client);
   test::trustLocalhostCertificate(context);
   server.script(KIWOOM_TOKEN, 200, kiwoom_token_body("fresh"));
-  // Other authentication codes (8010 and 8050 are the IP, 8031 the other environment) and a code that
-  // names 8005 only in its message keep the token: only 8005 says the token itself is refused.
+  // Other authentication codes (8050 is an unregistered address, 8031 the other environment) and a code
+  // that names 8005 only in its message keep the token: only 8005 and 8010 say the token itself is refused.
   const std::vector<std::string> others = {
-    R"({"return_code":8010,"return_msg":"Token을 발급받은 IP와 서비스를 요청한 IP가 동일하지 않습니다"})",
     R"({"return_code":8031,"return_msg":"투자구분(실전/모의)이 달라서 Token를 사용할수가 없습니다"})",
     R"({"return_code":8050,"return_msg":"IP가 등록되지 않았습니다"})",
     R"({"return_code":1999,"return_msg":"예기치 못한 에러가 발생했습니다. 실패사유=8005"})",

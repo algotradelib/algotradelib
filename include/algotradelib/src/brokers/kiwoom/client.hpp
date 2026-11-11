@@ -1356,11 +1356,11 @@ public:
    * @brief Uses a token issued earlier for the same app key and environment instead of requesting
    *   one.
    *
-   * When Kiwoom refuses the token a request carried (`return_code` `8005`), that request fails with
-   * Kiwoom's code and is not sent again, and the client drops the token: the next request asks for a
-   * new one, which `token()` then returns. The token does not identify its key, so key stored tokens
-   * by environment and app key, and discard one Kiwoom refused. **The token is a bearer credential**:
-   * store it as carefully as the key and secret.
+   * When Kiwoom refuses the token a request carried (`return_code` `8005`, or `8010` for a token issued to
+   * another address), that request fails with Kiwoom's code and is not sent again, and the client drops the
+   * token: the next request asks for a new one, which `token()` then returns. The token does not identify its
+   * key, so key stored tokens by environment and app key, and discard one Kiwoom refused. **The token is a
+   * bearer credential**: store it as carefully as the key and secret.
    *
    * Call it on the client's strand or before any request; on the blocking client, between calls.
    *
@@ -1552,12 +1552,13 @@ private:
 
   // Sends a request that carries the access token, and forgets that token if Kiwoom refuses it.
   //
-  // Kiwoom refuses a token with `return_code` `8005` ("Token이 유효하지 않습니다"), read here whatever
-  // the HTTP status, as `kiwoom_declared_error` and `kiwoom_http_error` both read the code. Kept,
-  // the token would be sent until its stated expiry and every request would fail; forgotten, the next
-  // request asks for a new one. The refused request is not sent again and its result reaches the
-  // caller unchanged. Only the token the request carried is forgotten: a late refusal of an older token
-  // leaves a newer one alone.
+  // Kiwoom refuses a token with `return_code` `8005` ("Token이 유효하지 않습니다"), and one issued to
+  // another address with `8010` ("Token을 발급받은 IP와 서비스를 요청한 IP가 동일하지 않습니다", as after the
+  // machine changes network), read here whatever the HTTP status, as `kiwoom_declared_error` and
+  // `kiwoom_http_error` both read the code. Kept, the token would be sent until its stated expiry and every
+  // request would fail; forgotten, the next request asks for a new one. The refused request is not sent
+  // again and its result reaches the caller unchanged. Only the token the request carried is forgotten: a
+  // late refusal of an older token leaves a newer one alone.
   template <typename Handler>
   void send(network::HttpRequest request, Handler handler) {
     std::string authorization;
@@ -1582,11 +1583,14 @@ private:
     );
   }
 
-  // Tests whether a reply, of any status, states `return_code` `8005`, as a number or as text. The
-  // body is parsed only if it holds `8005` or a backslash, which may escape it.
+  // Tests whether a reply, of any status, states `return_code` `8005` or `8010`, as a number or as text.
+  // The body is parsed only if it holds either code or a backslash, which may escape it.
   static bool refuses_token(const network::HttpResponse& response) {
     const auto& body = response.body();
-    if (body.find("8005") == std::string::npos && body.find('\\') == std::string::npos) {
+    if (
+      body.find("8005") == std::string::npos && body.find("8010") == std::string::npos &&
+      body.find('\\') == std::string::npos
+    ) {
       return false;
     }
     boost::system::error_code ec;
@@ -1598,8 +1602,12 @@ private:
     if (!code) {
       return false;
     }
-    return (code->is_int64() && code->as_int64() == 8005) || (code->is_uint64() && code->as_uint64() == 8005) ||
-      (code->is_string() && code->as_string() == "8005");
+    const auto refused = [](std::uint64_t value) {
+      return value == 8005 || value == 8010;
+    };
+    return (code->is_int64() && code->as_int64() >= 0 && refused(static_cast<std::uint64_t>(code->as_int64()))) ||
+      (code->is_uint64() && refused(code->as_uint64())) ||
+      (code->is_string() && (code->as_string() == "8005" || code->as_string() == "8010"));
   }
 
   // Forgets the held token if it is the one a refused request carried (its `authorization` value).

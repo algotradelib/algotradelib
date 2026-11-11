@@ -53,8 +53,8 @@ inline KiwoomRateLimitLayer kiwoom_rate_limit_layer(std::string_view code) noexc
  * - `RATE_LIMIT`: `1700`-`1702` and `1687`;
  * - `PROTOCOL`: any other code.
  *
- * The client drops the token a request carried when Kiwoom refuses it with `8005`, so the next
- * request asks for a new one.
+ * The client drops the token a request carried when Kiwoom refuses it with `8005` (invalid) or `8010`
+ * (issued to another address), so the next request asks for a new one.
  *
  * @param code The code, as text.
  * @return The category.
