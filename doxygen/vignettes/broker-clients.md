@@ -136,7 +136,32 @@ A Toss key holds one access token at a time: issuing a token revokes the one iss
 programs running with the same key therefore revoke each other's token. When Toss refuses a token
 (HTTP 401), the request fails, and `TossClient` asks for a new token on the next request. The refused
 request is not sent again.
-To run two programs on one key, take `token()` from one client and `adopt_token()` it in the other; the KIS and Kiwoom clients have the same pair.
+The KIS and Kiwoom clients drop a refused token the same way (KIS `EGW00121` and `EGW00123`, Kiwoom `8005` and `8010`).
+
+### Sharing a token between programs
+
+KIS issues one token per key per minute (`EGW00133`), a new Toss token revokes the one before it, and a Kiwoom token works only from the address that requested it.
+So programs on one key, on one machine, should share one token.
+Give their blocking clients one token store, `network::TokenStore`, as the constructor's last argument:
+
+```cpp
+auto tokens = std::make_shared<algotradelib::network::FileTokenStore>("atl-tokens");
+algotradelib::kis::KisBlockingClient client(tls, config, options, tokens);
+```
+
+`network::FileTokenStore` keeps one token file and one lock file per broker, environment and key, in a folder only the user can read; it is POSIX only and not provided on Windows.
+Before a call, a client without a valid token takes the key's lock, uses the stored token if it is valid, and otherwise requests one and stores it before sending anything else.
+It requests no token during a call: a call whose token stops being usable while it runs (between two pages of a Kiwoom listing, for example) returns `token_unusable`, and the next call prepares one.
+When the broker refuses the token a call carried, the client removes it from the store, if the store still holds it, and the next call requests a new one.
+A store that cannot be used (a folder others can read, a lock not obtained in time, a failed write) fails the call with `token_store`; nothing is sent.
+Both errors are `AUTHENTICATION` failures that did not reach the broker.
+
+Two limits remain.
+A request authorized just before another program replaced the token can still be refused (on Toss, as revoked); it is returned as the broker answered and not sent again.
+A program stopped after the broker issued a token and before it was stored leaves the old token stored until the broker refuses it.
+
+The asynchronous clients take no store; they offer `token()` and `adopt_token()` to hand a token over yourself, and `async_ensure_token()` to request one.
+`examples/example-live-program.cpp` shares its tokens through `--tokens DIR`.
 
 ## Order clients
 

@@ -98,6 +98,8 @@ Two consequences are worth knowing:
   already on the wire is never reordered around.
 - `AUTH` outranks `TRADING` because every request waits behind a token refresh, a
   cancellation included. It cannot flood, because refreshes are coalesced.
+  That holds within one client; programs on one key coordinate their token requests through a token store
+  ([talking to a broker directly](broker-clients.md)).
 
 KIS's amendable-order inquiry is `ACCOUNT`, not `TRADING`. KIS recommends it before
 an amendment but does not require it: a caller tracking its own working orders

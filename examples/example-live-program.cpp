@@ -5,7 +5,7 @@
  * ```
  * example-live-program <kis|kiwoom|toss> <symbol> [--live] [--journal PATH] [--control PATH]
  *                      [--toss-account SEQUENCE] [--credentials DIR] [--market-data kis|toss]
- *                      [--kiwoom-account LABEL]
+ *                      [--kiwoom-account LABEL] [--tokens DIR]
  * ```
  *
  * Without `--live` it **observes**: real market data, holdings and orders run through the real
@@ -43,6 +43,12 @@
  *
  * Toss reads its environment variables, so `--credentials` given to it is refused rather than ignored.
  *
+ * **Access tokens** are shared through files in `--tokens DIR` (default `atl-tokens`, created private),
+ * one per broker, environment and key, so a restart or a second program on the same key uses the token
+ * already issued: KIS issues one a minute per key, and a new Toss token revokes the one before it. Keep
+ * the folder as private as the credentials. On Windows the library has no file token store, and each
+ * client requests its own.
+ *
  * The broker-free part -- the order of journal, recovery, loop and report -- is `live_program.hpp`,
  * which the test suite drives against an in-memory session. This file only chooses a broker and a
  * strategy. The strategy is deliberately trivial: `BuyAndHold` of one share. Replace it with yours,
@@ -56,6 +62,7 @@
 
 #include <algotradelib/kis>
 #include <algotradelib/kiwoom>
+#include <algotradelib/network>
 #include <algotradelib/tossinvest>
 #include <algotradelib/vanilla>
 
@@ -92,6 +99,7 @@ struct Arguments {
   bool credentials_from_flag_{false};
   std::optional<std::string> market_data_;
   std::optional<std::string> kiwoom_account_;
+  std::optional<std::string> tokens_;
 };
 
 /** @brief The strategy this program runs: one share, held. The line a consumer replaces. */
@@ -190,6 +198,16 @@ void announce(
   }
 }
 
+/** @brief The store every client of this run shares its access token through, or null on Windows. */
+std::shared_ptr<atl::network::TokenStore> token_store(const Arguments& arguments) {
+#if defined(_WIN32)
+  (void)arguments;
+  return nullptr;
+#else
+  return std::make_shared<atl::network::FileTokenStore>(arguments.tokens_ ? *arguments.tokens_ : "atl-tokens");
+#endif
+}
+
 /** @brief Runs the chosen mode, installing the signal stop for the run's duration. */
 template <typename Session, typename MarketData>
 int run(
@@ -224,8 +242,9 @@ int run_kis(ssl::context& tls, const Arguments& arguments) {
   name_journal(settings, arguments, "kis", demo, account.account_number_ + '-' + account.product_code_);
   announce(arguments, settings, demo, "KIS_DEMO");
 
+  const auto tokens = token_store(arguments);
   atl::BlockingSession<kis::KisBlockingClient> session(
-    std::make_shared<kis::KisBlockingClient>(tls, std::move(config), kis_credentials::paced_options()),
+    std::make_shared<kis::KisBlockingClient>(tls, std::move(config), kis_credentials::paced_options(), tokens),
     std::move(account)
   );
 
@@ -244,7 +263,10 @@ int run_kis(ssl::context& tls, const Arguments& arguments) {
     algotradelib::tossinvest::TossConfig toss_config;
     toss_config.from_json(path.string());
     atl::BlockingSession<algotradelib::tossinvest::TossBlockingClient> market_data(
-      std::make_shared<algotradelib::tossinvest::TossBlockingClient>(tls, std::move(toss_config)), 0
+      std::make_shared<algotradelib::tossinvest::TossBlockingClient>(
+        tls, std::move(toss_config), atl::network::HttpClientOptions{}, tokens
+      ),
+      0
     );
     std::cout << "market data: toss " << path.string() << " (no account: cannot trade)\n";
     return run(session, market_data, instrument, settings, arguments.live_);
@@ -256,7 +278,9 @@ int run_kis(ssl::context& tls, const Arguments& arguments) {
     auto market_config = kis_credentials::market_data_config(arguments.credentials_);
     if (market_config) {
       atl::BlockingSession<kis::KisBlockingClient> market_data(
-        std::make_shared<kis::KisBlockingClient>(tls, std::move(*market_config), kis_credentials::paced_options()),
+        std::make_shared<kis::KisBlockingClient>(
+          tls, std::move(*market_config), kis_credentials::paced_options(), tokens
+        ),
         kis::KisAccount{}
       );
       std::cout
@@ -295,7 +319,9 @@ int run_kiwoom(ssl::context& tls, const Arguments& arguments) {
   const bool demo = config.is_demo_;
 
   atl::BlockingSession<kiwoom::KiwoomBlockingClient> session(
-    std::make_shared<kiwoom::KiwoomBlockingClient>(tls, std::move(config), kiwoom_credentials::paced_options()),
+    std::make_shared<kiwoom::KiwoomBlockingClient>(
+      tls, std::move(config), kiwoom_credentials::paced_options(), token_store(arguments)
+    ),
     kiwoom::KiwoomAccount{}
   );
   // Kiwoom takes no account number on a request -- the application key is the account -- so the
@@ -335,7 +361,9 @@ int run_toss(ssl::context& tls, const Arguments& arguments) {
   toss::TossConfig config;
   config.from_env();
   std::cout << "credentials: environment variables (Toss reads no credentials directory)\n";
-  auto client = std::make_shared<toss::TossBlockingClient>(tls, std::move(config));
+  auto client = std::make_shared<toss::TossBlockingClient>(
+    tls, std::move(config), atl::network::HttpClientOptions{}, token_store(arguments)
+  );
 
   // Toss selects an account by sequence number and publishes the list. With one account that is the
   // one; with several, the program will not guess which should trade, because a sequence is a request
@@ -411,6 +439,8 @@ std::optional<Arguments> parse(int argc, char** argv) {
       arguments.journal_ = argv[++i];
     } else if (argument == "--control" && has_value) {
       arguments.control_ = argv[++i];
+    } else if (argument == "--tokens" && has_value) {
+      arguments.tokens_ = argv[++i];
     } else if (argument == "--toss-account" && has_value) {
       arguments.toss_account_ = std::strtoll(argv[++i], nullptr, 10);
     } else if (argument == "--market-data" && has_value) {
@@ -463,7 +493,7 @@ int main(int argc, char** argv) {
       << "usage: example-live-program <kis|kiwoom|toss> <symbol> [--live] [--journal PATH]\n"
       << "                            [--control PATH] [--toss-account SEQUENCE]\n"
       << "                            [--credentials DIR] [--market-data kis|toss]\n"
-      << "                            [--kiwoom-account LABEL]\n\n"
+      << "                            [--kiwoom-account LABEL] [--tokens DIR]\n\n"
       << "Without --live it observes: nothing can be sent. KIS and Kiwoom are demo unless\n"
       << "KIS_DEMO=0 / KIWOOM_DEMO=0; Toss has no demo, so toss --live trades real money.\n";
     return 64;
