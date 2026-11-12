@@ -317,7 +317,7 @@ It models no trading hours, price band, partial fill, settlement or short sale, 
 It lives in memory unless it is kept in a state file (`mock::MarketFile`), for a program that runs once per command and trades one account each time.
 The file records each placement, cancellation and clock move before the market makes it, and opening it again with the same bars, settings and reference data replays it to the same market; a file of another market is refused.
 A market whose market orders a caller's own function prices cannot be kept, and the file keeps no scripted fault.
-Its environment is always `"paper"` (`mock::environment`): it is not a broker's demo account.
+Its environment is always `"mock"` (`mock::environment`): it is not a broker's demo account.
 `mock::MockClient` can fail a call, lose a reply or repeat a stale read on purpose, for testing what a program does with an unknown outcome.
 Its calendar gives the loop a market phase, so `RiskLimits::permitted_phases_` applies as with a real broker: a daily bar stamped at the close is seen after the close (`POST_CLOSE`), which the default (`OPEN` only) does not permit.
 The library's tests run one example: daily bars, a poll on every close, nothing fed as warm-up, a strategy that decides from each bar alone, and the same reference data, cash, fill model and limits; there a live run on it fills as a backtest of the same bars.

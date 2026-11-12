@@ -48,7 +48,7 @@ enum class Call {
  *   the call.
  *
  * Bind it like any blocking client, `BlockingSession<MockClient>(std::make_shared<MockClient>(market),
- * MockAccount{})`. Nothing leaves the process; `environment` is `"paper"`.
+ * MockAccount{})`. Nothing leaves the process; `environment` is `"mock"`.
  */
 class MockClient {
 public:
@@ -60,7 +60,7 @@ public:
 
   /**
    * @brief Returns the environment this client trades in.
-   * @return Always `"paper"`.
+   * @return Always `"mock"`.
    */
   static constexpr std::string_view environment() noexcept {
     return mock::environment;

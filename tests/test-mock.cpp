@@ -576,11 +576,11 @@ BrokerError transport() {
 
 } // namespace
 
-TEST_CASE("the mock broker is a paper broker bound like any other", "[mock]") {
+TEST_CASE("the mock broker reports its own environment and is bound like any other", "[mock]") {
   mock::Market market({three_days()}, cash("1000000", utc(2026, 3, 2, 6, 30)));
   MockSession bound(market);
-  CHECK(bound.session_.client().environment() == "paper");
-  CHECK(mock::environment == "paper");
+  CHECK(bound.session_.client().environment() == "mock");
+  CHECK(mock::environment == "mock");
   CHECK(BrokerTraits<mock::MockClient>::name == "mock");
   CHECK(bound.session_.rate_limit_stats() == nullptr);
   CHECK(bound.session_.quote(samsung()).value().last_price_ == dec("105"));
@@ -816,7 +816,7 @@ TEST_CASE("a live run on the mock trades as a backtest of the same bars", "[mock
   settings.bar_count_ = 5;
   settings.maximum_portfolio_age_ = std::chrono::minutes(30);
   settings.journal_path_ = journal.path_;
-  settings.journal_scope_ = "mock:paper:1";
+  settings.journal_scope_ = "mock:mock:1";
   settings.control_file_ = control.path_;
   const auto span = bars.bars_.back().timestamp_ - bars.bars_.front().timestamp_;
   settings.max_iterations_ = static_cast<std::size_t>(span / std::chrono::minutes(15)) + 2;
@@ -849,7 +849,7 @@ TEST_CASE("a live run on the mock trades as a backtest of the same bars", "[mock
   INFO(written.detail_);
   CHECK(written.unreadable_lines_ == 0);
   CHECK_FALSE(written.entries_.empty());
-  runner::FileJournal reopened(journal.path_, "mock:paper:1");
+  runner::FileJournal reopened(journal.path_, "mock:mock:1");
   REQUIRE(reopened.open());
   auto restarted = live::bind_journaled(bound.session_, reopened, Flips{});
   CHECK(runner::recover_runner(restarted, reopened).clean());

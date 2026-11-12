@@ -34,12 +34,12 @@ struct Broker {
 };
 
 /**
- * @brief The environment the mock reports: always `"paper"`, never `"demo"` or `"real"`.
+ * @brief The environment the mock reports: always `"mock"`, never `"demo"` or `"real"`.
  *
  * The library has no environment type (KIS and Kiwoom configure demo or real; Toss has one
  * environment), so this is the statement a program maps when it reports where it trades.
  */
-inline constexpr std::string_view environment = "paper";
+inline constexpr std::string_view environment = "mock";
 
 class MarketFile;
 
