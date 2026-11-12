@@ -24,10 +24,22 @@
  *
  * `mock::DataFeed` is the mock vendor: records released as that clock passes their time, installed as the
  * loop's data poll for a strategy's `on_data`.
+ *
+ * `mock::MarketFile` keeps a market's account in a file, for a program that runs once per command: each change is
+ * written before it is made, and opening the file with the same bars and settings rebuilds the same market.
+ *
+ * @code
+ * mock::MarketFile file("account.mock", {series}, settings);
+ * if (!file.open()) {
+ *   std::cerr << file.rejection() << '\n';
+ * }
+ * auto client = std::make_shared<mock::MockClient>(file.market());
+ * @endcode
  */
 
 #include "src/brokers/mock/client.hpp"
 #include "src/brokers/mock/clock.hpp"
 #include "src/brokers/mock/data.hpp"
+#include "src/brokers/mock/file.hpp"
 #include "src/brokers/mock/market.hpp"
 #include "src/brokers/mock/traits.hpp"

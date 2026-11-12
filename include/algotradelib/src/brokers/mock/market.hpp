@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -39,6 +40,46 @@ struct Broker {
  * environment), so this is the statement a program maps when it reports where it trades.
  */
 inline constexpr std::string_view environment = "paper";
+
+class MarketFile;
+
+/**
+ * @brief Thrown by a kept market's `Market::advance_to` when its state file (`MarketFile`) could not record the
+ *   move; the clock did not move.
+ */
+class MarketFileError : public std::runtime_error {
+public:
+  /** @brief What became of the record. */
+  enum class Kind {
+    /** @brief It was not written whole, or not at all: reopening the file does not make the move. */
+    NOT_WRITTEN,
+    /** @brief It was written, and flushing it to disk failed: reopening the file may make the move. */
+    UNCONFIRMED,
+  };
+
+  /**
+   * @brief Constructs the error.
+   * @param kind What became of the record.
+   */
+  explicit MarketFileError(Kind kind)
+  : std::runtime_error(
+      kind == Kind::NOT_WRITTEN ?
+        "the mock market's state file did not record this change, which was not made" :
+        "the mock market's state file may hold this change, which was not made here"
+    ),
+    kind_(kind) {}
+
+  /**
+   * @brief Returns what became of the record.
+   * @return The kind.
+   */
+  Kind kind() const noexcept {
+    return kind_;
+  }
+
+private:
+  Kind kind_;
+};
 
 /** @brief How a `Market` starts and what it charges. */
 struct MarketSettings {
@@ -95,7 +136,8 @@ struct MarketSettings {
  * the failure stands, including fills of earlier orders on that bar; the order that failed stays
  * `PENDING`. Reads answer that state.
  *
- * Not thread-safe; nothing is persisted.
+ * Not thread-safe. Nothing is persisted unless the market is kept in a state file (`MarketFile`): a copy of a kept
+ * market is an ordinary market, which writes nothing, and assigning to a kept market throws `std::logic_error`.
  */
 class Market {
 public:
@@ -178,6 +220,7 @@ public:
    * @throws std::invalid_argument if `to` is before `now()`.
    * @throws std::runtime_error if the market halts on this call (the clock then stays at the period end
    *   of the bar it halted on; see the class) or had halted.
+   * @throws MarketFileError if the market is kept in a file that could not record the move.
    */
   void advance_to(std::chrono::system_clock::time_point to) {
     if (to < now_) {
@@ -185,6 +228,10 @@ public:
     }
     if (halted_) {
       throw std::runtime_error(*halted_);
+    }
+    const auto failed = now_ < to ? record(Change{nullptr, nullptr, to}) : std::nullopt;
+    if (failed) {
+      throw MarketFileError(*failed);
     }
     for (;;) {
       Listing* earliest = nullptr;
@@ -402,6 +449,9 @@ public:
    * (a buy reserving more than the buying power, or in a currency without cash);
    * `insufficient_holdings` (a sell of more than is held less open sells).
    *
+   * A kept market whose file could not record the order answers `TRANSPORT`: `state_not_written` without
+   * `reached_broker_`, or `state_unconfirmed` with it (reopening the file may accept the order).
+   *
    * @param order The order; its venue is not used.
    * @return The acknowledgement, the order id `"1"`, `"2"`, ... in the order accepted.
    */
@@ -462,6 +512,9 @@ public:
         );
       }
     }
+    if (const auto failed = record(Change{&order, nullptr, std::nullopt})) {
+      return not_recorded<PlacedOrder<Broker>>(*failed);
+    }
     MarketOrder accepted;
     accepted.snapshot_.order_id_ = std::to_string(++last_id_);
     accepted.snapshot_.instrument_ = order.instrument_;
@@ -493,7 +546,8 @@ public:
    * @brief Cancels the whole remainder of an open order.
    * @param order_id The order id.
    * @return The acknowledgement; `INVALID_ARGUMENT` `nothing_to_cancel` (with `reached_broker_` set)
-   *   for an id that is unknown or already finished.
+   *   for an id that is unknown or already finished; for a kept market whose file could not record the
+   *   cancellation, as `place` answers.
    */
   Result<PlacedOrder<Broker>> cancel(const std::string& order_id) {
     for (auto& order : orders_) {
@@ -502,6 +556,9 @@ public:
       }
       if (order.snapshot_.status_ != OrderStatus::PENDING) {
         break;
+      }
+      if (const auto failed = record(Change{nullptr, &order_id, std::nullopt})) {
+        return not_recorded<PlacedOrder<Broker>>(*failed);
       }
       order.snapshot_.status_ = OrderStatus::CANCELED;
       order.snapshot_.canceled_at_ = now_;
@@ -555,6 +612,35 @@ public:
   }
 
 private:
+  friend class MarketFile;
+
+  /** A change a kept market records before making it: a placement, a cancellation or a clock move. */
+  struct Change {
+    /** The order placed. */
+    const OrderRequest* order_{nullptr};
+    /** The id of the order canceled. */
+    const std::string* order_id_{nullptr};
+    /** The instant the clock moves to. */
+    std::optional<std::chrono::system_clock::time_point> to_;
+  };
+
+  /** A kept market's record; a copy of the market has none, and assigning to a market that has one throws. */
+  struct Recorder {
+    Recorder() = default;
+
+    Recorder(const Recorder&) noexcept {}
+
+    Recorder& operator=(const Recorder&) {
+      if (record_) {
+        throw std::logic_error("a mock market kept in a file cannot be assigned to");
+      }
+      return *this;
+    }
+
+    /** Records a change, or says why it could not. */
+    std::function<std::optional<MarketFileError::Kind>(const Change&)> record_;
+  };
+
   /** One instrument's bars and how far the clock has applied them. */
   struct Listing {
     /** The bars. */
@@ -587,6 +673,22 @@ private:
     error.reached_broker_ = true;
     error.broker_code_ = code;
     error.message_ = message;
+    return Result<T>(std::move(error));
+  }
+
+  /** Records a change in the market's file, if it is kept in one; what became of a record that failed. */
+  std::optional<MarketFileError::Kind> record(const Change& change) const {
+    return recorder_.record_ ? recorder_.record_(change) : std::nullopt;
+  }
+
+  /** Returns the answer to a call the market's file could not record. */
+  template <typename T>
+  static Result<T> not_recorded(MarketFileError::Kind kind) {
+    BrokerError error;
+    error.category_ = ErrorCategory::TRANSPORT;
+    error.reached_broker_ = kind == MarketFileError::Kind::UNCONFIRMED;
+    error.broker_code_ = error.reached_broker_ ? "state_unconfirmed" : "state_not_written";
+    error.message_ = MarketFileError(kind).what();
     return Result<T>(std::move(error));
   }
 
@@ -827,6 +929,8 @@ private:
     done.filled_at_ = at;
   }
 
+  // First, so that assigning to a kept market throws before anything changes.
+  Recorder recorder_;
   MarketSettings settings_;
   std::chrono::system_clock::time_point now_;
   backtest::ReplayLedger ledger_;
