@@ -137,7 +137,8 @@ struct MarketSettings {
  * `PENDING`. Reads answer that state.
  *
  * Not thread-safe. Nothing is persisted unless the market is kept in a state file (`MarketFile`): a copy of a kept
- * market is an ordinary market, which writes nothing, and assigning to a kept market throws `std::logic_error`.
+ * market is an ordinary market, which writes nothing, and assigning to a kept market or moving from it throws
+ * `std::logic_error`, leaving it as it was.
  */
 class Market {
 public:
@@ -624,15 +625,35 @@ private:
     std::optional<std::chrono::system_clock::time_point> to_;
   };
 
-  /** A kept market's record; a copy of the market has none, and assigning to a market that has one throws. */
+  /**
+   * A kept market's record; a copy of the market has none. Assigning to a market that has one, or moving from it, throws
+   * before any other member changes.
+   */
   struct Recorder {
     Recorder() = default;
 
     Recorder(const Recorder&) noexcept {}
 
+    Recorder(Recorder&& other) {
+      if (other.record_) {
+        throw std::logic_error("a mock market kept in a file cannot be moved from");
+      }
+    }
+
     Recorder& operator=(const Recorder&) {
       if (record_) {
         throw std::logic_error("a mock market kept in a file cannot be assigned to");
+      }
+      return *this;
+    }
+
+    Recorder& operator=(Recorder&& other) {
+      if (record_ || other.record_) {
+        throw std::logic_error(
+          record_ ?
+            "a mock market kept in a file cannot be assigned to" :
+            "a mock market kept in a file cannot be moved from"
+        );
       }
       return *this;
     }
@@ -929,7 +950,7 @@ private:
     done.filled_at_ = at;
   }
 
-  // First, so that assigning to a kept market throws before anything changes.
+  // First, so that assigning to a kept market or moving from it throws before anything changes.
   Recorder recorder_;
   MarketSettings settings_;
   std::chrono::system_clock::time_point now_;
