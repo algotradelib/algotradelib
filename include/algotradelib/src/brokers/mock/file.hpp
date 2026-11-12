@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -91,10 +92,9 @@ public:
   )
   : market_(std::move(bars), std::move(settings), std::move(instruments)), path_(std::move(path)) {
     open_file();
-    if (!opened_ && handle_ != nullptr) {
+    if (!opened_) {
       // A refused file is not held: its lock would refuse this program's own retry.
-      std::fclose(handle_);
-      handle_ = nullptr;
+      handle_.reset();
     }
     market_.recorder_.record_ = [this](const Market::Change& change) {
       return record(change);
@@ -102,11 +102,7 @@ public:
   }
 
   /** @brief Closes the file, which releases its lock. */
-  ~MarketFile() {
-    if (handle_ != nullptr) {
-      std::fclose(handle_);
-    }
-  }
+  ~MarketFile() = default;
 
   MarketFile(const MarketFile&) = delete;
   MarketFile& operator=(const MarketFile&) = delete;
@@ -351,6 +347,11 @@ private:
     return boost::json::serialize(header) + "\n";
   }
 
+  // Closes a stream; never called for the null a failed open leaves behind.
+  static void closer(std::FILE* handle) noexcept {
+    std::fclose(handle);
+  }
+
   // Opens, locks, checks and replays the file; on any refusal says why in `rejection_`. Only the repair of an
   // incomplete last line or header changes the file before a refusal.
   void open_file() {
@@ -359,7 +360,7 @@ private:
       return;
     }
 #if defined(_WIN32)
-    handle_ = std::fopen(path_.c_str(), "a+b");
+    handle_.reset(std::fopen(path_.c_str(), "a+b"));
 #else
     const int descriptor = ::open(path_.c_str(), O_RDWR | O_APPEND | O_CREAT | O_CLOEXEC, 0666);
     if (descriptor < 0) {
@@ -367,13 +368,15 @@ private:
       return;
     }
     if (::flock(descriptor, LOCK_EX | LOCK_NB) != 0) {
-      rejection_ = errno == EWOULDBLOCK ?
+      // Closed before the reason is stored, which may allocate and throw.
+      const bool held_elsewhere = errno == EWOULDBLOCK;
+      ::close(descriptor);
+      rejection_ = held_elsewhere ?
         "the mock market's state file is open in another market (one at a time)" :
         "the mock market's state file could not be locked";
-      ::close(descriptor);
       return;
     }
-    handle_ = ::fdopen(descriptor, "a+b");
+    handle_.reset(::fdopen(descriptor, "a+b"));
     if (handle_ == nullptr) {
       ::close(descriptor);
     }
@@ -383,14 +386,14 @@ private:
       return;
     }
     // Unbuffered: a failed write leaves nothing behind for a later flush to complete.
-    std::setvbuf(handle_, nullptr, _IONBF, 0);
+    std::setvbuf(handle_.get(), nullptr, _IONBF, 0);
     std::string text;
     char buffer[65536];
-    std::rewind(handle_);
-    while (const auto count = std::fread(buffer, 1, sizeof(buffer), handle_)) {
+    std::rewind(handle_.get());
+    while (const auto count = std::fread(buffer, 1, sizeof(buffer), handle_.get())) {
       text.append(buffer, count);
     }
-    if (std::ferror(handle_) != 0 || std::fseek(handle_, 0, SEEK_END) != 0) {
+    if (std::ferror(handle_.get()) != 0 || std::fseek(handle_.get(), 0, SEEK_END) != 0) {
       rejection_ = "the mock market's state file could not be read";
       return;
     }
@@ -456,24 +459,24 @@ private:
   // Shortens the file to `size` bytes and flushes it.
   bool cut(std::size_t size) {
 #if defined(_WIN32)
-    const bool shortened = ::_chsize_s(::_fileno(handle_), static_cast<long long>(size)) == 0;
+    const bool shortened = ::_chsize_s(::_fileno(handle_.get()), static_cast<long long>(size)) == 0;
 #else
-    const bool shortened = ::ftruncate(::fileno(handle_), static_cast<off_t>(size)) == 0;
+    const bool shortened = ::ftruncate(::fileno(handle_.get()), static_cast<off_t>(size)) == 0;
 #endif
-    return shortened && std::fseek(handle_, 0, SEEK_END) == 0 && sync();
+    return shortened && std::fseek(handle_.get(), 0, SEEK_END) == 0 && sync();
   }
 
   // Writes `line` at the end of the file; `false` unless every byte was.
   bool write_whole(const std::string& line) {
-    return std::fwrite(line.data(), 1, line.size(), handle_) == line.size() && std::fflush(handle_) == 0;
+    return std::fwrite(line.data(), 1, line.size(), handle_.get()) == line.size() && std::fflush(handle_.get()) == 0;
   }
 
   // Asks the system to put the file's bytes on the disk.
   bool sync() {
 #if defined(_WIN32)
-    return ::_commit(::_fileno(handle_)) == 0;
+    return ::_commit(::_fileno(handle_.get())) == 0;
 #else
-    return ::fsync(::fileno(handle_)) == 0;
+    return ::fsync(::fileno(handle_.get())) == 0;
 #endif
   }
 
@@ -628,7 +631,8 @@ private:
 
   Market market_;
   std::string path_;
-  std::FILE* handle_{nullptr};
+  // The open file, closed with the market or when its opening throws: closing releases its lock.
+  std::unique_ptr<std::FILE, void (*)(std::FILE*)> handle_{nullptr, &closer};
   std::string rejection_;
   bool opened_{false};
   bool failed_{false};

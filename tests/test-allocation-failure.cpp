@@ -1,9 +1,10 @@
 // What a failed allocation leaves behind in the lookup tables a wide replay builds, and in the descriptors a file
-// journal opens. This executable replaces the global allocator so a test can make its n-th allocation fail, and
+// journal or a kept mock market opens. This executable replaces the global allocator so a test can make its n-th allocation fail, and
 // walks n from the first allocation to the last one the operation makes.
 
 #include <algotradelib/backtest>
 #include <algotradelib/krx>
+#include <algotradelib/mock>
 #include <algotradelib/runner>
 
 #include <catch2/catch_test_macros.hpp>
@@ -799,6 +800,90 @@ TEST_CASE("a journal's replay interrupted by a failed allocation reads as a whol
       SKIP("no allocation the replay makes reaches the replaced allocator here");
     }
     same_as_whole_read();
+  }
+  std::remove(path.c_str());
+}
+
+namespace {
+
+// Three daily bars of one instrument, stamped at their close.
+std::vector<BarSeries> market_bars() {
+  BarSeries series;
+  series.instrument_ = named("KEPT");
+  series.stamp_ = BarStamp::CLOSE;
+  series.currency_ = krw();
+  for (int day = 0; day < 3; ++day) {
+    series.bars_.push_back(bar_of("KEPT", BarInterval::ONE_DAY).bar_);
+    series.bars_.back().timestamp_ += std::chrono::hours(24 * day);
+  }
+  return {series};
+}
+
+// A million won, from the first bar's close.
+mock::MarketSettings market_settings() {
+  mock::MarketSettings settings;
+  settings.cash_ = Money{Decimal64::parse("1000000"), krw()};
+  settings.start_ = market_bars()[0].bars_[0].timestamp_;
+  return settings;
+}
+
+} // namespace
+
+TEST_CASE("a kept mock market that fails to open for an allocation closes its file and releases its lock") {
+  const std::string path = "atl-test-allocation-failure-market.jsonl";
+  std::remove(path.c_str());
+  {
+    // A file with changes to replay: a resting order and a clock move.
+    mock::MarketFile first(path, market_bars(), market_settings());
+    REQUIRE(first.open());
+    OrderRequest order;
+    order.instrument_ = named("KEPT");
+    order.side_ = OrderSide::BUY;
+    order.type_ = OrderType::LIMIT;
+    order.quantity_ = Decimal64::parse("1");
+    order.price_ = Decimal64::parse("50");
+    REQUIRE(first.market().place(order));
+    first.market().advance_to(market_settings().start_ + std::chrono::hours(1));
+  }
+  const auto before = open_descriptors();
+  bool opened = false;
+  const int failures = fail_each_allocation(
+    [&] {
+      mock::MarketFile kept(path, market_bars(), market_settings());
+      opened = kept.open();
+    },
+    [&] {
+      CHECK(open_descriptors() == before);
+    }
+  );
+  CHECK(failures > 0);
+  // A lock left by a failed attempt would have refused this one.
+  CHECK(opened);
+  CHECK(open_descriptors() == before);
+  std::remove(path.c_str());
+}
+
+TEST_CASE("a kept mock market refused for another market's lock closes its descriptor after a failed allocation") {
+  const std::string path = "atl-test-allocation-failure-market-locked.jsonl";
+  std::remove(path.c_str());
+  {
+    mock::MarketFile first(path, market_bars(), market_settings());
+    REQUIRE(first.open());
+    const auto before = open_descriptors();
+    std::string rejection;
+    const int failures = fail_each_allocation(
+      [&] {
+        mock::MarketFile second(path, market_bars(), market_settings());
+        rejection = second.rejection();
+      },
+      [&] {
+        CHECK(open_descriptors() == before);
+      }
+    );
+    CHECK(failures > 0);
+    CHECK(rejection.find("open in another market") != std::string::npos);
+    CHECK(open_descriptors() == before);
+    CHECK(first.open());
   }
   std::remove(path.c_str());
 }
