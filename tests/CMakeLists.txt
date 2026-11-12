@@ -75,6 +75,10 @@ foreach(source IN LISTS ATL_TEST_SOURCES)
     endif()
 
     target_link_libraries(${test} PRIVATE Catch2::Catch2WithMain)
+    # This suite replaces the C library's fsync and calls the original through dlsym.
+    if(test STREQUAL "test-mock-file")
+        target_link_libraries(${test} PRIVATE ${CMAKE_DL_LIBS})
+    endif()
     # What CMake read out of version.hpp, so a test can compare it with what the preprocessor sees. The
     # project-named variable rather than PROJECT_VERSION, which a project() in a fetched dependency would
     # shadow within its own directory.

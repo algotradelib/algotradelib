@@ -5,6 +5,8 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iterator>
@@ -15,30 +17,40 @@
 #include <utility>
 #include <vector>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include <process.h>
+#else
 #include <cerrno>
 
 #include <dlfcn.h>
 #include <signal.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 namespace {
 
-// While set, `fsync` fails as a disk that cannot confirm a write does.
+// While set, `fsync` fails as a disk that cannot confirm a write does: on every descriptor, or on folders only.
 bool fail_fsync = false;
+bool fail_folder_fsync = false;
 
 } // namespace
 
 // Replaces the C library's `fsync` in this test program only, so a flush can fail after a write succeeded.
 extern "C" int fsync(int descriptor) {
-  if (fail_fsync) {
+  struct stat status{};
+  const bool folder = ::fstat(descriptor, &status) == 0 && S_ISDIR(status.st_mode);
+  if (fail_fsync || (fail_folder_fsync && folder)) {
     errno = EIO;
     return -1;
   }
   using Sync = int (*)(int);
   static const auto real = reinterpret_cast<Sync>(::dlsym(RTLD_NEXT, "fsync"));
+  if (real == nullptr) {
+    std::fputs("test-mock-file: the C library's fsync was not found\n", stderr);
+    std::abort();
+  }
   return real(descriptor);
 }
 #endif
@@ -240,15 +252,21 @@ void check_same(const mock::Market& kept, const mock::Market& plain) {
   }
 }
 
-/** A file in the working folder, removed before and after. */
+/** A file in a folder of its own under the temporary folder, named for the process and the case; removed after. */
 class TempFile {
 public:
-  explicit TempFile(const char* name) : path_(std::string("atl-test-mock-file-") + name + ".state") {
-    std::remove(path_.c_str());
+  explicit TempFile(const char* name)
+  : folder_(
+      std::filesystem::temp_directory_path() / ("atl-test-mock-file-" + std::to_string(process_id()) + "-" + name)
+    ) {
+    std::filesystem::remove_all(folder_);
+    std::filesystem::create_directories(folder_);
+    path_ = (folder_ / "market.state").string();
   }
 
   ~TempFile() {
-    std::remove(path_.c_str());
+    std::error_code ignored;
+    std::filesystem::remove_all(folder_, ignored);
   }
 
   TempFile(const TempFile&) = delete;
@@ -259,6 +277,15 @@ public:
   }
 
 private:
+  static long process_id() {
+#if defined(_WIN32)
+    return static_cast<long>(::_getpid());
+#else
+    return static_cast<long>(::getpid());
+#endif
+  }
+
+  std::filesystem::path folder_;
   std::string path_;
 };
 
@@ -610,6 +637,32 @@ TEST_CASE("a kept mock market can be copied without its file but not assigned to
   CHECK(plain.order_history({}).orders_.size() == 2);
 }
 
+TEST_CASE("a kept mock market cannot be moved from", "[mock][file]") {
+  const TempFile file("move");
+  const auto text = started(file);
+  auto opened = kept(file);
+  auto& market = opened->market();
+  const auto unchanged = [&] {
+    CHECK(market.order_history({}).orders_.size() == 2);
+    CHECK(market.cash() == Money{dec("10000000"), Currency{"KRW"}});
+    CHECK(market.instrument(samsung()));
+    CHECK(bytes_of(file.str()) == text);
+  };
+  CHECK_THROWS_AS(mock::Market(std::move(market)), std::logic_error);
+  unchanged();
+  mock::Market plain(two_instruments(), costed());
+  CHECK_THROWS_AS(plain = std::move(market), std::logic_error);
+  unchanged();
+  CHECK_THROWS_AS(std::swap(market, plain), std::logic_error);
+  unchanged();
+  // Still the file's market: it records the next change.
+  REQUIRE(market.place(limit_order(samsung(), OrderSide::BUY, "1", "100")));
+  CHECK(bytes_of(file.str()).size() > text.size());
+  // An ordinary market moves as before.
+  mock::Market moved(std::move(plain));
+  CHECK(moved.now() == utc(2026, 3, 2, 6, 30));
+}
+
 TEST_CASE("a kept mock market that halted reopens halted once at the same bar", "[mock][file]") {
   const TempFile file("halt");
   // The sale's proceeds fit an exact decimal; cash plus them does not.
@@ -699,6 +752,20 @@ private:
   void (*previous_)(int){SIG_DFL};
 };
 
+/** Lets `fsync` work again when a test leaves, however it leaves. */
+class SyncRestored {
+public:
+  SyncRestored() = default;
+
+  ~SyncRestored() {
+    fail_fsync = false;
+    fail_folder_fsync = false;
+  }
+
+  SyncRestored(const SyncRestored&) = delete;
+  SyncRestored& operator=(const SyncRestored&) = delete;
+};
+
 /** Checks that a market whose file failed refuses every change and leaves the file as it is. */
 void check_refuses_changes(mock::MarketFile& opened) {
   const auto text = bytes_of(opened.path());
@@ -761,6 +828,7 @@ TEST_CASE("a mock market line that cannot be written whole is not carried out", 
 }
 
 TEST_CASE("a mock market line written but not flushed may be carried out on reopening", "[mock][file]") {
+  const SyncRestored restored;
   const TempFile file("failed-flush");
   started(file);
   SECTION("a placement") {
@@ -865,6 +933,61 @@ TEST_CASE("a mock market file another market holds is refused", "[mock][file]") 
     CHECK(bytes_of(file.str()) == text);
     // The child is gone, and its lock with it.
     CHECK(kept(file)->open());
+  }
+}
+
+TEST_CASE("a mock market file is flushed with its folder before it is opened", "[mock][file]") {
+  const SyncRestored restored;
+  SECTION("a folder that cannot be flushed, from the first open on") {
+    const TempFile file("folder-flush");
+    fail_folder_fsync = true;
+    {
+      mock::MarketFile first(file.str(), two_instruments(), costed());
+      CHECK_FALSE(first.open());
+      CHECK(first.rejection().find("could not be started") != std::string::npos);
+    }
+    // The header was written whole, and its name is still not known to be on the disk.
+    const auto text = bytes_of(file.str());
+    REQUIRE(text.back() == '\n');
+    {
+      mock::MarketFile again(file.str(), two_instruments(), costed());
+      CHECK_FALSE(again.open());
+      CHECK(again.rejection().find("could not be flushed") != std::string::npos);
+      CHECK(
+        again.market().place(limit_order(samsung(), OrderSide::BUY, "1", "100")).error().broker_code_ ==
+        "state_not_written"
+      );
+    }
+    fail_folder_fsync = false;
+    CHECK(bytes_of(file.str()) == text);
+    mock::MarketFile last(file.str(), two_instruments(), costed());
+    CHECK(last.open());
+  }
+  SECTION("a change written and not flushed by an earlier process") {
+    const TempFile file("recovered-flush");
+    started(file);
+    {
+      auto opened = kept(file);
+      fail_fsync = true;
+      CHECK_THROWS_AS(opened->market().advance_to(utc(2026, 3, 4, 0, 0)), mock::MarketFileError);
+    }
+    const auto text = bytes_of(file.str());
+    {
+      mock::MarketFile again(file.str(), two_instruments(), costed(), references());
+      CHECK_FALSE(again.open());
+      CHECK(again.rejection().find("could not be flushed") != std::string::npos);
+    }
+    fail_fsync = false;
+    CHECK(bytes_of(file.str()) == text);
+    // Flushed, it stands, once.
+    CHECK(kept(file)->market().now() == utc(2026, 3, 4, 0, 0));
+    CHECK(kept(file)->market().now() == utc(2026, 3, 4, 0, 0));
+    std::size_t moves = 0;
+    for (auto at = text.find("\"advance\""); at != std::string::npos; at = text.find("\"advance\"", at + 1)) {
+      ++moves;
+    }
+    CHECK(moves == 1);
+    CHECK(bytes_of(file.str()) == text);
   }
 }
 
