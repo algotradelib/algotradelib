@@ -256,6 +256,30 @@ public:
   }
 
   /**
+   * @brief Returns the stated model.
+   * @return The model a stated policy charges; unused by a scheduled one.
+   */
+  const CommissionModel& stated_model() const noexcept {
+    return flat_;
+  }
+
+  /**
+   * @brief Returns the schedule.
+   * @return The schedule a scheduled policy resolves, or `std::nullopt` for a stated one.
+   */
+  const std::optional<CommissionSchedule>& schedule() const noexcept {
+    return schedule_;
+  }
+
+  /**
+   * @brief Returns the market whose local trading day a scheduled policy's dates are.
+   * @return The market; `Country::KR` for a stated policy, which does not read it.
+   */
+  Country dating_market() const noexcept {
+    return dating_market_;
+  }
+
+  /**
    * @brief Computes the commission on one execution.
    *
    * A scheduled policy charges no minimum (a schedule states none).

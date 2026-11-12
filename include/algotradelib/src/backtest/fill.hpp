@@ -245,6 +245,7 @@ public:
     model.market_price_name_ = std::move(name);
     model.market_price_ = std::move(price);
     model.next_close_ = false;
+    model.library_rule_.reset();
     return model;
   }
 
@@ -261,6 +262,7 @@ public:
   NextBarFillModel with_market_price(MarketPrice price) const {
     auto model = *this;
     model.next_close_ = false;
+    model.library_rule_ = price;
     switch (price) {
       case MarketPrice::NEXT_OPEN:
         model.market_price_name_.clear();
@@ -297,6 +299,15 @@ public:
    */
   bool has_market_price_rule() const noexcept {
     return static_cast<bool>(market_price_);
+  }
+
+  /**
+   * @brief Returns which of the library's market-price rules prices market orders.
+   * @return The rule, `MarketPrice::NEXT_OPEN` when none is set; `std::nullopt` when a caller's own function
+   *   (`with_market_price(std::string, MarketPriceFunction)`) does, whatever its name.
+   */
+  const std::optional<MarketPrice>& library_market_price() const noexcept {
+    return library_rule_;
   }
 
   /**
@@ -727,6 +738,8 @@ private:
   MarketPriceFunction market_price_;
   // Set only by `MarketPrice::NEXT_CLOSE`: refuse to price a bar longer than a day.
   bool next_close_{false};
+  // The library's rule in force; empty under a caller's own function.
+  std::optional<MarketPrice> library_rule_{MarketPrice::NEXT_OPEN};
 };
 
 } // namespace backtest
