@@ -354,6 +354,15 @@ public:
   }
 
   /**
+   * @brief Returns the account's cash, before what open buys reserve.
+   * @return The cash, in the one currency the market keeps it in; below zero after a market buy filled above the
+   *   price it reserved.
+   */
+  Money cash() const {
+    return Money{ledger_.cash_in(settings_.cash_.currency_).value_or(Decimal64(0, 0)), settings_.cash_.currency_};
+  }
+
+  /**
    * @brief Answers a buying-power request: cash less what open buys reserve.
    *
    * An open limit buy reserves its quantity at its limit, an open market buy its quantity at the
