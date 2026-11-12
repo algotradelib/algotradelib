@@ -446,11 +446,11 @@ private:
   // Shortens the file to `size` bytes and flushes it.
   bool cut(std::size_t size) {
 #if defined(_WIN32)
-    const bool cut = ::_chsize_s(::_fileno(handle_), static_cast<long long>(size)) == 0;
+    const bool shortened = ::_chsize_s(::_fileno(handle_), static_cast<long long>(size)) == 0;
 #else
-    const bool cut = ::ftruncate(::fileno(handle_), static_cast<off_t>(size)) == 0;
+    const bool shortened = ::ftruncate(::fileno(handle_), static_cast<off_t>(size)) == 0;
 #endif
-    return cut && std::fseek(handle_, 0, SEEK_END) == 0 && sync();
+    return shortened && std::fseek(handle_, 0, SEEK_END) == 0 && sync();
   }
 
   // Writes `line` at the end of the file; `false` unless every byte was.
