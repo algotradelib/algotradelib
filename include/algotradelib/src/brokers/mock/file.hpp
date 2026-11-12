@@ -33,16 +33,18 @@ namespace mock {
  *
  * For a program that runs once per command and trades the same account each time. Build it with the bars,
  * settings and reference data the market was first built with: the file's first line holds a digest of them
- * and of the rules the market fills by, and a file whose first line does not match is refused and left as it
- * was. The digest covers every series in the order given with every bar, the starting cash and instant, the
- * fill model (the market-price rule, the limit price, the whole commission policy, the slippage and the sell
- * tax; not the tariff's name), the session window's times, the market's calendar and each instrument's
- * reference data. It detects a different market; it does not authenticate the file.
+ * and of the rules the market fills by, and a file whose first line does not match is refused. The digest
+ * covers every series in the order given with every bar, the starting cash and instant, the fill model (the
+ * market-price rule, the limit price, the whole commission policy, the slippage and the sell tax; not the
+ * tariff's name), the session window's times, the market's calendar and each instrument's reference data.
+ * It detects a different market; it does not authenticate the file.
  *
  * Each later line records one change and its instant, never an answer: opening replays them, and the market
  * answers again as it did. A change is made only once its whole line is written and flushed to disk. A line
  * cut short (the process was killed while writing it) is never replayed, and opening removes it. Opening flushes
- * the file and its folder before the market takes a change, and refuses a file it cannot flush. When a
+ * the file and its folder before the market takes a change, and refuses a file it cannot flush. A file refused as
+ * another market's, of another format or rules, or damaged is left byte for byte as it was; an incomplete last line
+ * or header may be removed before an open that then fails, such as one whose flush fails. When a
  * line cannot be written whole, the change is not made and the call answers as `Market::place` documents
  * (`state_not_written`); when it was written and flushing it failed, the change is not made here but
  * reopening may make it (`state_unconfirmed`). After either, the market refuses every placement,
@@ -349,7 +351,8 @@ private:
     return boost::json::serialize(header) + "\n";
   }
 
-  // Opens, locks, checks and replays the file; on any refusal says why in `rejection_` and leaves it as it was.
+  // Opens, locks, checks and replays the file; on any refusal says why in `rejection_`. Only the repair of an
+  // incomplete last line or header changes the file before a refusal.
   void open_file() {
     if (!market_.settings_.fills_.library_market_price()) {
       rejection_ = "a mock market whose market orders a caller's own function prices cannot be kept in a file";
