@@ -73,8 +73,9 @@ Testing/
 *.gcno
 coverage/
 
-# journals a test binary run outside a build directory leaves behind
+# journals and mock market files a test binary run outside a build directory leaves behind
 atl-test-*.jsonl
+atl-test-*.state
 
 CMakeLists.txt.user
 CMakeCache.txt
