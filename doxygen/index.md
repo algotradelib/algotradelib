@@ -313,7 +313,10 @@ a strategy with a replay or a dry run, or on a KIS or Kiwoom demo account, first
 `<algotradelib/mock>` (included by no other umbrella) is a broker client like the others, `mock::MockClient` behind a `BlockingSession`, over a `mock::Market`: bars you give, a clock you drive (`mock::MarketClock`, which a polling loop waits on), and one account's cash, holdings and orders.
 Orders fill by the backtest's rule (`backtest::NextBarFillModel`, with its costs) against the first bar that began at or after the instant the market accepted them, and a `DAY` order expires as in a replay.
 Reference data and the trading days are what you give it, or defaults: a lot of one share and no price grid, and every date with a bar open.
-It models no trading hours, price band, partial fill, settlement or short sale, keeps cash in one currency, and persists nothing.
+It models no trading hours, price band, partial fill, settlement or short sale, and keeps cash in one currency.
+It lives in memory unless it is kept in a state file (`mock::MarketFile`), for a program that runs once per command and trades one account each time.
+The file records each placement, cancellation and clock move before the market makes it, and opening it again with the same bars, settings and reference data replays it to the same market; a file of another market is refused.
+A market whose market orders a caller's own function prices cannot be kept, and the file keeps no scripted fault.
 Its environment is always `"paper"` (`mock::environment`): it is not a broker's demo account.
 `mock::MockClient` can fail a call, lose a reply or repeat a stale read on purpose, for testing what a program does with an unknown outcome.
 Its calendar gives the loop a market phase, so `RiskLimits::permitted_phases_` applies as with a real broker: a daily bar stamped at the close is seen after the close (`POST_CLOSE`), which the default (`OPEN` only) does not permit.
