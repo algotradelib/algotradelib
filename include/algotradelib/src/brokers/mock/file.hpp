@@ -41,7 +41,8 @@ namespace mock {
  *
  * Each later line records one change and its instant, never an answer: opening replays them, and the market
  * answers again as it did. A change is made only once its whole line is written and flushed to disk. A line
- * cut short (the process was killed while writing it) is never replayed, and opening removes it. When a
+ * cut short (the process was killed while writing it) is never replayed, and opening removes it. Opening flushes
+ * the file and its folder before the market takes a change, and refuses a file it cannot flush. When a
  * line cannot be written whole, the change is not made and the call answers as `Market::place` documents
  * (`state_not_written`); when it was written and flushing it failed, the change is not made here but
  * reopening may make it (`state_unconfirmed`). After either, the market refuses every placement,
@@ -142,7 +143,8 @@ public:
 
   /**
    * @brief Returns the kept market, for `MockClient` and `MarketClock`.
-   * @return The market; copy it to try changes that are not recorded, but do not assign to it or move from it.
+   * @return The market; copy it to try changes that are not recorded. Assigning to it or moving from it throws
+   *   `std::logic_error`.
    */
   Market& market() noexcept {
     return market_;
@@ -416,6 +418,11 @@ private:
     }
     if (last + 1 < text.size() && !cut(last + 1)) {
       rejection_ = "the mock market's state file ends in a line cut short, which could not be removed";
+      return;
+    }
+    // An earlier process may have stopped before either flush: what was replayed must be on the disk before it stands.
+    if (!sync() || !sync_folder()) {
+      rejection_ = "the mock market's state file could not be flushed to disk";
       return;
     }
     opened_ = true;
