@@ -8,12 +8,15 @@
 #include "local_https_server.hpp"
 
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <memory>
 #include <optional>
+#include <ratio>
 #include <string>
+#include <tuple>
 #include <utility>
 
 #if !defined(_WIN32)
@@ -192,11 +195,14 @@ std::string contents_of(const std::string& path) {
   return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
-/** A cache whose every call fails, counting them. */
-class FailingCache : public network::CalendarCache {
+/** A cache that returns `held_` if it is set and otherwise fails, and fails every publication, counting calls. */
+class TestCache : public network::CalendarCache {
 public:
   Result<std::optional<TradingCalendar>> load(const std::string&) override {
     ++loads_;
+    if (held_) {
+      return held_;
+    }
     return network::calendar_cache_error("calendar cache: failed");
   }
 
@@ -205,9 +211,16 @@ public:
     return network::calendar_cache_error("calendar cache: failed");
   }
 
+  std::optional<TradingCalendar> held_;
   int loads_{0};
   int publications_{0};
 };
+
+/** The instant a test's clock returns. */
+Clock::time_point fixed_now;
+
+/** 2026-09-01T00:00:00Z; midnight in Seoul is 15:00 UTC. */
+const auto SEPTEMBER = Clock::from_time_t(1788220800);
 
 /** Checks two errors agree in every field a caller reads. */
 void check_same_error(const BrokerError& returned, const BrokerError& expected) {
@@ -245,11 +258,20 @@ TEST_CASE(
   CHECK(loaded.value().received_at_ == fetched.value().received_at_);
   CHECK(second->token().access_token_.empty());
 
-  // Held by the client now: answered without the file.
+  // Held by the client now: answered without the file, and still the day after.
   std::filesystem::remove(folder.at("calendars/kis-kr.calendar"));
   REQUIRE(second->calendar(Date{2026, 9, 3}));
+  kis::KisClientTestAccess::set_clock(*second, [] {
+    return Clock::now() + std::chrono::hours(24);
+  });
+  REQUIRE(second->calendar(FROM));
   CHECK(server.inquiries() == 1);
   CHECK(server.tokens() == 1);
+
+  // `refresh` asks KIS again although the client holds a calendar, and stores the answer.
+  REQUIRE(first->calendar(FROM, true));
+  CHECK(server.inquiries() == 2);
+  CHECK(cache->load("kis-kr").value()->received_at_ > fetched.value().received_at_);
 }
 
 TEST_CASE(
@@ -296,7 +318,7 @@ TEST_CASE("a failing cache is a miss and a KIS or token error comes back unchang
   {
     // A load that fails asks KIS; a publication that fails still returns the calendar, and KIS is asked once.
     Server server;
-    const auto failing = std::make_shared<FailingCache>();
+    const auto failing = std::make_shared<TestCache>();
     const auto fetched = server.client(nullptr, failing)->calendar(FROM);
     REQUIRE(fetched);
     CHECK(fetched.value().days_.size() == 3);
@@ -334,14 +356,54 @@ TEST_CASE("a failing cache is a miss and a KIS or token error comes back unchang
   CHECK(contents_of(folder.at("calendars/kis-kr.calendar")) == written);
 }
 
+TEST_CASE("a stored calendar received at the clock's limits is a miss", "[network][calendar]") {
+  for (const auto received : {Clock::time_point::max(), Clock::time_point::min()}) {
+    Server server;
+    const auto cache = std::make_shared<TestCache>();
+    cache->held_ = covering();
+    cache->held_->received_at_ = received;
+    REQUIRE(server.client(nullptr, cache)->calendar(FROM));
+    CHECK(server.inquiries() == 1);
+  }
+}
+
+TEST_CASE("a stored calendar is reused by its date in Seoul and not in UTC", "[network][calendar]") {
+  using std::chrono::hours;
+  // Checked at 01:00 and received at 23:00 on 2 September in Seoul, on two dates in UTC: reused.
+  // Checked at 23:00 on 1 September and received at 01:00 on 2 September in Seoul, on one date in UTC: not reused.
+  for (
+    const auto& [check, received, reused] : {
+      std::tuple{SEPTEMBER + hours(16), SEPTEMBER + hours(38), true},
+      std::tuple{SEPTEMBER + hours(14), SEPTEMBER + hours(16), false},
+    }
+  ) {
+    const TempFolder folder;
+    Server server;
+    const auto cache = std::make_shared<network::FileCalendarCache>(folder.at("calendars"));
+    auto stored = covering();
+    stored.received_at_ = received;
+    REQUIRE_FALSE(cache->publish("kis-kr", stored));
+    auto client = server.client(nullptr, cache);
+    fixed_now = check;
+    kis::KisClientTestAccess::set_clock(*client, [] {
+      return fixed_now;
+    });
+    REQUIRE(client->calendar(FROM));
+    CHECK(server.inquiries() == (reused ? 0U : 1U));
+  }
+}
+
 TEST_CASE("a calendar fetched across midnight in Seoul is returned and not published", "[network][calendar]") {
   const TempFolder folder;
   Server server;
   const auto cache = std::make_shared<network::FileCalendarCache>(folder.at("calendars"));
   auto client = server.client(nullptr, cache);
-  // The fetch starts on the day before the one its last page arrives on.
+  // The fetch starts on the date in UTC its last page arrives on, but on another date in Seoul.
+  const auto now = Clock::now();
+  const auto utc_midnight = std::chrono::floor<std::chrono::duration<std::int64_t, std::ratio<86400>>>(now);
+  fixed_now = now - utc_midnight < std::chrono::hours(15) ? utc_midnight + std::chrono::hours(23) : utc_midnight;
   kis::KisClientTestAccess::set_clock(*client, [] {
-    return Clock::now() - std::chrono::hours(24);
+    return fixed_now;
   });
   const auto fetched = client->calendar(FROM);
   REQUIRE(fetched);

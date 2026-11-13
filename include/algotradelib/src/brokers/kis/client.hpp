@@ -4597,9 +4597,13 @@ private:
     return std::move(*result);
   }
 
-  // Returns an instant's date in Seoul.
+  // Returns an instant's date in Seoul, or no valid date for an instant within a day of the clock's limits.
   static Date seoul_date(std::chrono::system_clock::time_point value) {
+    using TimePoint = std::chrono::system_clock::time_point;
     Date date;
+    if (value < TimePoint::min() + std::chrono::hours(24) || TimePoint::max() - std::chrono::hours(24) < value) {
+      return date;
+    }
     std::string ignored;
     KisClient::korea_calendar(value, date, ignored);
     return date;
