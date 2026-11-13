@@ -118,7 +118,6 @@ TEST_CASE("an adopted calendar answers without a request and a refused one chang
   Server server;
   auto blocking = server.client();
   auto& client = kis::KisClientTestAccess::async(*blocking);
-  CHECK_FALSE(client.cached_calendar(FROM));
   REQUIRE(client.adopt_calendar(covering()));
 
   auto foreign = covering();
@@ -128,11 +127,7 @@ TEST_CASE("an adopted calendar answers without a request and a refused one chang
   for (const auto& refused : {foreign, TradingCalendar{}, invalid}) {
     CHECK_FALSE(client.adopt_calendar(refused));
   }
-  const auto held = client.cached_calendar(FROM);
-  REQUIRE(held);
-  CHECK(held->days_.size() == 2);
-  CHECK_FALSE(client.cached_calendar(Date{2026, 9, 3}));
-
+  // The calendar adopted first still answers.
   const auto answered = blocking->calendar(FROM);
   REQUIRE(answered);
   CHECK(answered.value().days_.size() == 2);

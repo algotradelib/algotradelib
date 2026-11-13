@@ -849,21 +849,6 @@ public:
   }
 
   /**
-   * @brief Returns the calendar the client holds if it answers for a date without a request (`async_calendar`).
-   *
-   * Read it on the client's strand or before any request, with no calendar request in progress; on the blocking client, between calls.
-   *
-   * @param from The first date.
-   * @return The calendar, or nothing unless it spans `from` and has a row for `from` itself.
-   */
-  std::optional<TradingCalendar> cached_calendar(Date from) const {
-    if (!calendar_covers(calendar_, from)) {
-      return std::nullopt;
-    }
-    return calendar_;
-  }
-
-  /**
    * @brief Requests an access token unless the held one stays valid for five more minutes, as any request
    *   does first, and reports the token held afterwards.
    * @tparam CompletionToken An Asio completion token.
@@ -4355,8 +4340,8 @@ public:
       return drive<TradingCalendar>(request, "calendar");
     }
     if (!refresh) {
-      if (auto held = client_->cached_calendar(from)) {
-        return std::move(*held);
+      if (KisClient::calendar_covers(client_->calendar_, from)) {
+        return client_->calendar_;
       }
       auto loaded = calendars_->load("kis-kr");
       if (

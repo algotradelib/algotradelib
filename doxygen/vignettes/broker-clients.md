@@ -177,7 +177,7 @@ algotradelib::kis::KisBlockingClient client(tls, config, options, tokens, calend
 A client uses a stored calendar that was received on today's date in Seoul and covers the date asked, with no request and no token; otherwise it asks KIS and stores the answer, unless the inquiry ran across midnight in Seoul.
 A cache that cannot be read or written fails nothing: the client asks KIS, or returns what KIS answered.
 It is not a promise of one inquiry a day: programs that start together each ask, and so does `calendar(from, true)`, which is also the only way to see a correction KIS makes during the day.
-The asynchronous client offers `cached_calendar()` and `adopt_calendar()` to hand a calendar over yourself.
+The asynchronous client offers `adopt_calendar()` to hand a calendar over yourself.
 
 ## Order clients
 
