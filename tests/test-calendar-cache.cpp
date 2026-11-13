@@ -8,13 +8,11 @@
 #include "local_https_server.hpp"
 
 #include <chrono>
-#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <memory>
 #include <optional>
-#include <ratio>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -411,12 +409,9 @@ TEST_CASE("a calendar fetched across midnight in Seoul is returned and not publi
   Server server;
   const auto cache = std::make_shared<network::FileCalendarCache>(folder.at("calendars"));
   auto client = server.client(nullptr, cache);
-  // The fetch starts on the date in UTC its last page arrives on, but on another date in Seoul.
-  const auto now = Clock::now();
-  const auto utc_midnight = std::chrono::floor<std::chrono::duration<std::int64_t, std::ratio<86400>>>(now);
-  fixed_now = now - utc_midnight < std::chrono::hours(15) ? utc_midnight + std::chrono::hours(23) : utc_midnight;
+  // The fetch starts on an earlier date in Seoul than the one its last page arrives on.
   kis::KisClientTestAccess::set_clock(*client, [] {
-    return fixed_now;
+    return Clock::now() - std::chrono::hours(48);
   });
   const auto fetched = client->calendar(FROM);
   REQUIRE(fetched);
