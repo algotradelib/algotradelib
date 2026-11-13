@@ -84,6 +84,8 @@ namespace network {
  * a cache that finds otherwise returns its error and leaves them as they were.
  * A symbolic link at the folder's path or at the file's is not followed, and descriptors are closed on `exec`.
  * A file over 256 KiB, or one that is not well formed, reads as no calendar.
+ * `publish` refuses a calendar received outside what signed 64-bit nanoseconds since the epoch hold, less a day at each end (about the years 1677 to 2262).
+ * A count of unreadable days larger than a signed 64-bit integer holds is stored but reads as no calendar.
  *
  * Writers take no lock: each writes a temporary file of its own, `N.calendar.<process>-<count>.tmp`, flushes it and renames it over `N.calendar`, so a reader sees a whole file and the last writer's calendar stays.
  * A writer stopped before its rename can leave its temporary file; it is never read and may be removed.
@@ -137,6 +139,11 @@ public:
    * @return The cache's error, or nothing; the old file is left as it was on failure.
    */
   std::optional<BrokerError> publish(const std::string& name, const TradingCalendar& calendar) override {
+    const auto latest = std::chrono::duration_cast<std::chrono::system_clock::duration>(LATEST_RECEIPT);
+    const auto received = calendar.received_at_.time_since_epoch();
+    if (received < -latest || latest < received) {
+      return calendar_cache_error("calendar cache: the receipt time is outside the range the file holds");
+    }
     Descriptor folder;
     if (auto error = open_folder(name, folder)) {
       return error;
@@ -159,6 +166,8 @@ private:
   static constexpr int FILE_FLAGS = O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK;
   // Larger calendar files are not well formed.
   static constexpr std::size_t MAXIMUM_FILE = 256 * 1024;
+  // The receipt times the file holds, either side of the epoch: a day of margin keeps their date in Seoul within the clock's range.
+  static constexpr auto LATEST_RECEIPT = std::chrono::nanoseconds::max() - std::chrono::hours(24);
 
   // Owns a descriptor; negative for none.
   class Descriptor {
@@ -297,12 +306,8 @@ private:
       return std::nullopt;
     }
     calendar.country_ = *named;
-    // A day of margin either side keeps the Seoul date of any accepted instant within the clock's range.
     const auto since_epoch = std::chrono::nanoseconds(received->as_int64());
-    const auto margin = std::chrono::hours(24);
-    if (
-      since_epoch < std::chrono::nanoseconds::min() + margin || std::chrono::nanoseconds::max() - margin < since_epoch
-    ) {
+    if (since_epoch < -LATEST_RECEIPT || LATEST_RECEIPT < since_epoch) {
       return std::nullopt;
     }
     calendar.received_at_ = std::chrono::system_clock::time_point(

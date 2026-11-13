@@ -352,6 +352,35 @@ TEST_CASE("a calendar fetched across midnight in Seoul is returned and not publi
   CHECK_FALSE(stored.value());
 }
 
+TEST_CASE("a calendar received outside the file's range is refused and the old file kept", "[network][calendar]") {
+  const TempFolder folder;
+  network::FileCalendarCache cache(folder.at("calendars"));
+  // The latest receipt the file holds, to the clock's resolution, and its opposite.
+  const auto latest =
+    std::chrono::duration_cast<Clock::duration>(std::chrono::nanoseconds::max() - std::chrono::hours(24));
+  for (const auto edge : {latest, -latest}) {
+    auto calendar = covering();
+    calendar.received_at_ = Clock::time_point(edge);
+    REQUIRE_FALSE(cache.publish("kis-kr", calendar));
+    CHECK(cache.load("kis-kr").value()->received_at_ == calendar.received_at_);
+  }
+  const auto written = contents_of(folder.at("calendars/kis-kr.calendar"));
+  // One tick beyond either; the clock's own limits are beyond signed 64-bit nanoseconds on a coarser clock (macOS).
+  for (
+    const auto beyond :
+    {Clock::time_point(latest + Clock::duration(1)), Clock::time_point(-latest - Clock::duration(1)),
+      Clock::time_point::max(), Clock::time_point::min()}
+  ) {
+    auto calendar = covering();
+    calendar.received_at_ = beyond;
+    const auto refused = cache.publish("kis-kr", calendar);
+    REQUIRE(refused);
+    CHECK(refused->category_ == ErrorCategory::TRANSPORT);
+    CHECK(refused->broker_code_ == "calendar_cache");
+    CHECK(contents_of(folder.at("calendars/kis-kr.calendar")) == written);
+  }
+}
+
 TEST_CASE("interleaved publications each rename a whole file of their own", "[network][calendar]") {
   const TempFolder folder;
   network::FileCalendarCache cache(folder.at("calendars"));
