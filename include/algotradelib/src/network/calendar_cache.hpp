@@ -82,7 +82,9 @@ namespace network {
  * For name `N` the cache keeps `N.calendar`: JSON with the format (`1`), the country, `received_at_ns` (nanoseconds since the epoch), `unreadable_days` and the days as `[YYYYMMDD, open]` pairs in their order.
  * The folder and the file must be owned by the user running the program and give no permission to group or others;
  * a cache that finds otherwise returns its error and leaves them as they were.
- * A symbolic link at the folder's path or at the file's is not followed, and descriptors are closed on `exec`.
+ * A symbolic link at the file's name is refused, and so is one at the folder's own name when the folder is given without a trailing separator.
+ * A link earlier in the folder's path, or one reached through a trailing separator, is followed: avoiding both is the caller's part, and the folder and file opened must still be the user's alone.
+ * Descriptors are closed on `exec`.
  * A file over 256 KiB, or one that is not well formed, reads as no calendar.
  * `publish` refuses a calendar received outside what signed 64-bit nanoseconds since the epoch hold, less a day at each end (about the years 1677 to 2262).
  * A count of unreadable days larger than a signed 64-bit integer holds is stored but reads as no calendar.
