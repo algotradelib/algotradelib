@@ -4344,9 +4344,9 @@ public:
         return client_->calendar_;
       }
       auto loaded = calendars_->load("kis-kr");
+      const auto received = loaded && loaded.value() ? seoul_date(loaded.value()->received_at_) : Date{};
       if (
-        loaded && loaded.value() && loaded.value()->country_ == Country::KR &&
-        seoul_date(loaded.value()->received_at_) == seoul_date(now_()) &&
+        is_valid_date(received) && received == seoul_date(now_()) && loaded.value()->country_ == Country::KR &&
         KisClient::calendar_covers(*loaded.value(), from) && client_->adopt_calendar(std::move(*loaded.value()))
       ) {
         return client_->calendar_;
@@ -4354,7 +4354,7 @@ public:
     }
     const auto started = seoul_date(now_());
     auto result = run<TradingCalendar>(request, "calendar");
-    if (result && seoul_date(result.value().received_at_) == started) {
+    if (result && is_valid_date(started) && seoul_date(result.value().received_at_) == started) {
       calendars_->publish("kis-kr", result.value());
     }
     return result;

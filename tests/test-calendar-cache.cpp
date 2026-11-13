@@ -365,6 +365,19 @@ TEST_CASE("a stored calendar received at the clock's limits is a miss", "[networ
     REQUIRE(server.client(nullptr, cache)->calendar(FROM));
     CHECK(server.inquiries() == 1);
   }
+
+  // A clock at its limit too: no date in Seoul on either side, so neither a hit nor a publication.
+  Server server;
+  const auto cache = std::make_shared<TestCache>();
+  cache->held_ = covering();
+  cache->held_->received_at_ = Clock::time_point::max();
+  auto client = server.client(nullptr, cache);
+  kis::KisClientTestAccess::set_clock(*client, [] {
+    return Clock::time_point::min();
+  });
+  REQUIRE(client->calendar(FROM));
+  CHECK(server.inquiries() == 1);
+  CHECK(cache->publications_ == 0);
 }
 
 TEST_CASE("a stored calendar is reused by its date in Seoul and not in UTC", "[network][calendar]") {
