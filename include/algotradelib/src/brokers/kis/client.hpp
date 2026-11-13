@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../../network/calendar_cache.hpp"
 #include "../common/adapter.hpp"
 #include "../common/krx.hpp"
 #include "./config.hpp"
@@ -824,6 +825,42 @@ public:
     }
     token_ = std::move(token);
     return true;
+  }
+
+  /**
+   * @brief Uses a calendar obtained earlier, such as from a `network::CalendarCache`, instead of requesting one while it covers the date asked (`async_calendar`).
+   *
+   * Call it on the client's strand or before any request, with no calendar request in progress; on the blocking client, between calls.
+   *
+   * @param calendar The calendar; its `received_at_` is kept as it is.
+   * @return `false` (nothing adopted, the held calendar kept) if its country is not KR, it has no days, or a day's date is invalid.
+   */
+  bool adopt_calendar(TradingCalendar calendar) {
+    if (calendar.country_ != Country::KR || calendar.days_.empty()) {
+      return false;
+    }
+    for (const auto& day : calendar.days_) {
+      if (!is_valid_date(day.date_)) {
+        return false;
+      }
+    }
+    calendar_ = std::move(calendar);
+    return true;
+  }
+
+  /**
+   * @brief Returns the calendar the client holds if it answers for a date without a request (`async_calendar`).
+   *
+   * Read it on the client's strand or before any request, with no calendar request in progress; on the blocking client, between calls.
+   *
+   * @param from The first date.
+   * @return The calendar, or nothing unless it spans `from` and has a row for `from` itself.
+   */
+  std::optional<TradingCalendar> cached_calendar(Date from) const {
+    if (!calendar_covers(calendar_, from)) {
+      return std::nullopt;
+    }
+    return calendar_;
   }
 
   /**
@@ -4242,6 +4279,8 @@ private:
  * request authorized just before another program replaced the token can still be refused; it is not sent
  * again. A program stopped after KIS issued a token and before it was stored leaves the old one stored
  * until KIS refuses it.
+ *
+ * With a calendar cache, clients share KIS's trading calendar for the day, in this process or others (`network::CalendarCache`, see `calendar`): KIS asks that its holiday inquiry be made at most once a day.
  */
 class KisBlockingClient {
 public:
@@ -4251,13 +4290,15 @@ public:
    * @param config The credentials and environment.
    * @param options HTTP options.
    * @param store Where to share the access token (`network::TokenStore`), or null to keep it to this client.
+   * @param calendars Where to share the trading calendar (`network::CalendarCache`), or null to keep it to this client.
    */
   KisBlockingClient(
     ssl::context& context, KisConfig config, network::HttpClientOptions options = {},
-    std::shared_ptr<network::TokenStore> store = nullptr
+    std::shared_ptr<network::TokenStore> store = nullptr, std::shared_ptr<network::CalendarCache> calendars = nullptr
   )
   : store_(std::move(store)),
     identity_(store_ ? config.token_identity() : std::string()),
+    calendars_(std::move(calendars)),
     client_(std::make_shared<KisClient>(ioc_.get_executor(), context, std::move(config), options)) {
     client_->store_managed_ = store_ != nullptr;
   }
@@ -4292,17 +4333,46 @@ public:
 
   /**
    * @brief Returns the trading calendar from a date on; see `KisClient::async_calendar` (cached).
+   *
+   * With a calendar cache, unless `refresh`, a calendar the client holds that covers `from` is returned first, and then one the cache holds under `kis-kr` that is for KR, was received on today's date in Seoul and covers `from`; neither needs a token.
+   * Otherwise KIS is asked, and its calendar is stored in the cache if it was received on the date in Seoul the request started on.
+   * A cache that cannot be read or written changes nothing else: KIS is asked, or its calendar returned.
+   * KIS's own error is returned as it is, never a stored calendar.
+   * Clients that start together can each ask KIS; a correction KIS makes during the day is seen only with `refresh`.
+   *
    * @param from The first date; an invalid date is refused (`invalid_date`) before sending.
    * @param refresh `true` to request again even if the cache covers `from`.
    * @return The calendar or an error.
    */
   Result<TradingCalendar> calendar(Date from, bool refresh = false) {
-    return run<TradingCalendar>(
-      [&](auto&& sink) {
-        client_->async_calendar(from, refresh, std::move(sink));
-      },
-      "calendar"
-    );
+    const auto request = [&](auto&& sink) {
+      client_->async_calendar(from, refresh, std::move(sink));
+    };
+    if (!calendars_) {
+      return run<TradingCalendar>(request, "calendar");
+    }
+    if (!is_valid_date(from)) {
+      return drive<TradingCalendar>(request, "calendar");
+    }
+    if (!refresh) {
+      if (auto held = client_->cached_calendar(from)) {
+        return std::move(*held);
+      }
+      auto loaded = calendars_->load("kis-kr");
+      if (
+        loaded && loaded.value() && loaded.value()->country_ == Country::KR &&
+        seoul_date(loaded.value()->received_at_) == seoul_date(now_()) &&
+        KisClient::calendar_covers(*loaded.value(), from) && client_->adopt_calendar(std::move(*loaded.value()))
+      ) {
+        return client_->calendar_;
+      }
+    }
+    const auto started = seoul_date(now_());
+    auto result = run<TradingCalendar>(request, "calendar");
+    if (result && seoul_date(result.value().received_at_) == started) {
+      calendars_->publish("kis-kr", result.value());
+    }
+    return result;
   }
 
   /**
@@ -4542,8 +4612,21 @@ private:
     return std::move(*result);
   }
 
+  // Returns an instant's date in Seoul.
+  static Date seoul_date(std::chrono::system_clock::time_point value) {
+    Date date;
+    std::string ignored;
+    KisClient::korea_calendar(value, date, ignored);
+    return date;
+  }
+
   std::shared_ptr<network::TokenStore> store_;
   std::string identity_;
+  std::shared_ptr<network::CalendarCache> calendars_;
+  // The clock a calendar's date is checked against.
+  std::chrono::system_clock::time_point (*now_)() = [] {
+    return std::chrono::system_clock::now();
+  };
   net::io_context ioc_;
   std::shared_ptr<KisClient> client_;
 };
