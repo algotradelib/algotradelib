@@ -57,6 +57,7 @@ examples therefore pace at `RateLimitBudget{1, 1, 0}` (`kis_credentials::paced_o
 in `examples/kis_credentials.hpp`). At a burst of 1 the reserve changes nothing, and
 a blocking client sends one operation at a time, so an order waits behind whatever
 call is running on the same client: at startup, up to the calendar's 20 seconds.
+A later program on the same day can skip that wait by reading the calendar from a calendar cache ([talking to a broker directly](broker-clients.md)).
 
 **Kiwoom, measured on a demo account (2026-10-07):** a second request to the same API within a few
 milliseconds of the first is refused (`1700`, with the API's id); 300 ms apart it was served, and

@@ -163,6 +163,22 @@ A program stopped after the broker issued a token and before it was stored leave
 The asynchronous clients take no store; they offer `token()` and `adopt_token()` to hand a token over yourself, and `async_ensure_token()` to request one.
 `examples/example-live-program.cpp` shares its tokens through `--tokens DIR`.
 
+### Sharing the KIS calendar between programs
+
+KIS asks that its holiday inquiry (국내휴장일조회) be made at most once a day, and one inquiry takes up to 20 pages, about 20 s at one request a second.
+A KIS client keeps the calendar for its life; to share it with later programs on the machine, give the blocking clients one calendar cache, `network::CalendarCache`, after the token store:
+
+```cpp
+auto calendars = std::make_shared<algotradelib::network::FileCalendarCache>("atl-calendars");
+algotradelib::kis::KisBlockingClient client(tls, config, options, tokens, calendars);
+```
+
+`network::FileCalendarCache` keeps one file, `kis-kr.calendar`, for every key and environment, in a folder only the user can read; it is POSIX only and not provided on Windows.
+A client uses a stored calendar that was received on today's date in Seoul and covers the date asked, with no request and no token; otherwise it asks KIS and stores the answer, unless the inquiry ran across midnight in Seoul.
+A cache that cannot be read or written fails nothing: the client asks KIS, or returns what KIS answered.
+It is not a promise of one inquiry a day: programs that start together each ask, and so does `calendar(from, true)`, which is also the only way to see a correction KIS makes during the day.
+The asynchronous client offers `cached_calendar()` and `adopt_calendar()` to hand a calendar over yourself.
+
 ## Order clients
 
 Both brokers expose order placement, modification, cancellation, and order

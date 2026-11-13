@@ -48,6 +48,7 @@
  * already issued: KIS issues one a minute per key, and a new Toss token revokes the one before it. Keep
  * the folder as private as the credentials. On Windows the library has no file token store, and each
  * client requests its own.
+ * KIS's trading calendar is shared the same way, for the day, through `atl-calendars` beside the token folder.
  *
  * The broker-free part -- the order of journal, recovery, loop and report -- is `live_program.hpp`,
  * which the test suite drives against an in-memory session. This file only chooses a broker and a
@@ -208,6 +209,17 @@ std::shared_ptr<atl::network::TokenStore> token_store(const Arguments& arguments
 #endif
 }
 
+/** @brief The cache every KIS client of this run shares the trading calendar through, or null on Windows. */
+std::shared_ptr<atl::network::CalendarCache> calendar_cache(const Arguments& arguments) {
+#if defined(_WIN32)
+  (void)arguments;
+  return nullptr;
+#else
+  const std::filesystem::path tokens = arguments.tokens_ ? *arguments.tokens_ : "atl-tokens";
+  return std::make_shared<atl::network::FileCalendarCache>((tokens.parent_path() / "atl-calendars").string());
+#endif
+}
+
 /** @brief Runs the chosen mode, installing the signal stop for the run's duration. */
 template <typename Session, typename MarketData>
 int run(
@@ -243,8 +255,11 @@ int run_kis(ssl::context& tls, const Arguments& arguments) {
   announce(arguments, settings, demo, "KIS_DEMO");
 
   const auto tokens = token_store(arguments);
+  const auto calendars = calendar_cache(arguments);
   atl::BlockingSession<kis::KisBlockingClient> session(
-    std::make_shared<kis::KisBlockingClient>(tls, std::move(config), kis_credentials::paced_options(), tokens),
+    std::make_shared<kis::KisBlockingClient>(
+      tls, std::move(config), kis_credentials::paced_options(), tokens, calendars
+    ),
     std::move(account)
   );
 
@@ -279,7 +294,7 @@ int run_kis(ssl::context& tls, const Arguments& arguments) {
     if (market_config) {
       atl::BlockingSession<kis::KisBlockingClient> market_data(
         std::make_shared<kis::KisBlockingClient>(
-          tls, std::move(*market_config), kis_credentials::paced_options(), tokens
+          tls, std::move(*market_config), kis_credentials::paced_options(), tokens, calendars
         ),
         kis::KisAccount{}
       );
