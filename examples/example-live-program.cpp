@@ -48,7 +48,7 @@
  * already issued: KIS issues one a minute per key, and a new Toss token revokes the one before it. Keep
  * the folder as private as the credentials. On Windows the library has no file token store, and each
  * client requests its own.
- * KIS's trading calendar is shared the same way, for the day, through `atl-calendars` beside the token folder.
+ * KIS's trading calendar is shared the same way, for the day, through `atl-calendars` in the folder that holds the token folder (inside `DIR` when it is given as `DIR/`).
  *
  * The broker-free part -- the order of journal, recovery, loop and report -- is `live_program.hpp`,
  * which the test suite drives against an in-memory session. This file only chooses a broker and a

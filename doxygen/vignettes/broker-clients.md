@@ -175,7 +175,7 @@ algotradelib::kis::KisBlockingClient client(tls, config, options, tokens, calend
 
 `network::FileCalendarCache` keeps one file, `kis-kr.calendar`, for every key and environment, in a folder only the user can read; it is POSIX only and not provided on Windows.
 A client uses a stored calendar that was received on today's date in Seoul and covers the date asked, with no request and no token; otherwise it asks KIS and stores the answer, unless the inquiry ran across midnight in Seoul.
-A cache that cannot be read or written fails nothing: the client asks KIS, or returns what KIS answered.
+A cache that cannot be read or written fails nothing (an allocation can still throw): the client asks KIS, or returns what KIS answered.
 It is not a promise of one inquiry a day: programs that start together each ask, and so does `calendar(from, true)`, which is also the only way to see a correction KIS makes during the day.
 The asynchronous client offers `adopt_calendar()` to hand a calendar over yourself.
 
