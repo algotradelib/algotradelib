@@ -28,6 +28,7 @@ void equity(const Equity& running, const Equity& summed);
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -6647,6 +6648,49 @@ TEST_CASE("chained test replays compound their returns and keep each boundary wi
     }
   ) {
     CHECK_THROWS_AS(backtest::chain_results(folds), std::invalid_argument);
+  }
+}
+#endif
+
+#if defined(ATL_HAS_EIGEN)
+TEST_CASE("two replays on two threads over shared bars match a replay on one") {
+  vanilla::DonchianBreakout breaking;
+  breaking.params_.instrument_ = samsung();
+  breaking.params_.lookback_ = 5;
+  breaking.params_.quantity_ = Decimal64::parse("100");
+  std::vector<strategy::BarEvent> bars;
+  for (std::size_t at = 0; at < path().size(); ++at) {
+    const auto close = std::to_string(path()[at]);
+    const auto day = std::chrono::hours(24 * static_cast<int>(at));
+    bars.push_back(moving_bar(utc(2026, 3, 10, 6, 30) + day, BarInterval::ONE_DAY, close.c_str(), close.c_str()));
+  }
+  auto config = replay_config();
+  config.series_capacity_ = 64;
+  config.trade_from_ = bars[6].period_end_;
+  const auto& shared = bars;
+  const auto run = [&](backtest::ReplayResult& out) {
+    backtest::Backtester<vanilla::DonchianBreakout> engine(breaking, config);
+    for (const auto& bar : shared) {
+      engine.feed(bar);
+    }
+    engine.finish();
+    out = engine.result();
+  };
+  backtest::ReplayResult first;
+  backtest::ReplayResult second;
+  backtest::ReplayResult alone;
+  std::thread one(run, std::ref(first));
+  std::thread two(run, std::ref(second));
+  one.join();
+  two.join();
+  run(alone);
+  REQUIRE_FALSE(alone.executions_.empty());
+  for (const auto* other : {&first, &second}) {
+    REQUIRE(other->executions_.size() == alone.executions_.size());
+    REQUIRE(other->equity_.size() == alone.equity_.size());
+    for (std::size_t at = 0; at < alone.equity_.size(); ++at) {
+      CHECK(other->equity_[at].equity_ == alone.equity_[at].equity_);
+    }
   }
 }
 #endif

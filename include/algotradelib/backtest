@@ -8,6 +8,9 @@
  * Any bar interval works: the clock advances by each bar's period end, phases come from a session
  * window, and the number of periods an annualized figure needs is stated, not assumed. Includes no
  * broker or transport header.
+ *
+ * The library starts no thread. Two `Backtester`s may run on two threads (see its documentation), and
+ * `folds`, `measure_input` and `chain_results` are pure functions of their arguments.
  */
 
 #include "src/backtest/clock.hpp"

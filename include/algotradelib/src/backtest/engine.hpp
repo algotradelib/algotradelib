@@ -832,6 +832,10 @@ struct ReplayConfig {
  * const auto report = backtest::summarize(replay.result(), replay.fills());
  * @endcode
  *
+ * Two replays, each with its own strategy, configuration and fill model, may run at once on two threads: a replay
+ * writes only to its own objects. What they share (bars, records, instruments, price rules) must not change
+ * meanwhile, and code of yours they call (a market-price rule, the strategy's own) must be safe on two threads.
+ *
  * @tparam Strategy The strategy type.
  * @tparam CapsType The broker capabilities the strategy sees as `Ctx::caps`.
  */
