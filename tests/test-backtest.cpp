@@ -6620,6 +6620,46 @@ backtest::ReplayResult curve_of(int first_day, std::vector<const char*> equities
 
 } // namespace
 
+TEST_CASE("chained replays keep a small positive level positive at any decimal scale") {
+  // Each window buys one share at 10,000 with all its cash and ends holding it at 1: [10000, 1], so four chained
+  // windows end at 1e-12, a level four extra decimal places would have rounded to zero.
+  const auto window = [](int day) {
+    auto config = replay_config();
+    config.cash_ = Decimal64::parse("10000");
+    backtest::Backtester<BuysOnFirstBar> engine(BuysOnFirstBar{}, config);
+    engine.feed(moving_bar(utc(2026, 3, day, 6, 30), BarInterval::ONE_DAY, "10000", "10000"));
+    engine.feed(moving_bar(utc(2026, 3, day + 1, 6, 30), BarInterval::ONE_DAY, "10000", "1"));
+    engine.finish();
+    return engine.result();
+  };
+  const auto a = window(2);
+  const auto b = window(4);
+  const auto c = window(9);
+  const auto d = window(11);
+  REQUIRE(a.equity_.back().equity_ == Decimal64::parse("1"));
+  const auto chained = backtest::chain_results({&a, &b, &c, &d});
+  CHECK(analytics::to_scalar(chained.equity_.back().equity_) == Catch::Approx(1e-12).epsilon(1e-12));
+  CHECK(
+    backtest::summarize(chained, backtest::NextBarFillModel{}).total_return_ == Catch::Approx(1e-16 - 1).epsilon(1e-12)
+  );
+
+  // Idle replays whose cash is one unit at 252 places: the chain stays flat instead of wrapping the scale.
+  const auto idle = [](int day) {
+    auto config = replay_config();
+    config.cash_ = Decimal64(1, 252);
+    backtest::Backtester<Idles> engine(Idles{}, config);
+    engine.feed(moving_bar(utc(2026, 3, day, 6, 30), BarInterval::ONE_DAY, "100", "100"));
+    engine.feed(moving_bar(utc(2026, 3, day + 1, 6, 30), BarInterval::ONE_DAY, "100", "100"));
+    engine.finish();
+    return engine.result();
+  };
+  const auto first = idle(2);
+  const auto second = idle(4);
+  const auto flat = backtest::chain_results({&first, &second});
+  CHECK(flat.equity_.back().equity_.coefficient() > 0);
+  CHECK(backtest::summarize(flat, backtest::NextBarFillModel{}).total_return_ == Catch::Approx(0).margin(1e-12));
+}
+
 TEST_CASE("chained test replays compound their returns and keep each boundary without one") {
   auto a = curve_of(2, {"100", "110"});
   auto b = curve_of(4, {"200", "220", "198"});
@@ -6629,8 +6669,8 @@ TEST_CASE("chained test replays compound their returns and keep each boundary wi
   const auto chained = backtest::chain_results({&a, &b});
   REQUIRE(chained.equity_.size() == 5);
   CHECK(chained.equity_[2].equity_ == Decimal64::parse("110"));
-  CHECK(chained.equity_[3].equity_ == Decimal64(1210000, 4));
-  CHECK(chained.equity_[4].equity_ == Decimal64(1089000, 4));
+  CHECK(chained.equity_[3].equity_ == Decimal64(1210000000000000, 13));
+  CHECK(chained.equity_[4].equity_ == Decimal64(1089000000000000, 13));
   CHECK_FALSE(math::observed(chained.equity_[2].period_return_));
   CHECK(chained.equity_[4].period_return_ == b.equity_[2].period_return_);
   CHECK(chained.bars_ == 5);
@@ -6644,12 +6684,16 @@ TEST_CASE("chained test replays compound their returns and keep each boundary wi
   auto dollars = b;
   dollars.currency_ = Currency{"USD"};
   const auto broke = curve_of(4, {"0", "10"});
-  const auto huge = curve_of(2, {"1", "1000000000000000000"});
+  const auto huge = curve_of(2, {"1", "5000000000000000000"});
   const auto doubles = curve_of(4, {"1", "2"});
+  // A positive level of 1e-260 has no digit within a decimal's 255 places: refused, not rounded to no capital.
+  auto tiny = curve_of(2, {"1", "1"});
+  tiny.equity_[1].equity_ = Decimal64(1, 250);
+  const auto falls = curve_of(4, {"10000000000", "1"});
   const backtest::ReplayResult none;
   for (
     const auto& folds : std::vector<std::vector<const backtest::ReplayResult*>>{
-      {}, {nullptr}, {&halted}, {&none}, {&a, &dollars}, {&a, &a}, {&a, &broke}, {&huge, &doubles}
+      {}, {nullptr}, {&halted}, {&none}, {&a, &dollars}, {&a, &a}, {&a, &broke}, {&huge, &doubles}, {&tiny, &falls}
     }
   ) {
     CHECK_THROWS_AS(backtest::chain_results(folds), std::invalid_argument);
