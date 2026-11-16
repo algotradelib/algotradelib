@@ -6509,6 +6509,11 @@ TEST_CASE("bars before trade_from_ warm the strategy up and trade nothing") {
     CHECK(result.executions_[0].fill_.price_ == Decimal64::parse("72000"));
     REQUIRE(result.equity_.size() == 2);
     CHECK(result.equity_.front().at_ == d11);
+    // History is over once an event traded.
+    CHECK_THROWS_AS(
+      engine.feed(slice_bar(hynix(), d10 + std::chrono::hours(1), BarInterval::ONE_DAY, "1", "1")),
+      std::invalid_argument
+    );
   }
 
   SECTION("what history asks for is dropped, uncounted; on_start's order rests through it") {
@@ -6709,10 +6714,12 @@ TEST_CASE("a bootstrap path's closes go to the nearest grid price from the unrou
   const std::pair<const char*, Decimal64> cases[] = {
     {"1999.4", Decimal64(19990, 1)},
     {"1999.6", Decimal64(20000, 1)},
+    {"2000.0", Decimal64(20000, 1)},
     {"4997.5", Decimal64(50000, 1)},
     {"4999.5", Decimal64(50000, 1)},
     {"5000", Decimal64(50000, 1)},
     {"20024.9", Decimal64(200000, 1)},
+    {"20000", Decimal64(200000, 1)},
     {"20025", Decimal64(200500, 1)},
   };
   for (const auto& [level, nearest] : cases) {
@@ -6726,6 +6733,11 @@ TEST_CASE("a bootstrap path's closes go to the nearest grid price from the unrou
 
   PriceRule unit;
   unit.kind_ = PriceRule::Kind::UNCONSTRAINED;
+  // No grid: one unit at the closes' largest scale.
+  CHECK(
+    backtest::resample_closes({d("10.25"), d("10.50"), d("10.75")}, unit, {1, 1}) ==
+    std::vector<Decimal64>{d("10.25"), Decimal64(1049, 2), Decimal64(1074, 2)}
+  );
   PriceRule threes;
   threes.kind_ = PriceRule::Kind::STATED;
   threes.bands_ = {TickBand{d("0"), d("3")}};

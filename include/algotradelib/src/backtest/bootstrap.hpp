@@ -62,10 +62,6 @@ inline std::vector<Decimal64> resample_closes(
   if (!rule.grid_known()) {
     throw refuse("the price grid is unknown");
   }
-  std::vector<TickBand> bands = rule.bands_;
-  if (rule.kind_ == PriceRule::Kind::UNCONSTRAINED) {
-    bands = {TickBand{Decimal64(0, 0), Decimal64(1, 0)}};
-  }
   std::uint8_t scale = 0;
   // A value in grid units, refused at or beyond 2^53, where a double would no longer hold every integer.
   constexpr std::int64_t limit = std::int64_t{1} << 53;
@@ -81,14 +77,18 @@ inline std::vector<Decimal64> resample_closes(
       out *= 10;
     }
   };
-  // The bands in units, checked aligned, at the bands' own scale and again at the closes'.
+  // The bands in units, checked aligned, at the bands' own scale and again at the closes'; one unit unconstrained.
   std::vector<std::pair<std::int64_t, std::int64_t>> grid;
   const auto grid_in_units = [&]() {
     grid.clear();
-    for (const auto& band : bands) {
+    if (rule.kind_ == PriceRule::Kind::UNCONSTRAINED) {
+      grid.emplace_back(0, 1);
+      return;
+    }
+    for (const auto& band : rule.bands_) {
       scale = std::max({scale, band.from_.scale(), band.tick_.scale()});
     }
-    for (const auto& band : bands) {
+    for (const auto& band : rule.bands_) {
       const auto start = units(band.from_);
       const auto tick = units(band.tick_);
       if (tick <= 0 || start % tick != 0 || (!grid.empty() && start % grid.back().second != 0)) {
