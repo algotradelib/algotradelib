@@ -6360,3 +6360,50 @@ TEST_CASE("an order from a record against a close-stamped weekly bar is allowed 
   CHECK(engine.result().unchecked_fill_causality_ > 0);
 }
 #endif
+
+// ---------------------------------------------------------------------------
+// Evaluation: the measure input, history before a replay, folds, chained results
+// ---------------------------------------------------------------------------
+
+#if defined(ATL_HAS_EIGEN)
+TEST_CASE("the measure input holds the report and the curve's levels and returns") {
+  // Equity goes below zero, so later returns are missing and the ratios undefined, as in the report.
+  auto config = replay_config();
+  config.cash_ = Decimal64::parse("100000");
+  backtest::Backtester<HoldsTen> engine(HoldsTen{}, std::move(config));
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "50000"));
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "50000", "40000"));
+  engine.finish();
+
+  const auto in = backtest::measure_input(engine.result(), engine.fills(), 252.0);
+  const auto report = backtest::summarize(engine.result(), engine.fills(), 252.0);
+  const auto& curve = engine.result().equity_;
+  CHECK(&in.result_ == &engine.result());
+  CHECK(in.periods_per_year_ == 252.0);
+  CHECK(in.report_.total_return_ == report.total_return_);
+  CHECK(in.report_.max_drawdown_ == report.max_drawdown_);
+  CHECK(math::is_undefined(in.report_.sharpe_));
+  REQUIRE(in.levels_.size() == static_cast<math::Index>(curve.size()));
+  REQUIRE(in.returns_.size() == static_cast<math::Index>(curve.size()));
+  for (std::size_t at = 0; at < curve.size(); ++at) {
+    const auto k = static_cast<math::Index>(at);
+    CHECK(in.levels_[k] == analytics::to_scalar(curve[at].equity_));
+    CHECK(math::observed(in.returns_[k]) == math::observed(curve[at].period_return_));
+    if (math::observed(curve[at].period_return_)) {
+      CHECK(in.returns_[k] == curve[at].period_return_);
+    }
+  }
+  CHECK_FALSE(math::observed(in.returns_[3]));
+
+  // No curve: no throw, empty columns, and no period count when none was given.
+  backtest::Backtester<HoldsTen> idle(HoldsTen{}, replay_config());
+  idle.finish();
+  const auto empty = backtest::measure_input(idle.result(), idle.fills());
+  CHECK(empty.levels_.size() == 0);
+  CHECK(empty.returns_.size() == 0);
+  CHECK_FALSE(math::observed(empty.periods_per_year_));
+  CHECK_FALSE(math::observed(empty.report_.sharpe_));
+}
+#endif

@@ -322,21 +322,13 @@ struct Report {
   std::vector<Money> tax_by_currency_;
 };
 
-/**
- * @brief Summarizes a replay into a `Report`.
- *
- * @param result The replay's result.
- * @param fills The fill model the replay used, so the report states its costs and assumptions.
- * @param periods_per_year Periods in a year, for the annualized Sharpe ratio (see
- *   `backtest::periods_per_year`); absent leaves it `missing()`.
- * @param risk_free The risk-free rate per period, in the units of the returns.
- * @return The report.
- * @throws std::invalid_argument if `periods_per_year` is given, not positive, and the equity curve
- *   is not empty.
- */
+namespace report_detail {
+
+// `summarize`, also handing back the curve's levels and returns as the columns the metrics take (both empty
+// for an empty curve), so `measure_input` keeps them without a second pass.
 inline Report summarize(
-  const ReplayResult& result, const NextBarFillModel& fills,
-  std::optional<math::Scalar> periods_per_year = std::nullopt, math::Scalar risk_free = math::Scalar{0}
+  const ReplayResult& result, const NextBarFillModel& fills, std::optional<math::Scalar> periods_per_year,
+  math::Scalar risk_free, math::Vector& levels, math::Vector& returns
 ) {
   Report report;
   report.bars_ = result.bars_;
@@ -488,8 +480,8 @@ inline Report summarize(
   report.closing_equity_ = result.equity_.back().equity_;
 
   // The returns and the equity curve, as the columns the metrics take.
-  math::Vector returns(static_cast<math::Index>(result.equity_.size()));
-  math::Vector levels(static_cast<math::Index>(result.equity_.size()));
+  returns.resize(static_cast<math::Index>(result.equity_.size()));
+  levels.resize(static_cast<math::Index>(result.equity_.size()));
   for (std::size_t at = 0; at < result.equity_.size(); ++at) {
     returns[static_cast<math::Index>(at)] = result.equity_[at].period_return_;
     levels[static_cast<math::Index>(at)] = analytics::to_scalar(result.equity_[at].equity_);
@@ -546,6 +538,90 @@ inline Report summarize(
 
   return report;
 }
+
+} // namespace report_detail
+
+/**
+ * @brief Summarizes a replay into a `Report`.
+ *
+ * @param result The replay's result.
+ * @param fills The fill model the replay used, so the report states its costs and assumptions.
+ * @param periods_per_year Periods in a year, for the annualized Sharpe ratio (see
+ *   `backtest::periods_per_year`); absent leaves it `missing()`.
+ * @param risk_free The risk-free rate per period, in the units of the returns.
+ * @return The report.
+ * @throws std::invalid_argument if `periods_per_year` is given, not positive, and the equity curve
+ *   is not empty.
+ */
+inline Report summarize(
+  const ReplayResult& result, const NextBarFillModel& fills,
+  std::optional<math::Scalar> periods_per_year = std::nullopt, math::Scalar risk_free = math::Scalar{0}
+) {
+  math::Vector levels;
+  math::Vector returns;
+  return report_detail::summarize(result, fills, periods_per_year, risk_free, levels, returns);
+}
+
+/**
+ * @brief What a measure of a finished replay reads: the replay, its report, and its equity curve's levels and
+ *   returns as the columns `analytics::sharpe`, `analytics::sortino` and `analytics::max_drawdown` take.
+ *
+ * Built by `measure_input` after the replay, never during it. It borrows the replay: `result_` refers to the
+ * `ReplayResult` it was built from, so it must not outlive that result (for `Backtester::result()`, the
+ * engine). Nothing checks this. The deleted overload refuses only a temporary `ReplayResult` itself; an input
+ * built from `make_engine().result()`, or returned past its result, still dangles.
+ *
+ * The levels and returns are copies, because the curve keeps each equity as an exact decimal inside a point.
+ */
+struct MeasureInput {
+  /** @brief The replay: its curve (each point's time in `equity_[i].at_`), its executions and its counts. */
+  const ReplayResult& result_;
+  /** @brief `summarize` of the replay, with every built-in figure, `halted_` and the caveats. */
+  Report report_;
+  /** @brief Each curve point's equity, in order. */
+  math::Vector levels_;
+  /**
+   * @brief Each curve point's period return, in order; `missing()` where the curve leaves it undefined
+   *   (see `EquityPoint::period_return_`), which every analytics reduction skips.
+   */
+  math::Vector returns_;
+  /** @brief The periods per year given to `measure_input`, or `missing()` when none was given. */
+  math::Scalar periods_per_year_;
+};
+
+/**
+ * @brief Builds the input a measure reads from a finished replay, calling `summarize` once.
+ *
+ * Does not throw for an empty curve or a halted replay: the levels and returns are then empty or end at the
+ * halt, as the report's figures do. A measure computing its own ratio applies the report's rule for equity at
+ * or below zero by reading `math::is_undefined(report_.sharpe_)`.
+ *
+ * @param result The replay's result; it must outlive the input (see `MeasureInput`).
+ * @param fills The fill model the replay used.
+ * @param periods_per_year Periods in a year, as for `summarize`.
+ * @return The input.
+ * @throws std::invalid_argument if `periods_per_year` is given, not positive, and the equity curve is not
+ *   empty.
+ */
+inline MeasureInput measure_input(
+  const ReplayResult& result, const NextBarFillModel& fills, std::optional<math::Scalar> periods_per_year = std::nullopt
+) {
+  math::Vector levels;
+  math::Vector returns;
+  auto report = report_detail::summarize(result, fills, periods_per_year, math::Scalar{0}, levels, returns);
+  return MeasureInput{
+    result, std::move(report), std::move(levels), std::move(returns),
+    periods_per_year ? *periods_per_year : math::missing()
+  };
+}
+
+/**
+ * @brief Refused: the input would refer to a temporary result that is gone before the input is read.
+ * @return Nothing; it does not compile.
+ */
+MeasureInput measure_input(
+  const ReplayResult&&, const NextBarFillModel&, std::optional<math::Scalar> = std::nullopt
+) = delete;
 
 } // namespace backtest
 } // namespace algotradelib

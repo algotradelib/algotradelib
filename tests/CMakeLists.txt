@@ -103,6 +103,10 @@ file(GLOB ATL_COMPILE_FAIL_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR
 foreach(source IN LISTS ATL_COMPILE_FAIL_SOURCES)
     get_filename_component(stem ${source} NAME_WE)
     string(REGEX REPLACE "^test-" "" name ${stem})
+    # The measure input needs a linear algebra backend, as the report does.
+    if(NOT ATL_USE_EIGEN AND name MATCHES "^measure-input")
+        continue()
+    endif()
     # The expectation is read at configure time, so editing it must reconfigure.
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${source})
 
