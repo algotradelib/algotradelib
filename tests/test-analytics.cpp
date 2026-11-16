@@ -11,6 +11,7 @@
 #include <initializer_list>
 #include <limits>
 #include <optional>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -722,4 +723,35 @@ TEST_CASE("the window overloads say what the three-argument form spells out") {
   REQUIRE_THROWS_AS(analytics::rolling_mean(values, 3, 0), std::invalid_argument);
   REQUIRE_THROWS_AS(analytics::rolling_stdev(values, 3, 0), std::invalid_argument);
   REQUIRE_THROWS_AS(analytics::ema(values, 0.5, 0), std::invalid_argument);
+}
+
+// ---------------------------------------------------------------------------
+// Bootstrap indices
+// ---------------------------------------------------------------------------
+
+TEST_CASE("bootstrap indices are the same on every standard library for a seed and a path") {
+  using analytics::BlockScheme;
+  // The standard's own reference value for the engine, and the draws below 2499 of seed 42, path 7.
+  std::mt19937_64 engine;
+  engine.discard(9999);
+  CHECK(engine() == 9981545732273789042ULL);
+  auto plain = analytics::bootstrap_indices(2499, BlockScheme::CIRCULAR, 1, 42, 7);
+  plain.resize(5);
+  CHECK(plain == std::vector<std::size_t>{2013, 135, 1036, 61, 302});
+  CHECK(
+    analytics::bootstrap_indices(12, BlockScheme::MOVING, 4, 42, 7) ==
+    std::vector<std::size_t>{6, 7, 8, 9, 3, 4, 5, 6, 7, 8, 9, 10}
+  );
+  CHECK(
+    analytics::bootstrap_indices(12, BlockScheme::CIRCULAR, 4, 42, 7) ==
+    std::vector<std::size_t>{0, 1, 2, 3, 9, 10, 11, 0, 10, 11, 0, 1}
+  );
+  CHECK(
+    analytics::bootstrap_indices(12, BlockScheme::STATIONARY, 4, 42, 7) ==
+    std::vector<std::size_t>{0, 1, 2, 3, 11, 6, 0, 1, 9, 5, 6, 5}
+  );
+  CHECK(analytics::bootstrap_indices(3, BlockScheme::STATIONARY, 9, 1, 0).size() == 3);
+  CHECK_THROWS_AS(analytics::bootstrap_indices(0, BlockScheme::STATIONARY, 1, 1, 0), std::invalid_argument);
+  CHECK_THROWS_AS(analytics::bootstrap_indices(5, BlockScheme::STATIONARY, 0, 1, 0), std::invalid_argument);
+  CHECK_THROWS_AS(analytics::bootstrap_indices(5, BlockScheme::MOVING, 6, 1, 0), std::invalid_argument);
 }

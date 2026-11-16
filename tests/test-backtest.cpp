@@ -6694,3 +6694,61 @@ TEST_CASE("two replays on two threads over shared bars match a replay on one") {
   }
 }
 #endif
+
+TEST_CASE("a bootstrap path's closes go to the nearest grid price from the unrounded level") {
+  const auto d = [](const char* text) {
+    return Decimal64::parse(text);
+  };
+  const auto krx = krx::equity_price_rule();
+  // 5150 * 1.03 = 5304.5 rounds to 5300 on the 10-won band, not to 5305 and then 5310.
+  CHECK(
+    backtest::resample_closes({d("5000"), d("5000"), d("5150")}, krx, {1, 1}) ==
+    std::vector<Decimal64>{d("5000"), d("5150"), d("5300")}
+  );
+  // From 1638.4 (2^14 units of 0.1, so the level is the second close exactly) across the band boundaries; a tie goes up.
+  const std::pair<const char*, Decimal64> cases[] = {
+    {"1999.4", Decimal64(19990, 1)},
+    {"1999.6", Decimal64(20000, 1)},
+    {"4997.5", Decimal64(50000, 1)},
+    {"4999.5", Decimal64(50000, 1)},
+    {"5000", Decimal64(50000, 1)},
+    {"20024.9", Decimal64(200000, 1)},
+    {"20025", Decimal64(200500, 1)},
+  };
+  for (const auto& [level, nearest] : cases) {
+    INFO(level);
+    const auto path = backtest::resample_closes({d("1638.4"), d(level), d("1")}, krx, {0});
+    CHECK(path == std::vector<Decimal64>{Decimal64(16380, 1), nearest});
+  }
+  // The identity draw returns the closes as they are, off the grid and beyond 2^53 included.
+  const std::vector<Decimal64> raw{Decimal64(9007199254740993, 0), Decimal64(1234567, 3), d("5001")};
+  CHECK(backtest::resample_closes(raw, krx, {0, 1}) == raw);
+
+  PriceRule unit;
+  unit.kind_ = PriceRule::Kind::UNCONSTRAINED;
+  PriceRule threes;
+  threes.kind_ = PriceRule::Kind::STATED;
+  threes.bands_ = {TickBand{d("0"), d("3")}};
+  auto unaligned = threes;
+  unaligned.bands_.push_back(TickBand{d("10"), d("4")});
+  auto from_hundred = threes;
+  from_hundred.bands_ = {TickBand{d("100"), d("1")}};
+  const auto big = Decimal64(9007199254740991, 0);
+  const auto refused = [](const std::vector<Decimal64>& closes, const PriceRule& rule, std::vector<std::size_t> at) {
+    CHECK_THROWS_AS(backtest::resample_closes(closes, rule, at), std::invalid_argument);
+  };
+  refused({d("1")}, krx, {});
+  refused({d("1"), d("0")}, krx, {0});
+  refused({d("1"), d("2")}, krx, {0, 0});
+  refused({d("1"), d("2"), d("3")}, krx, {2});
+  refused({d("1"), d("2")}, PriceRule{}, {0});
+  refused({d("9"), d("9"), d("9")}, unaligned, {1, 1});
+  // A level of 1.28e16 units, and a tick-3 neighbour at 2^53 + 1 that a double would make a false tie.
+  refused(
+    {Decimal64(5000000000000000, 0), Decimal64(5000000000000000, 0), Decimal64(8000000000000000, 0)}, unit, {1, 1}
+  );
+  refused({big, big, big}, threes, {1, 1});
+  refused({Decimal64(9007199254740993, 0), d("1"), d("1")}, krx, {1});
+  refused({d("200"), d("50"), d("200")}, from_hundred, {0});
+  refused({d("1"), d("0.3"), d("1")}, krx, {0});
+}
