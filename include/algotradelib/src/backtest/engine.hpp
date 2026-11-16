@@ -690,7 +690,7 @@ struct ReplayResult {
   std::vector<strategy::GuardRejection> refused_;
   /** @brief Bars that did not follow their predecessor; gaps are not interpolated. */
   std::size_t gaps_{0};
-  /** @brief The bars fed. */
+  /** @brief The bars replayed; bars fed as history (`ReplayConfig::trade_from_`) are in `history_bars_`. */
   std::size_t bars_{0};
   /** @brief Orders still queued when `finish` ran. */
   std::size_t unfilled_{0};
@@ -760,6 +760,8 @@ struct ReplayResult {
   std::optional<std::chrono::system_clock::time_point> lowest_cash_at_;
   /** @brief `DAY` orders withdrawn unfilled when their session ended, as a broker does at the close. */
   std::size_t expired_day_orders_{0};
+  /** @brief The bars fed as history, before `ReplayConfig::trade_from_`. */
+  std::size_t history_bars_{0};
 };
 
 /** @brief A replay's settings, besides the strategy and the bars. */
@@ -799,6 +801,20 @@ struct ReplayConfig {
    * `trading_day` argument.
    */
   TradingCalendar calendar_;
+  /**
+   * @brief Where trading starts: an event earlier than it is history; empty, none is.
+   *
+   * A bar is history when its period end is earlier, a record when it became known earlier. History runs the
+   * strategy's handlers, so its series and state warm up, and discards what they ask for, as a live warm-up does
+   * (`Runner::feed_warmup`): nothing fills, no equity point is recorded, the clock and `on_phase` do not move,
+   * and nothing is counted as rejected or refused. `on_start` still runs at the first event, and an order it
+   * places rests through history and may fill on the first traded bar. A strategy keeping its own record of
+   * having traded can start trading believing it holds a position the book does not.
+   *
+   * Set it to the smallest period end among the first traded date's bars, not to a bar's timestamp: an
+   * open-stamped daily bar ends at the next one's timestamp. A quote before it is refused.
+   */
+  std::optional<std::chrono::system_clock::time_point> trade_from_;
 };
 
 /**
@@ -902,6 +918,9 @@ public:
    * bar settles, or at a quote at or after it, or at `finish`. Its orders wait for a later period's
    * bar, as `on_bar`'s do. Such a strategy is fed every bar of a period before anything later.
    *
+   * A bar before `ReplayConfig::trade_from_` is history: it is priced and goes to `on_bar` (or its period to
+   * `on_bars`), whose orders are discarded, and none of the other steps runs.
+   *
    * @param event The bar; feed bars in timestamp order across instruments. Within one instrument
    *   and interval each bar's timestamp must be later than the last.
    * @param trading_day Whether the bar's date trades, for the phase; empty gives `UNKNOWN`.
@@ -911,6 +930,8 @@ public:
    * @throws std::invalid_argument (for a strategy declaring `on_bars`, with or without a linear algebra
    *   backend) if the bar's period was already delivered, it is earlier than bars already fed, or its
    *   instrument and interval already have a bar for that period; thrown before anything changes.
+   * @throws std::invalid_argument if the bar is history and history has ended (`finish_history`, or a traded
+   *   event), before anything changes.
    */
   void feed(const strategy::BarEvent& event, std::optional<bool> trading_day = true) {
     // **A halted replay consumes nothing further.** `feed` keeps returning `void` so no caller has to
@@ -922,6 +943,7 @@ public:
       pending_.clear();
       return;
     }
+    const bool history = is_history(event.period_end_);
     if constexpr (Runner::takes_records) {
       // A bar that ended before a record already fed would be decided on with that record in view: data from
       // after the bar. Refused before anything changes, rather than replayed with a look-ahead.
@@ -950,6 +972,19 @@ public:
     // Before anything this bar changes, so an order `on_start` places is queued ahead of the first
     // `open_bar`: eligible on this bar, undated, decided before anything was seen.
     start_strategy();
+    if (history) {
+      ++result_.history_bars_;
+      set_price(slot, event);
+      if constexpr (Runner::takes_bar_slices) {
+        collect_for_slice(event, slot);
+      } else {
+        install_portfolio();
+        runner_.feed_warmup(event);
+      }
+      previous_ = std::make_pair(event.interval_, event.period_end_);
+      return;
+    }
+    history_over_ = true;
     ++result_.bars_;
     if (previous_ && !ReplayClock::contiguous(previous_->first, previous_->second, event)) {
       // A gap is counted rather than interpolated across: nothing happened in it that a strategy
@@ -1038,26 +1073,7 @@ public:
     }
 
     if constexpr (Runner::takes_bar_slices) {
-      // Cached and clocked now (priced above, so not again); the strategy sees it with the rest of its period.
-      auto& by_interval = slot.interval(event.interval_);
-#if defined(ATL_HAS_EIGEN)
-      using Access = runner::context_detail::PortfolioAccess;
-      forget_pointers_if_replaced();
-      if constexpr (Runner::records_bar_history) {
-        if (by_interval.series_ == nullptr) {
-          by_interval.series_ = &Access::series_for(runner_.context(), event);
-        }
-        by_interval.series_->push(event.bar_);
-      } else {
-        if (by_interval.bar_time_ == nullptr) {
-          by_interval.bar_time_ = &Access::bar_time_for(runner_.context(), event);
-        }
-        Access::advance_bar_time(*by_interval.bar_time_, event);
-      }
-#endif
-      runner_.context().set_now(event.period_end_);
-      pending_.add_checked(event);
-      by_interval.pending_ = event.period_end_;
+      collect_for_slice(event, slot);
     } else {
       install_portfolio();
       drain_reports(runner_.feed(event));
@@ -1066,6 +1082,23 @@ public:
     // reported. Before it would report only what settlement had already changed.
     publish_order_updates();
     previous_ = std::make_pair(event.interval_, event.period_end_);
+  }
+
+  /**
+   * @brief Ends history now (`ReplayConfig::trade_from_`): delivers a pending history period to `on_bars`, after
+   *   which every history handler has run and no traded one has. An event before `trade_from_` is refused
+   *   afterwards. Optional, and idempotent: without it the first traded event delivers that period.
+   */
+  void finish_history() {
+    if (history_over_ || result_.halted_) {
+      return;
+    }
+    if constexpr (Runner::takes_bar_slices) {
+      if (!pending_.empty() && is_history(pending_.period_end())) {
+        deliver_pending();
+      }
+    }
+    history_over_ = true;
   }
 
   /**
@@ -1087,6 +1120,7 @@ public:
    * @param trading_day Whether the quote's date trades; empty gives `UNKNOWN`.
    * @throws std::invalid_argument for a strategy declaring `on_bars`, if the quote is earlier than bars
    *   already fed; a quote at or after a pending period first delivers that period to `on_bars`.
+   * @throws std::invalid_argument if the quote is before `ReplayConfig::trade_from_`.
    */
   void feed(const strategy::QuoteEvent& event, std::optional<bool> trading_day = true) {
     // The same rule `feed(const BarEvent&)` opens with: a halted replay consumes nothing further,
@@ -1095,6 +1129,9 @@ public:
     if (result_.halted_) {
       pending_.clear();
       return;
+    }
+    if (config_.trade_from_ && event.quote_.received_at_ < *config_.trade_from_) {
+      throw std::invalid_argument("a quote before trade_from_: a replay feeds no quote as history");
     }
     if constexpr (Runner::takes_bar_slices) {
       // A quote at or after the pending period comes after it: the period is delivered while its own
@@ -1117,6 +1154,7 @@ public:
         }
       }
     }
+    history_over_ = true;
     ++result_.quotes_;
     // The runner prices the instrument at this quote before any handler runs on it.
     slot_for(event.quote_.instrument_).priced_at_ = event.quote_.received_at_;
@@ -1176,11 +1214,14 @@ public:
    * as for a quote. A record does not price an instrument, mark the ledger, record an equity point or fill
    * anything. On the replay's first event, `on_start` is called first, dated at the record.
    *
+   * A record before `ReplayConfig::trade_from_` is history: it goes to `on_data`, whose orders are discarded,
+   * without moving the clock; `on_start`'s orders are then undated.
+   *
    * @tparam T The record type.
    * @param event The record.
    * @param trading_day Whether the record's date trades; empty gives `UNKNOWN`.
    * @throws std::invalid_argument if the record is earlier than a record or a bar already fed, or, for a strategy
-   *   declaring `on_bars`, than a period already delivered.
+   *   declaring `on_bars`, than a period already delivered, or is history after history ended.
    */
   template <typename T>
   void feed(const strategy::DataEvent<T>& event, std::optional<bool> trading_day = true) {
@@ -1194,6 +1235,7 @@ public:
       return;
     }
     const auto at = event.known_at_;
+    const bool history = is_history(at);
     // Records come in time order, with each other and with the bars: one earlier than either was fed out of
     // order, and is refused before anything changes.
     if (latest_record_at_ && at < *latest_record_at_) {
@@ -1227,6 +1269,14 @@ public:
     }
     ++result_.records_;
     latest_record_at_ = at;
+    if (history) {
+      // Undated, so an order `on_start` places here rests through history as one placed at a history bar does.
+      start_strategy();
+      install_portfolio();
+      runner_.feed_warmup(event);
+      return;
+    }
+    history_over_ = true;
     runner_.executor().deciding_at(at);
     start_strategy();
     const bool phase_changed = clock_.advance_to(at, trading_day);
@@ -1334,6 +1384,40 @@ private:
     }
   };
 
+  // Caches a bar for `on_bars` and holds it with the rest of its period; it is priced already, so not again.
+  void collect_for_slice(const strategy::BarEvent& event, InstrumentSlot& slot) {
+    auto& by_interval = slot.interval(event.interval_);
+#if defined(ATL_HAS_EIGEN)
+    using Access = runner::context_detail::PortfolioAccess;
+    forget_pointers_if_replaced();
+    if constexpr (Runner::records_bar_history) {
+      if (by_interval.series_ == nullptr) {
+        by_interval.series_ = &Access::series_for(runner_.context(), event);
+      }
+      by_interval.series_->push(event.bar_);
+    } else {
+      if (by_interval.bar_time_ == nullptr) {
+        by_interval.bar_time_ = &Access::bar_time_for(runner_.context(), event);
+      }
+      Access::advance_bar_time(*by_interval.bar_time_, event);
+    }
+#endif
+    runner_.context().set_now(event.period_end_);
+    pending_.add_checked(event);
+    by_interval.pending_ = event.period_end_;
+  }
+
+  // Whether an event at `at` is history (`ReplayConfig::trade_from_`); refuses one once history has ended.
+  bool is_history(std::chrono::system_clock::time_point at) const {
+    if (!config_.trade_from_ || !(at < *config_.trade_from_)) {
+      return false;
+    }
+    if (history_over_) {
+      throw std::invalid_argument("an event before trade_from_ after history ended: feed history first");
+    }
+    return true;
+  }
+
   // Refuses a bar a strategy declaring `on_bars` cannot be shown consistently: one for a period already
   // delivered (it would start a second slice for that period, and could meet an order decided on the
   // first), one earlier than the pending period, or a second bar of one instrument and interval in a
@@ -1372,9 +1456,15 @@ private:
     const auto end = pending_.period_end();
     auto slices = pending_.take();
     delivered_through_ = end;
+    const bool history = config_.trade_from_ && end < *config_.trade_from_;
     for (const auto& slice : slices) {
       if (result_.halted_) {
         return;
+      }
+      if (history) {
+        install_portfolio();
+        runner_.feed_warmup(slice);
+        continue;
       }
       bool exact = false;
       for (const auto& bar : slice.bars_) {
@@ -2257,6 +2347,8 @@ private:
   std::optional<std::chrono::system_clock::time_point> delivered_through_;
   // When the last record fed became known; a bar that ended before it is refused.
   std::optional<std::chrono::system_clock::time_point> latest_record_at_;
+  // Whether history ended (`finish_history`, or a traded event), after which an event before `trade_from_` is refused.
+  bool history_over_{false};
 };
 
 } // namespace backtest

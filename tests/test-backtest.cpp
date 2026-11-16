@@ -6463,3 +6463,132 @@ TEST_CASE("folds keep whole test blocks over positions whether rolling or expand
   CHECK_THROWS_AS(backtest::folds(20, lengths, LooksAhead{}), std::invalid_argument);
   CHECK_THROWS_AS(backtest::folds(20, lengths, RollingWithGap{6}), std::invalid_argument);
 }
+
+namespace {
+
+/** Buys ten on the second bar it sees, so a bar of history is what lets it trade on the first traded bar. */
+struct BuysOnSecondBar {
+  std::size_t seen_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (++seen_ == 2) {
+      ctx.submit(
+        strategy::OrderIntent::market(
+          bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
+        )
+      );
+    }
+  }
+};
+
+backtest::ReplayConfig trading_from(Clock::time_point at) {
+  auto config = replay_config();
+  config.trade_from_ = at;
+  return config;
+}
+
+} // namespace
+
+TEST_CASE("bars before trade_from_ warm the strategy up and trade nothing") {
+  const auto d10 = utc(2026, 3, 10, 6, 30);
+  const auto d11 = utc(2026, 3, 11, 6, 30);
+  const auto d12 = utc(2026, 3, 12, 6, 30);
+
+  SECTION("history primes the strategy, and its first traded order fills on the next bar") {
+    backtest::Backtester<BuysOnSecondBar> engine(BuysOnSecondBar{}, trading_from(d11));
+    engine.feed(moving_bar(d10, BarInterval::ONE_DAY, "69000", "70000"));
+    engine.feed(moving_bar(d11, BarInterval::ONE_DAY, "70500", "71000"));
+    engine.feed(moving_bar(d12, BarInterval::ONE_DAY, "72000", "73000"));
+    engine.finish();
+    const auto& result = engine.result();
+    CHECK(result.history_bars_ == 1);
+    CHECK(result.bars_ == 2);
+    REQUIRE(result.executions_.size() == 1);
+    CHECK(result.executions_[0].fill_.price_ == Decimal64::parse("72000"));
+    REQUIRE(result.equity_.size() == 2);
+    CHECK(result.equity_.front().at_ == d11);
+  }
+
+  SECTION("what history asks for is dropped, uncounted; on_start's order rests through it") {
+    backtest::Backtester<BuysOnFirstBar> dropped(BuysOnFirstBar{}, trading_from(d11));
+    dropped.feed(moving_bar(d10, BarInterval::ONE_DAY, "69000", "70000"));
+    dropped.feed(moving_bar(d11, BarInterval::ONE_DAY, "70500", "71000"));
+    dropped.finish();
+    CHECK(dropped.result().executions_.empty());
+    CHECK(dropped.result().rejected_.empty());
+    CHECK(dropped.result().refused_.empty());
+
+    backtest::Backtester<RecordsStart> starts(buying_at_start(), trading_from(d11));
+    starts.feed(moving_bar(d10, BarInterval::ONE_DAY, "70000", "72000"));
+    CHECK(starts.strategy().fill_prices_.empty());
+    starts.feed(moving_bar(d11, BarInterval::ONE_DAY, "70000", "72000"));
+    CHECK(starts.strategy().fill_prices_ == std::vector<Decimal64>{Decimal64::parse("71000")});
+  }
+
+  SECTION("a history period reaches on_bars and its order is dropped") {
+    backtest::Backtester<BuysOnFirstSlice> engine(BuysOnFirstSlice{}, trading_from(d11));
+    engine.feed(slice_bar(samsung(), d10, BarInterval::ONE_DAY, "69000", "70000"));
+    engine.feed(slice_bar(samsung(), d11, BarInterval::ONE_DAY, "70500", "71000"));
+    engine.feed(slice_bar(samsung(), d12, BarInterval::ONE_DAY, "72000", "73000"));
+    engine.finish();
+    CHECK(engine.strategy().done_);
+    CHECK(engine.result().executions_.empty());
+    CHECK(engine.result().history_bars_ == 1);
+  }
+
+  SECTION("a history record reaches on_data; a quote before trade_from_ is refused") {
+    ReadsRecords strategy;
+    strategy.buy_on_record_ = true;
+    backtest::Backtester<ReadsRecords> engine(std::move(strategy), trading_from(d11));
+    engine.feed(flag_at(utc(2026, 3, 10, 1, 0), 1));
+    engine.feed(moving_bar(d10, BarInterval::ONE_DAY, "69000", "70000"));
+    CHECK_THROWS_AS(engine.feed(quote_at(utc(2026, 3, 10, 7, 0), "70000")), std::invalid_argument);
+    engine.feed(moving_bar(d11, BarInterval::ONE_DAY, "70500", "71000"));
+    engine.feed(moving_bar(d12, BarInterval::ONE_DAY, "72000", "73000"));
+    engine.finish();
+    CHECK(engine.strategy().seen_at_bar_ == std::vector<std::optional<int>>{1, 1, 1});
+    CHECK(engine.result().records_ == 1);
+    CHECK(engine.result().quotes_ == 0);
+    CHECK(engine.result().executions_.empty());
+  }
+
+  SECTION("open-stamped daily bars: the last history bar ends where the first traded bar starts") {
+    const auto day = [](Clock::time_point at, const char* close) {
+      return slice_bar(samsung(), at, BarInterval::ONE_DAY, close, close, BarStamp::OPEN);
+    };
+    const auto open10 = utc(2026, 3, 10, 0, 0);
+    const auto open11 = utc(2026, 3, 11, 0, 0);
+    backtest::Backtester<BuysOnSecondBar> right(BuysOnSecondBar{}, trading_from(open11 + std::chrono::hours(24)));
+    backtest::Backtester<BuysOnSecondBar> wrong(BuysOnSecondBar{}, trading_from(open11));
+    for (auto* engine : {&right, &wrong}) {
+      engine->feed(day(open10, "70000"));
+      engine->feed(day(open11, "71000"));
+    }
+    CHECK(right.result().history_bars_ == 1);
+    CHECK(wrong.result().history_bars_ == 0);
+  }
+}
+
+TEST_CASE("finish_history delivers the last history period and ends history") {
+  const auto d = [](int day) {
+    return slice_bar(samsung(), utc(2026, 3, day, 6, 30), BarInterval::ONE_DAY, "100", "101");
+  };
+  backtest::Backtester<RecordsStartBySlice> engine(RecordsStartBySlice{}, trading_from(utc(2026, 3, 12, 6, 30)));
+  engine.feed(d(10));
+  engine.feed(d(11));
+  CHECK(engine.strategy().calls_.size() == 2);
+  engine.finish_history();
+  engine.finish_history();
+  const auto at_boundary = engine.strategy().calls_.size();
+  CHECK(at_boundary == 3);
+  CHECK_THROWS_AS(
+    engine.feed(slice_bar(hynix(), utc(2026, 3, 11, 7, 0), BarInterval::ONE_DAY, "1", "1")), std::invalid_argument
+  );
+  engine.feed(d(12));
+  engine.feed(d(13));
+  engine.finish();
+  CHECK(engine.strategy().calls_.size() - at_boundary == 2);
+  CHECK(engine.result().history_bars_ == 2);
+  CHECK(engine.result().bars_ == 2);
+}

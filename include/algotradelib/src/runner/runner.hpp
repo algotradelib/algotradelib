@@ -1764,6 +1764,25 @@ public:
   }
 
   /**
+   * @brief Feeds one record as history: like `feed(const strategy::DataEvent<T>&)`, but whatever the strategy asks
+   *   for is discarded (counted in `warmup_instructions_discarded`).
+   *
+   * @tparam T The record type.
+   * @param event The record.
+   */
+  template <typename T>
+  void feed_warmup(const strategy::DataEvent<T>& event) {
+    static_assert(
+      strategy::strategy_detail::declares_on_data<Strategy>,
+      "a record fed to a strategy that declares no on_data would vanish: declare on_data, or feed no records"
+    );
+    static_assert(std::is_same_v<T, DataRecord>, "a record must be of the strategy's data_type");
+    context_.set_now(event.known_at_);
+    dispatch::data(strategy_, context_, event);
+    warmup_instructions_discarded_ += context_.drain().size();
+  }
+
+  /**
    * @brief Returns how many instructions `feed_warmup` discarded.
    * @return The count over the runner's life.
    */
