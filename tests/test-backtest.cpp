@@ -6687,6 +6687,30 @@ TEST_CASE("chained replays keep a small positive level positive at any decimal s
   const auto flat = backtest::chain_results({&first, &second});
   CHECK(flat.equity_.back().equity_.coefficient() > 0);
   CHECK(backtest::summarize(flat, backtest::NextBarFillModel{}).total_return_ == Catch::Approx(0).margin(1e-12));
+
+  // Windows ending with the share marked at 1e-200: the second chains to 1e-404, whose product in double underflows
+  // to zero. A positive level is refused, not accepted as no capital.
+  const auto sinking = [](int day) {
+    auto config = replay_config();
+    config.cash_ = Decimal64::parse("10000");
+    backtest::Backtester<BuysOnFirstBar> engine(BuysOnFirstBar{}, config);
+    engine.feed(moving_bar(utc(2026, 3, day, 6, 30), BarInterval::ONE_DAY, "10000", "10000"));
+    Bar marked;
+    marked.timestamp_ = utc(2026, 3, day + 1, 6, 30);
+    marked.open_ = Decimal64::parse("10000");
+    marked.low_ = Decimal64::parse("10000");
+    marked.high_ = Decimal64(1, 200);
+    marked.close_ = Decimal64(1, 200);
+    marked.volume_ = Decimal64::parse("1000");
+    engine.feed(strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, marked));
+    engine.finish();
+    return engine.result();
+  };
+  const auto sunk = sinking(2);
+  const auto sunk_again = sinking(4);
+  REQUIRE(sunk.executions_.size() == 1);
+  REQUIRE(analytics::to_scalar(sunk.equity_.back().equity_) == Catch::Approx(1e-200).epsilon(1e-12));
+  CHECK_THROWS_AS(backtest::chain_results({&sunk, &sunk_again}), std::invalid_argument);
 }
 
 TEST_CASE("chained test replays compound their returns and keep each boundary without one") {
