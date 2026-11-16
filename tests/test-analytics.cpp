@@ -529,7 +529,7 @@ static_assert(ema_accepts<float>::value, "a float is promoted, not ambiguous");
 static_assert(!ema_accepts<int>::value, "an int is a span: alpha_from_span");
 static_assert(!ema_accepts<std::size_t>::value, "a size_t is a span: alpha_from_span");
 
-TEST_CASE("an exponential average refuses a smoothing factor outside (0, 1]") {
+TEST_CASE("an exponential average refuses a smoothing factor not above 0 or above 1") {
   const math::Vector values = series({1.0, 2.0, 3.0});
   const math::Vector empty = series({});
   for (const Scalar alpha : {0.0, -0.5, 1.5, std::numeric_limits<Scalar>::quiet_NaN()}) {
