@@ -6576,27 +6576,56 @@ TEST_CASE("bars before trade_from_ warm the strategy up and trade nothing") {
   }
 }
 
+namespace {
+
+/** Counts its periods and the session closes among them (a daily slice), keeping no bar history. */
+struct CountsCloses {
+  static constexpr bool reads_bar_history = false;
+  std::size_t slices_{0};
+  std::size_t closes_{0};
+
+  template <class Ctx>
+  void on_bars(Ctx&, const strategy::BarSlice& slice) {
+    ++slices_;
+    closes_ += slice.interval_ == BarInterval::ONE_DAY ? 1 : 0;
+  }
+};
+
+} // namespace
+
 TEST_CASE("finish_history delivers the last history period and ends history") {
-  const auto d = [](int day) {
-    return slice_bar(samsung(), utc(2026, 3, day, 6, 30), BarInterval::ONE_DAY, "100", "101");
+  // Each day is a point at the open and the day's close, as a consumer splits it; two days of history, two traded.
+  const auto day = [](backtest::Backtester<CountsCloses>& engine, int date) {
+    engine.feed(slice_bar(samsung(), utc(2026, 3, date, 0, 1), BarInterval::ONE_MINUTE, "100", "100"));
+    engine.feed(slice_bar(samsung(), utc(2026, 3, date, 6, 30), BarInterval::ONE_DAY, "100", "101"));
   };
-  backtest::Backtester<RecordsStartBySlice> engine(RecordsStartBySlice{}, trading_from(utc(2026, 3, 12, 6, 30)));
-  engine.feed(d(10));
-  engine.feed(d(11));
-  CHECK(engine.strategy().calls_.size() == 2);
+  const auto config = trading_from(utc(2026, 3, 12, 0, 1));
+  backtest::Backtester<CountsCloses> engine(CountsCloses{}, config);
+  day(engine, 10);
+  day(engine, 11);
+  CHECK(engine.strategy().closes_ == 1);
   engine.finish_history();
   engine.finish_history();
-  const auto at_boundary = engine.strategy().calls_.size();
-  CHECK(at_boundary == 3);
+  CHECK(engine.strategy().slices_ == 4);
+  CHECK(engine.strategy().closes_ == 2);
   CHECK_THROWS_AS(
     engine.feed(slice_bar(hynix(), utc(2026, 3, 11, 7, 0), BarInterval::ONE_DAY, "1", "1")), std::invalid_argument
   );
-  engine.feed(d(12));
-  engine.feed(d(13));
+  day(engine, 12);
+  day(engine, 13);
   engine.finish();
-  CHECK(engine.strategy().calls_.size() - at_boundary == 2);
-  CHECK(engine.result().history_bars_ == 2);
-  CHECK(engine.result().bars_ == 2);
+  CHECK(engine.strategy().slices_ == 8);
+  CHECK(engine.strategy().closes_ == 4);
+  CHECK(engine.result().history_bars_ == 4);
+  CHECK(engine.result().bars_ == 4);
+
+  // Without it, the first traded bar delivers the last history close before anything traded runs.
+  backtest::Backtester<CountsCloses> implicit(CountsCloses{}, config);
+  day(implicit, 10);
+  day(implicit, 11);
+  implicit.feed(slice_bar(samsung(), utc(2026, 3, 12, 0, 1), BarInterval::ONE_MINUTE, "100", "100"));
+  CHECK(implicit.strategy().slices_ == 4);
+  CHECK(implicit.strategy().closes_ == 2);
 }
 
 #if defined(ATL_HAS_EIGEN)
