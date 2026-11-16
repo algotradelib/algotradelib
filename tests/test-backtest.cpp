@@ -6407,3 +6407,59 @@ TEST_CASE("the measure input holds the report and the curve's levels and returns
   CHECK_FALSE(math::observed(empty.report_.sharpe_));
 }
 #endif
+
+namespace {
+
+/** Trains as `Rolling` does but leaves out the last `gap_` positions before the test range. */
+struct RollingWithGap {
+  std::size_t gap_{0};
+
+  backtest::IndexRange train(std::size_t test_begin, const backtest::FoldLengths& lengths) const {
+    return backtest::IndexRange{test_begin - lengths.train_, test_begin - gap_};
+  }
+};
+
+/** Looks one position into the test range, which `folds` refuses. */
+struct LooksAhead {
+  backtest::IndexRange train(std::size_t test_begin, const backtest::FoldLengths& lengths) const {
+    return backtest::IndexRange{test_begin - lengths.train_ + 1, test_begin + 1};
+  }
+};
+
+/** A fold's ranges and history starts, flattened for comparison. */
+std::vector<std::size_t> fold_positions(const backtest::Fold& fold) {
+  return {
+    fold.train_.begin_, fold.train_.end_, fold.test_.begin_, fold.test_.end_, fold.train_warmup_, fold.test_warmup_
+  };
+}
+
+} // namespace
+
+TEST_CASE("folds keep whole test blocks over positions whether rolling or expanding") {
+  static_assert(backtest::is_window_scheme<backtest::Rolling>::value);
+  static_assert(!backtest::is_window_scheme<int>::value);
+  // Twenty positions, two of history, train 6, test 4, step 4: tests start at 8, 12 and 16; a fourth would end at 24.
+  const backtest::FoldLengths lengths{6, 4, 4, 2};
+  const auto rolling = backtest::folds(20, lengths);
+  REQUIRE(rolling.size() == 3);
+  CHECK(rolling[2].index_ == 2);
+  CHECK(fold_positions(rolling[0]) == std::vector<std::size_t>{2, 8, 8, 12, 0, 6});
+  CHECK(fold_positions(rolling[2]) == std::vector<std::size_t>{10, 16, 16, 20, 8, 14});
+  const auto expanding = backtest::folds(20, lengths, backtest::Expanding{});
+  REQUIRE(expanding.size() == 3);
+  CHECK(fold_positions(expanding[2]) == std::vector<std::size_t>{2, 16, 16, 20, 0, 14});
+  // A scheme of one's own, with a gap before the test range.
+  const auto gapped = backtest::folds(20, lengths, RollingWithGap{1});
+  CHECK(fold_positions(gapped[0]) == std::vector<std::size_t>{2, 7, 8, 12, 0, 6});
+  // No test range: plain windows, the last one ending at the last position.
+  const auto windows = backtest::folds(11, backtest::FoldLengths{4, 0, 3, 1});
+  REQUIRE(windows.size() == 3);
+  CHECK(fold_positions(windows[2]) == std::vector<std::size_t>{7, 11, 11, 11, 6, 10});
+
+  CHECK_THROWS_AS(backtest::folds(20, backtest::FoldLengths{0, 4, 4, 0}), std::invalid_argument);
+  CHECK_THROWS_AS(backtest::folds(20, backtest::FoldLengths{6, 4, 0, 0}), std::invalid_argument);
+  CHECK_THROWS_AS(backtest::folds(11, lengths), std::invalid_argument);
+  CHECK_THROWS_AS(backtest::folds(1, backtest::FoldLengths{1, 0, 1, 5}), std::invalid_argument);
+  CHECK_THROWS_AS(backtest::folds(20, lengths, LooksAhead{}), std::invalid_argument);
+  CHECK_THROWS_AS(backtest::folds(20, lengths, RollingWithGap{6}), std::invalid_argument);
+}

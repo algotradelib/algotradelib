@@ -14,6 +14,7 @@
 #include "src/backtest/cost.hpp"
 #include "src/backtest/engine.hpp"
 #include "src/backtest/fill.hpp"
+#include "src/backtest/folds.hpp"
 #include "src/backtest/ledger.hpp"
 
 #if defined(ATL_HAS_EIGEN)
