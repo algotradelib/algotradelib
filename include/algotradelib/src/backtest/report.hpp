@@ -631,20 +631,21 @@ MeasureInput measure_input(
  * @brief Chains test replays into one result, so `summarize` and `measure_input` give the chain's figures.
  *
  * The chain is a synthetic account reset to the previous fold's close at each boundary, not a continuously held
- * portfolio. Each later fold's curve is scaled so its first point is the close so far, each point a decimal of at
- * least fifteen significant digits (a relative error near 1e-15, never a positive level rounded to zero) within a
- * decimal's 255 places; returns are kept as recorded, and a fold's first point carries none. Executions,
- * rejections and refusals are concatenated and counts summed; each `first_*` instant and the market-price rule
- * come from the first fold that has one, and `lowest_cash_` is the lowest over the folds, each in its own capital.
- * `summarize` measures turnover against fold 0's opening equity. The folds should share one fill model and one
- * `ReplayConfig` but for `trade_from_`; this is not checked.
+ * portfolio. Each later fold's curve is scaled so its first point is the close so far, each point a decimal of
+ * fifteen significant digits (a relative error near 1e-15 at each boundary, compounding over the folds) where a
+ * decimal's 255 places hold them; a level nearer the 255th place keeps fewer digits and can be far less accurate,
+ * but a nonzero level is never rounded to zero. Returns are kept as recorded, and a fold's first point carries none.
+ * Executions, rejections and refusals are concatenated and counts summed; each `first_*` instant and the
+ * market-price rule come from the first fold that has one, and `lowest_cash_` is the lowest over the folds, each in
+ * its own capital. `summarize` measures turnover against fold 0's opening equity. The folds should share one fill
+ * model and one `ReplayConfig` but for `trade_from_`; this is not checked.
  *
  * @param results The test replays, in order.
  * @return The chained result.
  * @throws std::invalid_argument if `results` is empty or holds a null pointer, a halted result, one with no curve
  *   point or one in another currency; if a fold does not start after the previous one ends, its first equity or
  *   the close it follows is not positive, or a scaled equity does not fit a decimal (too large, or nonzero and
- *   below 255 places).
+ *   zero once rounded to 255 places).
  */
 inline ReplayResult chain_results(const std::vector<const ReplayResult*>& results) {
   if (results.empty()) {
@@ -665,7 +666,8 @@ inline ReplayResult chain_results(const std::vector<const ReplayResult*>& result
       const auto& first = fold->equity_.front();
       const auto from = analytics::to_scalar(first.equity_);
       const auto to = analytics::to_scalar(close.equity_);
-      if (!(fold->currency_ == out.currency_) || !(close.at_ < first.at_) || !(from > 0) || !(to > 0)) {
+      const bool capital = first.equity_.coefficient() > 0 && close.equity_.coefficient() > 0;
+      if (!(fold->currency_ == out.currency_) || !(close.at_ < first.at_) || !capital) {
         throw std::invalid_argument(refused + "differs in currency, overlaps the previous one, or follows no capital");
       }
       for (std::size_t at = 0; at < fold->equity_.size(); ++at) {
@@ -677,7 +679,8 @@ inline ReplayResult chain_results(const std::vector<const ReplayResult*>& result
           magnitude *= 10;
         }
         const auto scaled = at == 0 ? std::optional<Decimal64>(close.equity_) : analytics::to_decimal(value, places);
-        if (!scaled || (value != 0 && scaled->coefficient() == 0)) {
+        // Nonzero is read from the decimal, not `value`: the scale is positive, and the product can underflow to 0.
+        if (!scaled || (point.equity_.coefficient() != 0 && scaled->coefficient() == 0)) {
           throw std::invalid_argument(refused + "has an equity that does not fit a decimal once scaled");
         }
         point.equity_ = *scaled;
