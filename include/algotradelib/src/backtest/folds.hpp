@@ -42,7 +42,7 @@ struct Fold {
   std::size_t index_{0};
   /** @brief The training range. */
   IndexRange train_;
-  /** @brief The test range, `test_` long; empty at the training range's end when `test_` is zero. */
+  /** @brief The test range, `test_` long; empty at its scheduled start when `test_` is zero. */
   IndexRange test_;
   /** @brief The first position of the training range's history: `train_.begin_ - warmup_`. */
   std::size_t train_warmup_{0};

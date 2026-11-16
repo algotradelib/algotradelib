@@ -6806,5 +6806,9 @@ TEST_CASE("a bootstrap path's closes go to the nearest grid price from the unrou
   refused({big, big, big}, threes, {1, 1});
   refused({Decimal64(9007199254740993, 0), d("1"), d("1")}, krx, {1});
   refused({d("200"), d("50"), d("200")}, from_hundred, {0});
+  // A band beyond 2^53 units is refused even for the identity draw.
+  auto high_band = threes;
+  high_band.bands_ = {TickBand{d("0"), d("1")}, TickBand{Decimal64(9007199254740992, 0), d("1")}};
+  refused({d("1"), d("2")}, high_band, {0});
   refused({d("1"), d("0.3"), d("1")}, krx, {0});
 }

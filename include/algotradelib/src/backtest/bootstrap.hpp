@@ -35,8 +35,9 @@ namespace backtest {
  * @param indices The drawn returns, each below `closes.size() - 1`.
  * @return `indices.size() + 1` closes.
  * @throws std::invalid_argument for fewer than two closes, a close at or below zero, too many indices or one out
- *   of range, an `UNKNOWN` or unaligned rule; for a drawn path, a close, band, tick, level or grid neighbour at or
- *   beyond 2^53 units, a level below the first band, or a close rounded to zero.
+ *   of range, an `UNKNOWN` or unaligned rule, or a band or tick at or beyond 2^53 units at the rule's own scale
+ *   (the identity draw included); for a drawn path, a close, band, tick, level or grid neighbour at or beyond 2^53
+ *   units, a level below the first band, or a close rounded to zero.
  */
 inline std::vector<Decimal64> resample_closes(
   const std::vector<Decimal64>& closes, const PriceRule& rule, const std::vector<std::size_t>& indices
