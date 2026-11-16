@@ -7,7 +7,10 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
+#include <initializer_list>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -622,6 +625,88 @@ inline MeasureInput measure_input(
 MeasureInput measure_input(
   const ReplayResult&&, const NextBarFillModel&, std::optional<math::Scalar> = std::nullopt
 ) = delete;
+
+/**
+ * @brief Chains test replays into one result, so `summarize` and `measure_input` give the chain's figures.
+ *
+ * The chain is a synthetic account reset to the previous fold's close at each boundary, not a continuously held
+ * portfolio. Each later fold's curve is scaled so its first point is the close so far (each point a decimal four
+ * places finer than its own); returns are kept as recorded, and a fold's first point carries none. Executions,
+ * rejections and refusals are concatenated and counts summed; each `first_*` instant and the market-price rule
+ * come from the first fold that has one, and `lowest_cash_` is the lowest over the folds, each in its own capital.
+ * `summarize` measures turnover against fold 0's opening equity. The folds should share one fill model and one
+ * `ReplayConfig` but for `trade_from_`; this is not checked.
+ *
+ * @param results The test replays, in order.
+ * @return The chained result.
+ * @throws std::invalid_argument if `results` is empty or holds a null pointer, a halted result, one with no curve
+ *   point or one in another currency; if a fold does not start after the previous one ends, its first equity or
+ *   the close it follows is not positive, or a scaled equity does not fit a decimal.
+ */
+inline ReplayResult chain_results(const std::vector<const ReplayResult*>& results) {
+  if (results.empty()) {
+    throw std::invalid_argument("chain_results needs a result");
+  }
+  ReplayResult out;
+  for (std::size_t f = 0; f < results.size(); ++f) {
+    const ReplayResult* fold = results[f];
+    const auto refused = "chain_results: fold " + std::to_string(f) + " ";
+    if (fold == nullptr || fold->halted_ || fold->equity_.empty()) {
+      throw std::invalid_argument(refused + "is null, halted, or has no curve point");
+    }
+    if (f == 0) {
+      out.currency_ = fold->currency_;
+      out.equity_ = fold->equity_;
+    } else {
+      const auto close = out.equity_.back();
+      const auto& first = fold->equity_.front();
+      const auto from = analytics::to_scalar(first.equity_);
+      const auto to = analytics::to_scalar(close.equity_);
+      if (!(fold->currency_ == out.currency_) || !(close.at_ < first.at_) || !(from > 0) || !(to > 0)) {
+        throw std::invalid_argument(refused + "differs in currency, overlaps the previous one, or follows no capital");
+      }
+      for (std::size_t at = 0; at < fold->equity_.size(); ++at) {
+        auto point = fold->equity_[at];
+        const auto finer = static_cast<std::uint8_t>(point.equity_.scale() + 4);
+        const auto scaled = at == 0 ?
+          std::optional<Decimal64>(close.equity_) :
+          analytics::to_decimal(analytics::to_scalar(point.equity_) * (to / from), finer);
+        if (!scaled) {
+          throw std::invalid_argument(refused + "has an equity that does not fit a decimal once scaled");
+        }
+        point.equity_ = *scaled;
+        point.period_return_ = at == 0 ? math::missing() : point.period_return_;
+        out.equity_.push_back(point);
+      }
+    }
+    out.executions_.insert(out.executions_.end(), fold->executions_.begin(), fold->executions_.end());
+    out.rejected_.insert(out.rejected_.end(), fold->rejected_.begin(), fold->rejected_.end());
+    out.refused_.insert(out.refused_.end(), fold->refused_.begin(), fold->refused_.end());
+    for (
+      auto [total, count] : std::initializer_list<std::pair<std::size_t*, std::size_t>>{
+        {&out.gaps_, fold->gaps_}, {&out.bars_, fold->bars_}, {&out.unfilled_, fold->unfilled_},
+        {&out.aborted_, fold->aborted_}, {&out.quotes_, fold->quotes_}, {&out.records_, fold->records_},
+        {&out.unchecked_fill_causality_, fold->unchecked_fill_causality_}, {&out.unvalued_bars_, fold->unvalued_bars_},
+        {&out.stop_releases_, fold->stop_releases_}, {&out.stop_fills_intrabar_, fold->stop_fills_intrabar_},
+        {&out.limit_fills_bounded_, fold->limit_fills_bounded_},
+        {&out.market_fills_by_rule_, fold->market_fills_by_rule_}, {&out.overdrawn_bars_, fold->overdrawn_bars_},
+        {&out.expired_day_orders_, fold->expired_day_orders_}, {&out.history_bars_, fold->history_bars_}
+      }
+    ) {
+      *total += count;
+    }
+    out.first_unvalued_ = out.first_unvalued_ ? out.first_unvalued_ : fold->first_unvalued_;
+    out.first_overdrawn_ = out.first_overdrawn_ ? out.first_overdrawn_ : fold->first_overdrawn_;
+    out.market_price_rule_ = out.market_price_rule_.empty() ? fold->market_price_rule_ : out.market_price_rule_;
+    if (
+      fold->lowest_cash_ && (!out.lowest_cash_ || decimal_less(fold->lowest_cash_->amount_, out.lowest_cash_->amount_))
+    ) {
+      out.lowest_cash_ = fold->lowest_cash_;
+      out.lowest_cash_at_ = fold->lowest_cash_at_;
+    }
+  }
+  return out;
+}
 
 } // namespace backtest
 } // namespace algotradelib

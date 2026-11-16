@@ -6592,3 +6592,61 @@ TEST_CASE("finish_history delivers the last history period and ends history") {
   CHECK(engine.result().history_bars_ == 2);
   CHECK(engine.result().bars_ == 2);
 }
+
+#if defined(ATL_HAS_EIGEN)
+namespace {
+
+/** A result whose curve has one point per day from `first_day`, at the given equities. */
+backtest::ReplayResult curve_of(int first_day, std::vector<const char*> equities) {
+  backtest::ReplayResult result;
+  for (std::size_t at = 0; at < equities.size(); ++at) {
+    backtest::EquityPoint point;
+    point.at_ = utc(2026, 3, first_day + static_cast<int>(at), 6, 30);
+    point.equity_ = Decimal64::parse(equities[at]);
+    point.period_return_ = at == 0 ?
+      math::missing() :
+      analytics::to_scalar(point.equity_) / analytics::to_scalar(result.equity_.back().equity_) - 1;
+    result.equity_.push_back(point);
+  }
+  result.bars_ = equities.size();
+  return result;
+}
+
+} // namespace
+
+TEST_CASE("chained test replays compound their returns and keep each boundary without one") {
+  auto a = curve_of(2, {"100", "110"});
+  auto b = curve_of(4, {"200", "220", "198"});
+  a.executions_.push_back(filled(OrderSide::BUY, "1", "100"));
+  b.executions_.push_back(filled(OrderSide::SELL, "1", "200"));
+  b.first_overdrawn_ = b.equity_[1].at_;
+  const auto chained = backtest::chain_results({&a, &b});
+  REQUIRE(chained.equity_.size() == 5);
+  CHECK(chained.equity_[2].equity_ == Decimal64::parse("110"));
+  CHECK(chained.equity_[3].equity_ == Decimal64(1210000, 4));
+  CHECK(chained.equity_[4].equity_ == Decimal64(1089000, 4));
+  CHECK_FALSE(math::observed(chained.equity_[2].period_return_));
+  CHECK(chained.equity_[4].period_return_ == b.equity_[2].period_return_);
+  CHECK(chained.bars_ == 5);
+  CHECK(chained.executions_.size() == 2);
+  CHECK(chained.first_overdrawn_ == b.first_overdrawn_);
+  const auto report = backtest::summarize(chained, backtest::NextBarFillModel{});
+  CHECK(report.total_return_ == Catch::Approx(1.1 * 0.99 - 1));
+
+  auto halted = a;
+  halted.halted_ = BrokerError{};
+  auto dollars = b;
+  dollars.currency_ = Currency{"USD"};
+  const auto broke = curve_of(4, {"0", "10"});
+  const auto huge = curve_of(2, {"1", "1000000000000000000"});
+  const auto doubles = curve_of(4, {"1", "2"});
+  const backtest::ReplayResult none;
+  for (
+    const auto& folds : std::vector<std::vector<const backtest::ReplayResult*>>{
+      {}, {nullptr}, {&halted}, {&none}, {&a, &dollars}, {&a, &a}, {&a, &broke}, {&huge, &doubles}
+    }
+  ) {
+    CHECK_THROWS_AS(backtest::chain_results(folds), std::invalid_argument);
+  }
+}
+#endif
