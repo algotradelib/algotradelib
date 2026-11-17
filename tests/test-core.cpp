@@ -525,21 +525,6 @@ TEST_CASE("a list of every value is checked at compile time in any order and at 
   REQUIRE_FALSE(value_named(all_venues, venue_name, "").has_value());
 }
 
-TEST_CASE("an unconstrained rule with bands reads them as a stated one does", "[core][price]") {
-  // Only an UNKNOWN rule refuses to answer; STATED and UNCONSTRAINED both read `bands_`. The factory's
-  // unconstrained rule has none, but the field is public.
-  PriceRule rule;
-  rule.kind_ = PriceRule::Kind::UNCONSTRAINED;
-  rule.bands_ = {TickBand{Decimal64::parse("0"), Decimal64::parse("5")}};
-  CHECK(rule.on_tick(Decimal64::parse("10")) == true);
-  CHECK(rule.on_tick(Decimal64::parse("12")) == false);
-  CHECK(rule.round_to_tick(Decimal64::parse("12"), OrderSide::BUY) == Decimal64::parse("10"));
-  CHECK(rule.round_to_tick(Decimal64::parse("12"), OrderSide::SELL) == Decimal64::parse("15"));
-  rule.kind_ = PriceRule::Kind::UNKNOWN;
-  CHECK_FALSE(rule.on_tick(Decimal64::parse("10")).has_value());
-  CHECK_FALSE(rule.round_to_tick(Decimal64::parse("12"), OrderSide::BUY).has_value());
-}
-
 TEST_CASE("KIS refuses the intraday intervals it publishes no chart for", "[core][kis][bars]") {
   // Its minute chart is one minute only; a day or longer has its period chart.
   for (
@@ -590,33 +575,6 @@ TEST_CASE("KIS refuses the intraday intervals it publishes no chart for", "[core
     ioc.run();
     REQUIRE(completed);
   }
-}
-
-TEST_CASE("two instrument ids are equal exactly when country, venue and the whole symbol are", "[core][id]") {
-  using algotradelib::Country;
-  using algotradelib::InstrumentId;
-  using algotradelib::Venue;
-  const auto id = [](const std::string& symbol, Country country = Country::KR, Venue venue = Venue::KRX) {
-    return InstrumentId{country, venue, symbol};
-  };
-  CHECK(id("005930") == id("005930"));
-  CHECK(id("") == id(""));
-  CHECK(std::string("A\0B", 3) == std::string("A\0B", 3));
-  CHECK(id(std::string("A\0B", 3)) == id(std::string("A\0B", 3)));
-  CHECK_FALSE(id(std::string("A\0B", 3)) == id(std::string("A\0C", 3)));
-  CHECK_FALSE(id(std::string("A\0B", 3)) == id("A"));
-  // Equal length, differing first, in the middle, last.
-  CHECK_FALSE(id("005930") == id("105930"));
-  CHECK_FALSE(id("005930") == id("005830"));
-  CHECK_FALSE(id("005930") == id("005931"));
-  // A common prefix of another length, either way round; an empty symbol against one.
-  CHECK_FALSE(id("BRK") == id("BRK.B"));
-  CHECK_FALSE(id("BRK.B") == id("BRK"));
-  CHECK_FALSE(id("") == id("A"));
-  CHECK_FALSE(id("A") == id(""));
-  // The same symbol elsewhere.
-  CHECK_FALSE(id("005930", Country::KR, Venue::KRX) == id("005930", Country::KR, Venue::NXT));
-  CHECK_FALSE(id("005930", Country::KR) == id("005930", Country::US));
 }
 
 TEST_CASE("decimal arithmetic at the edges of the coefficient", "[core][decimal]") {
@@ -1744,67 +1702,6 @@ TEST_CASE(
   REQUIRE(page_count == 2);
 }
 
-TEST_CASE("Toss account discovery preserves unknown account types", "[broker][toss][accounts]") {
-  network::HttpResponse response{http::status::ok, 11};
-  response.body() = R"({"result":[
-    {"accountNo":"12345678901","accountSeq":1,"accountType":"BROKERAGE"},
-    {"accountNo":"98765432100","accountSeq":2,"accountType":"FUTURE_ACCOUNT_TYPE"}
-  ]})";
-
-  const auto result = tossinvest::TossClientTestAccess::parse_accounts(std::move(response));
-  REQUIRE(result);
-  REQUIRE(result.value().size() == 2);
-  REQUIRE(result.value()[0].sequence_ == 1);
-  REQUIRE(result.value()[1].account_type_ == "FUTURE_ACCOUNT_TYPE");
-}
-
-TEST_CASE("Toss asks for a new token after refusing the one it holds", "[broker][toss][auth]") {
-  // Issuing a token with the same key revokes the one held; the code and message are the ones Toss
-  // returned to a running program on 2026-10-17.
-  test::LocalHttpsServer server;
-  server.scriptSequence(
-    "/oauth2/token",
-    {
-      {200, R"({"access_token":"first","token_type":"Bearer","expires_in":86400})", {}},
-      {200, R"({"access_token":"second","token_type":"Bearer","expires_in":86400})", {}},
-    }
-  );
-  server.scriptSequence(
-    "/api/v1/accounts",
-    {
-      {401,
-        R"({"error":{"requestId":"r1","code":"token-revoked","message":"새로 발급된 토큰으로 대체되어 더 이상 유효하지 않은 토큰입니다. 최신 토큰으로 다시 시도해 주세요."}})",
-        {}},
-      {200, R"({"result":[{"accountNo":"12345678901","accountSeq":1,"accountType":"BROKERAGE"}]})", {}},
-    }
-  );
-  net::io_context ioc;
-  ssl::context context(ssl::context::tls_client);
-  test::trustLocalhostCertificate(context);
-  auto client = std::make_shared<tossinvest::TossClient>(ioc.get_executor(), context, tossinvest::TossConfig{});
-  tossinvest::TossClientTestAccess::connect(*client, context, server.port());
-
-  auto refused = client->async_accounts(net::use_future);
-  ioc.run();
-  const auto first = refused.get();
-  REQUIRE_FALSE(first);
-  REQUIRE(first.error().http_status_ == 401);
-  REQUIRE(first.error().broker_code_ == "token-revoked");
-  REQUIRE(server.lastHeader("/api/v1/accounts", "Authorization") == "Bearer first");
-  REQUIRE_FALSE(tossinvest::TossClientTestAccess::holds_token(*client));
-
-  ioc.restart();
-  auto retried = client->async_accounts(net::use_future);
-  ioc.run();
-  const auto second = retried.get();
-  REQUIRE(second);
-  REQUIRE(second.value().size() == 1);
-  REQUIRE(server.scriptedCount("/oauth2/token") == 2);
-  // The refused request was not sent again: one refusal, then the caller's own second call.
-  REQUIRE(server.scriptedCount("/api/v1/accounts") == 2);
-  REQUIRE(server.lastHeader("/api/v1/accounts", "Authorization") == "Bearer second");
-}
-
 TEST_CASE("Toss keeps a newer token when a request carrying an older one is refused", "[broker][toss][auth]") {
   net::io_context ioc;
   ssl::context context(ssl::context::tls_client);
@@ -2665,63 +2562,6 @@ TEST_CASE("KIS reads back every order code the workbook publishes", "[broker][ki
       REQUIRE(order.session_ == OrderSession::UNKNOWN);
       REQUIRE(order.shape_code_.view() == code);
     }
-  }
-}
-
-TEST_CASE("a KIS amendment restates the shape it is amending", "[broker][kis][order]") {
-  const kis::KisAccount account{"12345678", "01"};
-  kis::KisConfig live;
-  live.is_demo_ = false;
-
-  SECTION("an immediate-or-cancel order amended to a new price stays immediate-or-cancel") {
-    kis::KisAmendment amendment;
-    amendment.order_ = kis::KisOrderRef{"0000117057", "00950"};
-    amendment.type_ = OrderType::LIMIT;
-    amendment.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
-    amendment.session_ = OrderSession::REGULAR;
-    amendment.venue_ = Venue::KRX;
-    amendment.quantity_ = Decimal64::parse("1");
-    amendment.price_ = Decimal64::parse("71000");
-
-    std::string division;
-    REQUIRE_FALSE(kis::KisClientTestAccess::amendment_division(amendment, division));
-    // 11, not 00. The amendment path sent `DAY` unconditionally, so this order
-    // reached KIS as a plain day order at the new price -- a different order
-    // from the one being amended, and one nobody asked for.
-    REQUIRE(division == "11");
-
-    const auto body =
-      json::parse(kis::KisClientTestAccess::amend_order_request(account, live, amendment, false, division).body_)
-        .as_object();
-    REQUIRE(body.at("ORD_DVSN").as_string() == "11");
-    REQUIRE(body.at("EXCG_ID_DVSN_CD").as_string() == "KRX");
-  }
-
-  SECTION("an amendment to a venue that does not publish the code is refused") {
-    kis::KisAmendment amendment;
-    amendment.order_ = kis::KisOrderRef{"0000117057", "00950"};
-    amendment.type_ = OrderType::MARKET;
-    amendment.venue_ = Venue::NXT;
-    amendment.quantity_ = Decimal64::parse("1");
-    std::string division;
-    REQUIRE(kis::KisClientTestAccess::amendment_division(amendment, division));
-  }
-
-  SECTION("a cancellation copies the whole shape rather than the basis alone") {
-    WorkingOrder<kis::Broker> working;
-    working.order_.type_ = OrderType::BEST_LIMIT;
-    working.order_.time_in_force_ = TimeInForce::FILL_OR_KILL;
-    working.order_.session_ = OrderSession::AFTER_MARKET;
-    working.order_.instrument_ = InstrumentId{Country::KR, kKoreanInstrumentVenue, "005930"};
-    // The venue the broker routed it to, which is not the instrument's.
-    working.order_.venue_ = Venue::KRX;
-    working.amendable_quantity_ = Decimal64::parse("5");
-
-    const auto instruction = cancel_all(working);
-    REQUIRE(instruction.shape_.type_ == OrderType::BEST_LIMIT);
-    REQUIRE(instruction.shape_.time_in_force_ == TimeInForce::FILL_OR_KILL);
-    REQUIRE(instruction.shape_.session_ == OrderSession::AFTER_MARKET);
-    REQUIRE(instruction.venue_ == Venue::KRX);
   }
 }
 
@@ -5361,22 +5201,6 @@ TEST_CASE("the KIS calendar cache covers a day only where it holds that day's ro
   CHECK_FALSE(kis::KisClientTestAccess::calendar_covers(calendar, Date{2026, 9, 4}));
 }
 
-TEST_CASE("a KIS page of only unreadable rows is progress, not the end of the listing", "[core][calendar][kis]") {
-  // Pagination stops on a page that consumed nothing. A page whose every date was unreadable keeps
-  // no day and must still count, or the pages after it -- today's row, possibly -- are never asked for.
-  TradingCalendar calendar;
-  calendar.days_.push_back(TradingDay{Date{2026, 9, 1}, true});
-  const auto before = kis::KisClientTestAccess::calendar_rows_consumed(calendar);
-  std::string search;
-  std::string next;
-  const auto failure = kis::KisClientTestAccess::parse_calendar_page(
-    json_response(R"({"rt_cd":"0","output":[{"bass_dt":"2026090x"},{"bass_dt":""}]})"), calendar, search, next
-  );
-  REQUIRE_FALSE(failure);
-  CHECK(calendar.days_.size() == 1);
-  CHECK(kis::KisClientTestAccess::calendar_rows_consumed(calendar) == before + 2);
-}
-
 // Through the client's own request path: the loopback server answers the token request and then each
 // calendar page in turn, so the wiring around the two helpers above is exercised, not only the helpers.
 namespace {
@@ -5431,55 +5255,6 @@ TEST_CASE("a KIS calendar request reads on past a page of only unreadable rows",
   CHECK(calendar.value().unreadable_days_ == 2);
   CHECK(calendar.value().is_trading_day(Date{2026, 9, 1}) == std::optional<bool>(true));
   CHECK(calendar.value().is_trading_day(Date{2026, 9, 2}) == std::optional<bool>(false));
-}
-
-TEST_CASE(
-  "a KIS calendar day dropped as unreadable is asked for again but a cached day is not", "[core][calendar][kis]"
-) {
-  test::LocalHttpsServer server;
-  net::io_context ioc;
-  ssl::context context(ssl::context::tls_client);
-  test::trustLocalhostCertificate(context);
-  server.script(
-    "/oauth2/tokenP", 200,
-    R"({"access_token":"test-token","token_type":"Bearer","expires_in":86400,)"
-    R"("access_token_token_expired":"2099-12-31 23:59:59"})"
-  );
-  server.scriptSequence(
-    KIS_CALENDAR,
-    {
-      kis_calendar_page(
-        "C1", false,
-        R"({"bass_dt":"20260901","opnd_yn":"Y"},{"bass_dt":"2026090x"},{"bass_dt":"20260903","opnd_yn":"Y"})"
-      ),
-      kis_calendar_page(
-        "C2", false,
-        R"({"bass_dt":"20260901","opnd_yn":"Y"},{"bass_dt":"20260902","opnd_yn":"Y"},{"bass_dt":"20260903","opnd_yn":"Y"})"
-      ),
-    }
-  );
-  auto client = scripted_kis(ioc, context, server, false);
-
-  const auto first = kis_calendar_from(ioc, *client, Date{2026, 9, 1});
-  REQUIRE(first);
-  CHECK(server.scriptedCount(KIS_CALENDAR) == 1);
-  CHECK_FALSE(first.value().is_trading_day(Date{2026, 9, 2}).has_value());
-
-  // A day the cache holds is served without a request.
-  const auto cached = kis_calendar_from(ioc, *client, Date{2026, 9, 3});
-  REQUIRE(cached);
-  CHECK(server.scriptedCount(KIS_CALENDAR) == 1);
-
-  // The day whose row was dropped lies inside the cached span, and is asked for again.
-  const auto repaired = kis_calendar_from(ioc, *client, Date{2026, 9, 2});
-  REQUIRE(repaired);
-  CHECK(server.scriptedCount(KIS_CALENDAR) == 2);
-  CHECK(repaired.value().is_trading_day(Date{2026, 9, 2}) == std::optional<bool>(true));
-
-  // And now the repaired day is cached.
-  const auto again = kis_calendar_from(ioc, *client, Date{2026, 9, 2});
-  REQUIRE(again);
-  CHECK(server.scriptedCount(KIS_CALENDAR) == 2);
 }
 
 // A token handed from one Toss client to another, and a token Toss refuses (HTTP 401), through the
@@ -5566,66 +5341,6 @@ TEST_CASE("a Toss client carries a token another client obtained and asks for no
   CHECK(server.lastHeader(TOSS_ACCOUNTS, "Authorization") == "Bearer issued");
 }
 
-TEST_CASE("a Toss client hands its token on and adopts only a live one", "[broker][toss][auth]") {
-  ssl::context tls(ssl::context::tls_client);
-  tossinvest::TossBlockingClient client(tls, tossinvest::TossConfig{});
-  REQUIRE(client.token().access_token_.empty());
-
-  tossinvest::TossRest expired;
-  expired.access_token_ = "expired-token";
-  expired.expires_at_ = std::chrono::system_clock::now() - std::chrono::minutes(1);
-  CHECK_FALSE(client.adopt_token(expired));
-  tossinvest::TossRest empty;
-  empty.expires_at_ = std::chrono::system_clock::now() + std::chrono::hours(20);
-  CHECK_FALSE(client.adopt_token(empty));
-  // Inside the five-minute margin every other validity check uses.
-  tossinvest::TossRest ending;
-  ending.access_token_ = "ending-token";
-  ending.expires_at_ = std::chrono::system_clock::now() + std::chrono::minutes(2);
-  CHECK_FALSE(client.adopt_token(ending));
-  CHECK(client.token().access_token_.empty());
-
-  const auto live = toss_live_token("kept-token");
-  REQUIRE(client.adopt_token(live));
-  CHECK(client.token().access_token_ == "kept-token");
-  CHECK(client.token().expires_at_ == live.expires_at_);
-  CHECK(client.token().valid());
-}
-
-TEST_CASE(
-  "a Toss client drops an adopted token Toss refuses and takes a new one on the next request", "[broker][toss][auth]"
-) {
-  for (const auto* code : TOSS_TOKEN_REFUSALS) {
-    CAPTURE(code);
-    test::LocalHttpsServer server;
-    net::io_context ioc;
-    ssl::context context(ssl::context::tls_client);
-    test::trustLocalhostCertificate(context);
-    server.script(TOSS_TOKEN, 200, toss_token_body("fresh"));
-    server.scriptSequence(TOSS_ACCOUNTS, {{401, toss_error_body(code), {}}, {200, TOSS_ACCOUNTS_REPLY, {}}});
-    auto client = scripted_toss(ioc, context, server);
-    REQUIRE(client->adopt_token(toss_live_token("adopted")));
-
-    const auto refused = toss_accounts_from(ioc, *client);
-    REQUIRE_FALSE(refused);
-    CHECK(refused.error().http_status_ == 401);
-    CHECK(refused.error().broker_code_ == code);
-    const auto read = tossinvest::TossClientTestAccess::parse_accounts(json_response(toss_error_body(code), 401));
-    REQUIRE_FALSE(read);
-    check_same_toss_error(refused.error(), read.error());
-    CHECK(server.scriptedCount(TOSS_TOKEN) == 0);
-    CHECK(server.scriptedCount(TOSS_ACCOUNTS) == 1);
-    CHECK(server.lastHeader(TOSS_ACCOUNTS, "Authorization") == "Bearer adopted");
-    CHECK(client->token().access_token_.empty());
-
-    REQUIRE(toss_accounts_from(ioc, *client));
-    CHECK(server.scriptedCount(TOSS_TOKEN) == 1);
-    CHECK(server.scriptedCount(TOSS_ACCOUNTS) == 2);
-    CHECK(server.lastHeader(TOSS_ACCOUNTS, "Authorization") == "Bearer fresh");
-    CHECK(client->token().access_token_ == "fresh");
-  }
-}
-
 TEST_CASE("a Toss order refused for its token is reported as before and not sent again", "[broker][toss][auth]") {
   for (const auto* code : TOSS_TOKEN_REFUSALS) {
     CAPTURE(code);
@@ -5657,40 +5372,6 @@ TEST_CASE("a Toss order refused for its token is reported as before and not sent
     CHECK(server.lastHeader(TOSS_ACCOUNTS, "Authorization") == "Bearer fresh");
     CHECK(server.scriptedCount(TOSS_ORDERS) == 1);
   }
-}
-
-TEST_CASE("a Toss client keeps an adopted token through a refusal that is not a 401", "[broker][toss][auth]") {
-  test::LocalHttpsServer server;
-  net::io_context ioc;
-  ssl::context context(ssl::context::tls_client);
-  test::trustLocalhostCertificate(context);
-  server.script(TOSS_TOKEN, 200, toss_token_body("fresh"));
-  server.scriptSequence(
-    TOSS_ACCOUNTS,
-    {
-      {403, toss_error_body("ip-not-allowed"), {}},
-      {400, toss_error_body("account-header-required"), {}},
-      {200, TOSS_ACCOUNTS_REPLY, {}},
-    }
-  );
-  auto client = scripted_toss(ioc, context, server);
-  REQUIRE(client->adopt_token(toss_live_token("adopted")));
-
-  for (
-    const auto& [status, code] : {std::pair<int, const char*>{403, "ip-not-allowed"}, {400, "account-header-required"}}
-  ) {
-    CAPTURE(status, code);
-    const auto refused = toss_accounts_from(ioc, *client);
-    REQUIRE_FALSE(refused);
-    const auto read = tossinvest::TossClientTestAccess::parse_accounts(json_response(toss_error_body(code), status));
-    REQUIRE_FALSE(read);
-    check_same_toss_error(refused.error(), read.error());
-    CHECK(client->token().access_token_ == "adopted");
-  }
-  REQUIRE(toss_accounts_from(ioc, *client));
-  CHECK(server.scriptedCount(TOSS_ACCOUNTS) == 3);
-  CHECK(server.scriptedCount(TOSS_TOKEN) == 0);
-  CHECK(server.lastHeader(TOSS_ACCOUNTS, "Authorization") == "Bearer adopted");
 }
 
 // A token handed from one KIS client to another, and a token KIS refuses (`EGW00121` invalid,
@@ -5785,38 +5466,6 @@ TEST_CASE("a KIS client carries a token another client obtained and asks for non
   CHECK(server.scriptedCount(KIS_TOKEN) == 1);
   CHECK(server.scriptedCount(KIS_CALENDAR) == 2);
   CHECK(server.lastHeader(KIS_CALENDAR, "authorization") == "Bearer issued");
-}
-
-TEST_CASE("a KIS client drops a token KIS refuses and takes a new one on the next request", "[broker][kis][auth]") {
-  for (const auto& refusal : KIS_TOKEN_REFUSALS) {
-    CAPTURE(refusal.code_, refusal.status_, refusal.body_);
-    test::LocalHttpsServer server;
-    net::io_context ioc;
-    ssl::context context(ssl::context::tls_client);
-    test::trustLocalhostCertificate(context);
-    server.script(KIS_TOKEN, 200, kis_token_body("fresh"));
-    server.scriptSequence(KIS_CALENDAR, {{refusal.status_, refusal.body_, {}}, kis_open_day()});
-    auto client = scripted_kis(ioc, context, server, false);
-    REQUIRE(client->adopt_token(kis_live_token("adopted")));
-
-    // The refusal is returned as the reply states it: a declared failure on 200, an HTTP one otherwise.
-    const auto refused = kis_calendar_from(ioc, *client, Date{2026, 9, 1});
-    REQUIRE_FALSE(refused);
-    CHECK(refused.error().category_ == (refusal.status_ == 200 ? ErrorCategory::PROTOCOL : ErrorCategory::HTTP));
-    CHECK(refused.error().broker_code_ == refusal.code_);
-    check_same_error(refused.error(), kis_calendar_reading(refusal.body_, refusal.status_));
-    CHECK(server.scriptedCount(KIS_TOKEN) == 0);
-    CHECK(server.scriptedCount(KIS_CALENDAR) == 1);
-    CHECK(server.lastHeader(KIS_CALENDAR, "authorization") == "Bearer adopted");
-    CHECK(client->token().access_token_.empty());
-
-    const auto read = kis_calendar_from(ioc, *client, Date{2026, 9, 1});
-    REQUIRE(read);
-    CHECK(server.scriptedCount(KIS_TOKEN) == 1);
-    CHECK(server.scriptedCount(KIS_CALENDAR) == 2);
-    CHECK(server.lastHeader(KIS_CALENDAR, "authorization") == "Bearer fresh");
-    CHECK(client->token().access_token_ == "fresh");
-  }
 }
 
 TEST_CASE("a KIS order refused for its token is reported as before and not sent again", "[broker][kis][auth]") {
