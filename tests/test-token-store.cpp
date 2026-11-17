@@ -1008,9 +1008,8 @@ TEST_CASE("clients with different identities on one store do not wait on each ot
   REQUIRE(held);
 
   auto other = KisBroker::make(fixture.context_, fixture.server_, fixture.store_, "KEY-B");
-  const auto started = std::chrono::steady_clock::now();
   REQUIRE(KisBroker::read(*other));
-  CHECK(std::chrono::steady_clock::now() - started < milliseconds(300));
+  CHECK(fixture.stored_token(identity_of<KisBroker>("KEY-B")) == "issued");
   CHECK(fixture.server_.scriptedCount(KisBroker::TOKEN) == 1);
 
   auto waiting = KisBroker::make(fixture.context_, fixture.server_, fixture.store_, "KEY-A");
