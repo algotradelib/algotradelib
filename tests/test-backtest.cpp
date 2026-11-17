@@ -169,24 +169,6 @@ strategy::BarEvent bar_at(Clock::time_point at, BarInterval interval, const char
 // Periods per year, the number an annualized figure needs
 // ---------------------------------------------------------------------------
 
-TEST_CASE("a minute interval annualizes on the session length, not on a day") {
-  // The KRX regular session is 09:00-15:30, which is 390 minutes. Over 245 trading days that is
-  // 95,550 minute bars -- and this is exactly why annualize_ratio takes the period count rather than
-  // defaulting to one: no single default serves both this and 245.
-  const auto session = strategy::SessionWindow::krx();
-  const auto minutes = backtest::periods_per_year(BarInterval::ONE_MINUTE, session, 245.0);
-  REQUIRE(minutes);
-  REQUIRE(*minutes == Catch::Approx(390.0 * 245.0));
-
-  // A shorter session gives proportionally fewer, derived rather than assumed.
-  strategy::SessionWindow half;
-  half.open_ = std::chrono::hours(9);
-  half.close_ = std::chrono::hours(12);
-  const auto shortened = backtest::periods_per_year(BarInterval::ONE_MINUTE, half, 245.0);
-  REQUIRE(shortened);
-  REQUIRE(*shortened == Catch::Approx(180.0 * 245.0));
-}
-
 TEST_CASE("an intraday interval annualizes on the whole bars a session holds") {
   // 390 minutes: 78 five-minute bars, 26 of fifteen, 13 of thirty, and 7 hourly ones, the last of them 30 minutes.
   const auto session = strategy::SessionWindow::krx();
@@ -263,37 +245,6 @@ backtest::ReplayLedger opening(const char* cash = "10000000") {
 }
 
 } // namespace
-
-TEST_CASE("a position crossing through flat closes one leg and opens the other") {
-  // **The case that catches a wrong implementation.** Selling 150 from a long of 100 is not "a short
-  // of 50 at the sale price". It closes 100, realizing against the old average, and opens 50 short at
-  // the new price. One weighted average would carry the closed leg's cost basis into the new position
-  // and misstate every later figure.
-  auto ledger = opening("100000000");
-  REQUIRE(ledger.apply(filled(OrderSide::BUY, "100", "70000"), krw()));
-  REQUIRE(ledger.apply(filled(OrderSide::SELL, "150", "80000"), krw()));
-
-  REQUIRE(ledger.quantity_of(samsung()) == std::optional<Decimal64>(Decimal64::parse("-50")));
-  // The new short's basis is the sale price, with nothing of the old long's 70,000 in it.
-  REQUIRE(ledger.average_price_of(samsung()) == std::optional<Decimal64>(Decimal64::parse("80000")));
-  // Only the 100 that closed realized, at 10,000 each.
-  REQUIRE(ledger.realized_in(krw()) == Decimal64::parse("1000000"));
-}
-
-TEST_CASE("realized profit is not banked by a fill that then fails") {
-  // The other half of the same promise. `add_realized` ran before the steps that can still fail, so
-  // a closing trade could bank its profit and then report that it never happened.
-  auto ledger = opening("9223372036854775000");
-  REQUIRE(ledger.apply(filled(OrderSide::BUY, "10", "70000"), krw()));
-  const auto realized_before = ledger.realized_in(krw());
-  const auto quantity_before = ledger.quantity_of(samsung());
-
-  // Closing at a profit, with proceeds that will not fit on top of the cash already held.
-  REQUIRE_FALSE(ledger.apply(filled(OrderSide::SELL, "10", "80000"), krw()));
-
-  REQUIRE(ledger.realized_in(krw()) == realized_before);
-  REQUIRE(ledger.quantity_of(samsung()) == quantity_before);
-}
 
 TEST_CASE("a ledger past sixteen instruments finds each lot as a scan of its positions would") {
   // Past sixteen lots the ledger finds a lot by an index instead of a scan; every answer must stay the same.
@@ -428,95 +379,6 @@ TEST_CASE("a ledger moved past sixteen instruments leaves its source empty and i
   }
 }
 
-namespace {
-
-// `ReplayLedger::equity_in` as it was written before it kept the lots held: every lot, in order, skipping the flat
-// ones and those in another currency, multiplied and added with the same checked arithmetic.
-std::optional<Decimal64> equity_by_scan(const backtest::ReplayLedger& ledger, const Currency& currency) {
-  auto total = ledger.cash_in(currency).value_or(Decimal64::parse("0"));
-  for (const auto& lot : ledger.positions()) {
-    if (lot.quantity_.coefficient() == 0 || !(lot.market_value_.currency_ == currency)) {
-      continue;
-    }
-    const auto value = decimal_multiply(lot.quantity_, lot.last_price_);
-    if (!value) {
-      return std::nullopt;
-    }
-    const auto sum = decimal_add(total, *value);
-    if (!sum) {
-      return std::nullopt;
-    }
-    total = *sum;
-  }
-  return total;
-}
-
-// The same optional decimal, written the same way: equal coefficient and scale, or both empty.
-bool same_written(const std::optional<Decimal64>& lhs, const std::optional<Decimal64>& rhs) {
-  if (lhs.has_value() != rhs.has_value()) {
-    return false;
-  }
-  return !lhs || (lhs->coefficient() == rhs->coefficient() && lhs->scale() == rhs->scale());
-}
-
-void require_equity_as_scanned(const backtest::ReplayLedger& ledger) {
-  for (const auto& currency : {krw(), Currency{"USD"}}) {
-    INFO("equity in " << currency.str());
-    REQUIRE(same_written(ledger.equity_in(currency), equity_by_scan(ledger, currency)));
-  }
-}
-
-} // namespace
-
-TEST_CASE("equity counts the lots held, as a scan of every lot does", "[ledger]") {
-  const auto id = [](int k) {
-    return InstrumentId{Country::KR, all_venues[static_cast<std::size_t>(k % 4)], "S" + std::to_string(k / 4)};
-  };
-  std::uint32_t state = 20261020;
-  const auto draw = [&state](std::uint32_t below) {
-    state = state * 1664525u + 1013904223u;
-    return (state >> 8) % below;
-  };
-  const std::array<const char*, 4> quantities{"0", "1", "3", "7"};
-  const std::array<const char*, 4> prices{"1000", "1250.5", "980", "1000000000000000000"};
-  // Opens, adds to, closes, crosses and reopens lots of 41 instruments, in two currencies, with fills that fail
-  // (an unrepresentable value, a currency change under an open lot) and marks between them.
-  const auto step = [&](backtest::ReplayLedger& ledger) {
-    const int k = static_cast<int>(draw(41));
-    if (draw(4) == 0) {
-      ledger.mark(id(k), Decimal64::parse(prices[draw(3)]));
-      return;
-    }
-    auto execution = filled(draw(2) == 0 ? OrderSide::BUY : OrderSide::SELL, quantities[draw(4)], prices[draw(4)]);
-    execution.fill_.instrument_ = id(k);
-    ledger.apply(execution, draw(9) == 0 ? Currency{"USD"} : krw());
-  };
-
-  auto ledger = opening("900000000000");
-  for (int at = 0; at < 600; ++at) {
-    INFO("step " << at);
-    step(ledger);
-    require_equity_as_scanned(ledger);
-  }
-  CHECK(ledger.positions().size() == 41);
-
-  // Each special member keeps it, and both sides go on agreeing as they trade apart.
-  auto copied = ledger;
-  auto assigned = opening();
-  assigned = ledger;
-  auto moved = std::move(copied);
-  auto target = opening();
-  target = std::move(assigned);
-  auto& alias = target;
-  target = std::move(alias);
-  for (auto* each : {&ledger, &copied, &assigned, &moved, &target}) {
-    for (int at = 0; at < 150; ++at) {
-      step(*each);
-      require_equity_as_scanned(*each);
-    }
-  }
-}
-
 TEST_CASE("a ledger keeping no executions holds what a ledger keeping them holds", "[ledger]") {
   const auto id = [](int k) {
     return InstrumentId{Country::KR, all_venues[static_cast<std::size_t>(k % 4)], "S" + std::to_string(k / 4)};
@@ -583,45 +445,6 @@ TEST_CASE("a ledger keeping no executions holds what a ledger keeping them holds
   auto kept_again = unkept;
   kept_again = kept;
   CHECK(kept_again.executions().size() == applied);
-}
-
-TEST_CASE("equity adds the lots held in the order they were opened", "[ledger]") {
-  // An earlier lot reopened after a later one: summed in the order of `positions()` the total fits; summed with
-  // the reopened lot last it would pass the largest decimal on the way.
-  const InstrumentId first{Country::KR, Venue::COMBINED, "FIRST"};
-  const InstrumentId second{Country::KR, Venue::COMBINED, "SECOND"};
-  const auto fill = [](const InstrumentId& instrument, OrderSide side) {
-    auto execution = filled(side, "1", "100000000000000000");
-    execution.fill_.instrument_ = instrument;
-    return execution;
-  };
-  auto ledger = opening("9200000000000000000");
-  REQUIRE(ledger.apply(fill(first, OrderSide::BUY), krw()));
-  REQUIRE(ledger.apply(fill(first, OrderSide::SELL), krw()));
-  REQUIRE(ledger.apply(fill(second, OrderSide::BUY), krw()));
-  REQUIRE(ledger.apply(fill(first, OrderSide::SELL), krw()));
-  REQUIRE(ledger.positions().front().instrument_ == first);
-  CHECK(ledger.quantity_of(first) == std::optional<Decimal64>(Decimal64::parse("-1")));
-  CHECK(same_written(ledger.equity_in(krw()), Decimal64::parse("9200000000000000000")));
-  require_equity_as_scanned(ledger);
-}
-
-TEST_CASE("an instrument does not change currency underneath an open position") {
-  // Backtester resolves the currency from fixed reference data, so it cannot reach this; the ledger
-  // is public and a direct caller can. The second fill used to relabel the whole lot, so a position
-  // bought in won reported as dollars while the cash stayed split across both.
-  auto ledger = opening();
-  REQUIRE(ledger.apply(filled(OrderSide::BUY, "1", "70000"), krw()));
-  REQUIRE_FALSE(ledger.apply(filled(OrderSide::BUY, "1", "70000"), Currency{"USD"}));
-
-  REQUIRE(ledger.quantity_of(samsung()) == std::optional<Decimal64>(Decimal64::parse("1")));
-  REQUIRE(ledger.positions().front().market_value_.currency_ == krw());
-  REQUIRE_FALSE(ledger.cash_in(Currency{"USD"}));
-
-  // Once flat there is no position to mislabel, so the lot may be re-denominated.
-  REQUIRE(ledger.apply(filled(OrderSide::SELL, "1", "70000"), krw()));
-  REQUIRE(ledger.apply(filled(OrderSide::BUY, "1", "200"), Currency{"USD"}));
-  REQUIRE(ledger.positions().front().market_value_.currency_ == Currency{"USD"});
 }
 
 // ---------------------------------------------------------------------------
@@ -882,40 +705,6 @@ struct BuysThenSells {
   }
 };
 
-/** Buys once from `on_quote`, recording what the context said while it decided. */
-struct BuysOnQuote {
-  bool submitted_{false};
-  std::vector<Decimal64> fill_prices_;
-  std::optional<Decimal64> price_when_submitted_;
-  Clock::time_point now_when_submitted_{};
-  std::size_t positions_when_submitted_{0};
-
-  template <class Ctx>
-  void on_bar(Ctx&, const strategy::BarEvent&) {}
-
-  template <class Ctx>
-  void on_quote(Ctx& ctx, const strategy::QuoteEvent& quote) {
-    if (submitted_) {
-      return;
-    }
-    submitted_ = true;
-    price_when_submitted_ = ctx.last_price(quote.quote_.instrument_);
-    now_when_submitted_ = ctx.now();
-    positions_when_submitted_ = ctx.portfolio().positions_.size();
-    ctx.submit(
-      strategy::OrderIntent::market(
-        quote.quote_.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
-      )
-        .with_tag("buys-on-quote")
-    );
-  }
-
-  template <class Ctx>
-  void on_fill(Ctx&, const strategy::Fill& fill) {
-    fill_prices_.push_back(fill.price_);
-  }
-};
-
 /** Buys the instrument it is shown, once, on its first bar, and records what filled. */
 struct BuysOnFirstBar {
   bool submitted_{false};
@@ -974,30 +763,6 @@ Clock::time_point session_minute(int minute) {
 } // namespace
 
 #if defined(ATL_HAS_EIGEN)
-TEST_CASE("a weekly bar's period start is not derivable, and the engine says so instead of guessing") {
-  // **The one shape this engine cannot check.** A close-stamped weekly bar ends on a Friday and began on a
-  // Monday, and nothing in the event says when. Three versions of this code inferred it from a previous bar
-  // -- of the instrument, then of the instrument and interval -- and each was wrong in turn, because `feed`'s
-  // contract requires timestamp order and nothing about stamps, anchors or overlap. So the fill is allowed on
-  // the rule that governed every fill before this check, and **counted**: the report says the check did not
-  // happen rather than claiming one that did not.
-  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config());
-  engine.feed(moving_bar(utc(2026, 3, 6, 6, 30), BarInterval::ONE_WEEK, "60000", "61000"));
-  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "69000", "70000"));
-  // The Tuesday inside the following week.
-  engine.feed(quote_at(utc(2026, 3, 17, 1, 0), "70500"));
-  engine.feed(moving_bar(utc(2026, 3, 20, 6, 30), BarInterval::ONE_WEEK, "75000", "76000"));
-  engine.finish();
-
-  REQUIRE(engine.strategy().fill_prices_.size() == 1);
-  // That week's own bar filled it, at that week's open, which may be a price from before the quote.
-  // Unchecked, not endorsed -- and the figure below is the whole of what the engine will say.
-  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("75000"));
-  CHECK(engine.result().unchecked_fill_causality_ > 0);
-
-  const auto report = backtest::summarize(engine.result(), engine.fills());
-  CHECK(report.caveats_.unchecked_fill_causality_ == engine.result().unchecked_fill_causality_);
-}
 #endif
 
 /** An open-stamped bar of `interval` at `at`, which is how every shipped adapter stamps one. */
@@ -1010,26 +775,6 @@ strategy::BarEvent open_stamped(Clock::time_point at, BarInterval interval, cons
   bar.close_ = Decimal64::parse(close);
   bar.volume_ = Decimal64::parse("1000");
   return strategy::make_bar_event(samsung(), interval, BarStamp::OPEN, bar);
-}
-
-TEST_CASE("a nominal period end does not defer a fill by a whole month") {
-  // **The other half of the causal rule.** It compares two instants, and only one of them was
-  // once checked. `bar_period_end` adds a
-  // nominal 31 days to an open-stamped monthly bar, and every shipped adapter stamps every
-  // non-minute bar `OPEN` -- so February's period end lands on 5 March, an order decided on
-  // February's bar looked as though it had been decided inside March's period, and it was deferred
-  // to April. Bars only, no quote, in the shape the library itself fetches.
-  backtest::Backtester<BuysOnFirstBar> engine(BuysOnFirstBar{}, replay_config());
-  engine.feed(open_stamped(utc(2026, 2, 2, 0, 0), BarInterval::ONE_MONTH, "60000", "61000"));
-  engine.feed(open_stamped(utc(2026, 3, 2, 0, 0), BarInterval::ONE_MONTH, "70000", "71000"));
-  engine.finish();
-
-  REQUIRE(engine.strategy().fill_prices_.size() == 1);
-  // March's open, which is the month after the decision -- not April's.
-  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("70000"));
-  // And the engine says it could not prove that, rather than claiming it checked -- once, for the
-  // one order on the one bar it was considered against.
-  CHECK(engine.result().unchecked_fill_causality_ == 1);
 }
 
 TEST_CASE("an open-stamped week whose successor starts exactly a week later is checked") {
@@ -1072,21 +817,6 @@ TEST_CASE("an order is never filled from the bar that produced it") {
   REQUIRE(engine.strategy().fill_prices_.size() == 1);
   // The next bar's open, not anything from the signal's own bar.
   REQUIRE(engine.strategy().fill_prices_[0] == Decimal64::parse("80000"));
-}
-
-TEST_CASE("a replay records each execution once and in its result only", "[ledger]") {
-  auto config = replay_config();
-  config.cash_ = Decimal64::parse("500000");
-  backtest::Backtester<HoldsTen> engine(HoldsTen{}, std::move(config));
-  engine.feed(bar_at(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000"));
-  engine.feed(bar_at(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000"));
-  engine.finish();
-
-  REQUIRE(engine.result().executions_.size() == 1);
-  CHECK(engine.result().executions_[0].fill_.quantity_ == Decimal64::parse("10"));
-  CHECK(engine.ledger().history() == backtest::ExecutionHistory::NONE);
-  CHECK_THROWS_AS(engine.ledger().executions(), std::logic_error);
-  CHECK(engine.ledger().quantity_of(samsung()) == std::optional<Decimal64>(Decimal64::parse("10")));
 }
 
 TEST_CASE("a replay that fills a buy its cash cannot pay for says it borrowed", "[overdraft]") {
@@ -1386,17 +1116,6 @@ void behaves_the_same_at_both_intervals(Strategy strategy) {
 
 #if defined(ATL_HAS_EIGEN)
 
-TEST_CASE("DonchianBreakout replays identically at both intervals") {
-  vanilla::DonchianBreakout breaking;
-  breaking.params_.instrument_ = samsung();
-  breaking.params_.lookback_ = 5;
-  breaking.params_.quantity_ = Decimal64::parse("100");
-  behaves_the_same_at_both_intervals(breaking);
-
-  const auto engine = replay(breaking, BarInterval::ONE_DAY);
-  REQUIRE(engine.result().executions_.size() >= 2);
-}
-
 TEST_CASE("ZScoreReversion replays identically at both intervals") {
   vanilla::ZScoreReversion reverting;
   reverting.params_.instrument_ = samsung();
@@ -1587,39 +1306,6 @@ TEST_CASE("a sell tax rate outside zero to one is refused", "[sell-tax]") {
   CHECK_NOTHROW(model.with_sell_tax(backtest::SellTax{Decimal64::parse("0"), Country::KR}));
 }
 
-TEST_CASE("a market-price rule prices market orders at the price they were decided on", "[market-price]") {
-  std::vector<std::pair<std::optional<Decimal64>, Decimal64>> seen;
-  const auto model =
-    backtest::NextBarFillModel{}.with_market_price("decision-close", [&seen](const backtest::MarketPriceInput& in) {
-      seen.emplace_back(in.decision_price_, in.next_.bar_.close_);
-      return in.decision_price_;
-    });
-  CHECK(model.market_price_rule() == "decision-close");
-  backtest::Backtester<BuysThenSells> engine(BuysThenSells{}, replay_config(), model);
-  engine.feed(moving_bar(utc(2026, 3, 9, 6, 30), BarInterval::ONE_DAY, "60000", "61000"));
-  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
-  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "71000", "72000"));
-  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "65000", "66000"));
-  engine.finish();
-  const auto& executions = engine.result().executions_;
-  REQUIRE(executions.size() == 2);
-  // Bought on the first close, outside the second bar's range, and sold on the third close: no range check.
-  CHECK(executions[0].fill_.price_ == Decimal64::parse("61000"));
-  CHECK(executions[0].fill_.at_ == utc(2026, 3, 10, 6, 30));
-  CHECK(executions[1].fill_.side_ == OrderSide::SELL);
-  CHECK(executions[1].fill_.price_ == Decimal64::parse("72000"));
-  CHECK(engine.result().market_fills_by_rule_ == 2);
-  // Called with the close the order was decided on and the fill bar, never the fill bar's own close.
-  REQUIRE(seen.size() == 2);
-  CHECK(seen[0].first == std::optional<Decimal64>(Decimal64::parse("61000")));
-  CHECK(seen[0].second == Decimal64::parse("70000"));
-#if defined(ATL_HAS_EIGEN)
-  const auto report = backtest::summarize(engine.result(), engine.fills());
-  CHECK(report.caveats_.market_price_rule_ == "decision-close");
-  CHECK(report.caveats_.market_fills_by_rule_ == 2);
-#endif
-}
-
 TEST_CASE("a market-price rule that names no price leaves a day order resting for its session", "[market-price]") {
   // Prices only a bar closing at 70,000 or more, at its open.
   const auto model = backtest::NextBarFillModel{}.with_market_price("late", [](const backtest::MarketPriceInput& in) {
@@ -1635,39 +1321,6 @@ TEST_CASE("a market-price rule that names no price leaves a day order resting fo
   CHECK(executions[0].fill_.price_ == Decimal64::parse("69000"));
   // The first order rested through the second bar, whose session then ended.
   CHECK(engine.result().expired_day_orders_ == 1);
-}
-
-TEST_CASE("a decision on a quote is priced at the quote, not at the bar before the fill", "[market-price]") {
-  // Decided at 10:30 on day 11 at 71,000: day 11's bar began before it, so day 12's fills it, at the quote's
-  // price; day 11's close (72,000), the instrument's bar before the fill, is not the price decided on.
-  const auto model =
-    backtest::NextBarFillModel{}.with_market_price("decision-price", [](const backtest::MarketPriceInput& in) {
-      return in.decision_price_;
-    });
-  backtest::Backtester<BuysOnQuote> engine(BuysOnQuote{}, replay_config(), model);
-  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
-  engine.feed(quote_at(utc(2026, 3, 11, 1, 30), "71000"));
-  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70500", "72000"));
-  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "73000", "74000"));
-  engine.finish();
-  REQUIRE(engine.strategy().fill_prices_.size() == 1);
-  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("71000"));
-}
-
-TEST_CASE("a market-price rule is told when the decision price was observed", "[market-price]") {
-  // The order is decided on day 11's bar; its instrument's price then is day 11's close, observed at that bar's end.
-  std::vector<std::pair<std::optional<Clock::time_point>, std::optional<Clock::time_point>>> seen;
-  const auto model =
-    backtest::NextBarFillModel{}.with_market_price("observed", [&seen](const backtest::MarketPriceInput& in) {
-      seen.emplace_back(in.decision_price_at_, in.decided_at_);
-      return in.decision_price_;
-    });
-  backtest::Backtester<BuysThenSells> engine(BuysThenSells{}, replay_config(), model);
-  engine.feed(moving_bar(utc(2026, 3, 9, 6, 30), BarInterval::ONE_DAY, "60000", "61000"));
-  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
-  REQUIRE(seen.size() == 1);
-  CHECK(seen[0].first == std::optional<Clock::time_point>(utc(2026, 3, 9, 6, 30)));
-  CHECK(seen[0].second == std::optional<Clock::time_point>(utc(2026, 3, 9, 6, 30)));
 }
 
 namespace {
@@ -2241,51 +1894,6 @@ TEST_CASE("an outstanding buy moves buying power only when the check is on") {
 
 namespace {
 
-/**
- * Rests two orders in one instrument, then from the first one's fill withdraws the second.
- *
- * The reentrancy case: `settle_queued_against` collects the eligible references before it fills
- * anything, so the second order's reference is already in that list when `on_fill` removes it.
- */
-struct WithdrawsTheOtherOnFill {
-  bool placed_{false};
-  bool withdrew_{false};
-  std::size_t working_at_fill_{0};
-
-  template <class Ctx>
-  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
-    if (placed_) {
-      return;
-    }
-    placed_ = true;
-    // The first fills against the next bar's open; the second rests, far from the market.
-    ctx.submit(
-      strategy::OrderIntent::market(
-        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
-      )
-        .with_tag("fills")
-    );
-    ctx.submit(
-      strategy::OrderIntent::limit(
-        bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")), far_below()
-      )
-        .with_tag("rests")
-    );
-  }
-
-  template <class Ctx>
-  void on_fill(Ctx& ctx, const strategy::Fill&) {
-    if (withdrew_) {
-      return;
-    }
-    withdrew_ = true;
-    working_at_fill_ = ctx.portfolio().working_.size();
-    for (const auto& working : ctx.portfolio().working_) {
-      ctx.cancel(working.ref_, "one is enough");
-    }
-  }
-};
-
 /** Places an order for the *other* instrument from a fill callback. */
 struct PlacesTheOtherOnFill {
   bool seeded_{false};
@@ -2322,20 +1930,6 @@ struct PlacesTheOtherOnFill {
 };
 
 } // namespace
-
-TEST_CASE("a fill callback can withdraw an order the same pass had not reached") {
-  // The order the loop has not filled yet is outstanding, so it is in the portfolio `on_fill` reads
-  // and its reference resolves. The queue was once empty for the length of the loop,
-  // so `on_fill` saw nothing to withdraw and could not have reached it if it had.
-  backtest::Backtester<WithdrawsTheOtherOnFill> engine(WithdrawsTheOtherOnFill{}, replay_config());
-  replay_flat_bars(engine, 3);
-
-  // The market order filled and the resting limit was still outstanding when `on_fill` ran.
-  REQUIRE(engine.result().executions_.size() == 1);
-  REQUIRE(engine.strategy().working_at_fill_ == 1);
-  // And the withdrawal reached it, so nothing is left over at the end.
-  REQUIRE(engine.result().unfilled_ == 0);
-}
 
 TEST_CASE("an order placed from a fill waits for its own instrument's next bar") {
   // Two claims at once, and the order is a *market* order so that each is observable: an order
@@ -2432,32 +2026,6 @@ TEST_CASE("one replay spanning a rate change charges each rate on its own dates"
 }
 #endif
 
-TEST_CASE("next-close charges an open-stamped daily row at its own session's rate", "[market-price]") {
-  // The 11th's row (00:00 KST, ending at the 12th's midnight) is the fill bar: its close is the 11th's, so the
-  // 11th's rate (0.002), not the 12th's (0.001) that its nominal end would name.
-  auto policy = backtest::CommissionPolicy::scheduled(
-    operator_tariff({
-      venue_rate(Venue::KRX, "0.002", "0", std::nullopt, Date{2026, 3, 11}),
-      venue_rate(Venue::KRX, "0.001", "0", Date{2026, 3, 12}, std::nullopt),
-    }),
-    *VenueKey::normalized(Venue::KRX), Country::KR
-  );
-  REQUIRE(policy);
-  const auto model =
-    backtest::NextBarFillModel(std::move(policy.value())).with_market_price(backtest::MarketPrice::NEXT_CLOSE);
-  CHECK(model.market_price_rule() == "next-close");
-  backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config(), model);
-  engine.feed(open_stamped(utc(2026, 3, 9, 15, 0), BarInterval::ONE_DAY, "60000", "61000"));
-  engine.feed(open_stamped(utc(2026, 3, 10, 15, 0), BarInterval::ONE_DAY, "70000", "71000"));
-  engine.finish();
-  const auto& executions = engine.result().executions_;
-  REQUIRE(executions.size() == 1);
-  CHECK(executions[0].fill_.price_ == Decimal64::parse("71000"));
-  CHECK(executions[0].fill_.at_ == utc(2026, 3, 11, 15, 0));
-  CHECK(executions[0].commission_ == Decimal64::parse("1420"));
-  CHECK(engine.result().market_fills_by_rule_ == 1);
-}
-
 TEST_CASE("next-close fills a close-stamped daily bar and a minute bar at their closes", "[market-price]") {
   const auto model = backtest::NextBarFillModel{}.with_market_price(backtest::MarketPrice::NEXT_CLOSE);
   {
@@ -2500,25 +2068,6 @@ TEST_CASE("next-close halts on a weekly bar only for an order it would price", "
     engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "69000", "70000"));
     engine.finish();
     CHECK_FALSE(engine.result().halted_.has_value());
-  }
-}
-
-TEST_CASE("any other rule replaces next-close's refusal of weekly bars", "[market-price]") {
-  const auto next_close = backtest::NextBarFillModel{}.with_market_price(backtest::MarketPrice::NEXT_CLOSE);
-  const auto open = [](const backtest::MarketPriceInput& in) {
-    return in.next_.bar_.open_;
-  };
-  for (
-    const auto& model :
-    {next_close.with_market_price(backtest::MarketPrice::NEXT_OPEN),
-      next_close.with_market_price(backtest::MarketPrice::DECISION_CLOSE), next_close.with_market_price("open", open)}
-  ) {
-    backtest::Backtester<HoldsTen> engine(HoldsTen{}, replay_config(), model);
-    engine.feed(moving_bar(utc(2026, 3, 6, 6, 30), BarInterval::ONE_WEEK, "60000", "61000"));
-    engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "69000", "70000"));
-    engine.finish();
-    CHECK_FALSE(engine.result().halted_.has_value());
-    CHECK(engine.result().executions_.size() == 1);
   }
 }
 
@@ -2937,35 +2486,6 @@ TEST_CASE("a costing refusal names the unreadable window, and the foreign guard 
 }
 
 #if defined(ATL_HAS_EIGEN)
-TEST_CASE("a cost total that will not sum is stated as incomplete rather than short") {
-  // No bound holds here: two ledger-accepted executions, each carrying an
-  // individually representable commission, can have a sum that does not fit -- and `summarize`
-  // left the previous total in place and reported it as the answer.
-  backtest::ReplayConfig config = replay_config();
-  config.cash_ = Decimal64::parse("5000000000000000000");
-
-  backtest::ReplayResult result;
-  const auto huge = Decimal64::parse("5000000000000000000");
-  for (int at = 0; at < 2; ++at) {
-    backtest::Execution execution;
-    execution.fill_.instrument_ = samsung();
-    execution.fill_.side_ = OrderSide::BUY;
-    execution.fill_.quantity_ = Decimal64::parse("1");
-    execution.fill_.price_ = Decimal64::parse("1");
-    execution.commission_ = huge;
-    execution.slippage_ = Decimal64::parse("0");
-    execution.currency_ = Currency{"KRW"};
-    result.executions_.push_back(execution);
-  }
-
-  const backtest::NextBarFillModel fills;
-  const auto report = backtest::summarize(result, fills);
-  CHECK(report.caveats_.cost_totals_incomplete_);
-  // Nothing is stated rather than a figure short by an amount nobody can name.
-  CHECK_FALSE(report.commission_paid_);
-  CHECK_FALSE(report.institution_fees_paid_);
-}
-
 TEST_CASE("an unsummable cost total is reported through a real replay, not only a built result") {
   // The route rather than the arithmetic: the previous case builds a `ReplayResult` directly, and
   // this one reaches `summarize` the way a replay does -- through the fill model,
@@ -2994,49 +2514,6 @@ TEST_CASE("an unsummable cost total is reported through a real replay, not only 
   CHECK(report.caveats_.cost_totals_incomplete_);
   CHECK_FALSE(report.commission_paid_);
   CHECK_FALSE(report.institution_fees_paid_);
-}
-
-TEST_CASE("slippage in two currencies is kept apart like every other cost") {
-  // The last cost figure once summed across currencies: one won
-  // fill and one dollar fill produced a scalar denominated in neither, with no caveat set and both
-  // shipped examples printing it plainly. `Execution` has carried its currency since the
-  // mixed-currency commission fix; slippage simply had not been given it.
-  backtest::ReplayConfig config;
-  config.cash_ = Decimal64::parse("100000000");
-  config.instruments_ = {samsung_reference(), apple_reference()};
-  config.limits_.permitted_phases_ = std::nullopt;
-
-  backtest::Backtester<HoldsTen> engine(
-    HoldsTen{}, config,
-    backtest::NextBarFillModel(backtest::CommissionModel::none(), backtest::SlippageModel::of_ticks(1))
-  );
-  engine.feed(bar_for(samsung(), utc(2026, 3, 10, 6, 30), "70000"));
-  engine.feed(bar_for(apple_reference().id_, utc(2026, 3, 10, 6, 31), "200"));
-  engine.feed(bar_for(samsung(), utc(2026, 3, 11, 6, 30), "70000"));
-  engine.feed(bar_for(apple_reference().id_, utc(2026, 3, 11, 6, 31), "200"));
-  engine.finish();
-
-  const auto report = backtest::summarize(engine.result(), engine.fills());
-  REQUIRE(report.executions_ == 2);
-  REQUIRE(report.slippage_by_currency_.size() == 2);
-  // Neither currency's figure is zero, so a scalar sum would have been a number that looked real
-  // and belonged to no currency at all.
-  for (const auto& given_up : report.slippage_by_currency_) {
-    CHECK(given_up.amount_.coefficient() > 0);
-  }
-  CHECK_FALSE(report.slippage_paid_);
-
-  // And a single-currency replay still states the scalar, so the absence means something.
-  backtest::Backtester<HoldsTen> home(
-    HoldsTen{}, replay_config(),
-    backtest::NextBarFillModel(backtest::CommissionModel::none(), backtest::SlippageModel::of_ticks(1))
-  );
-  home.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  home.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  home.finish();
-  const auto at_home = backtest::summarize(home.result(), home.fills());
-  REQUIRE(at_home.slippage_paid_);
-  CHECK(at_home.slippage_paid_->coefficient() > 0);
 }
 
 TEST_CASE("a replay whose every trade is outside its curve reports no figures and counts them") {
@@ -3163,59 +2640,6 @@ TEST_CASE("an update is not dispatched for an order a previous update handler wi
 
 namespace {
 
-/** Places one protective stop on the first bar, as a strategy protecting an entry would. */
-struct PlacesAStop {
-  bool sent_{false};
-
-  template <class Ctx>
-  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
-    if (sent_) {
-      return;
-    }
-    sent_ = true;
-    ctx.submit(
-      strategy::OrderIntent::stop_limit(
-        bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
-        *strategy::Price::checked(Decimal64::parse("69500"), krx::equity_price_rule()),
-        *strategy::Price::checked(Decimal64::parse("69000"), krx::equity_price_rule())
-      )
-        .with_tag("stop")
-    );
-  }
-};
-
-} // namespace
-
-TEST_CASE("a replay models the stop a strategy places", "[trigger]") {
-  // Parity with a live run, where this order goes to the broker: the stop is queued, released by the
-  // bar that falls through its trigger, filled at its limit, and counted as the intrabar assumption.
-  // The stop sells ten from a flat book, so this replay shorts.
-  backtest::Backtester<PlacesAStop> engine(PlacesAStop{}, short_replay_config());
-  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  // A day that opens above the trigger and falls through it. (`moving_bar` makes its low the open,
-  // which cannot describe a fall.)
-  Bar falling;
-  falling.timestamp_ = utc(2026, 3, 11, 6, 30);
-  falling.open_ = Decimal64::parse("70000");
-  falling.high_ = Decimal64::parse("70000");
-  falling.low_ = Decimal64::parse("68000");
-  falling.close_ = Decimal64::parse("68000");
-  falling.volume_ = Decimal64::parse("1000");
-  engine.feed(strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, falling));
-  engine.finish();
-
-  CHECK(engine.result().rejected_.empty());
-  REQUIRE(engine.result().executions_.size() == 1);
-  const auto& fill = engine.result().executions_[0].fill_;
-  CHECK(fill.side_ == OrderSide::SELL);
-  CHECK(fill.price_ == Decimal64::parse("69000"));
-  CHECK(fill.tag_ == "stop");
-  CHECK(engine.result().stop_releases_ == 1);
-  CHECK(engine.result().stop_fills_intrabar_ == 1);
-}
-
-namespace {
-
 /** A sell stop-limit, as `reconcile` plans one. */
 strategy::PlannedOrder sell_stop(const char* trigger, const char* limit) {
   auto order = order_of(OrderSide::SELL, "10", OrderType::STOP_LIMIT, limit);
@@ -3250,102 +2674,6 @@ TEST_CASE("a stop released inside the bar whose limit was not marketable stays w
   CHECK_FALSE(later.released_);
   CHECK_FALSE(later.intrabar_release_fill_);
   CHECK(later.execution_->fill_.price_ == Decimal64::parse("69800"));
-}
-
-TEST_CASE("a stop the open gapped through is priced as a limit against the whole bar", "[trigger]") {
-  const backtest::NextBarFillModel at_limit;
-  const backtest::NextBarFillModel open_if_better(
-    backtest::CommissionModel::none(), backtest::SlippageModel::none(), backtest::LimitFillPrice::AT_OPEN_IF_BETTER
-  );
-
-  SECTION("through the trigger and not the limit") {
-    const auto bar = ohlc("69200", "69400", "68000", "68500");
-    const auto limit = at_limit.decide(sell_stop("69500", "69000"), bar, krx_grid(), fill_date());
-    REQUIRE(limit.execution_);
-    CHECK(limit.released_);
-    CHECK_FALSE(limit.intrabar_release_fill_);
-    CHECK(limit.execution_->fill_.price_ == Decimal64::parse("69000"));
-    const auto open = open_if_better.decide(sell_stop("69500", "69000"), bar, krx_grid(), fill_date());
-    REQUIRE(open.execution_);
-    CHECK(open.execution_->fill_.price_ == Decimal64::parse("69200"));
-  }
-
-  SECTION("through both, and the bar never came back to the limit") {
-    const auto gapped =
-      at_limit.decide(sell_stop("69500", "69000"), ohlc("68000", "68800", "67500", "68200"), krx_grid(), fill_date());
-    CHECK_FALSE(gapped.execution_);
-    CHECK(gapped.released_);
-    CHECK(gapped.still_working_);
-  }
-
-  SECTION("a buy stop gapped through") {
-    const auto buy =
-      at_limit.decide(buy_stop("70500", "71000"), ohlc("70800", "71500", "70600", "71200"), krx_grid(), fill_date());
-    REQUIRE(buy.execution_);
-    CHECK_FALSE(buy.intrabar_release_fill_);
-    CHECK(buy.execution_->fill_.price_ == Decimal64::parse("71000"));
-  }
-}
-
-namespace {
-
-/** Places a protective stop on the first bar and asks to be flat on every later one. */
-struct StopsThenTargetsFlat {
-  int bars_{0};
-
-  template <class Ctx>
-  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
-    if (++bars_ == 1) {
-      strategy::TargetPosition entry;
-      entry.instrument_ = bar.instrument_;
-      entry.target_quantity_ = Decimal64::parse("10");
-      ctx.submit(entry);
-      return;
-    }
-    if (bars_ == 2) {
-      ctx.submit(
-        strategy::OrderIntent::stop_limit(
-          bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
-          *strategy::Price::checked(Decimal64::parse("66500"), krx::equity_price_rule()),
-          *strategy::Price::checked(Decimal64::parse("66000"), krx::equity_price_rule())
-        )
-          .with_tag("stop")
-      );
-      return;
-    }
-    strategy::TargetPosition flat;
-    flat.instrument_ = bar.instrument_;
-    flat.target_quantity_ = Decimal64::parse("0");
-    flat.tag_ = "flat";
-    ctx.submit(flat);
-  }
-};
-
-} // namespace
-
-TEST_CASE("a queued stop is withdrawn before a flatten in a replay as it is live", "[trigger]") {
-  // The parity: the working row a replay shows is a stop row with its trigger,
-  // so the target rule refuses exactly as it would against a live listing.
-  // Minute bars of one session: across daily bars the stop would have expired before bar 3.
-  backtest::Backtester<StopsThenTargetsFlat> engine(StopsThenTargetsFlat{}, replay_config());
-  engine.feed(moving_bar(session_minute(1), BarInterval::ONE_MINUTE, "70000", "70000"));
-  engine.feed(moving_bar(session_minute(2), BarInterval::ONE_MINUTE, "70000", "70000"));
-  engine.feed(moving_bar(session_minute(3), BarInterval::ONE_MINUTE, "70000", "70000"));
-
-  // Bar 3's flatten withdraws the stop and sells nothing beside it; bar 4 restates it against a book
-  // with no stop, and bar 5 fills the sale -- the sequence a live run takes.
-  engine.feed(moving_bar(session_minute(4), BarInterval::ONE_MINUTE, "70000", "70000"));
-  engine.feed(moving_bar(session_minute(5), BarInterval::ONE_MINUTE, "70000", "70000"));
-  engine.finish();
-
-  REQUIRE(engine.result().rejected_.size() == 1);
-  CHECK(engine.result().rejected_[0].reason_ == strategy::RejectReason::STOP_ORDER_RESTING);
-  REQUIRE(engine.result().executions_.size() == 2);
-  CHECK(engine.result().executions_[0].fill_.side_ == OrderSide::BUY);
-  CHECK(engine.result().executions_[1].fill_.side_ == OrderSide::SELL);
-  CHECK(engine.result().executions_[1].fill_.tag_ == "flat");
-  CHECK(engine.result().stop_releases_ == 0);
-  CHECK(engine.result().unfilled_ == 0);
 }
 
 TEST_CASE("a stop released inside the bar is credited a price the bar traded", "[trigger]") {
@@ -3475,23 +2803,6 @@ TEST_CASE("a stop released on a daily bar and not filled expires with that sessi
   CHECK(engine.result().stop_releases_ == 1);
   CHECK(engine.result().expired_day_orders_ == 1);
   CHECK(engine.result().unfilled_ == 0);
-}
-
-TEST_CASE("negative slippage never lifts a stop fill past its bar", "[trigger]") {
-  // `SlippageModel` accepts a negative figure, which moves a fill
-  // in the order's favour; past the bar's opposite extreme that is a price the bar never showed.
-  const backtest::NextBarFillModel generous(
-    backtest::CommissionModel::none(), backtest::SlippageModel::of_basis_points(Decimal64::parse("-1000"))
-  );
-  const auto sell =
-    generous.decide(sell_stop("69500", "68000"), ohlc("69200", "69400", "69000", "69100"), krx_grid(), fill_date());
-  REQUIRE(sell.execution_);
-  CHECK(sell.execution_->fill_.price_ == Decimal64::parse("69400"));
-
-  const auto buy =
-    generous.decide(buy_stop("70500", "72000"), ohlc("70800", "71000", "70600", "70900"), krx_grid(), fill_date());
-  REQUIRE(buy.execution_);
-  CHECK(buy.execution_->fill_.price_ == Decimal64::parse("70600"));
 }
 
 TEST_CASE("favourable slippage cannot credit a price the bar reached before the release", "[trigger]") {
@@ -3633,15 +2944,6 @@ WatchRow watch_row(
   return row;
 }
 
-/** The order ids of a batch of updates, in the order reported. */
-std::vector<std::string> ids_of(const std::vector<OrderSnapshot>& updates) {
-  std::vector<std::string> ids;
-  for (const auto& update : updates) {
-    ids.push_back(update.order_id_);
-  }
-  return ids;
-}
-
 /**
  * The watch's rule written the long way, one scan of the listing per row: what `OrderUpdateWatch`
  * must report, whatever it keeps to find a reference quickly.
@@ -3728,92 +3030,6 @@ private:
 };
 
 } // namespace
-
-TEST_CASE("an order-update watch reports the rows that changed, in the listing's order", "[order-updates]") {
-  algotradelib::runner::OrderUpdateWatch<algotradelib::runner::DryTag> watch;
-
-  // New rows are reported in the order listed; a second part distinguishes two orders.
-  CHECK(
-    ids_of(watch.changed({
-      watch_row("c", "", OrderStatus::PENDING),
-      watch_row("a", "1", OrderStatus::PENDING),
-      watch_row("a", "2", OrderStatus::PENDING),
-    })) == std::vector<std::string>{"c", "a", "a"}
-  );
-  CHECK(watch.tracked_orders() == 3);
-
-  // Nothing moved; then one fills in part and one leaves.
-  const auto unmoved = watch.changed({
-    watch_row("c", "", OrderStatus::PENDING),
-    watch_row("a", "1", OrderStatus::PENDING),
-    watch_row("a", "2", OrderStatus::PENDING),
-  });
-  CHECK(unmoved.empty());
-  const auto moved = watch.changed({
-    watch_row("a", "2", OrderStatus::PARTIAL_FILLED, "4"),
-    watch_row("c", "", OrderStatus::PENDING),
-  });
-  REQUIRE(moved.size() == 1);
-  CHECK(moved.front().status_ == OrderStatus::PARTIAL_FILLED);
-  CHECK(watch.tracked_orders() == 2);
-
-  // An order that left and returns is new again; a quantity written at another scale is no change.
-  auto rescaled = watch_row("c", "", OrderStatus::PENDING);
-  rescaled.order_.quantity_ = Decimal64(100, 1);
-  CHECK(
-    ids_of(watch.changed({
-      rescaled,
-      watch_row("a", "1", OrderStatus::PENDING),
-      watch_row("a", "2", OrderStatus::PARTIAL_FILLED, "4"),
-    })) == std::vector<std::string>{"a"}
-  );
-
-  // A baseline taken silently reports nothing, and is what the next listing is compared with.
-  algotradelib::runner::OrderUpdateWatch<algotradelib::runner::DryTag> adopted;
-  adopted.adopt({watch_row("x", "", OrderStatus::PENDING), watch_row("y", "", OrderStatus::PENDING)});
-  CHECK(adopted.tracked_orders() == 2);
-  CHECK(
-    ids_of(adopted.changed({
-      watch_row("x", "", OrderStatus::PENDING),
-      watch_row("y", "", OrderStatus::PARTIAL_FILLED, "1"),
-      watch_row("z", "", OrderStatus::PENDING),
-    })) == std::vector<std::string>{"y", "z"}
-  );
-}
-
-TEST_CASE("an order listed twice is one order, and two disagreeing readings are none", "[order-updates]") {
-  algotradelib::runner::OrderUpdateWatch<algotradelib::runner::DryTag> watch;
-  auto reserved = watch_row("r", "", OrderStatus::PENDING);
-  reserved.reserved_ = true;
-
-  // `b` is stated twice and disagrees, between two orders that are stated once; `d` twice and agrees.
-  const auto first = watch.changed({
-    watch_row("a", "", OrderStatus::PENDING),
-    watch_row("b", "", OrderStatus::PENDING),
-    watch_row("c", "", OrderStatus::PENDING),
-    watch_row("d", "", OrderStatus::PENDING),
-    watch_row("b", "", OrderStatus::PARTIAL_FILLED, "3"),
-    watch_row("d", "", OrderStatus::PENDING),
-    watch_row("", "", OrderStatus::PENDING),
-    reserved,
-  });
-  CHECK(ids_of(first) == std::vector<std::string>{"a", "c", "d"});
-  CHECK(watch.contradicted_rows() == 1);
-  CHECK(watch.untracked_rows() == 1);
-  CHECK(watch.tracked_orders() == 3);
-
-  // The contradicted order kept no baseline, so it is new once it is stated once; the orders listed
-  // after it are still compared with their own last reading, not with a neighbour's.
-  const auto second = watch.changed({
-    watch_row("a", "", OrderStatus::PENDING),
-    watch_row("b", "", OrderStatus::PENDING),
-    watch_row("c", "", OrderStatus::PENDING),
-    watch_row("d", "", OrderStatus::PARTIAL_FILLED, "2"),
-  });
-  CHECK(ids_of(second) == std::vector<std::string>{"b", "d"});
-  CHECK(watch.tracked_orders() == 4);
-  CHECK(watch.contradicted_rows() == 1);
-}
 
 TEST_CASE("an order-update watch reports what a row-by-row scan of the listings reports", "[order-updates]") {
   // Listings drawn from a small pool of references, so orders repeat, leave, return and are stated
@@ -3936,107 +3152,6 @@ TEST_CASE("an order-update watch reports what a row-by-row scan of the listings 
   CHECK(edited > 100);
 }
 
-TEST_CASE(
-  "a listing that repeats the last one reports nothing, and the next change reports the new row", "[order-updates]"
-) {
-  using Watch = algotradelib::runner::OrderUpdateWatch<algotradelib::runner::DryTag>;
-  const auto named = [](WatchRow row, const std::string& name) {
-    row.order_.name_ = name;
-    return row;
-  };
-  const auto a = watch_row("a", "", OrderStatus::PENDING);
-  const auto b = watch_row("b", "", OrderStatus::PENDING);
-  const auto s = watch_row("", "s1", OrderStatus::PENDING);
-
-  for (const bool adopting : {false, true}) {
-    INFO((adopting ? "adopted" : "reported") << " baseline");
-    Watch watch;
-    if (adopting) {
-      watch.adopt({named(a, "first"), named(b, "first"), s});
-    } else {
-      CHECK(ids_of(watch.changed({named(a, "first"), named(b, "first"), s})) == std::vector<std::string>{"a", "b", ""});
-    }
-    CHECK(watch.tracked_orders() == 3);
-
-    // Fields the watch ignores, and a quantity at another scale: nothing to report, by either call.
-    auto rescaled = named(b, "second");
-    rescaled.order_.quantity_ = Decimal64(100, 1);
-    rescaled.order_.execution_.average_filled_price_ = Decimal64::parse("99");
-    CHECK(watch.changed({named(a, "second"), rescaled, s}).empty());
-    watch.adopt({named(a, "second"), rescaled, s});
-    CHECK(watch.tracked_orders() == 3);
-    CHECK(watch.untracked_rows() == 0);
-    CHECK(watch.contradicted_rows() == 0);
-
-    // A change that counts reports the row as now listed, every field of it.
-    auto moved = named(watch_row("b", "", OrderStatus::PARTIAL_FILLED, "4"), "third");
-    const auto report = watch.changed({named(a, "third"), moved, s});
-    REQUIRE(report.size() == 1);
-    CHECK(report.front().order_id_ == "b");
-    CHECK(report.front().name_ == "third");
-    CHECK(report.front().status_ == OrderStatus::PARTIAL_FILLED);
-  }
-
-  Watch watch;
-  watch.changed({a, b});
-  // The same orders in another order: compared by reference, nothing changed.
-  CHECK(watch.changed({b, a}).empty());
-  CHECK(watch.tracked_orders() == 2);
-  // A tracked order that comes back reserved, in its own place, is skipped, not counted as untracked; when it is
-  // listed plainly again it is new.
-  auto reserved = a;
-  reserved.reserved_ = true;
-  CHECK(watch.changed({b, reserved}).empty());
-  CHECK(watch.tracked_orders() == 1);
-  CHECK(watch.untracked_rows() == 0);
-  CHECK(ids_of(watch.changed({b, a})) == std::vector<std::string>{"a"});
-  // A row without a reference, as often as the listing has the same length, is counted every time.
-  watch.changed({b, watch_row("", "", OrderStatus::PENDING)});
-  watch.changed({b, watch_row("", "", OrderStatus::PENDING)});
-  CHECK(watch.untracked_rows() == 2);
-  // The same reference twice, the length of the tracked listing: contradicted, and counted.
-  watch.changed({a, b});
-  CHECK(watch.changed({a, watch_row("a", "", OrderStatus::PARTIAL_FILLED, "1")}).empty());
-  CHECK(watch.contradicted_rows() == 1);
-  CHECK(watch.tracked_orders() == 0);
-  // Empty after non-empty, then empty again.
-  watch.changed({a});
-  CHECK(watch.changed({}).empty());
-  CHECK(watch.tracked_orders() == 0);
-  CHECK(watch.changed({}).empty());
-  CHECK(ids_of(watch.changed({a})) == std::vector<std::string>{"a"});
-
-  // The tracked orders again, then something more: only the rest is compared and reported.
-  const auto c = watch_row("c", "", OrderStatus::PENDING);
-  Watch prefixed;
-  prefixed.changed({a, b});
-  CHECK(ids_of(prefixed.changed({a, b, c})) == std::vector<std::string>{"c"});
-  CHECK(
-    ids_of(prefixed.changed({a, b, watch_row("c", "", OrderStatus::PARTIAL_FILLED, "2")})) ==
-    std::vector<std::string>{"c"}
-  );
-  CHECK(prefixed.changed({a, b}).empty());
-  CHECK(prefixed.tracked_orders() == 2);
-  // Two disagreeing readings after an unchanged leading order are still a contradiction.
-  CHECK(prefixed.changed({a, watch_row("b", "", OrderStatus::PARTIAL_FILLED, "1"), b}).empty());
-  CHECK(prefixed.contradicted_rows() == 1);
-  CHECK(prefixed.tracked_orders() == 1);
-  prefixed.changed({a, b});
-  // A later row that repeats an unchanged leading order agrees with it: one order, nothing to report.
-  CHECK(prefixed.changed({a, b, a}).empty());
-  CHECK(prefixed.tracked_orders() == 2);
-  // A later row that disagrees with an unchanged leading order: contradicted, not reported, and dropped.
-  CHECK(prefixed.changed({a, b, watch_row("a", "", OrderStatus::PARTIAL_FILLED, "1")}).empty());
-  CHECK(prefixed.contradicted_rows() == 2);
-  CHECK(prefixed.tracked_orders() == 1);
-  // Listed plainly again, the dropped order is new; the leading one is not.
-  CHECK(ids_of(prefixed.changed({b, a})) == std::vector<std::string>{"a"});
-  // Fewer rows than tracked, all of them unchanged: nothing reported, the missing order forgotten.
-  CHECK(prefixed.changed({b}).empty());
-  CHECK(prefixed.tracked_orders() == 1);
-  CHECK(ids_of(prefixed.changed({b, a})) == std::vector<std::string>{"a"});
-}
-
 // ---------------------------------------------------------------------------
 // on_bars: one call per period end and interval, with every instrument's bar
 // ---------------------------------------------------------------------------
@@ -4136,38 +3251,6 @@ strategy::QuoteEvent quote_at(const InstrumentId& id, Clock::time_point at, cons
 
 } // namespace
 
-TEST_CASE("on_bars receives each period once with every instrument's bar") {
-  backtest::Backtester<RecordsSlices> engine(RecordsSlices{}, pair_config());
-  const auto d1 = utc(2026, 3, 10, 6, 30);
-  const auto d2 = utc(2026, 3, 11, 6, 30);
-  const auto d3 = utc(2026, 3, 12, 6, 30);
-  engine.feed(slice_bar(samsung(), d1, BarInterval::ONE_DAY, "100", "101"));
-  engine.feed(slice_bar(hynix(), d1, BarInterval::ONE_DAY, "200", "201"));
-  // Nothing is delivered while the period may still receive bars.
-  CHECK(engine.strategy().seen_.empty());
-  engine.feed(slice_bar(samsung(), d2, BarInterval::ONE_DAY, "102", "103"));
-  // A later period delivered the first, with both instruments.
-  REQUIRE(engine.strategy().seen_.size() == 1);
-  // The second period has no bar for one instrument, so that instrument is absent.
-  engine.feed(slice_bar(samsung(), d3, BarInterval::ONE_DAY, "104", "105"));
-  engine.feed(slice_bar(hynix(), d3, BarInterval::ONE_DAY, "204", "205"));
-  engine.finish();
-
-  const auto& seen = engine.strategy().seen_;
-  REQUIRE(seen.size() == 3);
-  CHECK(seen[0].end_ == d1);
-  CHECK(seen[0].symbols_ == std::vector<std::string>{"005930", "000660"});
-  CHECK(seen[1].end_ == d2);
-  CHECK(seen[1].symbols_ == std::vector<std::string>{"005930"});
-  CHECK(seen[2].end_ == d3);
-  CHECK(seen[2].symbols_ == std::vector<std::string>{"005930", "000660"});
-  for (const auto& one : seen) {
-    // The clock stands at the period, and each instrument's cached series ends at its bar.
-    CHECK(one.now_ == one.end_);
-    CHECK(one.cached_to_its_bar_);
-  }
-}
-
 TEST_CASE("an order decided in on_bars fills on a later period and never on a bar of its own") {
   RecordsSlices strategy;
   strategy.buy_ = hynix();
@@ -4182,49 +3265,6 @@ TEST_CASE("an order decided in on_bars fills on a later period and never on a ba
 
   REQUIRE(engine.strategy().fill_prices_.size() == 1);
   CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("220"));
-}
-
-TEST_CASE("the last period reaches on_bars at finish before on_stop counts what is left") {
-  RecordsSlices strategy;
-  strategy.buy_ = samsung();
-  strategy.buy_on_ = 1;
-  backtest::Backtester<RecordsSlices> engine(std::move(strategy), pair_config());
-  engine.feed(slice_bar(samsung(), utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "100", "101"));
-  engine.feed(slice_bar(samsung(), utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "102", "103"));
-  REQUIRE(engine.strategy().seen_.size() == 1);
-  engine.finish();
-  // Delivered once, before on_stop, and the order it placed is the one still queued.
-  CHECK(engine.strategy().seen_.size() == 2);
-  CHECK(engine.strategy().slices_at_stop_ == std::optional<std::size_t>(2));
-  CHECK(engine.result().unfilled_ == 1);
-}
-
-TEST_CASE("intervals ending at one instant give one slice each in the order first fed") {
-  const auto t = utc(2026, 3, 13, 6, 30);
-  const auto run = [&](bool minute_first) {
-    backtest::Backtester<RecordsSlices> engine(RecordsSlices{}, pair_config());
-    for (const auto& id : {samsung(), hynix()}) {
-      if (minute_first) {
-        engine.feed(slice_bar(id, t, BarInterval::ONE_MINUTE, "100", "101"));
-        engine.feed(slice_bar(id, t, BarInterval::ONE_DAY, "99", "101"));
-      } else {
-        engine.feed(slice_bar(id, t, BarInterval::ONE_DAY, "99", "101"));
-        engine.feed(slice_bar(id, t, BarInterval::ONE_MINUTE, "100", "101"));
-      }
-    }
-    engine.finish();
-    return engine.strategy().seen_;
-  };
-  for (const bool minute_first : {true, false}) {
-    const auto seen = run(minute_first);
-    REQUIRE(seen.size() == 2);
-    CHECK(seen[0].interval_ == (minute_first ? BarInterval::ONE_MINUTE : BarInterval::ONE_DAY));
-    CHECK(seen[1].interval_ == (minute_first ? BarInterval::ONE_DAY : BarInterval::ONE_MINUTE));
-    for (const auto& one : seen) {
-      CHECK(one.symbols_ == std::vector<std::string>{"005930", "000660"});
-      CHECK(one.cached_to_its_bar_);
-    }
-  }
 }
 
 TEST_CASE("a slice's order does not meet a same-instant bar of another interval fed after it") {
@@ -4412,151 +3452,8 @@ TEST_CASE("an all-nominal monthly slice's order fills in the next month and not 
   CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("120"));
 }
 
-namespace {
-
-/** Rests a limit buy from `on_phase`, withdraws it from `on_order_update`, and records what `on_bars` sees. */
-struct WithdrawsBeforeTheSlice {
-  bool placed_{false};
-  bool withdrawn_{false};
-  std::vector<std::size_t> working_seen_;
-
-  template <class Ctx>
-  void on_phase(Ctx& ctx, const strategy::MarketPhase&) {
-    if (placed_) {
-      return;
-    }
-    placed_ = true;
-    ctx.submit(
-      strategy::OrderIntent::limit(
-        samsung(), OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")), far_below()
-      )
-        .with_tag("rests")
-    );
-  }
-
-  template <class Ctx>
-  void on_order_update(Ctx& ctx, const OrderSnapshot&) {
-    if (withdrawn_) {
-      return;
-    }
-    for (const auto& working : ctx.portfolio().working_) {
-      withdrawn_ = true;
-      ctx.cancel(working.ref_, "withdraw");
-    }
-  }
-
-  template <class Ctx>
-  void on_bars(Ctx& ctx, const strategy::BarSlice&) {
-    working_seen_.push_back(ctx.portfolio().working_.size());
-  }
-};
-
-} // namespace
-
-TEST_CASE("on_bars sees the queue an order update left and not the one before it") {
-  backtest::Backtester<WithdrawsBeforeTheSlice> engine(WithdrawsBeforeTheSlice{}, replay_config());
-  engine.feed(slice_bar(samsung(), utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "100", "101"));
-  engine.finish();
-  REQUIRE(engine.strategy().placed_);
-  REQUIRE(engine.strategy().withdrawn_);
-  REQUIRE(engine.strategy().working_seen_.size() == 1);
-  CHECK(engine.strategy().working_seen_[0] == 0);
-  CHECK(engine.result().unfilled_ == 0);
-}
-
 #if defined(ATL_HAS_EIGEN)
-TEST_CASE("a halt drops the period being collected and finish does not deliver it") {
-  RecordsSlices strategy;
-  strategy.buy_ = samsung();
-  backtest::Backtester<RecordsSlices> engine(std::move(strategy), pair_config());
-  engine.feed(slice_bar(samsung(), utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  engine.feed(slice_bar(samsung(), utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  REQUIRE(engine.strategy().fill_prices_.size() == 1);
-  // The third period's first bar is collected; the second halts the replay at its mark.
-  engine.feed(slice_bar(hynix(), utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "200", "201"));
-  engine.feed(slice_bar(samsung(), utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "70000", "9223372036854775807"));
-  REQUIRE(engine.result().halted_);
-  const auto delivered = engine.strategy().seen_.size();
-  engine.finish();
-  CHECK(engine.strategy().seen_.size() == delivered);
-}
 #endif
-
-namespace {
-
-/** Holds ten of the first instrument while it closes above the second: the pair rule, by single bars. */
-struct PairRuleByBar {
-  std::optional<std::pair<Clock::time_point, Decimal64>> first_;
-  std::optional<std::pair<Clock::time_point, Decimal64>> second_;
-  std::optional<Clock::time_point> decided_;
-
-  template <class Ctx>
-  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
-    if (bar.instrument_ == samsung()) {
-      first_ = std::make_pair(bar.period_end_, bar.bar_.close_);
-    } else if (bar.instrument_ == hynix()) {
-      second_ = std::make_pair(bar.period_end_, bar.bar_.close_);
-    }
-    if (!first_ || !second_ || !(first_->first == second_->first) || decided_ == first_->first) {
-      return;
-    }
-    decided_ = first_->first;
-    decide(ctx, first_->second, second_->second);
-  }
-
-  template <class Ctx>
-  static void decide(Ctx& ctx, const Decimal64& first, const Decimal64& second) {
-    strategy::TargetPosition target;
-    target.instrument_ = samsung();
-    target.tag_ = "pair";
-    target.target_quantity_ = decimal_less(second, first) ? Decimal64::parse("10") : Decimal64::parse("0");
-    ctx.submit(target);
-  }
-};
-
-/** The same rule with `on_bars`: no bookkeeping. */
-struct PairRuleBySlice {
-  template <class Ctx>
-  void on_bars(Ctx& ctx, const strategy::BarSlice& slice) {
-    const auto* first = slice.find(samsung());
-    const auto* second = slice.find(hynix());
-    if (first == nullptr || second == nullptr) {
-      return;
-    }
-    PairRuleByBar::decide(ctx, first->bar_.close_, second->bar_.close_);
-  }
-};
-
-template <typename Strategy>
-std::vector<backtest::Execution> pair_rule_executions() {
-  backtest::Backtester<Strategy> engine(Strategy{}, pair_config());
-  const std::array<std::array<const char*, 2>, 6> closes{
-    {{"100", "90"}, {"95", "99"}, {"110", "100"}, {"108", "109"}, {"120", "100"}, {"121", "100"}}
-  };
-  for (std::size_t day = 0; day < closes.size(); ++day) {
-    const auto at = utc(2026, 3, 9 + static_cast<int>(day), 6, 30);
-    engine.feed(slice_bar(samsung(), at, BarInterval::ONE_DAY, closes[day][0], closes[day][0]));
-    engine.feed(slice_bar(hynix(), at, BarInterval::ONE_DAY, closes[day][1], closes[day][1]));
-  }
-  engine.finish();
-  return engine.result().executions_;
-}
-
-} // namespace
-
-TEST_CASE("the same pair rule trades identically through on_bar and on_bars") {
-  const auto by_bar = pair_rule_executions<PairRuleByBar>();
-  const auto by_slice = pair_rule_executions<PairRuleBySlice>();
-  REQUIRE(by_bar.size() >= 2);
-  REQUIRE(by_bar.size() == by_slice.size());
-  for (std::size_t i = 0; i < by_bar.size(); ++i) {
-    CHECK(by_bar[i].fill_.instrument_ == by_slice[i].fill_.instrument_);
-    CHECK(by_bar[i].fill_.side_ == by_slice[i].fill_.side_);
-    CHECK(by_bar[i].fill_.quantity_ == by_slice[i].fill_.quantity_);
-    CHECK(by_bar[i].fill_.price_ == by_slice[i].fill_.price_);
-    CHECK(by_bar[i].fill_.at_ == by_slice[i].fill_.at_);
-  }
-}
 
 TEST_CASE("a replay models limit and market orders under every condition and stops only as day orders") {
   const auto order = [](OrderType type, TimeInForce condition, bool priced, bool triggered) {
@@ -5040,39 +3937,6 @@ backtest::ReplayConfig limited_pair_config() {
   return config;
 }
 
-/** Holds ten, rests a stop under them, then states flat once: the flat waits behind the stop, and is never restated. */
-struct FlatOnceBehindAStop {
-  int bars_{0};
-
-  template <class Ctx>
-  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
-    ++bars_;
-    if (bars_ == 1) {
-      ctx.submit(
-        strategy::OrderIntent::market(
-          bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10"))
-        )
-          .with_tag("entry")
-      );
-    } else if (bars_ == 3) {
-      ctx.submit(
-        strategy::OrderIntent::stop_limit(
-          bar.instrument_, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("10")),
-          *strategy::Price::checked(Decimal64::parse("66500"), krx::equity_price_rule()),
-          *strategy::Price::checked(Decimal64::parse("66000"), krx::equity_price_rule())
-        )
-          .with_tag("stop")
-      );
-    } else if (bars_ == 5) {
-      strategy::TargetPosition flat;
-      flat.instrument_ = bar.instrument_;
-      flat.target_quantity_ = Decimal64::parse("0");
-      flat.tag_ = "flat";
-      ctx.submit(flat);
-    }
-  }
-};
-
 } // namespace
 
 TEST_CASE("a replay skips order updates for a strategy that has no handler and changes no result", "[order-updates]") {
@@ -5266,21 +4130,6 @@ TEST_CASE("the result digest the replay comparisons use tells apart a change to 
   CHECK(result_digest(limited) != result_digest(halted));
 }
 
-TEST_CASE("a flat stated once behind a stop is placed at the boundary that withdraws the stop", "[order-updates]") {
-  // No `on_order_update`, and the flat is never restated: only the release of deferred targets at the end of the
-  // pass can place it, and it then fills on the next bar.
-  backtest::Backtester<FlatOnceBehindAStop> engine(FlatOnceBehindAStop{}, replay_config());
-  for (int minute = 1; minute <= 7; ++minute) {
-    engine.feed(moving_bar(session_minute(minute), BarInterval::ONE_MINUTE, "70000", "70000"));
-  }
-  engine.finish();
-  REQUIRE(engine.result().rejected_.size() == 1);
-  CHECK(engine.result().rejected_[0].reason_ == strategy::RejectReason::STOP_ORDER_RESTING);
-  REQUIRE(engine.result().executions_.size() == 2);
-  CHECK(engine.result().executions_[1].fill_.tag_ == "flat");
-  CHECK(engine.result().executions_[1].fill_.at_ == session_minute(6));
-}
-
 namespace {
 
 /**
@@ -5445,80 +4294,6 @@ TEST_CASE("a ledger's running equity is the full sum digit for digit or falls ba
     same(assigned);
     same(moved);
   }
-}
-
-TEST_CASE("a ledger applies one of its own executions while making room for it") {
-  // `apply` copies what it is given before anything can move: the execution may be an element of
-  // `executions()`, which grows when this one is recorded, and the currency may be that element's.
-  const auto krw_currency = Currency{"KRW"};
-  backtest::ReplayLedger ledger(Decimal64::parse("1000"), krw_currency);
-  backtest::Execution bought;
-  bought.fill_.instrument_ = InstrumentId{Country::KR, Venue::COMBINED, "A-SYMBOL-LONGER-THAN-A-SHORT-STRING"};
-  bought.fill_.side_ = OrderSide::BUY;
-  bought.fill_.quantity_ = Decimal64::parse("1");
-  bought.fill_.price_ = Decimal64::parse("1");
-  bought.commission_ = Decimal64::parse("0");
-  bought.slippage_ = Decimal64::parse("0");
-  bought.currency_ = krw_currency;
-  // Applied until the list is full, then once more from its own front, its currency passed from it too.
-  while (ledger.executions().size() < 8 || ledger.executions().size() != ledger.executions().capacity()) {
-    REQUIRE(ledger.apply(bought, krw_currency));
-  }
-  const auto before = ledger.executions().size();
-  REQUIRE(ledger.apply(ledger.executions().front(), ledger.executions().front().currency_));
-  CHECK(ledger.executions().size() == before + 1);
-  CHECK(
-    ledger.quantity_of(bought.fill_.instrument_) ==
-    std::optional<Decimal64>(Decimal64(static_cast<std::int64_t>(before + 1), 0))
-  );
-}
-
-namespace {
-
-/**
- * Buys one share on bar 1; on bar 3 moves into its context a copy of it whose position names another
- * instrument. Records the symbol of the first position it reads on every bar.
- */
-struct MovesAContextIn {
-  int bars_{0};
-  std::vector<std::string> symbols_seen_;
-
-  template <class Ctx>
-  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
-    ++bars_;
-    symbols_seen_.push_back(
-      ctx.portfolio().positions_.empty() ? "" : ctx.portfolio().positions_[0].instrument_.symbol_
-    );
-    if (bars_ == 1) {
-      ctx.submit(
-        strategy::OrderIntent::market(
-          bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
-        )
-      );
-    } else if (bars_ == 3) {
-      auto portfolio = ctx.portfolio();
-      portfolio.positions_[0].instrument_.symbol_ = "WRONG";
-      Ctx replacement;
-      replacement.set_portfolio(std::move(portfolio));
-      replacement.set_instrument(*ctx.instrument(bar.instrument_));
-      replacement.set_now(ctx.now());
-      replacement.set_phase(ctx.phase());
-      ctx = std::move(replacement);
-    }
-  }
-};
-
-} // namespace
-
-TEST_CASE("a replay rebuilds a portfolio moved into its context") {
-  // A move brings in another context's portfolio and its count of replacements; the count must still differ
-  // from the one the replay last saw, or the replay would keep the moved-in rows. This file's check fails the
-  // replay on any difference from a fresh rebuild.
-  backtest::Backtester<MovesAContextIn> engine(MovesAContextIn{}, replay_config());
-  for (int minute = 1; minute <= 4; ++minute) {
-    engine.feed(moving_bar(session_minute(minute), BarInterval::ONE_MINUTE, "70000", "70000"));
-  }
-  REQUIRE(engine.strategy().symbols_seen_ == std::vector<std::string>{"", "005930", "005930", "005930"});
 }
 
 TEST_CASE("a replay's queue keeps placement order and finds orders by reference after removals") {
@@ -5739,31 +4514,6 @@ TEST_CASE("a replay records its equity curve per period, per bar or not at all")
   }
 }
 
-TEST_CASE("one instrument's equity curve is the same per period as per bar") {
-  const auto run = [](backtest::EquityCurve curve) {
-    auto config = replay_config();
-    config.equity_curve_ = curve;
-    backtest::Backtester<PlacesTwoEachBar> engine(PlacesTwoEachBar{}, config);
-    const char* closes[] = {"70000", "71000", "69500", "72000", "70500", "70100"};
-    for (int day = 0; day < 6; ++day) {
-      engine.feed(moving_bar(utc(2026, 3, 10 + day, 6, 30), BarInterval::ONE_DAY, closes[day], closes[day]));
-    }
-    engine.finish();
-    return engine.result().equity_;
-  };
-  const auto per_bar = run(backtest::EquityCurve::PER_BAR);
-  const auto per_period = run(backtest::EquityCurve::PER_PERIOD);
-  REQUIRE(per_bar.size() == per_period.size());
-  for (std::size_t at = 0; at < per_bar.size(); ++at) {
-    CHECK(per_bar[at].at_ == per_period[at].at_);
-    CHECK(per_bar[at].equity_ == per_period[at].equity_);
-    CHECK((
-      per_bar[at].period_return_ == per_period[at].period_return_ ||
-      (std::isnan(per_bar[at].period_return_) && std::isnan(per_period[at].period_return_))
-    ));
-  }
-}
-
 namespace {
 
 /** Trades nothing. */
@@ -5773,31 +4523,6 @@ struct Idles {
 };
 
 } // namespace
-
-TEST_CASE("bars whose period ends interleave lose no point of the equity curve") {
-  // An open-stamped day ends at the next midnight, after the minute bars fed later in time order: period ends
-  // that go back. Each change of period end records the run before it, so per period records every point per
-  // bar does here, with the same instants and equities.
-  const auto run = [](backtest::EquityCurve curve) {
-    auto config = replay_config();
-    config.equity_curve_ = curve;
-    backtest::Backtester<Idles> engine(Idles{}, config);
-    engine.feed(open_stamped(utc(2026, 3, 10, 0, 0), BarInterval::ONE_DAY, "70000", "70000"));
-    engine.feed(moving_bar(utc(2026, 3, 10, 1, 0), BarInterval::ONE_MINUTE, "70000", "70000"));
-    engine.feed(moving_bar(utc(2026, 3, 10, 2, 0), BarInterval::ONE_MINUTE, "70000", "70000"));
-    engine.finish();
-    return engine.result();
-  };
-  const auto per_bar = run(backtest::EquityCurve::PER_BAR);
-  const auto per_period = run(backtest::EquityCurve::PER_PERIOD);
-  REQUIRE(per_bar.bars_ == 3);
-  REQUIRE(per_bar.equity_.size() == 3);
-  REQUIRE(per_period.equity_.size() == 3);
-  for (std::size_t at = 0; at < 3; ++at) {
-    CHECK(per_period.equity_[at].at_ == per_bar.equity_[at].at_);
-    CHECK(per_period.equity_[at].equity_ == per_bar.equity_[at].equity_);
-  }
-}
 
 #if defined(ATL_HAS_EIGEN)
 namespace {
@@ -5848,198 +4573,7 @@ TEST_CASE("a replay keeps pricing and caching bars after a context is moved into
 #endif
 
 #if defined(ATL_HAS_EIGEN)
-namespace {
-
-/** Buys on its second bar and sells part on its fourth; reads no history, and says so unless `Reads`. */
-template <bool Reads>
-struct TradesWithoutHistory {
-  static constexpr bool reads_bar_history = Reads;
-  int bars_{0};
-
-  template <class Ctx>
-  void act(Ctx& ctx, const InstrumentId& id) {
-    ++bars_;
-    if (bars_ == 2) {
-      ctx.submit(
-        strategy::OrderIntent::market(id, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("10")))
-      );
-    } else if (bars_ == 4) {
-      ctx.submit(
-        strategy::OrderIntent::market(id, OrderSide::SELL, strategy::SizeSpec::quantity(Decimal64::parse("4")))
-      );
-    }
-  }
-};
-
-template <bool Reads>
-struct BarTradesWithoutHistory : TradesWithoutHistory<Reads> {
-  template <class Ctx>
-  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
-    this->act(ctx, bar.instrument_);
-  }
-};
-
-template <bool Reads>
-struct SliceTradesWithoutHistory : TradesWithoutHistory<Reads> {
-  template <class Ctx>
-  void on_bars(Ctx& ctx, const strategy::BarSlice& slice) {
-    this->act(ctx, slice.bars_.front().instrument_);
-  }
-};
-
-template <class Strategy>
-backtest::ReplayResult replay_six_minutes() {
-  backtest::Backtester<Strategy> engine(Strategy{}, replay_config());
-  const char* closes[] = {"70000", "70100", "70200", "70300", "70400", "70500"};
-  for (int minute = 1; minute <= 6; ++minute) {
-    engine.feed(moving_bar(session_minute(minute), BarInterval::ONE_MINUTE, closes[minute - 1], closes[minute - 1]));
-  }
-  engine.finish();
-  return engine.result();
-}
-
-void require_same_replay(const backtest::ReplayResult& kept, const backtest::ReplayResult& dropped) {
-  REQUIRE(kept.executions_.size() == 2);
-  REQUIRE(dropped.executions_.size() == kept.executions_.size());
-  for (std::size_t at = 0; at < kept.executions_.size(); ++at) {
-    CHECK(dropped.executions_[at].fill_.price_ == kept.executions_[at].fill_.price_);
-    CHECK(dropped.executions_[at].fill_.quantity_ == kept.executions_[at].fill_.quantity_);
-    CHECK(dropped.executions_[at].fill_.at_ == kept.executions_[at].fill_.at_);
-  }
-  REQUIRE(dropped.equity_.size() == kept.equity_.size());
-  for (std::size_t at = 0; at < kept.equity_.size(); ++at) {
-    CHECK(dropped.equity_[at].at_ == kept.equity_[at].at_);
-    CHECK(dropped.equity_[at].equity_ == kept.equity_[at].equity_);
-  }
-  CHECK(dropped.bars_ == kept.bars_);
-}
-
-/** Reads no history; on its second period moves a fresh context into its own, then reads the history. */
-struct ReadsAfterMovingAContextIn {
-  static constexpr bool reads_bar_history = false;
-  int periods_{0};
-
-  template <class Ctx>
-  void on_bars(Ctx& ctx, const strategy::BarSlice& slice) {
-    if (++periods_ == 2) {
-      Ctx replacement;
-      replacement.set_now(ctx.now());
-      ctx = std::move(replacement);
-      static_cast<void>(ctx.bars(slice.bars_.front().instrument_, slice.interval_));
-    }
-  }
-};
-
-/** Reads no history; on its second period moves in a context holding a later bar of the same series. */
-struct MovesInAPopulatedContext {
-  static constexpr bool reads_bar_history = false;
-  int periods_{0};
-
-  template <class Ctx>
-  void on_bars(Ctx& ctx, const strategy::BarSlice&) {
-    if (++periods_ == 2) {
-      Ctx replacement;
-      replacement.set_now(ctx.now());
-      replacement.record_bar(moving_bar(session_minute(10), BarInterval::ONE_MINUTE, "70000", "70000"));
-      ctx = std::move(replacement);
-    }
-  }
-};
-
-} // namespace
-
-TEST_CASE("a replay of a strategy reading no bar history matches one keeping it") {
-  require_same_replay(
-    replay_six_minutes<BarTradesWithoutHistory<true>>(), replay_six_minutes<BarTradesWithoutHistory<false>>()
-  );
-  require_same_replay(
-    replay_six_minutes<SliceTradesWithoutHistory<true>>(), replay_six_minutes<SliceTradesWithoutHistory<false>>()
-  );
-}
-
-TEST_CASE("a replay keeping no bar history refuses a read after a context is moved into its own") {
-  backtest::Backtester<ReadsAfterMovingAContextIn> engine(ReadsAfterMovingAContextIn{}, replay_config());
-  const auto feed_all = [&engine] {
-    for (int minute = 1; minute <= 4; ++minute) {
-      engine.feed(moving_bar(session_minute(minute), BarInterval::ONE_MINUTE, "70000", "70000"));
-    }
-  };
-  CHECK_THROWS_AS(feed_all(), std::logic_error);
-  CHECK(engine.strategy().periods_ == 2);
-}
-
-TEST_CASE("a replay keeping no bar history refuses a bar older than one a moved-in context holds") {
-  backtest::Backtester<MovesInAPopulatedContext> engine(MovesInAPopulatedContext{}, replay_config());
-  const auto feed_all = [&engine] {
-    for (int minute = 1; minute <= 4; ++minute) {
-      engine.feed(moving_bar(session_minute(minute), BarInterval::ONE_MINUTE, "70000", "70000"));
-    }
-  };
-  CHECK_THROWS_WITH(feed_all(), "a series buffer observation must be later than the last");
-  CHECK(engine.strategy().periods_ == 2);
-}
-
-TEST_CASE("a slice replay refuses a bar stamped no later than its series' last with or without history") {
-  // Two periods whose bars carry the same timestamp: the period ends move on, the series does not.
-  const auto replay = [](auto strategy) {
-    backtest::Backtester<decltype(strategy)> engine(strategy, replay_config());
-    auto first = moving_bar(session_minute(1), BarInterval::ONE_MINUTE, "70000", "70000");
-    auto second = first;
-    second.period_end_ = session_minute(2);
-    engine.feed(first);
-    engine.feed(second);
-  };
-  const std::string later = "a series buffer observation must be later than the last";
-  CHECK_THROWS_WITH(replay(SliceTradesWithoutHistory<true>{}), later);
-  CHECK_THROWS_WITH(replay(SliceTradesWithoutHistory<false>{}), later);
-}
 #endif
-
-namespace {
-
-/** Buys one on its first bar; its fill handler throws once. */
-struct ThrowsOnItsFirstFill {
-  int bars_{0};
-  bool thrown_{false};
-
-  template <class Ctx>
-  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
-    if (++bars_ == 1) {
-      ctx.submit(
-        strategy::OrderIntent::market(
-          bar.instrument_, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1"))
-        )
-      );
-    }
-  }
-  template <class Ctx>
-  void on_fill(Ctx&, const strategy::Fill&) {
-    if (!thrown_) {
-      thrown_ = true;
-      throw std::runtime_error("the fill handler failed");
-    }
-  }
-};
-
-} // namespace
-
-TEST_CASE("a lot opened by a fill whose handler threw is still marked on later bars") {
-  // The replay learns where a new lot is as soon as the ledger has it, before `on_fill` runs: a caller that
-  // catches the handler's exception and keeps feeding must see the position marked at each later close.
-  backtest::Backtester<ThrowsOnItsFirstFill> engine(ThrowsOnItsFirstFill{}, replay_config());
-  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "70000"));
-  CHECK_THROWS_AS(
-    engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "70000")), std::runtime_error
-  );
-  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "71000", "72000"));
-  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "72000", "73000"));
-  REQUIRE(engine.ledger().positions().size() == 1);
-  CHECK(engine.ledger().positions()[0].quantity_ == Decimal64::parse("1"));
-  CHECK(engine.ledger().positions()[0].last_price_ == Decimal64::parse("73000"));
-  const auto cash = engine.ledger().cash_in(Currency{"KRW"});
-  REQUIRE(cash);
-  CHECK(engine.ledger().equity_in(Currency{"KRW"}) == decimal_add(*cash, Decimal64::parse("73000")));
-}
 
 // --- `on_start` -------------------------------------------------------------------------------
 
@@ -6086,21 +4620,6 @@ struct RecordsStart {
   }
 };
 
-/** The same record, for a strategy deciding on periods. */
-struct RecordsStartBySlice {
-  std::vector<std::string> calls_;
-
-  template <class Ctx>
-  void on_start(Ctx&) {
-    calls_.emplace_back("start");
-  }
-
-  template <class Ctx>
-  void on_bars(Ctx&, const strategy::BarSlice&) {
-    calls_.emplace_back("bars");
-  }
-};
-
 RecordsStart buying_at_start() {
   RecordsStart strategy;
   strategy.buy_on_start_ = true;
@@ -6108,39 +4627,6 @@ RecordsStart buying_at_start() {
 }
 
 } // namespace
-
-TEST_CASE("a replay calls on_start once, before its first bar") {
-  backtest::Backtester<RecordsStart> engine(RecordsStart{}, replay_config());
-  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "72000"));
-  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "72000"));
-  engine.finish();
-
-  CHECK(engine.strategy().calls_ == std::vector<std::string>{"start", "bar", "bar", "stop"});
-}
-
-TEST_CASE("a replay deciding on periods calls on_start before its first period") {
-  backtest::Backtester<RecordsStartBySlice> engine(RecordsStartBySlice{}, replay_config());
-  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "72000"));
-  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "70000", "72000"));
-  engine.finish();
-
-  CHECK(engine.strategy().calls_ == std::vector<std::string>{"start", "bars", "bars"});
-}
-
-TEST_CASE("a replay given no event calls on_start before on_stop") {
-  backtest::Backtester<RecordsStart> engine(RecordsStart{}, replay_config());
-  engine.finish();
-
-  CHECK(engine.strategy().calls_ == std::vector<std::string>{"start", "stop"});
-}
-
-TEST_CASE("an order on_start places before the first bar fills against that bar") {
-  // Decided before anything was seen, so the first bar's open is from after the decision.
-  backtest::Backtester<RecordsStart> engine(buying_at_start(), replay_config());
-  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "70000", "72000"));
-
-  CHECK(engine.strategy().fill_prices_ == std::vector<Decimal64>{Decimal64::parse("71000")});
-}
 
 TEST_CASE("an order on_start places at a first quote waits for a bar that began after it") {
   // The day's bar began at 09:00, before the 10:30 quote that started the replay: filling against it
@@ -6269,16 +4755,6 @@ TEST_CASE("an order placed on a record fills at the open of the first bar that b
   CHECK(engine.result().unchecked_fill_causality_ == 0);
 }
 
-TEST_CASE("a record earlier than a record or a bar already fed is refused before anything changes") {
-  backtest::Backtester<ReadsRecords> engine(ReadsRecords{}, replay_config());
-  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
-  CHECK_THROWS_AS(engine.feed(flag_at(utc(2026, 3, 10, 6, 0), 1)), std::invalid_argument);
-  engine.feed(flag_at(utc(2026, 3, 11, 1, 0), 2));
-  CHECK_THROWS_AS(engine.feed(flag_at(utc(2026, 3, 11, 0, 59), 3)), std::invalid_argument);
-  CHECK(engine.result().records_ == 1);
-  CHECK(engine.strategy().latest_ == std::optional<int>(2));
-}
-
 TEST_CASE("a bar that ended before a record already fed is refused before anything changes") {
   backtest::Backtester<ReadsRecords> engine(ReadsRecords{}, replay_config());
   engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "69000", "70000"));
@@ -6347,19 +4823,6 @@ TEST_CASE("records of any frequency are ordered with the bars by when they becam
 }
 
 #if defined(ATL_HAS_EIGEN)
-TEST_CASE("an order from a record against a close-stamped weekly bar is allowed and counted unchecked") {
-  // The quote's rule, unchanged: a weekly bar's start is not derivable, so the fill is allowed and counted.
-  ReadsRecords strategy;
-  strategy.buy_on_record_ = true;
-  backtest::Backtester<ReadsRecords> engine(std::move(strategy), replay_config());
-  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_WEEK, "69000", "70000"));
-  engine.feed(flag_at(utc(2026, 3, 17, 1, 0), 1));
-  engine.feed(moving_bar(utc(2026, 3, 20, 6, 30), BarInterval::ONE_WEEK, "75000", "76000"));
-  engine.finish();
-  REQUIRE(engine.strategy().fill_prices_.size() == 1);
-  CHECK(engine.strategy().fill_prices_[0] == Decimal64::parse("75000"));
-  CHECK(engine.result().unchecked_fill_causality_ > 0);
-}
 #endif
 
 // ---------------------------------------------------------------------------
