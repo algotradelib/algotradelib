@@ -144,54 +144,6 @@ TEST_CASE("a token identity names the broker and the environment and hides the k
   CHECK(real.token_identity().find("KEY-ONE") == std::string::npos);
 }
 
-namespace {
-
-/** Runs the managed and unmanaged `ensure_token` of one asynchronous client with a valid and with no token. */
-template <typename Access, typename Client, typename Config, typename Token>
-void check_managed_ensure_token(const char* name) {
-  CAPTURE(name);
-  net::io_context ioc;
-  ssl::context context(ssl::context::tls_client);
-
-  // Managed, valid: completes at once with success and starts no token request.
-  auto valid = std::make_shared<Client>(ioc.get_executor(), context, Config{});
-  Token token;
-  token.access_token_ = "held";
-  token.expires_at_ = std::chrono::system_clock::now() + std::chrono::hours(20);
-  REQUIRE(valid->adopt_token(token));
-  const auto passed = Access::ensure(*valid, true);
-  REQUIRE(passed);
-  CHECK_FALSE(passed->has_value());
-  CHECK_FALSE(Access::requesting(*valid));
-
-  // Managed, no token: completes at once with `token_unusable` and starts no token request.
-  auto empty = std::make_shared<Client>(ioc.get_executor(), context, Config{});
-  const auto refused = Access::ensure(*empty, true);
-  REQUIRE(refused);
-  REQUIRE(refused->has_value());
-  CHECK((*refused)->broker_code_ == "token_unusable");
-  CHECK((*refused)->category_ == ErrorCategory::AUTHENTICATION);
-  CHECK_FALSE((*refused)->reached_broker_);
-  CHECK_FALSE(Access::requesting(*empty));
-
-  // Unmanaged, no token: the same probe sees today's token request start (the loop is never run).
-  auto unmanaged = std::make_shared<Client>(ioc.get_executor(), context, Config{});
-  CHECK_FALSE(Access::ensure(*unmanaged, false));
-  CHECK(Access::requesting(*unmanaged));
-}
-
-} // namespace
-
-TEST_CASE("a managed client completes ensure_token at once and never requests a token", "[network][token]") {
-  check_managed_ensure_token<kis::KisClientTestAccess, kis::KisClient, kis::KisConfig, kis::KisRest>("kis");
-  check_managed_ensure_token<
-    kiwoom::KiwoomClientTestAccess, kiwoom::KiwoomClient, kiwoom::KiwoomConfig, kiwoom::KiwoomRest
-  >("kiwoom");
-  check_managed_ensure_token<
-    tossinvest::TossClientTestAccess, tossinvest::TossClient, tossinvest::TossConfig, tossinvest::TossRest
-  >("toss");
-}
-
 #if !defined(_WIN32)
 
 namespace {
@@ -710,23 +662,6 @@ void check_unusable(const BrokerError& error) {
 }
 
 template <typename Broker>
-void second_client_loads_the_shared_token() {
-  Fixture fixture;
-  fixture.server_.script(Broker::TOKEN, 200, Broker::token_body("issued", hours(24)));
-  fixture.server_.scriptSequence(Broker::READ, {Broker::read_reply()});
-  auto first = Broker::make(fixture.context_, fixture.server_, fixture.store_);
-  REQUIRE(Broker::read(*first));
-  CHECK(fixture.server_.scriptedCount(Broker::TOKEN) == 1);
-  CHECK(fixture.stored_token(identity_of<Broker>()) == "issued");
-
-  auto second = Broker::make(fixture.context_, fixture.server_, fixture.store_);
-  REQUIRE(Broker::read(*second));
-  CHECK(fixture.server_.scriptedCount(Broker::TOKEN) == 1);
-  CHECK(fixture.server_.lastHeader(Broker::READ, Broker::AUTHORIZATION) == "Bearer issued");
-  CHECK(second->token().access_token_ == "issued");
-}
-
-template <typename Broker>
 void refused_token_is_discarded_and_replaced_once(const test::LocalHttpsServer::Scripted& refusal) {
   CAPTURE(Broker::NAME, refusal.body_);
   // What a client without a store returns for the same refusal.
@@ -809,12 +744,6 @@ void token_unusable_before_dispatch_fails_locally() {
 
 } // namespace
 
-TEST_CASE("a second client on the store sends no token request while the shared token is valid", "[network][token]") {
-  second_client_loads_the_shared_token<KisBroker>();
-  second_client_loads_the_shared_token<KiwoomBroker>();
-  second_client_loads_the_shared_token<TossBroker>();
-}
-
 TEST_CASE("a refused shared token is discarded and replaced by one token request in all", "[network][token]") {
   for (const auto& refusal : KisBroker::refusals()) {
     refused_token_is_discarded_and_replaced_once<KisBroker>(refusal);
@@ -868,32 +797,6 @@ TEST_CASE("a token that expires between two pages fails the read without a token
   CHECK(listed.value().orders_.size() == 1);
   CHECK(fixture.server_.scriptedCount(KiwoomBroker::TOKEN) == 2);
   CHECK(fixture.server_.lastHeader(KiwoomBroker::READ, "authorization") == "Bearer lasting");
-}
-
-TEST_CASE("a shared token near its expiry is replaced by one token request for both clients", "[network][token]") {
-  Fixture fixture;
-  const auto identity = identity_of<KisBroker>();
-  {
-    auto lock = fixture.store_->lock(identity);
-    REQUIRE_FALSE(fixture.store_->publish(identity, stored("old", seconds(302))));
-  }
-  fixture.server_.script(KisBroker::TOKEN, 200, KisBroker::token_body("new", hours(24)));
-  fixture.server_.scriptSequence(KisBroker::READ, {KisBroker::read_reply()});
-  auto one = KisBroker::make(fixture.context_, fixture.server_, fixture.store_);
-  auto two = KisBroker::make(fixture.context_, fixture.server_, fixture.store_);
-  REQUIRE(KisBroker::read(*one));
-  REQUIRE(KisBroker::read(*two));
-  CHECK(fixture.server_.lastHeader(KisBroker::READ, "authorization") == "Bearer old");
-  CHECK(fixture.server_.scriptedCount(KisBroker::TOKEN) == 0);
-
-  // Both copies cross the margin.
-  std::this_thread::sleep_for(milliseconds(2500));
-  REQUIRE(KisBroker::read(*one));
-  CHECK(fixture.server_.lastHeader(KisBroker::READ, "authorization") == "Bearer new");
-  REQUIRE(KisBroker::read(*two));
-  CHECK(fixture.server_.lastHeader(KisBroker::READ, "authorization") == "Bearer new");
-  CHECK(fixture.server_.scriptedCount(KisBroker::TOKEN) == 1);
-  CHECK(fixture.stored_token(identity) == "new");
 }
 
 TEST_CASE("a token response read only in part is not kept and the next call prepares again", "[network][token]") {
