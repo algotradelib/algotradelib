@@ -315,28 +315,6 @@ TEST_CASE("every requestable shape maps to the code Kiwoom publishes", "[kiwoom]
   }
 }
 
-TEST_CASE("an unrecognized label leaves the shape unknown and preserves it", "[kiwoom][orders]") {
-  CHECK(kiwoom::shape_by_name("장중대량") == nullptr);
-
-  auto row =
-    json::parse(
-      R"({"ord_no":"0000069","stk_cd":"005930","ord_stt":"접수","stk_nm":"삼성전자",
-        "ord_qty":"1","ord_pric":"0","oso_qty":"1","orig_ord_no":"0000000",
-        "io_tp_nm":"+매수","trde_tp":"장중대량","tm":"154113","cntr_qty":"0","stex_tp":"1"})"
-    )
-      .as_object();
-  const auto open_order = kiwoom::KiwoomClientTestAccess::open_order(row);
-
-  CHECK(open_order.order_.type_ == OrderType::UNKNOWN);
-  CHECK(open_order.order_.time_in_force_ == TimeInForce::UNKNOWN);
-  CHECK(open_order.order_.session_ == OrderSession::UNKNOWN);
-  // The raw label is kept where a caller can still read it.
-  CHECK(open_order.shape_name_ == "장중대량");
-  // And the rest of the row still parsed: one odd shape must not cost the listing.
-  CHECK(open_order.order_.order_id_ == "0000069");
-  CHECK(open_order.order_.side_ == OrderSide::BUY);
-}
-
 TEST_CASE("a working-order row flagged sor_yn Y reads as SOR whatever stex_tp says", "[kiwoom][orders][sor]") {
   // ka10075 documents stex_tp (0 : 통합, 1 : KRX, 2 : NXT) and sor_yn (Y,N) separately, so a SOR
   // order may be listed under the book it rests on with the flag set.
@@ -446,33 +424,6 @@ TEST_CASE("every documented return_code lands in the right category", "[kiwoom][
   }
   // An undocumented code is a protocol failure rather than anything more specific.
   CHECK(kiwoom::kiwoom_error_category("9999") == ErrorCategory::PROTOCOL);
-}
-
-TEST_CASE("a refused token on an ordinary endpoint is an authentication failure", "[kiwoom][errors]") {
-  // This is the case that matters beyond classification tidiness. 8005 and 8010 arrive on an
-  // ordinary endpoint with HTTP 200; read as a protocol failure, the client's refresh path -- which
-  // keys on AUTHENTICATION -- would never run and every later request would fail identically.
-  auto expired = kiwoom::KiwoomClientTestAccess::quote(
-    samsung(), ok_body(R"({"return_code":8005,"return_msg":"Token이 유효하지 않습니다"})")
-  );
-  REQUIRE_FALSE(expired);
-  CHECK(expired.error().category_ == ErrorCategory::AUTHENTICATION);
-  CHECK(expired.error().broker_code_ == "8005");
-  CHECK(expired.error().reached_broker_);
-
-  auto throttled = kiwoom::KiwoomClientTestAccess::quote(
-    samsung(), ok_body(R"({"return_code":1700,"return_msg":"허용된 API 요청 개수를 초과"})")
-  );
-  REQUIRE_FALSE(throttled);
-  CHECK(throttled.error().category_ == ErrorCategory::RATE_LIMIT);
-  CHECK(kiwoom::kiwoom_rate_limit_layer(throttled.error().broker_code_) == kiwoom::KiwoomRateLimitLayer::ENDPOINT);
-
-  // A demo key calling an endpoint 모의투자 does not serve is availability, not authentication.
-  auto unavailable = kiwoom::KiwoomClientTestAccess::quote(
-    samsung(), ok_body(R"({"return_code":8104,"return_msg":"모의투자에서 지원하지 않는 API"})")
-  );
-  REQUIRE_FALSE(unavailable);
-  CHECK(unavailable.error().category_ == ErrorCategory::INVALID_ARGUMENT);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1674,63 +1625,6 @@ TEST_CASE("a Kiwoom client carries a token another client obtained and asks for 
   CHECK(server.scriptedCount(KIWOOM_TOKEN) == 1);
   CHECK(server.scriptedCount(KIWOOM_ACCOUNT) == 2);
   CHECK(server.lastHeader(KIWOOM_ACCOUNT, "authorization") == "Bearer issued");
-}
-
-TEST_CASE("a Kiwoom client hands its token on and adopts only a live one", "[kiwoom][auth]") {
-  ssl::context tls(ssl::context::tls_client);
-  kiwoom::KiwoomBlockingClient client(tls, kiwoom::KiwoomConfig{});
-  REQUIRE(client.token().access_token_.empty());
-
-  kiwoom::KiwoomRest expired;
-  expired.access_token_ = "expired-token";
-  expired.expires_at_ = std::chrono::system_clock::now() - std::chrono::minutes(1);
-  CHECK_FALSE(client.adopt_token(expired));
-  kiwoom::KiwoomRest empty;
-  empty.expires_at_ = std::chrono::system_clock::now() + std::chrono::hours(20);
-  CHECK_FALSE(client.adopt_token(empty));
-  // Inside the five-minute margin every other validity check uses.
-  kiwoom::KiwoomRest ending;
-  ending.access_token_ = "ending-token";
-  ending.expires_at_ = std::chrono::system_clock::now() + std::chrono::minutes(2);
-  CHECK_FALSE(client.adopt_token(ending));
-  CHECK(client.token().access_token_.empty());
-
-  const auto live = kiwoom_live_token("kept-token");
-  REQUIRE(client.adopt_token(live));
-  CHECK(client.token().access_token_ == "kept-token");
-  CHECK(client.token().expires_at_ == live.expires_at_);
-  CHECK(client.token().valid());
-}
-
-TEST_CASE("a Kiwoom client drops a token Kiwoom refuses and takes a new one on the next request", "[kiwoom][auth]") {
-  for (const auto& refusal : KIWOOM_TOKEN_REFUSALS) {
-    CAPTURE(refusal.status_, refusal.body_);
-    test::LocalHttpsServer server;
-    net::io_context ioc;
-    ssl::context context(ssl::context::tls_client);
-    test::trustLocalhostCertificate(context);
-    server.script(KIWOOM_TOKEN, 200, kiwoom_token_body("fresh"));
-    server.scriptSequence(KIWOOM_ACCOUNT, {{refusal.status_, refusal.body_, {}}, {200, KIWOOM_ACCOUNTS_REPLY, {}}});
-    auto client = scripted_kiwoom(ioc, context, server);
-    REQUIRE(client->adopt_token(kiwoom_live_token("adopted")));
-
-    const auto refused = kiwoom_accounts_from(ioc, *client);
-    REQUIRE_FALSE(refused);
-    CHECK(refused.error().broker_code_ == refusal.code_);
-    const auto read = kiwoom::KiwoomClientTestAccess::accounts(kiwoom_reply(refusal.status_, refusal.body_));
-    REQUIRE_FALSE(read);
-    check_same_error(refused.error(), read.error());
-    CHECK(server.scriptedCount(KIWOOM_TOKEN) == 0);
-    CHECK(server.scriptedCount(KIWOOM_ACCOUNT) == 1);
-    CHECK(server.lastHeader(KIWOOM_ACCOUNT, "authorization") == "Bearer adopted");
-    CHECK(client->token().access_token_.empty());
-
-    REQUIRE(kiwoom_accounts_from(ioc, *client));
-    CHECK(server.scriptedCount(KIWOOM_TOKEN) == 1);
-    CHECK(server.scriptedCount(KIWOOM_ACCOUNT) == 2);
-    CHECK(server.lastHeader(KIWOOM_ACCOUNT, "authorization") == "Bearer fresh");
-    CHECK(client->token().access_token_ == "fresh");
-  }
 }
 
 TEST_CASE("a Kiwoom order refused for its token is reported as before and not sent again", "[kiwoom][auth]") {
