@@ -2565,6 +2565,63 @@ TEST_CASE("KIS reads back every order code the workbook publishes", "[broker][ki
   }
 }
 
+TEST_CASE("a KIS amendment restates the shape it is amending", "[broker][kis][order]") {
+  const kis::KisAccount account{"12345678", "01"};
+  kis::KisConfig live;
+  live.is_demo_ = false;
+
+  SECTION("an immediate-or-cancel order amended to a new price stays immediate-or-cancel") {
+    kis::KisAmendment amendment;
+    amendment.order_ = kis::KisOrderRef{"0000117057", "00950"};
+    amendment.type_ = OrderType::LIMIT;
+    amendment.time_in_force_ = TimeInForce::IMMEDIATE_OR_CANCEL;
+    amendment.session_ = OrderSession::REGULAR;
+    amendment.venue_ = Venue::KRX;
+    amendment.quantity_ = Decimal64::parse("1");
+    amendment.price_ = Decimal64::parse("71000");
+
+    std::string division;
+    REQUIRE_FALSE(kis::KisClientTestAccess::amendment_division(amendment, division));
+    // 11, not 00. The amendment path sent `DAY` unconditionally, so this order
+    // reached KIS as a plain day order at the new price -- a different order
+    // from the one being amended, and one nobody asked for.
+    REQUIRE(division == "11");
+
+    const auto body =
+      json::parse(kis::KisClientTestAccess::amend_order_request(account, live, amendment, false, division).body_)
+        .as_object();
+    REQUIRE(body.at("ORD_DVSN").as_string() == "11");
+    REQUIRE(body.at("EXCG_ID_DVSN_CD").as_string() == "KRX");
+  }
+
+  SECTION("an amendment to a venue that does not publish the code is refused") {
+    kis::KisAmendment amendment;
+    amendment.order_ = kis::KisOrderRef{"0000117057", "00950"};
+    amendment.type_ = OrderType::MARKET;
+    amendment.venue_ = Venue::NXT;
+    amendment.quantity_ = Decimal64::parse("1");
+    std::string division;
+    REQUIRE(kis::KisClientTestAccess::amendment_division(amendment, division));
+  }
+
+  SECTION("a cancellation copies the whole shape rather than the basis alone") {
+    WorkingOrder<kis::Broker> working;
+    working.order_.type_ = OrderType::BEST_LIMIT;
+    working.order_.time_in_force_ = TimeInForce::FILL_OR_KILL;
+    working.order_.session_ = OrderSession::AFTER_MARKET;
+    working.order_.instrument_ = InstrumentId{Country::KR, kKoreanInstrumentVenue, "005930"};
+    // The venue the broker routed it to, which is not the instrument's.
+    working.order_.venue_ = Venue::KRX;
+    working.amendable_quantity_ = Decimal64::parse("5");
+
+    const auto instruction = cancel_all(working);
+    REQUIRE(instruction.shape_.type_ == OrderType::BEST_LIMIT);
+    REQUIRE(instruction.shape_.time_in_force_ == TimeInForce::FILL_OR_KILL);
+    REQUIRE(instruction.shape_.session_ == OrderSession::AFTER_MARKET);
+    REQUIRE(instruction.venue_ == Venue::KRX);
+  }
+}
+
 TEST_CASE("KIS rejects unrepresentable orders before any network I/O", "[broker][kis][order][validation]") {
   std::string division;
 
