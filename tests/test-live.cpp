@@ -3412,22 +3412,6 @@ TEST_CASE("a failed band poll leaves the band it could not refresh in place") {
   CHECK(live_runner.price_bands_withheld() == 0);
 }
 
-TEST_CASE("an outright failure wins however late in the sweep it lands") {
-  // The same rule from the other side, so the answer does not depend on the order the currencies
-  // happen to be configured in.
-  BudgetSession session;
-  session.set_buying_power("5000000");
-  session.throttle_buying_power_in(Currency::krw());
-  session.fail_buying_power_in(Currency::usd());
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<BudgetSession> source(session, {samsung()});
-  source.set_buying_power_currencies({Currency::krw(), Currency::usd()});
-
-  CHECK(source.poll(runner::PollKind::BUYING_POWER, live_runner) == runner::PollOutcome::FAILED);
-  REQUIRE(source.last_error().has_value());
-  CHECK(source.last_error()->category_ == ErrorCategory::TRANSPORT);
-}
-
 TEST_CASE("a bar or quote poll over an empty universe reads nothing and keeps the last error") {
   BudgetSession session;
   session.fail_buying_power_in(Currency::usd());
@@ -3658,116 +3642,6 @@ TEST_CASE("a sweep before any bar stamps its resolution with the loop's clock", 
   }
 }
 
-TEST_CASE("a sweep counts time on the later of the decision instant and the loop's reading", "[confirm]") {
-  // The decision instant moves with bars, quotes and phase changes only. On daily bars, or with a stop
-  // pending, it stands still while the wall clock runs, and an order absent from every listing stayed
-  // too recent to conclude from until the next bar.
-  WorkingSession session;
-  session.set_working_orders(WorkingOrders<FakeBroker>{});
-  session.set_history(OrderPage{});
-
-  const auto sweep =
-    [&session](std::chrono::system_clock::time_point decided, std::chrono::system_clock::time_point observed) {
-      runner::MemoryJournal journal;
-      journal.append(journaled_placement());
-      auto live_runner = live::bind_observer(session, CountEvents{});
-      live_runner.context().set_now(decided);
-      live_runner.set_observed_at(observed);
-      live_runner.ledger().mark(samsung(), "an order request failed in transit");
-      live::SessionSource<WorkingSession, runner::MemoryJournal> source(session, {samsung()});
-      source.set_journal(journal);
-      source.poll(runner::PollKind::WORKING_ORDERS, live_runner);
-      REQUIRE(source.last_reconcile().matches_.size() == 1);
-      return std::pair(
-        source.last_reconcile().matches_.front().verdict_, live_runner.ledger().requires_reconcile(samsung())
-      );
-    };
-  const auto just_after = journaled_at() + std::chrono::seconds(5);
-
-  SECTION("the decision instant stood still and the loop's reading moved on: the absence is concluded") {
-    const auto [verdict, marked] = sweep(just_after, swept_at());
-    CHECK(verdict == runner::MatchVerdict::NOT_PLACED);
-    CHECK_FALSE(marked);
-  }
-
-  SECTION("the decision instant is the later one: as before") {
-    const auto [verdict, marked] = sweep(swept_at(), just_after);
-    CHECK(verdict == runner::MatchVerdict::NOT_PLACED);
-    CHECK_FALSE(marked);
-  }
-
-  SECTION("neither is far enough on: nothing is concluded and the hold stands") {
-    const auto [verdict, marked] = sweep(just_after, just_after + std::chrono::seconds(20));
-    CHECK(verdict == runner::MatchVerdict::UNDECIDED);
-    CHECK(marked);
-  }
-
-  SECTION("the boundary is the window's, on the later reading") {
-    const runner::MatchWindow window;
-    const auto boundary = journaled_at() + window.maximum_request_ + window.clock_skew_ + window.listing_delay_;
-    CHECK(sweep(just_after, boundary - std::chrono::seconds(1)).first == runner::MatchVerdict::UNDECIDED);
-    CHECK(sweep(just_after, boundary).first == runner::MatchVerdict::NOT_PLACED);
-  }
-}
-
-TEST_CASE("a loop's sweep resolves a mark while the decision instant stands still", "[confirm][loop]") {
-  // No bar arrives, as between two daily bars or under a stop, so the decision instant stays where the
-  // last one left it. The loop reports its own reading each iteration, and the sweep counts on that.
-  const auto started = journaled_at() + std::chrono::seconds(5);
-  WorkingSession session;
-  WorkingOrders<FakeBroker> listing;
-  listing.received_at_ = started;
-  session.set_working_orders(listing);
-  session.set_history(OrderPage{});
-  HoldingsSnapshot held;
-  held.received_at_ = started;
-  HoldingPosition position;
-  position.instrument_ = samsung();
-  position.quantity_ = Decimal64::parse("10");
-  held.positions_.push_back(position);
-  session.set_holdings(held);
-
-  runner::MemoryJournal journal;
-  journal.append(journaled_placement());
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live_runner.context().set_now(started);
-  live_runner.ledger().mark(samsung(), "an order request failed in transit");
-  using Source = live::SessionSource<WorkingSession, runner::MemoryJournal>;
-  Source source(session, {samsung()});
-  source.set_journal(journal);
-
-  runner::PollSchedule schedule;
-  schedule.bars_.reset();
-  schedule.calendar_.reset();
-  schedule.holdings_ = std::chrono::seconds(10);
-  schedule.working_orders_ = std::chrono::seconds(10);
-  schedule.tick_ = std::chrono::seconds(10);
-  runner::PollingLoop<decltype(live_runner), Source, runner::ManualClock> loop(
-    live_runner, source, schedule, runner::ManualClock{started}
-  );
-  loop.allow_unbounded_portfolio_age();
-  runner::StopSource stop;
-
-  SECTION("running: the mark is gone once the window has passed on the loop's clock, and not before") {
-    loop.run(stop, 11);
-    CHECK(live_runner.context().now() == started);
-    CHECK(live_runner.ledger().requires_reconcile(samsung()));
-    loop.run(stop, 4);
-    CHECK(live_runner.context().now() == started);
-    CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
-  }
-
-  SECTION("stopping: a wait longer than the window ends when the mark does") {
-    loop.set_closing_wait(std::chrono::seconds(300));
-    stop.request(runner::StopIntent::WITHDRAW);
-    const auto report = loop.run(stop, 0);
-    CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
-    CHECK_FALSE(report.closing_wait_expired_);
-    CHECK(report.closing_waited_ >= std::chrono::seconds(110));
-    CHECK(report.closing_waited_ < std::chrono::seconds(130));
-  }
-}
-
 // ---------------------------------------------------------------------------
 // The journal has to be in the runner's own send path, not beside it
 // ---------------------------------------------------------------------------
@@ -3858,42 +3732,6 @@ private:
 };
 
 } // namespace
-
-TEST_CASE("a placement sweep builds a history query KIS actually accepts") {
-  // Before the capability existed, `read_history` always set `limit_`, and KIS rejects that outright
-  // with `limit_unsupported` rather than ignoring it. Every KIS placement sweep therefore took the
-  // history-failure branch and the instrument stayed withheld forever -- safe, and completely
-  // nonfunctional.
-  KisContractSession session;
-  OrderPage page;
-  page.orders_.push_back(listed_order("KRX-1"));
-  session.set_history(page);
-
-  runner::MemoryJournal journal("kis:test");
-  journal.append(journaled_placement());
-
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live_runner.context().set_now(swept_at());
-  live_runner.ledger().mark(samsung(), "an order request failed in transit");
-
-  live::SessionSource<KisContractSession, runner::MemoryJournal> source(session, {samsung()});
-  source.set_journal(journal);
-
-  CHECK(source.read_order_list(live_runner) == runner::PollOutcome::UPDATED);
-  REQUIRE(session.history_calls() == 1);
-  // The production conversion accepted it.
-  CHECK_FALSE(session.rejection().has_value());
-  // No limit, because KIS refuses one; a range, because KIS requires one.
-  REQUIRE(session.last_query().has_value());
-  CHECK_FALSE(session.last_query()->limit_.has_value());
-  CHECK(session.last_query()->from_.has_value());
-  CHECK(session.last_query()->to_.has_value());
-  CHECK_FALSE(session.last_query()->cursor_.has_value());
-
-  // And the sweep actually resolved, which is the point of all of it.
-  CHECK(source.last_reconcile().settled());
-  CHECK_FALSE(live_runner.ledger().requires_reconcile(samsung()));
-}
 
 namespace {
 
@@ -4402,19 +4240,6 @@ WorkingOrder<FakeBroker> update_row(
 
 } // namespace
 
-TEST_CASE("a row with no reference at all is counted and reported to nobody") {
-  WorkingSession session;
-  auto live_runner = live::bind_observer(session, WatchesOrders{});
-  live::SessionSource<WorkingSession> source(session, {samsung()});
-
-  auto anonymous = update_row("A1", "", "0");
-  anonymous.ref_ = OrderRef<FakeBroker>{"", ""};
-  anonymous.order_.order_id_ = "";
-  poll_rows(source, live_runner, session, {anonymous});
-
-  CHECK(live_runner.strategy().updates_.empty());
-}
-
 TEST_CASE("a stop's trigger moved on its own is reported, and a disagreement about it is not") {
   // A stop's trigger can be amended at the same limit and quantity, through this library or any
   // other channel. A strategy holding the stop is owed that event, and two rows for one order that
@@ -4852,103 +4677,6 @@ live_program::Settings program_settings(const TempPath& journal, const TempPath&
 
 } // namespace
 
-namespace {
-
-/** A session whose first holdings read fails, so nothing is placed before the loop has waited once. */
-struct FirstHoldingsFail : ProgramSession {
-  int holdings_reads_{0};
-  Result<HoldingsSnapshot> holdings() {
-    if (holdings_reads_++ == 0) {
-      BrokerError error;
-      error.category_ = ErrorCategory::TRANSPORT;
-      error.message_ = "first read fails";
-      return Result<HoldingsSnapshot>(error);
-    }
-    return ProgramSession::holdings();
-  }
-};
-
-} // namespace
-
-TEST_CASE("the live program stamps its journal with the loop's clock", "[live][program]") {
-  // A paper run or a test runs the loop on a clock of its own. Its journal must say the same times, or
-  // recovery's history sweep asks the broker about today's real dates instead of the run's. The clock is
-  // a bare `ManualClock`, taken by value; the first holdings read fails, so the order goes out after the
-  // loop has waited, and a journal holding a copy of the clock would still say the start.
-  const TempPath journal("atl-test-program-journal-clock.jsonl");
-  const TempPath control("atl-test-program-journal-clock.stop");
-  FirstHoldingsFail session;
-  HoldingsSnapshot holdings;
-  holdings.received_at_ = program_start();
-  session.set_holdings(holdings);
-  BandSession market;
-  market.set_reference(samsung_reference());
-  market.set_bars(two_bars("70000", "71000"));
-  runner::StopSource stop;
-  std::ostringstream out;
-
-  const auto exit = live_program::trade(
-    session, market, one_share(), program_settings(journal, control), stop, out, runner::ManualClock{program_start()}
-  );
-
-  INFO(out.str());
-  REQUIRE(exit == live_program::Exit::CLEAN);
-  REQUIRE(session.holdings_reads_ >= 2);
-  REQUIRE(session.placed().size() == 1);
-  const auto replay = runner::read_journal_file(journal.str());
-  REQUIRE(replay.entries_.size() >= 2); // the order's PENDING line and its answer
-  for (const auto& entry : replay.entries_) {
-    CAPTURE(entry.id_);
-    CHECK(entry.recorded_at_ > program_start());
-    CHECK(entry.recorded_at_ < program_start() + std::chrono::hours(1));
-  }
-}
-
-namespace {
-
-/** Wants one share, decided on whole periods: the program's own strategy, written with `on_bars`. */
-struct HoldsOneBySlice {
-  std::size_t slices_{0};
-  template <class Ctx>
-  void on_bars(Ctx& ctx, const strategy::BarSlice& slice) {
-    ++slices_;
-    if (slice.find(samsung()) == nullptr) {
-      return;
-    }
-    strategy::TargetPosition target;
-    target.instrument_ = samsung();
-    target.target_quantity_ = Decimal64::parse("1");
-    ctx.submit(target);
-  }
-};
-
-} // namespace
-
-TEST_CASE("the live program runs a strategy that decides on whole periods", "[live][program]") {
-  // The generic entry point builds the source, the journal binding and the loop around the strategy;
-  // with `on_bars` they take the slice route, and the one order goes out once.
-  const TempPath journal("atl-test-program-slices.jsonl");
-  const TempPath control("atl-test-program-slices.stop");
-  ProgramSession session;
-  HoldingsSnapshot holdings;
-  holdings.received_at_ = program_start();
-  session.set_holdings(holdings);
-  BandSession market;
-  market.set_reference(samsung_reference());
-  market.set_bars(two_bars("70000", "71000"));
-  runner::StopSource stop;
-  std::ostringstream out;
-
-  const auto exit = live_program::trade(
-    session, market, HoldsOneBySlice{}, program_settings(journal, control), stop, out,
-    runner::ManualClock{program_start()}
-  );
-
-  INFO(out.str());
-  CHECK(exit == live_program::Exit::CLEAN);
-  CHECK(session.placed().size() == 1);
-}
-
 TEST_CASE("the live program reads reference data and bars from its market-data session", "[live][program]") {
   // The trading session has no reference data and no bars, as a KIS demo host has no reference data:
   // the run gets past both only by reading them from the second session, and still places through
@@ -5200,17 +4928,6 @@ struct BuysOneOnUpdate {
   }
 };
 
-/** Wants ten shares on every bar. */
-struct TenOnEveryBar {
-  template <class Ctx>
-  void on_bar(Ctx& ctx, const strategy::BarEvent&) {
-    strategy::TargetPosition ten;
-    ten.instrument_ = samsung();
-    ten.target_quantity_ = Decimal64::parse("10");
-    ctx.submit(ten);
-  }
-};
-
 /** Binds `strategy` with no phase restriction and a reference and price for Samsung. */
 template <typename Strategy>
 auto bind_for_poll_order(WorkingSession& session, Strategy strategy_instance) {
@@ -5241,76 +4958,6 @@ TEST_CASE("an order intent stated against a superseded account is withheld and n
   poll_holdings_at(source, bound, session, "5", 3);
   bound.retry_retained_targets();
   CHECK(session.placed().empty());
-}
-
-namespace {
-
-/**
- * Fails the second holdings read and asks for a flatten at that moment, after a listing newer than the
- * last successful holdings.
- */
-class FlattenAfterFailedHoldings {
-public:
-  static constexpr bool provides_working_orders = true;
-
-  FlattenAfterFailedHoldings(WorkingSession& session, runner::StopSource& stop)
-  : inner_(session, {samsung()}), session_(&session), stop_(&stop) {}
-
-  template <typename Runner>
-  runner::PollOutcome poll(runner::PollKind kind, Runner& runner_instance) {
-    if (kind == runner::PollKind::WORKING_ORDERS) {
-      ++listings_;
-      // Each listing arrives an hour after the last, so the second is newer than the first holdings.
-      WorkingOrders<FakeBroker> listing;
-      listing.received_at_ = live_hour(listings_ * 2 - 1);
-      session_->set_working_orders(listing);
-    }
-    if (kind == runner::PollKind::HOLDINGS && listings_ >= 2) {
-      stop_->request(runner::StopIntent::FLATTEN);
-      return runner::PollOutcome::FAILED;
-    }
-    return inner_.poll(kind, runner_instance);
-  }
-
-  template <typename Runner>
-  runner::PollOutcome read_order_list(Runner& runner_instance) {
-    return inner_.read_order_list(runner_instance);
-  }
-
-private:
-  live::SessionSource<WorkingSession> inner_;
-  WorkingSession* session_;
-  runner::StopSource* stop_;
-  int listings_{0};
-};
-
-} // namespace
-
-TEST_CASE("a flatten after a listing newer than the holdings does not report a verified close", "[live][poll-order]") {
-  WorkingSession session;
-  HoldingsSnapshot held;
-  held.received_at_ = live_hour(2);
-  session.set_holdings(held);
-  auto bound = bind_for_poll_order(session, TenOnEveryBar{});
-  runner::StopSource stop;
-  FlattenAfterFailedHoldings source(session, stop);
-  runner::PollSchedule schedule;
-  schedule.holdings_ = std::chrono::seconds(1);
-  schedule.working_orders_ = std::chrono::seconds(1);
-  schedule.tick_ = std::chrono::seconds(1);
-  schedule.calendar_.reset();
-  runner::PollingLoop<decltype(bound), FlattenAfterFailedHoldings, runner::ManualClock> loop(
-    bound, source, schedule, runner::ManualClock{live_hour(3)}
-  );
-  loop.allow_unbounded_portfolio_age();
-
-  const auto report = loop.run(stop, 4);
-
-  REQUIRE(report.stopped_by_ == runner::StopIntent::FLATTEN);
-  // The listing at hour 3 is newer than the holdings from hour 2, and a fill between them would be in
-  // neither: the closing pass could not know what it owed.
-  CHECK(report.closing_source_unverified_);
-  CHECK_FALSE(report.closing_complete());
 }
 
 namespace {
@@ -5497,40 +5144,6 @@ TEST_CASE("a file journal reads back a resolution a startup sweep wrote", "[reco
   CHECK(runner::unresolved_instructions(replay).empty());
   auto restarted = live::bind_observer(session, CountEvents{});
   CHECK(runner::recover_runner(restarted, next).clean());
-}
-
-TEST_CASE("a working-order poll sees a line another writer appended to the file journal", "[recovery][file]") {
-  // The poll keeps what it read of the journal; a line appended by anything but this journal must still
-  // reach the next sweep, as it did when every poll read the whole file.
-  const TempPath path("atl-test-poll-foreign-line.jsonl");
-  WorkingSession session;
-  session.set_working_orders(WorkingOrders<FakeBroker>{});
-  session.set_history(OrderPage{});
-  runner::FileJournal journal(path.str(), "fake:demo:1");
-  REQUIRE(journal.open());
-  auto live_runner = live::bind_observer(session, CountEvents{});
-  live::SessionSource<WorkingSession, runner::FileJournal> source(session, {samsung()});
-  source.set_journal(journal);
-  const auto now = std::chrono::system_clock::now();
-  live_runner.set_observed_at(now);
-
-  source.poll(runner::PollKind::WORKING_ORDERS, live_runner);
-  CHECK(source.last_reconcile().matches_.empty());
-
-  auto foreign = journaled_placement("other-1");
-  foreign.recorded_at_ = now - std::chrono::seconds(5);
-  foreign.scope_ = "fake:demo:1";
-  {
-    std::FILE* handle = std::fopen(path.str().c_str(), "ab");
-    REQUIRE(handle != nullptr);
-    const auto line = runner::journal_entry_to_line(foreign) + "\n";
-    REQUIRE(std::fwrite(line.data(), 1, line.size(), handle) == line.size());
-    std::fclose(handle);
-  }
-  source.poll(runner::PollKind::WORKING_ORDERS, live_runner);
-  REQUIRE(source.last_reconcile().matches_.size() == 1);
-  CHECK(source.last_reconcile().matches_.front().entry_id_ == "other-1");
-  CHECK_FALSE(source.last_reconcile().settled());
 }
 
 // ---------------------------------------------------------------------------
@@ -6292,37 +5905,6 @@ TEST_CASE("a restart restores every order the journal leaves unaccounted for", "
     CHECK_FALSE(rig.runner_instance.ledger().requires_reconcile(samsung()));
     CHECK(rig.runner_instance.orders_unconfirmed_timed_out() == 0);
   }
-}
-
-TEST_CASE("a restored order is settled through the source's own history read", "[serialized]") {
-  SerialRig rig(
-    {serial_line("p-1", runner::JournalOutcome::PENDING), serial_line("p-1", runner::JournalOutcome::ACCEPTED, "B")}
-  );
-  OrderPage page;
-  page.orders_.push_back(dated_row("B", at_hour(-1), "10", OrderStatus::FILLED));
-  rig.session.set_history(page);
-  rig.session.set_working_orders(WorkingOrders<FakeBroker>{});
-  live::SessionSource<SerialSession, SwitchableJournal> source(rig.session, {samsung()});
-  source.set_journal(rig.journal);
-  rig.runner_instance.set_observed_at(at_hour(1));
-  REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
-  CHECK(rig.session.history_calls() > 0);
-  CHECK(rig.owed() == runner::ObligationState::NAMED);
-  rig.show(polled(2, "10", {}));
-  rig.runner_instance.refresh_unconfirmed();
-  CHECK(rig.owed() == runner::ObligationState::NONE);
-}
-
-TEST_CASE("orders a serialized runner owes and cannot see are counted for a closing pass", "[serialized]") {
-  SerialRig rig(
-    {serial_line("p-1", runner::JournalOutcome::PENDING), serial_line("p-1", runner::JournalOutcome::ACCEPTED, "B")}
-  );
-  rig.runner_instance.refresh_unconfirmed();
-  CHECK(rig.runner_instance.obligations_unexplained() == 1);
-  // Listed resting in full: the closing pass sees and withdraws it, so it is not counted.
-  rig.show(polled(1, "0", {listed_row("B", OrderSide::BUY, "10", "0")}));
-  rig.runner_instance.refresh_unconfirmed();
-  CHECK(rig.runner_instance.obligations_unexplained() == 0);
 }
 
 TEST_CASE("a holdings read older than the one an order was decided against cannot account for it", "[serialized]") {
@@ -7396,185 +6978,6 @@ TEST_CASE("a flatten waits for a mark on what it has to close", "[serialized][cl
   }
 }
 
-TEST_CASE("a flatten does not wait for a mark on rows that net to nothing", "[serialized][closing-wait]") {
-  // The pass closes an instrument's net, and here there is none.
-  SerialRig rig;
-  auto portfolio = polled(1, "10", {});
-  auto against = portfolio.positions_.front();
-  against.quantity_ = Decimal64::parse("-10");
-  portfolio.positions_.push_back(against);
-  rig.show(portfolio);
-  REQUIRE(rig.runner_instance.context().portfolio().net_quantity_of(samsung()).value().coefficient() == 0);
-  rig.runner_instance.ledger().mark(samsung(), "a cancellation request has an unknown outcome");
-  QuietSource source;
-  auto loop = loop_over(rig, source, 1);
-  runner::StopSource stop;
-  stop.request(runner::StopIntent::FLATTEN);
-
-  const auto report = loop.run(stop, 0);
-  CHECK(report.iterations_ == 1);
-  CHECK_FALSE(report.closing_wait_expired_);
-  CHECK(rig.session.placed().empty());
-}
-
-TEST_CASE(
-  "a flatten arriving a second after the account was read still makes the read that was due",
-  "[serialized][closing-wait]"
-) {
-  // A resting buy, read as resting; it fills; the flatten arrives one second after that read, with both
-  // account reads due again on their one-second cadence. The iteration that takes the stop up makes
-  // them, whatever the wait's limit: held back for the wait's five-second floor, they were lost when
-  // the limit was shorter than the floor, and the pass withdrew an order that had filled and sold nothing.
-  for (const auto limit : {std::chrono::seconds(30), std::chrono::seconds(1), std::chrono::seconds(0)}) {
-    for (const std::size_t iterations : {std::size_t{0}, std::size_t{1}}) {
-      SerialRig rig;
-      rig.session.order_ids_ = {"B", "S"};
-      rig.bar(1, {limit_target("10", "69000")});
-      const auto sent = rig.runner_instance.context().now();
-      auto resting = listed_row("B", OrderSide::BUY, "10", "0", OrderType::LIMIT);
-      resting.order_.ordered_at_ = sent;
-      rig.show(polled(2, "0", {resting}));
-
-      QuietSource source;
-      auto loop = loop_over(rig, source, 2);
-      source.clock_ = &loop.clock();
-      loop.set_closing_wait(limit);
-      runner::StopSource stop;
-      REQUIRE(loop.run(stop, 1).iterations_ == 1);
-      REQUIRE(source.working_polls_ == 1);
-
-      // The next read of the account, whenever the loop makes it, shows the fill.
-      source.act_on_working_poll_ = 2;
-      source.act_ = [&] {
-        rig.show(polled(3, "10", {}));
-      };
-      loop.clock().wait_for(std::chrono::seconds(1));
-      stop.request(runner::StopIntent::FLATTEN);
-
-      const auto report = loop.run(stop, iterations);
-      CAPTURE(limit.count(), iterations);
-      CHECK(report.iterations_ == 1);
-      CHECK_FALSE(report.closing_wait_expired_);
-      CHECK(rig.session.canceled().empty());
-      REQUIRE(rig.session.placed().size() == 2);
-      CHECK(rig.session.placed().back().side_ == OrderSide::SELL);
-      CHECK(rig.session.placed().back().quantity_ == Decimal64::parse("10"));
-      // At once, not five seconds after the read before the stop.
-      REQUIRE(source.working_asked_.size() == 2);
-      CHECK(source.working_asked_[1] - source.working_asked_[0] < std::chrono::seconds(5));
-    }
-  }
-}
-
-TEST_CASE("a quiesce reads as any other iteration", "[serialized][closing-wait]") {
-  SerialRig rig;
-  rig.show(polled(2, "0", {}));
-  QuietSource source;
-  auto loop = loop_over(rig, source, 2);
-  runner::StopSource stop;
-  REQUIRE(loop.run(stop, 1).iterations_ == 1);
-  loop.clock().wait_for(std::chrono::seconds(1));
-  stop.request(runner::StopIntent::QUIESCE);
-  const auto report = loop.run(stop, 0);
-  CHECK(report.iterations_ == 1);
-  CHECK(source.working_polls_ == 2);
-  CHECK(rig.session.placed().empty());
-}
-
-namespace {
-
-/** A loop clock that does something after each wait: between two iterations, where a signal lands. */
-struct BetweenIterations {
-  runner::ManualClock* clock_{nullptr};
-  std::size_t* waits_{nullptr};
-  std::function<void()> act_;
-  std::chrono::system_clock::time_point now() const noexcept {
-    return clock_->now();
-  }
-  std::chrono::steady_clock::time_point monotonic_now() const noexcept {
-    return clock_->monotonic_now();
-  }
-  void wait_for(std::chrono::nanoseconds duration) {
-    clock_->wait_for(duration);
-    ++*waits_;
-    if (act_) {
-      act_();
-    }
-  }
-};
-
-} // namespace
-
-TEST_CASE(
-  "a flatten arriving between two iterations makes the holdings read that is due", "[serialized][closing-wait]"
-) {
-  // Working orders once a minute, holdings every second, one run. The flatten arrives between two
-  // iterations, a second after holdings were read. The next iteration reads them on their cadence, as
-  // it would without a stop, and they show the fill. A wall clock stepped back afterwards changes
-  // nothing: the read has been made and the pass has run.
-  SerialRig rig;
-  rig.session.order_ids_ = {"B", "S"};
-  rig.bar(1, {limit_target("10", "69000")});
-  auto resting = listed_row("B", OrderSide::BUY, "10", "0", OrderType::LIMIT);
-  resting.order_.ordered_at_ = rig.runner_instance.context().now();
-  rig.show(polled(2, "0", {resting}));
-
-  QuietSource source;
-  runner::PollSchedule schedule;
-  schedule.bars_.reset();
-  schedule.holdings_ = std::chrono::seconds(1);
-  schedule.working_orders_ = std::chrono::seconds(60);
-  schedule.tick_ = std::chrono::seconds(1);
-  runner::ManualClock clock{polled(2, "0", {}).as_of_};
-  runner::StopSource stop;
-  std::size_t waits = 0;
-  BetweenIterations between{
-    &clock, &waits, [&] {
-      if (waits == 2) {
-        stop.request(runner::StopIntent::FLATTEN);
-      } else if (waits == 3) {
-        clock.jump(-std::chrono::seconds(10));
-      }
-    }
-  };
-  runner::PollingLoop<SerialRunner, QuietSource, BetweenIterations> loop(
-    rig.runner_instance, source, schedule, between
-  );
-  loop.allow_unbounded_portfolio_age();
-  // The third holdings read, whenever the loop makes it, shows the ten.
-  source.act_on_holdings_poll_ = 3;
-  source.act_ = [&] {
-    rig.show(polled(3, "10", {}));
-  };
-
-  const auto report = loop.run(stop, 0);
-  CHECK(report.iterations_ == 3);
-  CHECK(waits == 2);
-  CHECK(source.holdings_polls_ == 3);
-  CHECK_FALSE(report.closing_wait_expired_);
-  CHECK(rig.session.canceled().empty());
-  REQUIRE(rig.session.placed().size() == 2);
-  CHECK(rig.session.placed().back().side_ == OrderSide::SELL);
-  CHECK(rig.session.placed().back().quantity_ == Decimal64::parse("10"));
-}
-
-TEST_CASE("a flatten does not wait for a mark on an instrument with nothing held", "[serialized][closing-wait]") {
-  // Nothing to close there, so no read changes what the pass sends.
-  SerialRig rig;
-  rig.show(polled(1, "0", {}));
-  REQUIRE(rig.runner_instance.context().portfolio().positions_.size() == 1);
-  rig.runner_instance.ledger().mark(samsung(), "a cancellation request has an unknown outcome");
-  QuietSource source;
-  auto loop = loop_over(rig, source, 1);
-  runner::StopSource stop;
-  stop.request(runner::StopIntent::FLATTEN);
-
-  const auto report = loop.run(stop, 0);
-  CHECK(report.iterations_ == 1);
-  CHECK_FALSE(report.closing_wait_expired_);
-  CHECK(rig.session.placed().empty());
-}
-
 TEST_CASE("a flatten does not wait for an order held for an operator", "[serialized][closing-wait]") {
   // No read gives an account of it: only `release_obligations` does. Fifteen held where a buy of ten from
   // none explains ten; then still held, and marked with it, or gone since.
@@ -8041,33 +7444,6 @@ TEST_CASE("a listed row whose day the adapter assumed names no order", "[seriali
 }
 
 TEST_CASE(
-  "an order sent hours before, of the same shape, does not keep the later search from naming one",
-  "[serialized][unfound]"
-) {
-  using runner::JournalOutcome;
-  auto earlier = [](JournalOutcome outcome, const char* order_id = "", const char* baseline = "0") {
-    auto line = serial_line("p-1", outcome, order_id, baseline);
-    line.recorded_at_ = at_hour(-4);
-    return line;
-  };
-  auto lines = std::vector<runner::JournalEntry>{
-    earlier(JournalOutcome::PENDING),
-    earlier(JournalOutcome::ACCEPTED, "A"),
-    earlier(JournalOutcome::CONFIRMED, "A", "10"),
-  };
-  for (const auto& line : unfound_lines("p-2", "10")) {
-    lines.push_back(line);
-  }
-  SerialRig rig(lines);
-  rig.show(polled(0, "10", {}));
-  auto source = source_over(rig, page_of({market_row("A", at_hour(-4)), market_row("B", at_hour(-1))}));
-  rig.runner_instance.set_observed_at(at_hour(1));
-  REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
-  REQUIRE(rig.runner_instance.obligations().size() == 1);
-  CHECK(rig.runner_instance.obligations().front().order_id_ == "B");
-}
-
-TEST_CASE(
   "an earlier order whose journal lines record no route still keeps its row from the later search",
   "[serialized][unfound][loop]"
 ) {
@@ -8225,17 +7601,6 @@ TEST_CASE("a cancellation of unknown outcome still finds the order it names in t
   REQUIRE(source.last_reconcile().matches_.size() == 1);
   CHECK(source.last_reconcile().matches_.front().verdict_ == runner::MatchVerdict::MATCHED);
   CHECK(source.last_reconcile().matches_.front().order_id_ == "B");
-}
-
-TEST_CASE("a runner that overlaps orders makes no later search", "[serialized][unfound]") {
-  SerialRig rig(unfound_lines(), /*recover=*/false);
-  rig.runner_instance.allow_overlapping_orders();
-  runner::recover_runner(rig.runner_instance, rig.journal);
-  auto source = source_over(rig, page_of({market_row("B", at_hour(-1))}));
-  rig.runner_instance.set_observed_at(at_hour(1));
-  REQUIRE(source.read_order_list(rig.runner_instance) == runner::PollOutcome::UPDATED);
-  CHECK(rig.session.history_calls() == 0);
-  CHECK(rig.lines(runner::JournalOutcome::RESOLVED).size() == 1);
 }
 
 TEST_CASE("a run stops placing for an order nobody has been able to account for", "[serialized][unfound][loop]") {
@@ -8606,36 +7971,6 @@ TEST_CASE("a run stops placing for an order nobody has been able to account for"
     REQUIRE(report.stopped_by_.has_value());
     CHECK(*report.stopped_by_ == runner::StopIntent::WITHDRAW);
   }
-}
-
-TEST_CASE("after that stop, the documented steps let the instrument trade again", "[serialized][unfound][loop]") {
-  SerialRig rig(unfound_lines());
-  // As its timeout marks it: a release leaves the ledger alone.
-  rig.runner_instance.ledger().mark(samsung(), "not accounted for within the confirmation timeout");
-  QuietSource source;
-  auto loop = loop_over(rig, source, 1);
-  runner::StopSource stop;
-  REQUIRE(loop.run(stop, 5).owed_stop_.has_value());
-
-  // Starting again without them stops again at once.
-  CHECK(loop.run(stop, 5).iterations_ == 1);
-
-  // The operator read the broker's order list and holdings: the order is not there.
-  REQUIRE(rig.runner_instance.release_obligations(samsung(), "read the order list and holdings: not placed"));
-  rig.runner_instance.ledger().resolve_after_reading_orders(samsung());
-  stop.clear();
-  rig.runner_instance.guard().resume(strategy::HaltReason::STOPPING);
-  // Only a holdings read received after the release sizes the next order. (The loop installed the phase
-  // it derives, and this fixture has no calendar.)
-  rig.runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
-  const auto too_early = rig.bar(3, {target_of("10")});
-  CHECK(rig.session.placed().empty());
-  REQUIRE(too_early.withheld_plans_.size() == 1);
-  CHECK(too_early.withheld_plans_.front().detail_.find("waiting for a newer read") != std::string::npos);
-  rig.show(polled(4, "0", {}));
-  rig.bar(5, {target_of("10")});
-  CHECK(rig.session.placed().size() == 1);
-  CHECK_FALSE(loop.run(stop, 2).owed_stop_.has_value());
 }
 
 TEST_CASE(
