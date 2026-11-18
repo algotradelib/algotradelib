@@ -24,40 +24,50 @@ namespace backtest {
 
 namespace bootstrap_detail {
 
-/** @brief A price grid in whole units of `10^-scale`, and the rounding of a path's level onto it. */
+// A refusal naming the function.
+inline std::invalid_argument refusal(const char* who, const char* why) {
+  return std::invalid_argument(std::string(who) + ": " + why);
+}
+
+// The checks before the identity draw: two prices or more (`few`), the indices, and without `any_sign` every price
+// above zero (`sign`). Returns whether `indices` is the identity draw.
+inline bool identity_draw(
+  std::size_t count, const std::vector<std::size_t>& indices, const std::vector<Decimal64>& prices, bool any_sign,
+  const char* who, const char* few, const char* sign
+) {
+  if (count < 2 || indices.size() > count - 1) {
+    throw refusal(who, few);
+  }
+  bool identity = indices.size() == count - 1;
+  for (std::size_t k = 0; k < indices.size(); ++k) {
+    identity = identity && indices[k] == k;
+    if (indices[k] >= count - 1) {
+      throw refusal(who, "an index names no return");
+    }
+  }
+  for (const auto& price : prices) {
+    if (!any_sign && price.coefficient() <= 0) {
+      throw refusal(who, sign);
+    }
+  }
+  return identity;
+}
+
+// A price grid in whole units of `10^-scale_`, checked aligned, and the rounding of a path's level onto it.
 class Grid {
 public:
-  /** @brief A value in grid units is refused at or beyond 2^53, where a double would no longer hold every integer. */
+  // A value in grid units is refused at or beyond 2^53, where a double would no longer hold every integer.
   static constexpr std::int64_t LIMIT = std::int64_t{1} << 53;
 
-  /**
-   * @brief Reads the rule's bands at their own scale.
-   * @param rule The price grid; it must outlive the grid.
-   * @param any_sign Whether levels at or below zero are rounded rather than refused.
-   * @param who The caller's name, put before each refusal.
-   * @throws std::invalid_argument for an `UNKNOWN` or unaligned rule, or a band or tick at or beyond 2^53 units.
-   */
+  // The bands at their own scale; `rule` must outlive the grid.
   Grid(const PriceRule& rule, bool any_sign, const char* who) : rule_(rule), any_sign_(any_sign), who_(who) {
     if (!rule.grid_known()) {
-      throw refuse("the price grid is unknown");
+      throw refusal(who_, "the price grid is unknown");
     }
     build();
   }
 
-  /**
-   * @brief Returns a refusal naming the caller.
-   * @param why The reason.
-   * @return The exception.
-   */
-  std::invalid_argument refuse(const char* why) const {
-    return std::invalid_argument(std::string(who_) + ": " + why);
-  }
-
-  /**
-   * @brief Raises the scale to cover the values', and reads the bands again at it.
-   * @param values The values.
-   * @throws std::invalid_argument for a band or tick at or beyond 2^53 units at the new scale.
-   */
+  // The bands again, at a scale covering the values'.
   void widen(const std::vector<Decimal64>& values) {
     for (const auto& value : values) {
       scale_ = std::max(scale_, value.scale());
@@ -65,17 +75,11 @@ public:
     build();
   }
 
-  /**
-   * @brief Returns a value in grid units.
-   * @param value The value.
-   * @return The value times `10^scale`.
-   * @throws std::invalid_argument if it is at or beyond 2^53 units in magnitude.
-   */
   std::int64_t units(const Decimal64& value) const {
     std::int64_t out = value.coefficient();
     for (auto step = value.scale();; ++step) {
       if (out >= LIMIT || out <= -LIMIT) {
-        throw refuse("a value at or beyond 2^53 grid units");
+        throw refusal(who_, "a value at or beyond 2^53 grid units");
       }
       if (step >= scale_) {
         return out;
@@ -84,14 +88,7 @@ public:
     }
   }
 
-  /**
-   * @brief Rounds a level to its nearest grid price, a tie going up.
-   * @param level The level, in grid units.
-   * @param zero The refusal for a price rounded to zero.
-   * @return The price, at the grid's scale.
-   * @throws std::invalid_argument for a level or neighbour at or beyond 2^53 units in magnitude, a level below the
-   *   first band (stated, or unconstrained without `any_sign`), or a price rounded to zero without `any_sign`.
-   */
+  // The nearest grid price, a tie going up; below the first band only unconstrained with `any_sign`.
   Decimal64 round(double level, const char* zero) const {
     constexpr auto limit = static_cast<double>(LIMIT);
     std::size_t band = 0;
@@ -103,7 +100,7 @@ public:
       !(level < limit) || !(level > -limit) || grid_.empty() ||
       (floored && static_cast<double>(grid_[band].first) > level)
     ) {
-      throw refuse("a level at or beyond 2^53 grid units, or below the first band");
+      throw refusal(who_, "a level at or beyond 2^53 grid units, or below the first band");
     }
     const auto tick = grid_[band].second;
     auto lower = static_cast<std::int64_t>(std::floor(level / static_cast<double>(tick)));
@@ -111,7 +108,7 @@ public:
       const std::int64_t lo = lower * tick;
       const std::int64_t hi = lo + tick;
       if (hi >= LIMIT || lo <= -LIMIT) {
-        throw refuse("a grid neighbour at or beyond 2^53 grid units");
+        throw refusal(who_, "a grid neighbour at or beyond 2^53 grid units");
       }
       if (static_cast<double>(lo) > level) {
         --lower;
@@ -120,7 +117,7 @@ public:
       } else {
         const auto nearest = level - static_cast<double>(lo) < static_cast<double>(hi) - level ? lo : hi;
         if (nearest == 0 && !any_sign_) {
-          throw refuse(zero);
+          throw refusal(who_, zero);
         }
         return Decimal64(nearest, scale_);
       }
@@ -142,7 +139,7 @@ private:
       const auto start = units(band.from_);
       const auto tick = units(band.tick_);
       if (tick <= 0 || start % tick != 0 || (!grid_.empty() && start % grid_.back().second != 0)) {
-        throw refuse("a band's start is not a multiple of its tick and of the previous band's");
+        throw refusal(who_, "a band's start is not a multiple of its tick and of the previous band's");
       }
       grid_.emplace_back(start, tick);
     }
@@ -155,11 +152,10 @@ private:
   std::vector<std::pair<std::int64_t, std::int64_t>> grid_;
 };
 
-/** @brief Whether a join declares `static constexpr bool any_sign = true`; `false` when it declares nothing. */
+// Whether a join declares `static constexpr bool any_sign = true`; `false` when it declares nothing.
 template <typename Join, typename = void>
 struct has_any_sign : std::false_type {};
 
-/** @brief A join that declares `any_sign`. */
 template <typename Join>
 struct has_any_sign<Join, std::void_t<decltype(Join::any_sign)>> : std::bool_constant<Join::any_sign> {};
 
@@ -280,26 +276,10 @@ std::vector<Decimal64> resample_closes(
     "a bootstrap join needs the member double join(double level, double from, double value) const"
   );
   constexpr bool any_sign = bootstrap_detail::has_any_sign<Join>::value;
-  const auto refuse = [](const char* why) {
-    return std::invalid_argument(std::string("resample_closes: ") + why);
-  };
-  if (closes.size() < 2 || indices.size() > closes.size() - 1) {
-    throw refuse("needs two closes or more, and at most one index per return");
-  }
-  bool identity = indices.size() == closes.size() - 1;
-  for (std::size_t k = 0; k < indices.size(); ++k) {
-    identity = identity && indices[k] == k;
-    if (indices[k] >= closes.size() - 1) {
-      throw refuse("an index names no return");
-    }
-  }
-  if constexpr (!any_sign) {
-    for (const auto& close : closes) {
-      if (close.coefficient() <= 0) {
-        throw refuse("a close at or below zero");
-      }
-    }
-  }
+  const bool identity = bootstrap_detail::identity_draw(
+    closes.size(), indices, closes, any_sign, "resample_closes",
+    "needs two closes or more, and at most one index per return", "a close at or below zero"
+  );
   // The bands checked aligned at their own scale, then at the closes'.
   bootstrap_detail::Grid grid(rule, any_sign, "resample_closes");
   if (identity) {
@@ -357,19 +337,6 @@ std::vector<Bar> resample_bars(
     "a bootstrap join needs the member double join(double level, double from, double value) const"
   );
   constexpr bool any_sign = bootstrap_detail::has_any_sign<Join>::value;
-  const auto refuse = [](const char* why) {
-    return std::invalid_argument(std::string("resample_bars: ") + why);
-  };
-  if (bars.size() < 2 || indices.size() > bars.size() - 1) {
-    throw refuse("needs two bars or more, and at most one index per return");
-  }
-  bool identity = indices.size() == bars.size() - 1;
-  for (std::size_t k = 0; k < indices.size(); ++k) {
-    identity = identity && indices[k] == k;
-    if (indices[k] >= bars.size() - 1) {
-      throw refuse("an index names no return");
-    }
-  }
   std::vector<Decimal64> prices;
   for (const auto& bar : bars) {
     if (bar.open_) {
@@ -377,13 +344,10 @@ std::vector<Bar> resample_bars(
     }
     prices.insert(prices.end(), {bar.high_, bar.low_, bar.close_});
   }
-  if constexpr (!any_sign) {
-    for (const auto& price : prices) {
-      if (price.coefficient() <= 0) {
-        throw refuse("a price at or below zero");
-      }
-    }
-  }
+  const bool identity = bootstrap_detail::identity_draw(
+    bars.size(), indices, prices, any_sign, "resample_bars", "needs two bars or more, and at most one index per return",
+    "a price at or below zero"
+  );
   bootstrap_detail::Grid grid(rule, any_sign, "resample_bars");
   if (identity) {
     return bars;
@@ -396,33 +360,27 @@ std::vector<Bar> resample_bars(
   const auto units = [&grid](const Decimal64& value) {
     return static_cast<double>(grid.units(value));
   };
-  const char* zero = "a price rounded to zero";
   std::vector<Bar> out;
-  out.reserve(indices.size() + 1);
-  out.push_back(bars.front());
-  if (out.front().open_) {
-    out.front().open_ = grid.round(units(*out.front().open_), zero);
-  }
-  out.front().high_ = grid.round(units(out.front().high_), zero);
-  out.front().low_ = grid.round(units(out.front().low_), zero);
-  double level = units(out.front().close_);
-  out.front().close_ = grid.round(level, zero);
-  for (std::size_t k = 1; k <= indices.size(); ++k) {
-    const auto& drawn = bars[indices[k - 1] + 1];
-    const double from = units(bars[indices[k - 1]].close_);
+  double level = units(bars.front().close_);
+  for (std::size_t k = 0; k <= indices.size(); ++k) {
+    // Bar 0 is the first bar on the grid; bar `k` is day `j + 1` joined from close `j`.
+    const auto& drawn = k == 0 ? bars.front() : bars[indices[k - 1] + 1];
+    const double from = k == 0 ? 0.0 : units(bars[indices[k - 1]].close_);
     const auto price = [&](const Decimal64& value) {
-      return grid.round(join.join(level, from, units(value)), zero);
+      return grid.round(k == 0 ? units(value) : join.join(level, from, units(value)), "a price rounded to zero");
     };
-    Bar bar;
+    Bar bar = drawn;
     bar.timestamp_ = bars[k].timestamp_;
     if (drawn.open_) {
       bar.open_ = price(*drawn.open_);
     }
     bar.high_ = price(drawn.high_);
     bar.low_ = price(drawn.low_);
-    level = join.join(level, from, units(drawn.close_));
-    bar.close_ = grid.round(level, zero);
-    bar.volume_ = drawn.volume_;
+    bar.close_ = price(drawn.close_);
+    if (k > 0) {
+      level = join.join(level, from, units(drawn.close_));
+      bar.traded_value_.reset();
+    }
     out.push_back(bar);
   }
   return out;
