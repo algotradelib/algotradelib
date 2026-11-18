@@ -10,7 +10,8 @@
  * broker or transport header.
  *
  * The library starts no thread. Two `Backtester`s may run on two threads (see its documentation), and
- * `folds`, `resample_closes`, `measure_input` and `chain_results` are pure functions of their arguments.
+ * `folds`, `resample_closes`, `resample_bars`, `measure_input` and `chain_results` are pure functions of their
+ * arguments.
  */
 
 #include "src/backtest/bootstrap.hpp"

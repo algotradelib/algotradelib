@@ -321,5 +321,112 @@ std::vector<Decimal64> resample_closes(
   return out;
 }
 
+/**
+ * @brief Rebuilds one instrument's bars along a bootstrap path (`analytics::bootstrap_indices`): each drawn day's
+ *   prices joined to the path's previous close and rounded to their nearest grid prices, a tie going up.
+ *
+ * Call it with the same `indices` for every instrument of a path. The identity draw (`0, 1, ..., n - 2`) returns
+ * `bars` as they are. Otherwise bar 0 is the first bar with its prices rounded. Bar `k` draws day `j + 1` with
+ * `j = indices[k - 1]`: each of its prices `value` (open, high, low, close) becomes
+ * `join.join(level, bars[j].close_, value)`, `level` the path's close `k - 1` unrounded, so the closes are those of
+ * `resample_closes` when the scale is the same (here it is read over every price). Bar `k` takes `bars[k]`'s
+ * timestamp and the drawn day's volume; an empty open stays empty, and `traded_value_` is empty.
+ *
+ * An ordered bar (low at most open and close, high at least both) stays ordered, since every built-in join and the
+ * rounding are non-decreasing in the price; the input's order is not checked. With `Differences` or `Levels` a price
+ * can be at or below zero; whether a replay may trade at it is the caller's choice.
+ *
+ * @tparam Join `Returns`, `Differences`, `Levels`, or one of your own with the member
+ *   `double join(double level, double from, double value) const`, non-decreasing in `value`. A join without
+ *   `static constexpr bool any_sign = true` takes and returns positive prices only.
+ * @param bars The bars, in order, one per instant.
+ * @param rule The price grid, as `resample_closes`.
+ * @param indices The drawn returns, each below `bars.size() - 1`.
+ * @param join The join.
+ * @return `indices.size() + 1` bars, bar `k` stamped with `bars[k].timestamp_`.
+ * @throws std::invalid_argument for what `resample_closes` refuses, read over every price of every bar (an empty
+ *   open is skipped).
+ */
+template <typename Join = Returns>
+std::vector<Bar> resample_bars(
+  const std::vector<Bar>& bars, const PriceRule& rule, const std::vector<std::size_t>& indices,
+  const Join& join = Join{}
+) {
+  static_assert(
+    is_price_join<Join>::value,
+    "a bootstrap join needs the member double join(double level, double from, double value) const"
+  );
+  constexpr bool any_sign = bootstrap_detail::has_any_sign<Join>::value;
+  const auto refuse = [](const char* why) {
+    return std::invalid_argument(std::string("resample_bars: ") + why);
+  };
+  if (bars.size() < 2 || indices.size() > bars.size() - 1) {
+    throw refuse("needs two bars or more, and at most one index per return");
+  }
+  bool identity = indices.size() == bars.size() - 1;
+  for (std::size_t k = 0; k < indices.size(); ++k) {
+    identity = identity && indices[k] == k;
+    if (indices[k] >= bars.size() - 1) {
+      throw refuse("an index names no return");
+    }
+  }
+  std::vector<Decimal64> prices;
+  for (const auto& bar : bars) {
+    if (bar.open_) {
+      prices.push_back(*bar.open_);
+    }
+    prices.insert(prices.end(), {bar.high_, bar.low_, bar.close_});
+  }
+  if constexpr (!any_sign) {
+    for (const auto& price : prices) {
+      if (price.coefficient() <= 0) {
+        throw refuse("a price at or below zero");
+      }
+    }
+  }
+  bootstrap_detail::Grid grid(rule, any_sign, "resample_bars");
+  if (identity) {
+    return bars;
+  }
+  grid.widen(prices);
+  // Every price in bounds, drawn or not, as `resample_closes` reads every close.
+  for (const auto& price : prices) {
+    grid.units(price);
+  }
+  const auto units = [&grid](const Decimal64& value) {
+    return static_cast<double>(grid.units(value));
+  };
+  const char* zero = "a price rounded to zero";
+  std::vector<Bar> out;
+  out.reserve(indices.size() + 1);
+  out.push_back(bars.front());
+  if (out.front().open_) {
+    out.front().open_ = grid.round(units(*out.front().open_), zero);
+  }
+  out.front().high_ = grid.round(units(out.front().high_), zero);
+  out.front().low_ = grid.round(units(out.front().low_), zero);
+  double level = units(out.front().close_);
+  out.front().close_ = grid.round(level, zero);
+  for (std::size_t k = 1; k <= indices.size(); ++k) {
+    const auto& drawn = bars[indices[k - 1] + 1];
+    const double from = units(bars[indices[k - 1]].close_);
+    const auto price = [&](const Decimal64& value) {
+      return grid.round(join.join(level, from, units(value)), zero);
+    };
+    Bar bar;
+    bar.timestamp_ = bars[k].timestamp_;
+    if (drawn.open_) {
+      bar.open_ = price(*drawn.open_);
+    }
+    bar.high_ = price(drawn.high_);
+    bar.low_ = price(drawn.low_);
+    level = join.join(level, from, units(drawn.close_));
+    bar.close_ = grid.round(level, zero);
+    bar.volume_ = drawn.volume_;
+    out.push_back(bar);
+  }
+  return out;
+}
+
 } // namespace backtest
 } // namespace algotradelib
