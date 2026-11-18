@@ -5405,3 +5405,154 @@ TEST_CASE("a bootstrap path's closes go to the nearest grid price from the unrou
   refused({d("1"), d("2")}, high_band, {0});
   refused({d("1"), d("0.3"), d("1")}, krx, {0});
 }
+
+TEST_CASE("a bootstrap path joins blocks by returns or differences or levels") {
+  const auto d = [](const char* text) {
+    return Decimal64::parse(text);
+  };
+  const auto krx = krx::equity_price_rule();
+  const auto unit = PriceRule::unconstrained();
+  using backtest::Differences;
+  using backtest::Levels;
+  using backtest::resample_closes;
+  const std::vector<Decimal64> rising{d("5000"), d("5000"), d("5150")};
+  CHECK(resample_closes(rising, krx, {1, 1}) == resample_closes(rising, krx, {1, 1}, backtest::Returns{}));
+  // KRX starts at 0: a path of changes keeps 0 and refuses a level below it.
+  CHECK(resample_closes({d("3"), d("6"), d("3")}, krx, {1}, Differences{}) == std::vector<Decimal64>{d("3"), d("0")});
+  CHECK_THROWS_AS(resample_closes({d("3"), d("6"), d("3")}, krx, {1, 1}, Differences{}), std::invalid_argument);
+  // Levels: close 0, then the drawn closes on the grid.
+  CHECK(
+    resample_closes({d("1500"), d("2003"), d("5004")}, krx, {1, 0}, Levels{}) ==
+    std::vector<Decimal64>{d("1500"), d("5000"), d("2005")}
+  );
+  // The identity draw returns the closes as they are for every join, at or below zero too with any_sign.
+  const std::vector<Decimal64> raw{Decimal64(9007199254740993, 0), Decimal64(1234567, 3), d("5001")};
+  CHECK(resample_closes(raw, krx, {0, 1}, Differences{}) == raw);
+  CHECK(resample_closes(raw, krx, {0, 1}, Levels{}) == raw);
+  const std::vector<Decimal64> signed_raw{d("-5"), d("0"), d("7")};
+  CHECK(resample_closes(signed_raw, krx, {0, 1}, Differences{}) == signed_raw);
+  CHECK_THROWS_AS(resample_closes(signed_raw, krx, {0, 1}), std::invalid_argument);
+  // Unconstrained, a path of changes goes below zero, and stops short of -2^53 units.
+  CHECK(
+    resample_closes({d("5"), d("10"), d("2")}, unit, {1, 1}, Differences{}) ==
+    std::vector<Decimal64>{d("5"), d("-3"), d("-11")}
+  );
+  const auto bound = std::int64_t{1} << 53;
+  for (
+    const auto& closes : {
+      std::vector<Decimal64>{Decimal64(-(bound - 1), 0), d("0"), d("-1")},
+      std::vector<Decimal64>{Decimal64(-bound, 0), d("0"), d("1")},
+      std::vector<Decimal64>{d("0"), Decimal64(bound - 1, 0), Decimal64(-(bound - 1), 0)},
+    }
+  ) {
+    CHECK_THROWS_AS(resample_closes(closes, unit, {1, 1}, Differences{}), std::invalid_argument);
+  }
+  // A stated grid from -100 with tick 5: -12.5 is a tie going up to -10, and 1 rounds to 0, kept.
+  PriceRule fives;
+  fives.kind_ = PriceRule::Kind::STATED;
+  fives.bands_ = {TickBand{Decimal64(-100, 0), d("5")}};
+  CHECK(
+    resample_closes({d("1"), d("-12.5"), d("1")}, fives, {0, 0}, Levels{}) ==
+    std::vector<Decimal64>{Decimal64(0, 1), Decimal64(-100, 1), Decimal64(-100, 1)}
+  );
+}
+
+TEST_CASE("a bootstrap path rebuilds whole bars on the grid with their order kept") {
+  const auto d = [](const char* text) {
+    return Decimal64::parse(text);
+  };
+  using backtest::Differences;
+  using backtest::Levels;
+  using backtest::resample_bars;
+  using backtest::resample_closes;
+  const auto bar = [&](int day, const char* open, const char* high, const char* low, const char* close, int volume) {
+    return Bar{utc(2026, 3, day, 6, 30), d(open), d(high), d(low), d(close), Decimal64(volume, 0), d("7")};
+  };
+  const auto prices = [](const Bar& at) {
+    return std::vector<Decimal64>{at.open_.value_or(Decimal64(-1, 0)), at.high_, at.low_, at.close_};
+  };
+  const auto unit = PriceRule::unconstrained();
+  const std::vector<Bar> bars{
+    bar(2, "100", "104", "98", "101", 1000), bar(3, "110", "130", "105", "120", 2000),
+    bar(4, "90", "100", "50", "60", 3000)
+  };
+  const std::vector<Decimal64> closes{d("101"), d("120"), d("60")};
+  using Four = std::vector<Decimal64>;
+  const auto check = [&](const std::vector<Bar>& path, const Four& first, const Four& second) {
+    REQUIRE(path.size() == 3);
+    CHECK(prices(path[0]) == prices(bars[0]));
+    CHECK(prices(path[1]) == first);
+    CHECK(prices(path[2]) == second);
+    for (std::size_t k = 0; k < 3; ++k) {
+      CHECK(path[k].timestamp_ == bars[k].timestamp_);
+    }
+    CHECK(path[0].volume_ == d("1000"));
+    CHECK(path[1].volume_ == d("3000"));
+    CHECK(path[2].volume_ == d("2000"));
+    CHECK(path[0].traded_value_ == d("7"));
+    CHECK_FALSE(path[1].traded_value_);
+    CHECK_FALSE(path[2].traded_value_);
+  };
+  // Step 1 draws bar 2 from close 120, step 2 bar 1 from close 101; Returns' second bar is joined to 50.5, unrounded.
+  check(
+    resample_bars(bars, unit, {1, 0}), Four{d("76"), d("84"), d("42"), d("51")},
+    Four{d("55"), d("65"), d("53"), d("60")}
+  );
+  check(
+    resample_bars(bars, unit, {1, 0}, Differences{}), Four{d("71"), d("81"), d("31"), d("41")},
+    Four{d("50"), d("70"), d("45"), d("60")}
+  );
+  check(
+    resample_bars(bars, unit, {1, 0}, Levels{}), Four{d("90"), d("100"), d("50"), d("60")},
+    Four{d("110"), d("130"), d("105"), d("120")}
+  );
+  const auto closes_of = [](const std::vector<Bar>& path) {
+    std::vector<Decimal64> out;
+    for (const auto& at : path) {
+      out.push_back(at.close_);
+    }
+    return out;
+  };
+  CHECK(closes_of(resample_bars(bars, unit, {1, 0})) == resample_closes(closes, unit, {1, 0}));
+  CHECK(
+    closes_of(resample_bars(bars, unit, {1, 0}, Differences{})) == resample_closes(closes, unit, {1, 0}, Differences{})
+  );
+  CHECK(closes_of(resample_bars(bars, unit, {1, 0}, Levels{})) == resample_closes(closes, unit, {1, 0}, Levels{}));
+  // An empty open stays empty; the identity draw returns the bars as they are.
+  auto no_open = bars;
+  no_open[2].open_.reset();
+  CHECK_FALSE(resample_bars(no_open, unit, {1, 0})[1].open_);
+  const auto same = resample_bars(no_open, unit, {0, 1});
+  for (std::size_t k = 0; k < 3; ++k) {
+    CHECK(prices(same[k]) == prices(no_open[k]));
+    CHECK(same[k].traded_value_ == no_open[k].traded_value_);
+  }
+  // Returns refuses a low at zero.
+  auto zero_low = bars;
+  zero_low[1].low_ = d("0");
+  CHECK_THROWS_AS(resample_bars(zero_low, unit, {1, 0}), std::invalid_argument);
+
+  // On KRX, changes from 2000 to 5000: 4997.5 and 4992.5 are ties going up; the second step crosses 5000 from 5000.
+  const auto krx = krx::equity_price_rule();
+  const std::vector<Bar> krx_bars{
+    bar(2, "2000", "2000", "2000", "2000", 1000), bar(3, "1999.6", "2002.4", "1997.4", "2000.0", 2000),
+    bar(4, "4997.5", "5004.9", "4992.5", "5000", 3000)
+  };
+  const auto krx_path = resample_bars(krx_bars, krx, {1, 0}, Differences{});
+  const Four at_5000{Decimal64(50000, 1), Decimal64(50000, 1), Decimal64(49950, 1), Decimal64(50000, 1)};
+  REQUIRE(krx_path.size() == 3);
+  CHECK(prices(krx_path[0]) == Four(4, Decimal64(20000, 1)));
+  CHECK(prices(krx_path[1]) == at_5000);
+  CHECK(prices(krx_path[2]) == at_5000);
+  // Flat bars rebuild by returns to flat bars at resample_closes' closes.
+  const std::vector<Bar> flat{
+    bar(2, "5000", "5000", "5000", "5000", 100), bar(3, "5000", "5000", "5000", "5000", 100),
+    bar(4, "5150", "5150", "5150", "5150", 100)
+  };
+  const auto flat_path = resample_bars(flat, krx, {1, 1});
+  const auto flat_closes = resample_closes({d("5000"), d("5000"), d("5150")}, krx, {1, 1});
+  REQUIRE(flat_path.size() == 3);
+  for (std::size_t k = 0; k < 3; ++k) {
+    CHECK(prices(flat_path[k]) == Four(4, flat_closes[k]));
+  }
+}
