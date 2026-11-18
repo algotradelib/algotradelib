@@ -6,8 +6,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -16,7 +18,8 @@ namespace backtest {
 
 /**
  * @file
- * @brief The closes of a bootstrap path, rebuilt from drawn returns and put on the instrument's price grid.
+ * @brief The prices of a bootstrap path, rebuilt from drawn blocks joined to the path and put on the instrument's
+ *   price grid.
  */
 
 namespace bootstrap_detail {
@@ -30,10 +33,11 @@ public:
   /**
    * @brief Reads the rule's bands at their own scale.
    * @param rule The price grid; it must outlive the grid.
+   * @param any_sign Whether levels at or below zero are rounded rather than refused.
    * @param who The caller's name, put before each refusal.
    * @throws std::invalid_argument for an `UNKNOWN` or unaligned rule, or a band or tick at or beyond 2^53 units.
    */
-  Grid(const PriceRule& rule, const char* who) : rule_(rule), who_(who) {
+  Grid(const PriceRule& rule, bool any_sign, const char* who) : rule_(rule), any_sign_(any_sign), who_(who) {
     if (!rule.grid_known()) {
       throw refuse("the price grid is unknown");
     }
@@ -50,7 +54,7 @@ public:
   }
 
   /**
-   * @brief Raises the scale to cover a value's, and reads the bands again at it.
+   * @brief Raises the scale to cover the values', and reads the bands again at it.
    * @param values The values.
    * @throws std::invalid_argument for a band or tick at or beyond 2^53 units at the new scale.
    */
@@ -85,15 +89,20 @@ public:
    * @param level The level, in grid units.
    * @param zero The refusal for a price rounded to zero.
    * @return The price, at the grid's scale.
-   * @throws std::invalid_argument for a level or neighbour at or beyond 2^53 units, a level below the first band, or
-   *   a price rounded to zero.
+   * @throws std::invalid_argument for a level or neighbour at or beyond 2^53 units in magnitude, a level below the
+   *   first band (stated, or unconstrained without `any_sign`), or a price rounded to zero without `any_sign`.
    */
   Decimal64 round(double level, const char* zero) const {
+    constexpr auto limit = static_cast<double>(LIMIT);
     std::size_t band = 0;
     while (band + 1 < grid_.size() && static_cast<double>(grid_[band + 1].first) <= level) {
       ++band;
     }
-    if (!(level < static_cast<double>(LIMIT)) || grid_.empty() || static_cast<double>(grid_[band].first) > level) {
+    const bool floored = !any_sign_ || rule_.kind_ != PriceRule::Kind::UNCONSTRAINED;
+    if (
+      !(level < limit) || !(level > -limit) || grid_.empty() ||
+      (floored && static_cast<double>(grid_[band].first) > level)
+    ) {
       throw refuse("a level at or beyond 2^53 grid units, or below the first band");
     }
     const auto tick = grid_[band].second;
@@ -101,7 +110,7 @@ public:
     for (;;) {
       const std::int64_t lo = lower * tick;
       const std::int64_t hi = lo + tick;
-      if (hi >= LIMIT) {
+      if (hi >= LIMIT || lo <= -LIMIT) {
         throw refuse("a grid neighbour at or beyond 2^53 grid units");
       }
       if (static_cast<double>(lo) > level) {
@@ -110,7 +119,7 @@ public:
         ++lower;
       } else {
         const auto nearest = level - static_cast<double>(lo) < static_cast<double>(hi) - level ? lo : hi;
-        if (nearest == 0) {
+        if (nearest == 0 && !any_sign_) {
           throw refuse(zero);
         }
         return Decimal64(nearest, scale_);
@@ -140,36 +149,137 @@ private:
   }
 
   const PriceRule& rule_;
+  bool any_sign_;
   const char* who_;
   std::uint8_t scale_{0};
   std::vector<std::pair<std::int64_t, std::int64_t>> grid_;
 };
 
+/** @brief Whether a join declares `static constexpr bool any_sign = true`; `false` when it declares nothing. */
+template <typename Join, typename = void>
+struct has_any_sign : std::false_type {};
+
+/** @brief A join that declares `any_sign`. */
+template <typename Join>
+struct has_any_sign<Join, std::void_t<decltype(Join::any_sign)>> : std::bool_constant<Join::any_sign> {};
+
 } // namespace bootstrap_detail
 
+/** @brief Chains the drawn returns: a path price is the path's previous close times `value / from`. */
+struct Returns {
+  /**
+   * @brief Returns the path's price for a drawn price.
+   * @param level The path's previous close, unrounded, in grid units.
+   * @param from The drawn day's previous close in the history, in grid units; positive.
+   * @param value The drawn day's price (open, high, low or close), in grid units; positive.
+   * @return `level * (value / from)`, the ratio first.
+   */
+  double join(double level, double from, double value) const {
+    return level * (value / from);
+  }
+};
+
+/** @brief Chains the drawn changes (Paparoditis and Politis): the path's previous close plus `value - from`. */
+struct Differences {
+  /** @brief Prices at or below zero are joined, not refused. */
+  static constexpr bool any_sign = true;
+
+  /**
+   * @brief Returns the path's price for a drawn price.
+   * @param level The path's previous close, in grid units.
+   * @param from The drawn day's previous close in the history, in grid units.
+   * @param value The drawn day's price, in grid units.
+   * @return `level + (value - from)`.
+   * @throws std::invalid_argument if `value - from` is at or beyond 2^53 units in magnitude.
+   */
+  double join(double level, double from, double value) const {
+    constexpr auto limit = static_cast<double>(bootstrap_detail::Grid::LIMIT);
+    const double step = value - from;
+    if (!(step < limit && step > -limit)) {
+      throw std::invalid_argument("Differences: a step at or beyond 2^53 grid units");
+    }
+    return level + step;
+  }
+};
+
 /**
- * @brief Rebuilds one instrument's closes along a bootstrap path (`analytics::bootstrap_indices`) and rounds each to
- *   its nearest grid price, a tie going up.
+ * @brief Joins the drawn prices as they are (Künsch; Politis and Romano): for a stationary series, not trending
+ *   prices, where each block boundary is a jump.
+ */
+struct Levels {
+  /** @brief Prices at or below zero are joined, not refused. */
+  static constexpr bool any_sign = true;
+
+  /**
+   * @brief Returns the drawn price.
+   * @param level Unused.
+   * @param from Unused.
+   * @param value The drawn day's price, in grid units.
+   * @return `value`.
+   */
+  double join(double level, double from, double value) const {
+    static_cast<void>(level);
+    static_cast<void>(from);
+    return value;
+  }
+};
+
+/**
+ * @brief Whether `Join` can join drawn blocks: `true` when a `const Join` has a member
+ *   `join(double, double, double)` returning something convertible to `double`.
+ * @tparam Join The join type.
+ */
+template <typename Join, typename = void>
+struct is_price_join : std::false_type {};
+
+/** @brief A join with the member `join` that `resample_closes` and `resample_bars` call. */
+template <typename Join>
+struct is_price_join<
+  Join,
+  std::enable_if_t<
+    std::is_convertible_v<decltype(std::declval<const Join&>().join(double{}, double{}, double{})), double>
+  >
+> : std::true_type {};
+
+/**
+ * @brief Rebuilds one instrument's closes along a bootstrap path (`analytics::bootstrap_indices`), joining the drawn
+ *   blocks by `Join`, and rounds each to its nearest grid price, a tie going up.
  *
  * Call it with the same `indices` for every instrument of a path, so they move on the same drawn days. The identity
  * draw (`0, 1, ..., n - 2`) returns `closes` as they are. Otherwise close 0 is the first close, and close `k` is
- * close `k - 1` times `closes[j + 1] / closes[j]` with `j = indices[k - 1]`, accumulated unrounded and rounded once
- * each. The arithmetic is in grid units (`10^-s`, `s` the largest scale among the closes and the rule's band
- * starts and ticks), exact below 2^53 units, so the result is the same on every platform.
+ * `join.join(level, closes[j], closes[j + 1])` with `j = indices[k - 1]` and `level` close `k - 1`, accumulated
+ * unrounded and rounded once each; with `Returns`, close `k - 1` times `closes[j + 1] / closes[j]`. The arithmetic is
+ * in grid units (`10^-s`, `s` the largest scale among the closes and the rule's band starts and ticks), exact below
+ * 2^53 units, so the result is the same on every platform.
  *
+ * `Levels` keeps close 0 and draws closes 1 to `n - 1`, so a circular block wraps from close `n - 1` to close 1. With
+ * `Differences` or `Levels` a close can be at or below zero; whether a replay may trade at it is the caller's choice.
+ *
+ * @tparam Join `Returns`, `Differences`, `Levels`, or one of your own with the member
+ *   `double join(double level, double from, double value) const`. A join without
+ *   `static constexpr bool any_sign = true` takes and returns positive closes only.
  * @param closes The closes, in order.
- * @param rule The price grid: `UNCONSTRAINED` rounds to one unit; a stated grid must be aligned (each band's start
- *   a multiple of its own tick and of the previous band's).
+ * @param rule The price grid: `UNCONSTRAINED` rounds to one unit, from zero (at every sign with `any_sign`); a stated
+ *   grid must be aligned (each band's start a multiple of its own tick and of the previous band's).
  * @param indices The drawn returns, each below `closes.size() - 1`.
+ * @param join The join.
  * @return `indices.size() + 1` closes.
- * @throws std::invalid_argument for fewer than two closes, a close at or below zero, too many indices or one out
- *   of range, an `UNKNOWN` or unaligned rule, or a band or tick at or beyond 2^53 units at the rule's own scale
- *   (the identity draw included); for a drawn path, a close, band, tick, level or grid neighbour at or beyond 2^53
- *   units, a level below the first band, or a close rounded to zero.
+ * @throws std::invalid_argument for fewer than two closes, too many indices or one out of range, a close at or below
+ *   zero (without `any_sign`), an `UNKNOWN` or unaligned rule, or a band or tick at or beyond 2^53 units at the rule's
+ *   own scale (the identity draw included); for a drawn path, a close, band, tick, level or grid neighbour at or
+ *   beyond 2^53 units in magnitude, a level below a stated grid's first band (or below zero without `any_sign`), a
+ *   close rounded to zero (without `any_sign`), or what `join` throws.
  */
-inline std::vector<Decimal64> resample_closes(
-  const std::vector<Decimal64>& closes, const PriceRule& rule, const std::vector<std::size_t>& indices
+template <typename Join = Returns>
+std::vector<Decimal64> resample_closes(
+  const std::vector<Decimal64>& closes, const PriceRule& rule, const std::vector<std::size_t>& indices,
+  const Join& join = Join{}
 ) {
+  static_assert(
+    is_price_join<Join>::value,
+    "a bootstrap join needs the member double join(double level, double from, double value) const"
+  );
+  constexpr bool any_sign = bootstrap_detail::has_any_sign<Join>::value;
   const auto refuse = [](const char* why) {
     return std::invalid_argument(std::string("resample_closes: ") + why);
   };
@@ -183,13 +293,15 @@ inline std::vector<Decimal64> resample_closes(
       throw refuse("an index names no return");
     }
   }
-  for (const auto& close : closes) {
-    if (close.coefficient() <= 0) {
-      throw refuse("a close at or below zero");
+  if constexpr (!any_sign) {
+    for (const auto& close : closes) {
+      if (close.coefficient() <= 0) {
+        throw refuse("a close at or below zero");
+      }
     }
   }
   // The bands checked aligned at their own scale, then at the closes'.
-  bootstrap_detail::Grid grid(rule, "resample_closes");
+  bootstrap_detail::Grid grid(rule, any_sign, "resample_closes");
   if (identity) {
     return closes;
   }
@@ -202,8 +314,7 @@ inline std::vector<Decimal64> resample_closes(
   double level = in.front();
   for (std::size_t k = 0; k <= indices.size(); ++k) {
     if (k > 0) {
-      const double ratio = in[indices[k - 1] + 1] / in[indices[k - 1]];
-      level = level * ratio;
+      level = join.join(level, in[indices[k - 1]], in[indices[k - 1] + 1]);
     }
     out.push_back(grid.round(level, "a close rounded to zero"));
   }
