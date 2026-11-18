@@ -25,8 +25,8 @@ enum class BlockScheme {
 };
 
 /**
- * @brief Draws the returns of one bootstrap path: entry `k` names the return, `close[j + 1] / close[j]` as `j`, the
- *   path takes at step `k`.
+ * @brief Draws the steps of one bootstrap path: entry `k` names the step from close `j` to close `j + 1`, as `j`,
+ *   the path takes at step `k`.
  *
  * Path `path` of `seed` comes from its own `std::mt19937_64`, seeded by `std::seed_seq` with the low and high 32 bits
  * of `seed` and then of `path`, so it is reproducible alone, on any thread and in any order. Draws use only the
