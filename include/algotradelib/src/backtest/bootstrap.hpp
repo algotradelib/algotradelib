@@ -6,7 +6,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -213,9 +212,7 @@ struct Levels {
    * @param value The drawn day's price, in grid units.
    * @return `value`.
    */
-  double join(double level, double from, double value) const {
-    static_cast<void>(level);
-    static_cast<void>(from);
+  double join([[maybe_unused]] double level, [[maybe_unused]] double from, double value) const {
     return value;
   }
 };
@@ -245,8 +242,10 @@ struct is_price_join<
  * draw (`0, 1, ..., n - 2`) returns `closes` as they are. Otherwise close 0 is the first close, and close `k` is
  * `join.join(level, closes[j], closes[j + 1])` with `j = indices[k - 1]` and `level` close `k - 1`, accumulated
  * unrounded and rounded once each; with `Returns`, close `k - 1` times `closes[j + 1] / closes[j]`. The arithmetic is
- * in grid units (`10^-s`, `s` the largest scale among the closes and the rule's band starts and ticks), exact below
- * 2^53 units, so the result is the same on every platform.
+ * in grid units (`10^-s`, `s` the largest scale among the closes and the rule's band starts and ticks): converting a
+ * price to units is exact below 2^53, and `Differences` and `Levels` stay in whole units. `Returns` divides and
+ * multiplies in rounded binary64 doubles in a fixed order, with no multiply-add to fuse, so its result is the same
+ * wherever doubles are IEEE binary64 rounding to nearest (not x87 extended precision).
  *
  * `Levels` keeps close 0 and draws closes 1 to `n - 1`, so a circular block wraps from close `n - 1` to close 1. With
  * `Differences` or `Levels` a close can be at or below zero; whether a replay may trade at it is the caller's choice.
@@ -310,7 +309,8 @@ std::vector<Decimal64> resample_closes(
  * `j = indices[k - 1]`: each of its prices `value` (open, high, low, close) becomes
  * `join.join(level, bars[j].close_, value)`, `level` the path's close `k - 1` unrounded, so the closes are those of
  * `resample_closes` when the scale is the same (here it is read over every price). Bar `k` takes `bars[k]`'s
- * timestamp and the drawn day's volume; an empty open stays empty, and `traded_value_` is empty.
+ * timestamp and the drawn day's volume; an empty open stays empty. Bar 0 keeps its own `traded_value_`; a drawn bar
+ * (`k >= 1`) has none.
  *
  * An ordered bar (low at most open and close, high at least both) stays ordered, since every built-in join and the
  * rounding are non-decreasing in the price; the input's order is not checked. With `Differences` or `Levels` a price
