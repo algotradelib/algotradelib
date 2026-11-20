@@ -90,8 +90,8 @@ struct Normalizers {
   /** @brief `false`: a calendar request covers only a date and the business days either side. */
   static constexpr bool has_calendar_range = false;
 
-  /** @brief `true`: Toss publishes session hours, but this library does not expose them yet. */
-  static constexpr bool has_calendar_sessions = true;
+  /** @brief `false`: Toss publishes session hours, but this adapter does not fill them yet. */
+  static constexpr bool has_calendar_sessions = false;
 
   /**
    * @brief Refuses a calendar request with an invalid date (the market argument is not checked).

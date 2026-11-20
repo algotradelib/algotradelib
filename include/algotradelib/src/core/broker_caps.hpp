@@ -187,8 +187,8 @@ struct BrokerCaps {
   static constexpr bool has_calendar_range = Traits::has_calendar_range;
 
   /**
-   * @brief Whether the broker publishes intraday session hours (only Toss); the library does not
-   *   expose them yet.
+   * @brief Whether the adapter fills each open day's session hours (`TradingDay::regular_`, `extended_`); a live
+   *   loop over such a broker takes the market phase from them (`strategy::stated_session_phase`).
    */
   static constexpr bool has_calendar_sessions = Traits::has_calendar_sessions;
 

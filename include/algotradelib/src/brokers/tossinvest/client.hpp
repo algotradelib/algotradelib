@@ -1202,9 +1202,8 @@ private:
   // A day is a trading day when Toss reports trading hours for it. The two markets name the hours
   // differently: KR has one `integrated` field, null "둘 다 휴장이면", when both KRX and NXT are
   // closed; US has four sessions, all null on a holiday, of which `regularMarket` is the exchange's
-  // own. So the presence of those hours *is* the answer, and the hours themselves are not
-  // normalized — only Toss publishes them. They are dropped here, not exposed (the library does not
-  // offer session hours yet; see `BrokerCaps::has_calendar_sessions`).
+  // own. So the presence of those hours *is* the answer. The hours themselves are dropped here, not
+  // filled in `TradingDay`, so this adapter does not declare `BrokerCaps::has_calendar_sessions`.
   //
   // A `today` without that field at all is refused, not read as closed: reading the KR field on a
   // US reply reported every US trading day as closed.

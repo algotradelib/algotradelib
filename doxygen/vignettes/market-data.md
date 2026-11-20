@@ -91,8 +91,7 @@ A default-constructed rule is `UNKNOWN` too, so a rule that was never set cannot
 ## What differs between the brokers
 
 Per the intersection principle, each of these can be tested at compile time, and none
-is emulated for a broker that lacks it (the session-hours row only says that Toss
-publishes them; see below).
+is emulated for a broker that lacks it.
 
 | Capability | KIS | Toss | Kiwoom |
 | --- | --- | --- | --- |
@@ -100,16 +99,16 @@ publishes them; see below).
 | `has_batch_prices` | no | yes, 200 symbols | no |
 | `has_batch_reference_data` | no | yes, 200 symbols | no |
 | `has_calendar_range` | yes, from a base date | no, three days | no calendar at all (`has_calendar` is `false`) |
-| `has_calendar_sessions` | no | yes | no |
+| `has_calendar_sessions` (the adapter fills each day's session hours) | no | no | no |
 
 An interval a broker does not publish is **refused**, never produced by aggregating
 a shorter one. A batch verb a broker lacks does not compile rather than looping
 single requests behind the caller's back, which would wear one signature over
 several times the request cost.
 
-KIS's per-bar corporate-action columns, its after-hours depth totals, and Toss's
-intraday session windows are not normalized — only one broker publishes each — and
-the library does not expose them yet.
+KIS's per-bar corporate-action columns and its after-hours depth totals are not normalized — only one broker publishes each — and the library does not expose them yet.
+Toss publishes each day's session hours, but its adapter does not fill them in `TradingDay` yet.
+An adapter that does (`TradingDay::regular_` and `extended_`) declares `has_calendar_sessions`, and a live loop over it takes the market phase from those hours.
 
 ## Two broker-specific behaviours worth knowing
 

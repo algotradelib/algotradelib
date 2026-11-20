@@ -760,10 +760,10 @@ TEST_CASE("calendar capabilities record how much one request answers") {
   static_assert(BrokerCaps<kis::KisClient>::has_calendar_range);
   static_assert(!BrokerCaps<tossinvest::TossClient>::has_calendar_range);
 
-  // Session windows are Toss's alone and are not normalized, so this capability
-  // points at `session.client()` rather than gating a port verb.
+  // The capability means an adapter that fills each day's session hours, which none in the library
+  // does yet: Toss publishes them and its adapter drops them.
   static_assert(!BrokerCaps<kis::KisClient>::has_calendar_sessions);
-  static_assert(BrokerCaps<tossinvest::TossClient>::has_calendar_sessions);
+  static_assert(!BrokerCaps<tossinvest::TossClient>::has_calendar_sessions);
 
   static_assert(!BrokerCaps<vendor::MockClient>::has_calendar);
   SUCCEED("calendar reach is a compile-time capability");

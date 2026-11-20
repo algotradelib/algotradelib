@@ -662,9 +662,11 @@ bar of the read fed as history; everything else goes through `feed_warmup`.
 
 The loop derives the phase each iteration from two things:
 
-- **a session window you state**, `set_session_window(...)`, defaulting to `SessionWindow::krx()`. Only
-  Toss publishes intraday hours and they are not normalized, so this is configuration rather than
-  something the library discovers. For a market that is not KRX, state it.
+- **the session's open and close**, from one of two places, chosen at compile time from the source:
+  - a source that declares `states_calendar_sessions` (a `live::SessionSource` whose market-data broker declares `has_calendar_sessions`) takes them from the hours its adapter fills in each calendar day, as instants, so daylight saving and early closes are right (`strategy::stated_session_phase`);
+  - any other source uses **a session window you state**, `set_session_window(...)`, defaulting to `SessionWindow::krx()`.
+    No broker in the library fills session hours yet, so this is configuration rather than something the library discovers.
+    For a market that is not KRX, state it.
 - **a trading calendar it polls**, `PollKind::CALENDAR`. This is the one cadence in `PollSchedule` that
   is **on by default**, six hours, because a loop without a calendar has an uncovered date, an
   uncovered date is `MarketPhase::UNKNOWN`, and `UNKNOWN` is not in the default
@@ -683,6 +685,9 @@ re-derives the phase before every call it makes that could send, but nothing of 
 it stood when that poll began. `SessionSource::poll_calendar` installs a calendar and feeds nothing,
 which is the shape with no edge.
 
+A source that wraps a `SessionSource` by composition must also forward its `states_calendar_sessions`.
+If a source that does not declare it installs a calendar whose open days carry session hours, the loop does not fall back to the window: the phase is `UNKNOWN`, every opening order is refused, and a note names the missing constant.
+
 The same rule applies to a **strategy**: `on_phase` and `on_stop` receive a mutable context, and
 `Context::set_calendar` is not theirs to call — read `calendar()` instead, which is what it is published
 for. A calendar revised by `on_stop` is the one case the loop can still answer, because the closing pass
@@ -693,8 +698,9 @@ phase moved *and* a request went out, with a note naming the call. It is a contr
 than proof that a particular order was mis-checked, and it says so.
 
 When the phase cannot be established, the run says so: `final_phase_` is `unknown` and a note names
-the reason — no cadence configured, no calendar published by the broker, every poll failed, or the
-date is uncovered. It is deliberately **not** a halt: a halt would also stop cancellations, which
+the reason — a calendar with session hours under a source that does not declare them, no cadence
+configured, no calendar published by the broker, every poll failed, the date is uncovered, or (under
+filled hours) the hours do not decide the instant. It is deliberately **not** a halt: a halt would also stop cancellations, which
 `Runner::send_cancel` exempts from the phase limit because withdrawing only ever reduces exposure.
 `RiskGuard` already refuses every *placement that opens a position* with `PHASE_NOT_PERMITTED`, and
 permits one that closes a held position — which is the case a halt would wrongly stop, for the same

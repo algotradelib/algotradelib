@@ -80,6 +80,7 @@ namespace network {
  *
  * The folder is created (mode `0700`) if it does not exist; its parent must.
  * For name `N` the cache keeps `N.calendar`: JSON with the format (`1`), the country, `received_at_ns` (nanoseconds since the epoch), `unreadable_days` and the days as `[YYYYMMDD, open]` pairs in their order.
+ * Session hours (`TradingDay::regular_`, `extended_`) are not stored: a calendar read back has none.
  * The folder and the file must be owned by the user running the program and give no permission to group or others;
  * a cache that finds otherwise returns its error and leaves them as they were.
  * A symbolic link at the file's name is refused, and so is one at the folder's own name when the folder is given without a trailing separator.
