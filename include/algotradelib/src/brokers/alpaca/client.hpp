@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -200,8 +201,8 @@ inline std::optional<Date> parse_date(std::string_view text) {
 /**
  * @brief Reads a decimal Alpaca sends as a string (trading replies) or a JSON number (market data).
  *
- * A JSON number arrives as a double; it is written back in its shortest fixed form, which gives the digits Alpaca
- * sent for any price with up to 15 significant digits.
+ * A JSON number arrives as a double; it is read back with the fewest decimal places (up to 15) that give the same
+ * double, which are the digits Alpaca sent for any price with up to 15 significant digits.
  *
  * @param object The object.
  * @param key The member.
@@ -224,10 +225,18 @@ inline std::optional<Decimal64> number(const json::object& object, const char* k
       return Decimal64::parse(std::to_string(value->as_uint64()));
     }
     if (value->is_double()) {
-      char buffer[64];
-      const auto written = std::to_chars(buffer, buffer + sizeof(buffer), value->as_double(), std::chars_format::fixed);
-      if (written.ec == std::errc{}) {
-        return Decimal64::parse(std::string_view(buffer, static_cast<std::size_t>(written.ptr - buffer)));
+      // The fewest decimal places that give the same double back, found by exact division: no locale, and no
+      // floating-point `std::to_chars`, which older standard libraries and macOS targets lack.
+      const double number = value->as_double();
+      double power = 1;
+      for (std::uint8_t scale = 0; std::isfinite(number) && scale <= 15; ++scale, power *= 10) {
+        const double scaled = std::round(number * power);
+        if (std::fabs(scaled) < 9007199254740992.0) {
+          const auto coefficient = static_cast<std::int64_t>(scaled);
+          if (static_cast<double>(coefficient) / power == number) {
+            return Decimal64(coefficient, scale);
+          }
+        }
       }
     }
   } catch (const std::exception&) {
