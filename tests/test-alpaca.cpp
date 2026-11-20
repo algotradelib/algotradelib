@@ -4,8 +4,8 @@
 // paper host on 2026-11-20 (labs/atl-thirdparty/tests/alpaca and the reads made for this branch): the asset, the
 // latest trade, daily bars, an open order, the v3 clock (`pre`; `core`, `post` and `closed` are the same body with the
 // phase changed) and the v3 calendar for 2026-11-01 to 2027-01-15, which `calendar_body` rebuilds row by row (checked
-// field for field against the recording). The position rows follow Alpaca's position schema
-// (docs/api/alpaca/openapi/trading-api.json): the paper account held nothing when it was read.
+// field for field against the recording). The position rows carry the fields of the row the paper host gave for one
+// SPY share on 2026-11-20 at 09:32 New York (labs/atl-thirdparty/README.md, "Market hours"), every number a string.
 
 #include <algotradelib/alpaca>
 #include <algotradelib/live>
@@ -141,9 +141,11 @@ std::string clock_body(const char* phase) {
     R"(","phase_until":"2026-11-20T09:30:00-05:00","timestamp":"2026-11-20T08:14:03.803639012-05:00"}]})";
 }
 
-std::string position_row(const char* symbol, const char* asset_class, const char* side, const char* qty) {
+std::string position_row(
+  const char* symbol, const char* asset_class, const char* side, const char* qty, const char* available = nullptr
+) {
   return std::string(R"({"symbol":")") + symbol + R"(","asset_class":")" + asset_class + R"(","side":")" + side +
-    R"(","qty":")" + qty + R"(","qty_available":")" + qty +
+    R"(","qty":")" + qty + R"(","qty_available":")" + (available ? available : qty) +
     R"(","avg_entry_price":"700.5","current_price":"714.65","cost_basis":"700.5","market_value":"714.65",)"
     R"("unrealized_pl":"14.15","unrealized_plpc":"0.0202"})";
 }
@@ -378,6 +380,19 @@ TEST_CASE(
   const auto replaced = Traits::to_replacement(OrderRef<alpaca::Broker>{}, AmendInstruction{});
   REQUIRE_FALSE(replaced);
   CHECK(replaced.error().broker_code_ == "replace_unsupported");
+
+  // An order id that is not one never reaches a path: "." would make the cancellation DELETE /v2/orders (all orders).
+  for (const char* id : {"", ".", "..", "a/b", "b0b0?x=1"}) {
+    INFO(id);
+    const auto cancel = loop.client->cancel_order({}, {id});
+    REQUIRE_FALSE(cancel);
+    CHECK(cancel.error().broker_code_ == "invalid_reference");
+    CHECK_FALSE(loop.client->order_by_id({}, id));
+    OrderRef<alpaca::Broker> ref;
+    ref.primary_ = id;
+    CHECK_FALSE(Traits::to_cancellation(ref, AmendInstruction{}));
+  }
+  CHECK(loop.server.connectionCount() == 0);
 }
 
 TEST_CASE(
@@ -393,7 +408,8 @@ TEST_CASE(
     return placed.error();
   };
   server.script("/v2/assets/SPY", 200, kAssetSpy);
-  server.script("/v2/positions/SPY", 200, position_row("SPY", "us_equity", "long", "2"));
+  // Two of the three shares available: one sell of one share rests.
+  server.script("/v2/positions/SPY", 200, position_row("SPY", "us_equity", "long", "3", "2"));
   server.script("/v3/clock", 200, clock_body("core"));
 
   SECTION("an asset not listed on a national exchange, not tradable or unknown is refused before the clock") {
@@ -425,6 +441,8 @@ TEST_CASE(
     CHECK(server.positionsOnConnection("/v2/positions/SPY") == std::vector<std::size_t>{2});
     CHECK(server.positionsOnConnection("/v3/clock?markets=XNYS") == std::vector<std::size_t>{3});
     CHECK(refused(order(OrderSide::SELL, "3")).broker_code_ == "sell_exceeds_position");
+    server.script("/v2/positions/SPY", 200, position_row("QQQ", "us_equity", "long", "3"));
+    CHECK(refused(order(OrderSide::SELL)).broker_code_ == "position_mismatch");
     server.script("/v2/positions/SPY", 404, R"({"code":40410000,"message":"position does not exist"})");
     CHECK(refused(order(OrderSide::SELL)).broker_code_ == "no_position");
     server.script("/v2/positions/SPY", 500, "{}");
@@ -477,6 +495,25 @@ TEST_CASE("Alpaca's seen refusals map to rejected and everything else on an orde
   CHECK(placed(404, R"({"code":40410000,"message":"not found"})") == runner::SendOutcome::INDETERMINATE);
   CHECK(placed(503, "unavailable") == runner::SendOutcome::INDETERMINATE);
   CHECK(placed(200, R"({"status":"new"})") == runner::SendOutcome::INDETERMINATE);
+  CHECK(
+    placed(403, R"({"code":40310000,"message":"potential wash trade detected. use complex orders"})") ==
+    runner::SendOutcome::REJECTED
+  );
+
+  // A placement Alpaca accepts carries only the fields that passed the checks.
+  server.script("/v2/orders", 200, R"({"id":"b0b0b0b0-0000-4000-8000-000000000002","client_order_id":"atl-7"})");
+  auto limit = order(OrderSide::BUY, "2");
+  limit.client_order_id_ = std::string("atl-7");
+  const auto accepted = loop.client->place_order({}, limit);
+  REQUIRE(accepted);
+  CHECK(accepted.value().order_id_ == "b0b0b0b0-0000-4000-8000-000000000002");
+  CHECK(
+    json::parse(server.lastBody("/v2/orders")) ==
+    json::parse(
+      R"({"symbol":"SPY","qty":"2","side":"buy","type":"limit","time_in_force":"day","limit_price":"700.01",)"
+      R"("client_order_id":"atl-7"})"
+    )
+  );
 
   const auto cancelled = [&](unsigned status, const std::string& body) {
     server.script("/v2/orders/b0b0b0b0-0000-4000-8000-000000000001", status, body);
@@ -544,7 +581,11 @@ TEST_CASE("Alpaca's replies normalize in dollars and its holdings state their co
   }
 
   server.script(
-    "/v2/orders", 200, "[" + order_row("a1", "us_equity", "new") + "," + order_row("a2", "crypto", "new") + "]"
+    "/v2/orders", 200,
+    "[" + order_row("a1", "us_equity", "new") + "," + order_row("a2", "crypto", "new") + "," +
+      R"({"id":"a9","symbol":"","asset_class":"","order_class":"mleg","qty":"1","filled_qty":"0","side":"buy",)"
+      R"("type":"limit","time_in_force":"day","status":"new"})" +
+      "]"
   );
   const auto working = loop.client->working_orders();
   REQUIRE(working);

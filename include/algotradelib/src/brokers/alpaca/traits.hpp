@@ -267,8 +267,8 @@ struct BrokerTraits<alpaca::AlpacaBlockingClient> {
         alpaca::detail::refusal("partial_cancel_unsupported", "Alpaca cancels the whole order only")
       );
     }
-    if (ref.primary_.empty()) {
-      return Result<Amendment>(alpaca::detail::refusal("invalid_reference", "an Alpaca order reference holds its id"));
+    if (!alpaca::detail::valid_order_id(ref.primary_)) {
+      return Result<Amendment>(alpaca::detail::invalid_order_id());
     }
     return Result<Amendment>(Amendment{ref.primary_});
   }

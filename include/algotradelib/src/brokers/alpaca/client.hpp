@@ -372,6 +372,29 @@ inline std::optional<BrokerError> unsupported_instrument(const InstrumentId& ins
 }
 
 /**
+ * @brief Tests whether a text can be an Alpaca order id in a request path: 1 to 128 characters of `A-Z`, `a-z`, `0-9`,
+ *   `-` and `_` (Alpaca's ids are UUIDs).
+ *
+ * Anything else is refused before sending, so `.` or `..` can never turn `DELETE /v2/orders/{id}` into
+ * `DELETE /v2/orders`, which cancels every open order.
+ *
+ * @param id The id.
+ * @return Whether it may be sent.
+ */
+inline bool valid_order_id(std::string_view id) {
+  return !id.empty() && id.size() <= client_order_id_limit &&
+    id.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") == std::string_view::npos;
+}
+
+/**
+ * @brief Makes the refusal of an order id `valid_order_id` rejects (`invalid_reference`, not sent).
+ * @return The error.
+ */
+inline BrokerError invalid_order_id() {
+  return refusal("invalid_reference", "an Alpaca order id is 1 to 128 characters of letters, digits, - and _");
+}
+
+/**
  * @brief Refuses a bar request this adapter cannot answer as asked, before any I/O: an interval other than 1, 5, 15
  *   and 30 minutes, an hour and a day, a count outside 1 to 9,999, or an instrument `unsupported_instrument` refuses.
  * @param query The query.
@@ -898,7 +921,7 @@ public:
    * the position (`no_position`, `sell_exceeds_position` above `qty_available` or `qty`), and last Alpaca's clock for
    * the New York Stock Exchange: unless its phase is `core`, the order is not sent (`market_closed`, `CANCELLED`,
    * `reached_broker_` false), since Alpaca would queue a day order for the next session. A failed read refuses the
-   * order with the read's own category, not sent. The checks cover market-wide state, not a single stock's halt, and
+   * order with the read's own category, not sent. The clock covers market-wide state (an unscheduled closure), not a single stock's halt, and
    * a fill between a read and the order is not seen.
    *
    * Alpaca's refusals seen on the paper host (422 `42210000`, 403 `40310000`) are `INVALID_ARGUMENT`; any other
@@ -940,8 +963,8 @@ public:
    */
   Result<AlpacaOrderAck> cancel_order(AlpacaAccount account, AlpacaAmendment amendment) {
     static_cast<void>(account);
-    if (amendment.order_id_.empty()) {
-      return Result<AlpacaOrderAck>(detail::refusal("invalid_reference", "an Alpaca cancellation needs the order id"));
+    if (!detail::valid_order_id(amendment.order_id_)) {
+      return Result<AlpacaOrderAck>(detail::invalid_order_id());
     }
     return send_order(
       http::verb::delete_, "/v2/orders/" + broker_detail::query_encode(amendment.order_id_), std::string(),
@@ -987,6 +1010,9 @@ public:
    */
   Result<OrderSnapshot> order_by_id(AlpacaAccount account, const std::string& id) {
     static_cast<void>(account);
+    if (!detail::valid_order_id(id)) {
+      return Result<OrderSnapshot>(detail::invalid_order_id());
+    }
     return attempt<OrderSnapshot>(
       [&] {
         const auto row =
@@ -1146,6 +1172,13 @@ private:
       }
       try {
         const auto& row = position_reply.value();
+        if (detail::text(row, "symbol") != symbol || detail::text(row, "asset_class") != "us_equity") {
+          BrokerError error;
+          error.category_ = ErrorCategory::PROTOCOL;
+          error.broker_code_ = "position_mismatch";
+          error.message_ = "Alpaca's position reply is not the US equity position in " + symbol;
+          return unsent(std::move(error), "the position");
+        }
         const auto available = detail::number(row, "qty_available");
         const auto held = detail::required(row, "qty");
         if (
@@ -1258,8 +1291,11 @@ private:
     const auto* object = ec ? nullptr : value.if_object();
     if (object != nullptr) {
       error.message_ = "Alpaca: " + detail::text(*object, "message");
-      if (const auto* code = object->if_contains("code"); code != nullptr && code->is_number()) {
-        error.broker_code_ = std::to_string(code->to_number<std::int64_t>());
+      // Read without a throwing conversion: a code that is not a whole number is left out.
+      if (const auto* code = object->if_contains("code"); code != nullptr && code->is_int64()) {
+        error.broker_code_ = std::to_string(code->as_int64());
+      } else if (code != nullptr && code->is_uint64()) {
+        error.broker_code_ = std::to_string(code->as_uint64());
       }
     } else {
       error.message_ = "Alpaca answered HTTP " + std::to_string(status) + " with a body that is not JSON";
@@ -1407,7 +1443,8 @@ private:
     for (const auto& value : rows) {
       const auto* row = value.if_object();
       const auto id = row ? detail::text(*row, "id") : std::string();
-      if (id.empty() || detail::text(*row, "asset_class").empty()) {
+      // A multi-leg option order (`order_class` mleg) states no asset class; it is skipped below with the others.
+      if (id.empty() || (detail::text(*row, "asset_class").empty() && detail::text(*row, "order_class") != "mleg")) {
         throw std::runtime_error("an order has no id or asset class");
       }
       if (!seen.insert(id).second) {
