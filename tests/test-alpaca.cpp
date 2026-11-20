@@ -390,7 +390,11 @@ TEST_CASE(
     CHECK_FALSE(loop.client->order_by_id({}, id));
     OrderRef<alpaca::Broker> ref;
     ref.primary_ = id;
-    CHECK_FALSE(Traits::to_cancellation(ref, AmendInstruction{}));
+    AmendInstruction whole;
+    whole.all_remaining_ = true; // past the partial-cancel refusal, so the id check decides
+    const auto converted = Traits::to_cancellation(ref, whole);
+    REQUIRE_FALSE(converted);
+    CHECK(converted.error().broker_code_ == "invalid_reference");
   }
   CHECK(loop.server.connectionCount() == 0);
 }

@@ -791,7 +791,8 @@ public:
         // Alpaca documents it as the shares "available minus open orders", one row per symbol (the duplicate check
         // above enforces that). `DEDUCT` is safe whatever Alpaca does: deducting resting sells Alpaca had already
         // deducted over-refuses a second sell while one rests, where the other error sells the same shares twice.
-        // `verified_` stays false: nobody has measured it.
+        // Observed once on the paper account (2026-11-20): a resting sell lowered `qty_available` by its quantity, and
+        // its cancellation restored it. `verified_` stays false: one observation, and nothing in the library sets it.
         snapshot.sellable_basis_ =
           SellableBasis{SellableBasis::Coverage::WHOLE_HOLDING, SellableBasis::RestingTreatment::DEDUCT, false};
         snapshot.received_at_ = clock_();
@@ -921,8 +922,8 @@ public:
    * the position (`no_position`, `sell_exceeds_position` above `qty_available` or `qty`), and last Alpaca's clock for
    * the New York Stock Exchange: unless its phase is `core`, the order is not sent (`market_closed`, `CANCELLED`,
    * `reached_broker_` false), since Alpaca would queue a day order for the next session. A failed read refuses the
-   * order with the read's own category, not sent. The clock covers market-wide state (an unscheduled closure), not a single stock's halt, and
-   * a fill between a read and the order is not seen.
+   * order with the read's own category, not sent. The clock covers market-wide state (an unscheduled closure), not a
+   * single stock's halt, and a fill between a read and the order is not seen.
    *
    * Alpaca's refusals seen on the paper host (422 `42210000`, 403 `40310000`) are `INVALID_ARGUMENT`; any other
    * failure leaves the outcome unknown (`PROTOCOL`, or `HTTP` for 5xx, or the transport's), to be read back.

@@ -128,7 +128,7 @@ struct BrokerTraits<alpaca::AlpacaBlockingClient> {
   /** @brief `false`: there is no buying power to express in shares. */
   static constexpr bool has_buying_power_quantity = false;
 
-  /** @brief `HOLDINGS`: each position's `qty_available`, with the basis `alpaca::AlpacaBlockingClient::holdings` states. */
+  /** @brief `HOLDINGS`: each position's `qty_available`, with the basis `AlpacaBlockingClient::holdings` states. */
   static constexpr SellableSource sellable_source = SellableSource::HOLDINGS;
 
   /** @brief `false`: commission-free, and the per-share FINRA fee on sells has no `CommissionRate` shape. */

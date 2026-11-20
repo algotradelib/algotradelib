@@ -766,7 +766,7 @@ not both go out, and neither do two buys the budget can only fund once. The rese
 pass, so a second bar before the next poll cannot re-spend the same money.
 
 **Every order sent to a broker counts as working until the broker shows what became of it, whatever
-the limits** — on a broker that lists working orders, which all three shipped ones do. Any later pass
+the limits** — on a broker that lists working orders, which all four shipped ones do. Any later pass
 therefore sees the order an earlier one sent and does not send it again: two bars of a minute strategy
 between listings, a runner driven by hand, a quote and a bar in one iteration, with or without the
 checks above (and `SessionSource` feeds a cold start's history as history, above, so only its newest bar
