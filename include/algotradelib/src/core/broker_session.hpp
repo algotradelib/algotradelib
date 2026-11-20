@@ -1405,7 +1405,12 @@ Result<AccountInfo<Client>> resolve_account(
     static_assert(port_detail::dependent_false<Client>, "resolve_account: a data-only client acts for no account");
   } else if constexpr (BrokerCaps<Client>::has_account_discovery) {
     if (configured) {
-      return Resolved(port_detail::account_refusal("account_configured", "choose a listed account by number", false));
+      return Resolved(
+        port_detail::account_refusal(
+          "account_configured", "this broker lists its accounts, so a configured one is refused: choose by number",
+          false
+        )
+      );
     }
     auto listed = list_accounts(client);
     if (!listed) {
