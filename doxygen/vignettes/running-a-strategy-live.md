@@ -687,6 +687,7 @@ which is the shape with no edge.
 
 A source that wraps a `SessionSource` by composition must also forward its `states_calendar_sessions`.
 If a source that does not declare it installs a calendar whose open days carry session hours, the loop does not fall back to the window: the phase is `UNKNOWN`, every opening order is refused, and a note names the missing constant.
+The loop cannot see the one case left: over a declaring broker whose hours all failed to parse, such a source still runs on the window.
 
 The same rule applies to a **strategy**: `on_phase` and `on_stop` receive a mutable context, and
 `Context::set_calendar` is not theirs to call — read `calendar()` instead, which is what it is published
@@ -697,10 +698,8 @@ Where it cannot, it witnesses: `LoopReport::sends_under_a_revised_phase_` counts
 phase moved *and* a request went out, with a note naming the call. It is a contract diagnostic rather
 than proof that a particular order was mis-checked, and it says so.
 
-When the phase cannot be established, the run says so: `final_phase_` is `unknown` and a note names
-the reason — a calendar with session hours under a source that does not declare them, no cadence
-configured, no calendar published by the broker, every poll failed, the date is uncovered, or (under
-filled hours) the hours do not decide the instant. It is deliberately **not** a halt: a halt would also stop cancellations, which
+When the phase cannot be established, the run says so: `final_phase_` is `unknown` and a note names the reason — a calendar with session hours under a source that does not declare them, no cadence configured, no calendar published by the broker, every poll failed, the date is uncovered, or (under filled hours) the hours do not decide the instant.
+It is deliberately **not** a halt: a halt would also stop cancellations, which
 `Runner::send_cancel` exempts from the phase limit because withdrawing only ever reduces exposure.
 `RiskGuard` already refuses every *placement that opens a position* with `PHASE_NOT_PERMITTED`, and
 permits one that closes a held position — which is the case a halt would wrongly stop, for the same

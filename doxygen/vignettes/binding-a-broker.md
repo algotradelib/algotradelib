@@ -58,11 +58,9 @@ for (const auto& order : report.would_place_) {
 }
 ```
 
-**That `set_phase` belongs to a hand-driven pass and nowhere else.** `runner::PollingLoop` derives the
-phase itself, each iteration, from the trading calendar it polls and either the session hours that
-calendar states or a `strategy::SessionWindow` — and it overwrites anything set here. A `Runner` fed by
-hand has no clock of its own, so it is the caller's to state; a program that runs continuously uses the
-loop and does not state it at all.
+**That `set_phase` belongs to a hand-driven pass and nowhere else.**
+`runner::PollingLoop` derives the phase itself, each iteration, from the trading calendar it polls and either the session hours that calendar states or a `strategy::SessionWindow` — and it overwrites anything set here.
+A `Runner` fed by hand has no clock of its own, so it is the caller's to state; a program that runs continuously uses the loop and does not state it at all.
 
 
 
