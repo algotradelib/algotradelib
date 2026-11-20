@@ -61,7 +61,8 @@ auto visit_named(type_list<First, Clients...>, std::string_view name, Visit& vis
   );
   std::optional<R> result;
   const auto match = [&](auto tag) {
-    return name == BrokerTraits<typename decltype(tag)::type>::name && (result.emplace(visit(tag)), true);
+    return name == BrokerTraits<typename decltype(tag)::type>::name &&
+      (static_cast<void>(result.emplace(visit(tag))), true);
   };
   static_cast<void>((match(type_tag<First>{}) || ... || match(type_tag<Clients>{})));
   return result;
