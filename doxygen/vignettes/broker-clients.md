@@ -179,6 +179,19 @@ A cache that cannot be read or written fails nothing (an allocation can still th
 It is not a promise of one inquiry a day: programs that start together each ask, and so does `calendar(from, true)`, which is also the only way to see a correction KIS makes during the day.
 The asynchronous client offers `adopt_calendar()` to hand a calendar over yourself.
 
+### Building any blocking client with the run's stores
+
+`network::ClientStores` holds a run's token store and calendar cache, and `network::make_client` builds a blocking client with them, giving each client what its constructor takes: the token store always, the calendar cache only to a client that accepts one (KIS's).
+It sends nothing.
+
+```cpp
+const algotradelib::network::ClientStores stores{tokens, calendars};
+auto client = algotradelib::network::make_client<algotradelib::kis::KisBlockingClient>(tls, config, options, stores);
+```
+
+It accepts a client constructible as `Client(ssl::context&, Config, HttpClientOptions, std::shared_ptr<TokenStore>)`, optionally with a trailing `std::shared_ptr<CalendarCache>`; a client of another shape is constructed by hand.
+The options are passed as given: no pacing is added.
+
 ## Order clients
 
 Both brokers expose order placement, modification, cancellation, and order

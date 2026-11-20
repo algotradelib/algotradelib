@@ -198,7 +198,54 @@ compilation at either binding, as it does for every traits specialization.
 data from the market-data session, so they need a vendor that declares
 `has_reference_data`.
 
+A session for a data-only client binds `BrokerTraits<Client>::no_account()`.
+KIS and Toss declare the same member: an account every account request refuses before any I/O, so `BlockingSession<Client>(client, BrokerTraits<Client>::no_account())` reads market data and cannot trade.
+Kiwoom declares none, since its key is its account, and such a line does not compile there.
 
+## Choosing a broker by name
+
+A broker named at run time (a command-line word, a configuration field) becomes a type once; everything after is a template.
+`with_broker<List>(name, visit)` calls `visit(type_tag<Client>{})` for the client in `List` whose `BrokerTraits<Client>::name` is `name`, and returns its result in a `std::optional`, empty when no client has that name.
+`builtin_brokers`, from `<algotradelib/builtin_brokers>`, lists the library's blocking clients (`kis`, `kiwoom`, `tossinvest`); a list of your own is a `type_list` of any clients with distinct names.
+
+```cpp
+#include <algotradelib/builtin_brokers>
+
+using namespace algotradelib;
+
+template <typename Client>
+int trade(ssl::context& tls, const network::ClientStores& stores, const std::string& login, std::string_view number) {
+  typename BrokerTraits<Client>::Config config;
+  config.from_json_text(login, "stored login");
+  std::optional<typename BrokerTraits<Client>::Account> configured;
+  if constexpr (!BrokerCaps<Client>::has_account_discovery) {
+    configured.emplace();
+    configured->from_json_text(login, "stored login"); // KIS: the account is in the login
+  }
+  auto client = network::make_client<Client>(tls, std::move(config), {}, stores);
+  auto account = resolve_account(*client, std::move(configured), number);
+  if (!account) {
+    return 7; // account.error().message_ says why
+  }
+  BlockingSession<Client> session(std::move(client), account.value().selector_);
+  // ...
+  return 0;
+}
+
+int run(std::string_view broker, ssl::context& tls, const network::ClientStores& stores, const std::string& login) {
+  const auto code = with_broker<builtin_brokers>(broker, [&](auto tag) {
+    return trade<typename decltype(tag)::type>(tls, stores, login, "");
+  });
+  return code.value_or(64); // no built-in broker has that name
+}
+```
+
+`resolve_account` names the one account to bind, or refuses: none, several, and a `number` that matches no account are errors, never a guess.
+Where the broker lists accounts, the candidates are the listing (a configured account is refused there); otherwise the configured account (`BrokerTraits<Client>::display_of(const Account&)` gives its number).
+The number is compared with `-`, space, `.` and `/` removed.
+
+Every listed client's `visit` is compiled where `with_broker` is called, and `<algotradelib/builtin_brokers>` parses all three adapters.
+To compile each broker in its own translation unit, let the visitor call a function template declared `extern template` beside the dispatch and explicitly instantiated in that broker's source; a broker added to `builtin_brokers` later then needs a unit of its own.
 
 ## Where to go next
 
