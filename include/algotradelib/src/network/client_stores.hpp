@@ -24,7 +24,8 @@ struct ClientStores {
  *
  * The client gets the token store always, and the calendar cache when its constructor takes one as a fifth
  * argument. A client of another shape, or whose constructor is a variadic forwarding template (it counts as
- * taking five arguments and then fails in its own body), is constructed by hand.
+ * taking five arguments and then fails in its own body), is constructed by hand. The stores are passed as const
+ * lvalues, so a constructor taking `std::shared_ptr<TokenStore>&&` fails inside `std::make_shared`.
  *
  * @tparam Client A client constructible as `Client(ssl::context&, Config, HttpClientOptions,
  *   std::shared_ptr<TokenStore>)`, optionally with a trailing `std::shared_ptr<CalendarCache>`.
@@ -51,7 +52,7 @@ std::shared_ptr<Client> make_client(
   );
   if constexpr (takes5) {
     return std::make_shared<Client>(context, std::move(config), std::move(options), stores.tokens_, stores.calendars_);
-  } else {
+  } else if constexpr (takes4) {
     return std::make_shared<Client>(context, std::move(config), std::move(options), stores.tokens_);
   }
 }
