@@ -45,31 +45,25 @@ constexpr bool distinct_names() {
   return true;
 }
 
-template <typename Visit, typename First, typename... Rest>
-auto visit_named(type_list<First, Rest...>, std::string_view name, Visit& visit) {
+template <typename Visit, typename First, typename... Clients>
+auto visit_named(type_list<First, Clients...>, std::string_view name, Visit& visit) {
   using R = std::invoke_result_t<Visit&, type_tag<First>>;
   static_assert(
-    (std::is_same_v<R, std::invoke_result_t<Visit&, type_tag<Rest>>> && ...),
-    "with_broker: visit must return the same type for every client in the list"
+    (std::is_same_v<R, std::invoke_result_t<Visit&, type_tag<Clients>>> && ...),
+    "with_broker: visit must return the same type for every client"
   );
   static_assert(
-    !std::is_void_v<R> && !std::is_reference_v<R>,
-    "with_broker: visit must return a value (not void, not a reference); the result is a std::optional"
+    !std::is_void_v<R> && !std::is_reference_v<R>, "with_broker: visit must return a value, not void or a reference"
   );
   static_assert(
-    distinct_names<First, Rest...>(),
-    "with_broker: the clients in a type_list must have distinct names (BrokerTraits<Client>::name); "
-    "a broker's asynchronous and blocking clients share one"
+    distinct_names<First, Clients...>(),
+    "with_broker: listed clients need distinct names; a broker's asynchronous and blocking clients share one"
   );
   std::optional<R> result;
-  const auto matches = [&](auto tag) {
-    if (name != BrokerTraits<typename decltype(tag)::type>::name) {
-      return false;
-    }
-    result.emplace(visit(tag));
-    return true;
+  const auto match = [&](auto tag) {
+    return name == BrokerTraits<typename decltype(tag)::type>::name && (result.emplace(visit(tag)), true);
   };
-  static_cast<void>((matches(type_tag<First>{}) || ... || matches(type_tag<Rest>{})));
+  static_cast<void>((match(type_tag<First>{}) || ... || match(type_tag<Clients>{})));
   return result;
 }
 
@@ -85,8 +79,7 @@ auto visit_named(type_list<First, Rest...>, std::string_view name, Visit& visit)
  * @tparam List A non-empty `type_list` of clients with distinct names (checked at compile time).
  * @param name The broker's name, compared exactly (case and all).
  * @param visit Called as `visit(type_tag<Client>{})`; every client must give the same type `R`, a value.
- * @return What `visit` returned, as a `std::optional<R>`, or nothing if no listed client has that name (then
- *   `visit` is not called).
+ * @return What `visit` returned, or nothing (and `visit` is not called) if no listed client has that name.
  */
 template <typename List, typename Visit>
 auto with_broker(std::string_view name, Visit&& visit) {

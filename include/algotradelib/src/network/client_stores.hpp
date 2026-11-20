@@ -11,20 +11,11 @@
 namespace algotradelib {
 namespace network {
 
-/**
- * @brief What every client of a run shares, across clients and processes; each client takes those its
- *   constructor accepts.
- */
+/** @brief What the clients of a run share, across processes too; each takes those its constructor accepts. */
 struct ClientStores {
-  /**
-   * @brief Where clients share access tokens, or null for each client to keep its own. Give every client of
-   *   a run the same store: a new Toss token revokes the previous one for that key.
-   */
+  /** @brief Where clients share access tokens, or null for each to keep its own (Toss needs it shared). */
   std::shared_ptr<TokenStore> tokens_;
-  /**
-   * @brief Where clients share a trading calendar, or null. Used only by a client whose constructor takes
-   *   one (KIS); it saves requests and never changes a result, so a client without one asks the broker.
-   */
+  /** @brief Where clients share a trading calendar, or null; only KIS's client takes one, to save requests. */
   std::shared_ptr<CalendarCache> calendars_;
 };
 
@@ -56,8 +47,7 @@ std::shared_ptr<Client> make_client(
   static_assert(
     takes4 || takes5,
     "Client is not constructible from (ssl::context&, Config, HttpClientOptions, shared_ptr<TokenStore>[, "
-    "shared_ptr<CalendarCache>]): check that Config is BrokerTraits<Client>::Config, or construct the client "
-    "by hand"
+    "shared_ptr<CalendarCache>]): check that Config is BrokerTraits<Client>::Config, or construct it by hand"
   );
   if constexpr (takes5) {
     return std::make_shared<Client>(context, std::move(config), std::move(options), stores.tokens_, stores.calendars_);
