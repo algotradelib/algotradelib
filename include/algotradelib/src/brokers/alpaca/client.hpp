@@ -157,8 +157,9 @@ inline std::chrono::hours eastern_offset(std::chrono::system_clock::time_point i
 inline std::chrono::system_clock::time_point eastern_midnight(const Date& date) {
   const auto utc_midnight =
     std::chrono::system_clock::time_point{} + std::chrono::seconds(days_from_civil(date) * 86400);
-  // Midnight is never inside a change (02:00), so the offset at noon UTC of the date is the one at midnight.
-  return utc_midnight - eastern_offset(utc_midnight + std::chrono::hours(12));
+  // Local midnight is 04:00Z or 05:00Z, before either change (07:00Z in March, 06:00Z in November), so the offset at
+  // 04:00Z of the date is the one at midnight, change days included.
+  return utc_midnight - eastern_offset(utc_midnight + std::chrono::hours(4));
 }
 
 /**
