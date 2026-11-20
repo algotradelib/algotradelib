@@ -29,12 +29,12 @@ graph TD
     BR["<b>&lt;broker&gt;</b><br/>BrokerTraits, BrokerCaps,<br/>BrokerSession"]
     CO["<b>&lt;core&gt;</b><br/>Decimal64, Money, InstrumentId,<br/>bars, calendar, Result, BrokerError"]
     NW["<b>&lt;network&gt;</b><br/>HTTPS transport, OAuth,<br/>WebSocket, rate-limit pacer"]
-    KT["<b>&lt;kis&gt;</b> &nbsp; <b>&lt;tossinvest&gt;</b> &nbsp; <b>&lt;kiwoom&gt;</b><br/>adapters: one BrokerTraits<br/>specialization each"]
+    KT["<b>&lt;kis&gt;</b> &nbsp; <b>&lt;tossinvest&gt;</b> &nbsp; <b>&lt;kiwoom&gt;</b> &nbsp; <b>&lt;alpaca&gt;</b><br/>adapters: one BrokerTraits<br/>specialization each"]
     MK["<b>&lt;mock&gt;</b><br/>an in-memory market over<br/>your bars; no transport"]
     BB["<b>&lt;builtin_brokers&gt;</b><br/>the built-in blocking clients,<br/>for with_broker"]
   end
 
-  X(("KIS / Toss / Kiwoom<br/>HTTPS"))
+  X(("KIS / Toss / Kiwoom / Alpaca<br/>HTTPS"))
 
   S --> ST
   V --> ST

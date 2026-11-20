@@ -665,7 +665,7 @@ The loop derives the phase each iteration from two things:
 - **the session's open and close**, from one of two places, chosen at compile time from the source:
   - a source that declares `states_calendar_sessions` (a `live::SessionSource` whose market-data broker declares `has_calendar_sessions`) takes them from the hours its adapter fills in each calendar day, as instants, so daylight saving and early closes are right (`strategy::stated_session_phase`);
   - any other source uses **a session window you state**, `set_session_window(...)`, defaulting to `SessionWindow::krx()`.
-    No broker in the library fills session hours yet, so this is configuration rather than something the library discovers.
+    Of the library's brokers only Alpaca fills session hours; for the others this is configuration rather than something the library discovers.
 
   For a market that is not KRX, state the window either way: under stated hours the phase comes from the calendar, but `Context::session()`, which `SessionEdges` and `bar_period_start` read, is still the window.
 - **a trading calendar it polls**, `PollKind::CALENDAR`. This is the one cadence in `PollSchedule` that

@@ -4,12 +4,12 @@
 
 ## Overview
 
-A C++ library for algorithmic trading through Korean broker APIs — currently Korea Investment &
-Securities (KIS), Kiwoom Securities and Toss Securities.
+A C++ library for algorithmic trading through broker APIs — currently Korea Investment &
+Securities (KIS), Kiwoom Securities and Toss Securities in Korea, and Alpaca for US equities.
 
 Header-only, consumed through CMake. A strategy is a plain struct that performs no I/O and names no
 broker, so one source is replayed against history, dry-run with no credentials, and then run live
-without being rewritten — against KIS, Toss or Kiwoom, where a runner needs a few statements from you
+without being rewritten — against KIS, Toss, Kiwoom or Alpaca, where a runner needs a few statements from you
 first (see "Brokers and accounts"). Selecting a broker is choosing a type parameter.
 
 > **This library sends real orders to real accounts.** It has placed orders on KIS and Kiwoom demo
@@ -293,10 +293,11 @@ the environment, and the KIS and Kiwoom ones also from a credentials directory, 
 | KIS | market data, calendar, reference data, holdings, buying power, orders (including stop-limit), order history | default (`KIS_DEMO=0` for live) |
 | Kiwoom | market data, reference data, buying power, orders (including stop-limit) and order history through the session; **no calendar**; **holdings refuse** until you state what its `kt00018` inquiry covers (below); **a strategy runner needs a stated route** (below) | default (`KIWOOM_DEMO=0` for live) |
 | Toss | market data, calendar, reference data, holdings, buying power, orders (no stop-limit), order history | **none** |
+| Alpaca | market data (IEX), calendar with session hours, reference data, holdings, orders (limit and market, day, whole shares), order history; exchange-listed US equities only; **no buying power: buys can borrow on margin** | default (`ALPACA_DEMO=0` for live) |
 | Mock | an in-memory market over bars you give: quotes, calendar, reference data, holdings, buying power, market and limit orders, order history | always: it reaches no broker |
 
-**KIS and Kiwoom are demo unless you say live.** Live — the one choice that moves real money — has
-to be written down: `KIS_DEMO=0` / `KIWOOM_DEMO=0`, `"demo": false` in a credential file, or
+**KIS, Kiwoom and Alpaca are demo unless you say live.** Live — the one choice that moves real money — has
+to be written down: `KIS_DEMO=0` / `KIWOOM_DEMO=0` / `ALPACA_DEMO=0`, `"demo": false` in a credential file, or
 `is_demo_ = false` in code. Anything unstated uses the broker's 모의투자 (paper-trading) endpoints, where
 live keys are refused, so a forgotten setting fails instead of trading. A value that is set must be
 exactly `1` or `0`; anything else refuses to load.
@@ -308,6 +309,17 @@ and all market data, from the real account's keys with no account selected, or f
 
 **Toss has no paper-trading environment.** A Toss program with credentials trades real money; rehearse
 a strategy with a replay or a dry run, or on a KIS or Kiwoom demo account, first.
+
+**Alpaca: exchange-listed US equities, paper unless you say live.**
+`<algotradelib/alpaca>` holds `alpaca::AlpacaBlockingClient` (a blocking client only), with keys from `ALPACA_KEY` and `ALPACA_SECRET`, or `{"key_id", "secret_key", "demo"}` in a credential file.
+Live trading (`ALPACA_DEMO=0`) is the same code path on `api.alpaca.markets`; it is supported, but the library's own checks ran on the paper account only.
+It sends limit and market day orders in the regular session, in whole shares, on the US price grid (`us::equity_price_rule()`); OTC equities and any asset not listed on a US national exchange, or not active and tradable, are refused before any order request.
+Before each order it also reads Alpaca's clock, and sends nothing unless the regular session is on, since Alpaca would queue a day order for the next session.
+That refusal is `CANCELLED` with nothing sent, so a runner keeps the instruction: a flatten refused after the close is offered again and sent once the clock says the session is on, at a fresh price.
+Its calendar fills each day's session hours, so a live loop over it takes the market phase from them, across daylight saving and early closes; call `set_calendar_country(Country::US)` on its `live::SessionSource` first, or the phase stays unknown.
+It declares no buying power: no Alpaca figure is cash net of resting buys without credit, so `RiskLimits::enforce_buying_power_` (off by default) would refuse every buy, and with it off a buy above the cash borrows on the account's margin; `max_order_notional_` and `max_gross_exposure_` are the guard.
+The sellable figure is each position's `qty_available`, stated as KIS states its own (`WHOLE_HOLDING`, `DEDUCT`, not verified), and a symbol listed twice fails the holdings read; a short US equity position anywhere in the account stops the read, crypto and option rows are skipped, and the fraction of a fractional position bought elsewhere cannot be sold through the library.
+Alpaca refuses a sell while a buy on the same symbol rests (its wash-trade protection, HTTP 403), and a runner does not offer a refused exit again, so a strategy that states its target once loses that exit.
 
 **The mock broker reaches no broker.**
 `<algotradelib/mock>` (included by no other umbrella) is a broker client like the others, `mock::MockClient` behind a `BlockingSession`, over a `mock::Market`: bars you give, a clock you drive (`mock::MarketClock`, which a polling loop waits on), and one account's cash, holdings and orders.

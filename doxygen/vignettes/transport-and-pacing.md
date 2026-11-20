@@ -35,7 +35,7 @@ it, and an opt-in pacer that decides what goes out and in what order.
 ## Request pacing
 
 Requests are paced per connection, and the pacing is opt-in: with no budget
-configured the transport behaves exactly as an unpaced one.
+configured the transport behaves exactly as an unpaced one (the Alpaca client is the exception, below).
 
 ```cpp
 network::HttpClientOptions options;
@@ -72,6 +72,12 @@ An unpaced client reading several holdings or order-history pages back to back e
 The Kiwoom clients of `example-live-program` and
 `example-kiwoom-account` pace at the same `RateLimitBudget{1, 1, 0}` (`kiwoom_credentials::paced_options` in
 `examples/kiwoom_credentials.hpp`).
+
+**Alpaca, observed on the paper host (2026-11-20):** `X-RateLimit-Limit` was 200 a minute on the trading host's account and order routes and on the market-data host, and 1000 on the clock and calendar, from a bucket that refills continuously; whether the two hosts share one allowance was not observed.
+`alpaca::AlpacaBlockingClient` is the one client that paces itself when `rate_limit_` is empty: it sets `RateLimitBudget{2, 1, 1}` on each of its two connections, one request a second sustained per host, so at most 120 a minute across both, under 200 even if they share it, with one request of the burst reserved for orders.
+A budget you set is used as given, on each connection, so twice the budget across both.
+The cost is time: before an order the client reads the asset, for a sell the position, and Alpaca's clock, so a buy takes about two seconds and a sell about three, and a rebalance of 20 symbols about a minute.
+A 429 on a read carries `X-RateLimit-Reset`, read into `BrokerError::retry_after_`; on an order call it leaves the outcome unknown.
 
 **Leaving `rate_limit_` unset issues requests unpaced**, which is the default. Not
 every endpoint is metered, and one that is not should not be slowed down; an

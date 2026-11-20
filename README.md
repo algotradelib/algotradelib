@@ -6,8 +6,8 @@
 [![Release](https://img.shields.io/github/v/release/algotradelib/algotradelib)](https://github.com/algotradelib/algotradelib/releases/latest)
 <!-- badges: end -->
 
-A C++ library for algorithmic trading through Korean broker APIs
-— currently Korea Investment & Securities (KIS), Kiwoom Securities and Toss Securities.
+A C++ library for algorithmic trading through broker APIs
+— currently Korea Investment & Securities (KIS), Kiwoom Securities and Toss Securities in Korea, and Alpaca for US equities.
 
 Header-only, consumed through CMake.
 A strategy is a plain struct that performs no I/O and names no broker, so one source is replayed against history, dry-run with no credentials, and then run live without being rewritten.
@@ -102,12 +102,16 @@ Before `--live`, read [Running a strategy live](doxygen/vignettes/running-a-stra
 | KIS | market data, calendar, reference data, holdings, buying power, orders (including stop-limit), order history | default (`KIS_DEMO=0` for live) |
 | Kiwoom | market data, reference data, buying power, orders (including stop-limit), order history; **no calendar**; holdings and strategy orders need settings first | default (`KIWOOM_DEMO=0` for live) |
 | Toss | market data, calendar, reference data, holdings, buying power, orders (no stop-limit), order history | **none** |
+| Alpaca | market data (IEX), calendar with session hours, reference data, holdings, orders (limit and market, day, whole shares), order history; exchange-listed US equities only; **no buying power: buys can borrow on margin** | default (`ALPACA_DEMO=0` for live) |
 | Mock (`<algotradelib/mock>`) | an in-memory market over bars you give: quotes, calendar, reference data, holdings, buying power, market and limit orders, order history | always: it reaches no broker |
 
-- **KIS and Kiwoom are demo unless you say live** (`KIS_DEMO=0`, `KIWOOM_DEMO=0`, or `"demo": false` in a credential file). Demo endpoints refuse live keys, so a forgotten setting fails instead of trading.
+- **KIS, Kiwoom and Alpaca are demo unless you say live** (`KIS_DEMO=0`, `KIWOOM_DEMO=0`, `ALPACA_DEMO=0`, or `"demo": false` in a credential file). Demo endpoints refuse live keys, so a forgotten setting fails instead of trading.
 - **Toss has no paper-trading environment.** A Toss program with credentials trades real money.
 - **The mock broker sends nothing.** It fills orders against bars you give, by the backtest's rule, as a clock you drive passes them, and can fail calls on purpose for tests. It is not a broker's demo account.
 - **Kiwoom places nothing as shipped.** Its holdings inquiry and its strategy orders refuse until you state what the inquiry covers and which venue orders go to, and with no calendar the default limits open no position.
+- **Alpaca sends an order only while its clock says the regular session is on**, and refuses OTC and other assets not listed on a US national exchange before any order request.
+  It declares no buying power, so a buy above the cash borrows on the account's margin unless `max_order_notional_` or `max_gross_exposure_` stops it.
+  Live trading is the same code path as paper, but has been checked on paper only.
 - **SOR (`Venue::COMBINED`) is opt-in**, and KRX or NXT is the safer choice until SOR has been seen on an account.
 
 The [main page](doxygen/index.md#brokers-and-accounts) has the details of each.

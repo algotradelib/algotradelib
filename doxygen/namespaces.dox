@@ -66,6 +66,16 @@
  */
 
 /**
+ * @namespace algotradelib::alpaca
+ * @brief The Alpaca Trading API and Market Data API client: exchange-listed US equities, paper by default.
+ */
+
+/**
+ * @namespace algotradelib::us
+ * @brief The US equity price grid that the Alpaca adapter attaches to instruments, in `brokers/common/us.hpp`.
+ */
+
+/**
  * @namespace algotradelib::krx
  * @brief The KRX tick tables that the Korean adapters attach to instruments, in `<algotradelib/krx>`.
  */

@@ -1,14 +1,15 @@
 # Talking to a broker directly {#broker-clients}
 
-`KisClient`, `KiwoomClient` and `TossClient` are the layer underneath the
+`KisClient`, `KiwoomClient`, `TossClient` and `alpaca::AlpacaBlockingClient` are the layer underneath the
 [broker port](the-broker-port.md). Strategy
 code should not name them — that is what the port is for — but a program that needs one broker's
 particular verb, or that is not running a strategy at all, talks to them.
 
-Every verb exists twice: an asynchronous form taking a completion handler, and a blocking facade
+For KIS, Kiwoom and Toss every verb exists twice: an asynchronous form taking a completion handler, and a blocking facade
 (`KisBlockingClient`, `KiwoomBlockingClient`, `TossBlockingClient`) that drives the same implementation on the caller's thread
 and keeps the HTTPS connection between sequential calls. Both apply the same normalizers, so they
 cannot disagree about what a broker response means.
+Alpaca has the blocking client only (see "The Alpaca client" below).
 
 The brokers expose the same broker-neutral results while retaining concrete client types; this page
 covers KIS and Toss in detail, and Kiwoom's own examples are `example-kiwoom-*`. The first
@@ -385,6 +386,39 @@ orders. KIS credit, reserved and overseas orders. KIS's 시간외 단일가 (`07
 the inquiry publishes it, the order sheet does not. KIS history older than
 three months, and real-time execution notifications.
 
+
+## The Alpaca client
+
+`<algotradelib/alpaca>` holds `alpaca::AlpacaBlockingClient`, for Alpaca's Trading API and Market Data API: exchange-listed US equities, whole shares, limit and market day orders in the regular session.
+It is paper unless live is stated (`ALPACA_DEMO=0`, `"demo": false`, or `is_demo_ = false`), which changes only the trading host, `paper-api.alpaca.markets` or `api.alpaca.markets`; market data comes from `data.alpaca.markets` for both.
+Live is supported on the same code path, but the library's own checks ran on paper only.
+
+- **Keys, no token.** `AlpacaConfig` reads `ALPACA_KEY` and `ALPACA_SECRET`, or `{"key_id", "secret_key", "demo"}` from a credential file, and every request carries both as `APCA-API-KEY-ID` and `APCA-API-SECRET-KEY`. The token store `make_client` passes is ignored.
+- **Pacing.** With `HttpClientOptions::rate_limit_` empty, each of its two connections (trading, market data) is paced at `RateLimitBudget{2, 1, 1}`; see [transport and pacing](transport-and-pacing.md).
+- **Refusals before sending.** `alpaca::detail::validate_order`, which the session's `validate_place` returns and the client's own `place_order` calls first, refuses fractional quantities, any time in force but `DAY`, any session but `REGULAR` (no extended hours), stops and every type but `LIMIT` and `MARKET`, a venue, a limit off `us::equity_price_rule()`, and a `client_order_id_` that is empty or over 128 characters.
+- **Reads before sending.** `place_order` then reads the asset and refuses one not listed on a US national exchange (OTC included) or not active and tradable, reads the position for a sell and refuses one above `qty_available`, and reads Alpaca's clock last: unless its New York Stock Exchange phase is `core`, nothing is sent (`market_closed`, `CANCELLED`, not sent, which a runner keeps). A buy costs two reads and a sell three before the order.
+- **Outcomes.** The refusals Alpaca was seen to give (422 `42210000` and 403 `40310000` on a placement, 422 `42210000` on a cancellation) are `INVALID_ARGUMENT`; any other failure of an order call leaves its outcome unknown, to be read back.
+- **Replacements are refused** (`replace_unsupported`): Alpaca's replacement is a new order that drops your `client_order_id`, and a runner cancels and places instead. Cancellation is of the whole order.
+- **No buying power.** The capability is `false`; see the main page.
+
+```cpp
+#include <algotradelib/alpaca>
+#include <algotradelib/live>
+
+using namespace algotradelib;
+
+void run(ssl::context& tls) {
+  alpaca::AlpacaConfig config;
+  config.from_env(); // paper unless ALPACA_DEMO=0
+  auto client = std::make_shared<alpaca::AlpacaBlockingClient>(tls, std::move(config));
+  BlockingSession<alpaca::AlpacaBlockingClient> session(std::move(client), alpaca::AlpacaAccount{});
+  live::SessionSource<BlockingSession<alpaca::AlpacaBlockingClient>> source(
+    session, {InstrumentId{Country::US, Venue::UNSPECIFIED, "SPY"}}
+  );
+  source.set_calendar_country(Country::US); // before the first poll: the default market is KR
+  // ... bind a runner and a PollingLoop as on the other brokers' pages
+}
+```
 
 ## Where to go next
 

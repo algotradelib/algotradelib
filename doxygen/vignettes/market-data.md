@@ -84,6 +84,7 @@ three states:
 
 The Korean adapters attach `krx::price_rule_for(type)` from `<algotradelib/krx>`: the stock table for stocks, REITs and the like, the ETF and ETN table (1 KRW below 2,000 KRW and 5 KRW from 2,000 KRW) for ETFs and ETNs, and `UNKNOWN` for foreign ETFs, warrants and unknown types.
 Toss's US listings are `UNCONSTRAINED`.
+Alpaca's US listings carry `us::equity_price_rule()` (Regulation NMS Rule 612: $0.01 from $1, $0.0001 below), which Alpaca enforces.
 A caller that builds its own reference data, as a backtest does, includes `<algotradelib/krx>` and sets the rule itself.
 Attaching a guessed grid would be worse than attaching none: a ladder finer than the exchange's would send an off-tick price, which the broker should refuse, with the library having confidently produced the price.
 A default-constructed rule is `UNKNOWN` too, so a rule that was never set cannot silently approve anything.
@@ -93,13 +94,13 @@ A default-constructed rule is `UNKNOWN` too, so a rule that was never set cannot
 Per the intersection principle, each of these can be tested at compile time, and none
 is emulated for a broker that lacks it.
 
-| Capability | KIS | Toss | Kiwoom |
-| --- | --- | --- | --- |
-| `supports_interval(ONE_WEEK/MONTH/YEAR)` | yes | no | yes |
-| `has_batch_prices` | no | yes, 200 symbols | no |
-| `has_batch_reference_data` | no | yes, 200 symbols | no |
-| `has_calendar_range` | yes, from a base date | no, three days | no calendar at all (`has_calendar` is `false`) |
-| `has_calendar_sessions` (the adapter fills each day's session hours) | no | no | no |
+| Capability | KIS | Toss | Kiwoom | Alpaca |
+| --- | --- | --- | --- | --- |
+| `supports_interval(ONE_WEEK/MONTH/YEAR)` | yes | no | yes | no |
+| `has_batch_prices` | no | yes, 200 symbols | no | no |
+| `has_batch_reference_data` | no | yes, 200 symbols | no | no |
+| `has_calendar_range` | yes, from a base date | no, three days | no calendar at all (`has_calendar` is `false`) | yes, 41 days |
+| `has_calendar_sessions` (the adapter fills each day's session hours) | no | no | no | yes |
 
 An interval a broker does not publish is **refused**, never produced by aggregating
 a shorter one. A batch verb a broker lacks does not compile rather than looping
@@ -108,7 +109,11 @@ several times the request cost.
 
 KIS's per-bar corporate-action columns and its after-hours depth totals are not normalized — only one broker publishes each — and the library does not expose them yet.
 Toss publishes each day's session hours, but its adapter does not fill them in `TradingDay` yet.
-An adapter that does (`TradingDay::regular_` and `extended_`) declares `has_calendar_sessions`, and a live loop over it takes the market phase from those hours.
+An adapter that does (`TradingDay::regular_` and `extended_`) declares `has_calendar_sessions`, and a live loop over it takes the market phase from those hours; Alpaca's does.
+
+Alpaca's bars come from the IEX feed, the one its free plan serves up to the present.
+IEX carries a small part of the consolidated volume (2,674,961 shares of SPY on 2026-11-19, against 76,779,335 consolidated), and its minute and hour bars include pre- and post-market trades: keep that in mind when a backtest reads them.
+One call returns at most 9,999 bars; older ones are read by further calls with an earlier `before_`.
 
 ## Two broker-specific behaviours worth knowing
 
