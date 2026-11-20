@@ -174,6 +174,8 @@ file(GLOB_RECURSE ATL_ALL_HEADERS
 )
 
 set(ATL_STANDALONE_SOURCES "")
+# The one umbrella with no other test that includes it.
+list(APPEND ATL_ALL_HEADERS algotradelib/builtin_brokers)
 foreach(header IN LISTS ATL_ALL_HEADERS)
     # Some headers require a linear-algebra backend on purpose: the analytics umbrella refuses to
     # compile without one, naming the option to set. Checking those in a build that has no backend
