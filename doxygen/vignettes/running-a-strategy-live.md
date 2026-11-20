@@ -699,12 +699,9 @@ phase moved *and* a request went out, with a note naming the call. It is a contr
 than proof that a particular order was mis-checked, and it says so.
 
 When the phase cannot be established, the run says so: `final_phase_` is `unknown` and a note names the reason — a calendar with session hours under a source that does not declare them, no cadence configured, no calendar published by the broker, every poll failed, the date is uncovered, or (under filled hours) the hours do not decide the instant.
-It is deliberately **not** a halt: a halt would also stop cancellations, which
-`Runner::send_cancel` exempts from the phase limit because withdrawing only ever reduces exposure.
-`RiskGuard` already refuses every *placement that opens a position* with `PHASE_NOT_PERMITTED`, and
-permits one that closes a held position — which is the case a halt would wrongly stop, for the same
-reason it would wrongly stop a cancellation. So there is nothing a halt would add and something it
-would take away.
+It is deliberately **not** a halt: a halt would also stop cancellations, which `Runner::send_cancel` exempts from the phase limit because withdrawing only ever reduces exposure.
+`RiskGuard` already refuses every *placement that opens a position* with `PHASE_NOT_PERMITTED`, and permits one that closes a held position — which is the case a halt would wrongly stop, for the same reason it would wrongly stop a cancellation.
+So there is nothing a halt would add and something it would take away.
 
 ## Poll failures are not send failures
 

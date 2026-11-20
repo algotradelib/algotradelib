@@ -41,7 +41,8 @@ struct TradingDay {
   /**
    * @brief The exchange's regular session on an open day, where the adapter fills it.
    *
-   * Filled only by an adapter that declares `BrokerCaps::has_calendar_sessions`; absent otherwise.
+   * An adapter that fills it declares `BrokerCaps::has_calendar_sessions`.
+   * It counts only on an open day and when `opens_at_` is before `closes_at_`; see `strategy::stated_session_phase`.
    */
   std::optional<SessionHours> regular_{};
   /**
@@ -49,6 +50,7 @@ struct TradingDay {
    *   one included.
    *
    * Absent when only the regular session is filled.
+   * It counts only when it contains `regular_`; otherwise it is ignored and the span is `regular_`.
    */
   std::optional<SessionHours> extended_{};
 };

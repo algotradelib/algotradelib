@@ -1025,7 +1025,8 @@ public:
    */
   PollingLoop(Runner& runner, Source& source, PollSchedule schedule = {}, Clock clock = {})
   : runner_(&runner), source_(&source), schedule_(std::move(schedule)), clock_(std::move(clock)) {
-    // The strategy reads the window phases come from (`Context::session`); one window, the loop's.
+    // The strategy reads the loop's window (`Context::session`); under stated calendar sessions the phase does not
+    // come from it.
     runner_->context().set_session(session_window_);
   }
 
