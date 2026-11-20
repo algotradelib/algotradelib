@@ -1,4 +1,5 @@
 #include <algotradelib/kis>
+#include <algotradelib/network>
 #include <algotradelib/tossinvest>
 
 #include "mock_broker.hpp"
@@ -9,6 +10,8 @@
 #include <boost/asio/use_future.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <memory>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <unordered_set>
@@ -908,4 +911,83 @@ TEST_CASE("a live KIS session with an empty account refuses every account path b
   refused(session.buying_power(Currency::krw()), "buying_power");
   refused(session.working_orders(), "working_orders");
   refused(session.order_history(history), "order_history");
+}
+
+TEST_CASE("with_broker visits the named client and no other", "[port][list]") {
+  using Listed = type_list<kis::KisBlockingClient, tossinvest::TossBlockingClient>;
+  static_assert(Listed::size == 2);
+  int calls = 0;
+  const auto visit = [&calls](auto tag) {
+    ++calls;
+    return std::string(BrokerTraits<typename decltype(tag)::type>::name);
+  };
+  CHECK(with_broker<Listed>("kis", visit) == std::optional<std::string>("kis"));
+  CHECK(with_broker<Listed>("tossinvest", visit) == std::optional<std::string>("tossinvest"));
+  CHECK(calls == 2);
+  for (const char* other : {"toss", "KIS", ""}) {
+    INFO(other);
+    CHECK_FALSE(with_broker<Listed>(other, visit));
+  }
+  CHECK(calls == 2);
+}
+
+namespace {
+
+/** The configuration of the fake clients below. */
+struct FakeConfig {
+  std::string key_;
+};
+
+/** A client with the four-argument constructor `make_client` documents, and no default arguments. */
+struct FourArgumentClient {
+  FourArgumentClient(
+    ssl::context&, FakeConfig config, network::HttpClientOptions, std::shared_ptr<network::TokenStore> tokens
+  )
+  : key_(std::move(config.key_)), tokens_(std::move(tokens)) {}
+
+  std::string key_;
+  std::shared_ptr<network::TokenStore> tokens_;
+};
+
+/** A client that also takes a calendar cache, as KIS's does. */
+struct FiveArgumentClient {
+  FiveArgumentClient(
+    ssl::context&, FakeConfig config, network::HttpClientOptions, std::shared_ptr<network::TokenStore> tokens,
+    std::shared_ptr<network::CalendarCache> calendars
+  )
+  : key_(std::move(config.key_)), tokens_(std::move(tokens)), calendars_(std::move(calendars)) {}
+
+  std::string key_;
+  std::shared_ptr<network::TokenStore> tokens_;
+  std::shared_ptr<network::CalendarCache> calendars_;
+};
+
+} // namespace
+
+TEST_CASE("make_client hands each client the stores its constructor takes", "[port][make_client]") {
+  using Tokens = std::shared_ptr<network::TokenStore>;
+  using Calendars = std::shared_ptr<network::CalendarCache>;
+  // The facts make_client relies on: only the KIS client takes a calendar cache.
+  static_assert(std::is_constructible_v<
+    kis::KisBlockingClient, ssl::context&, kis::KisConfig, network::HttpClientOptions, Tokens, Calendars
+  >);
+  static_assert(std::is_constructible_v<
+    tossinvest::TossBlockingClient, ssl::context&, tossinvest::TossConfig, network::HttpClientOptions, Tokens
+  >);
+  static_assert(!std::is_constructible_v<
+    tossinvest::TossBlockingClient, ssl::context&, tossinvest::TossConfig, network::HttpClientOptions, Tokens, Calendars
+  >);
+
+  ssl::context tls(ssl::context::tls_client);
+  // Neither store opens anything until its first call.
+  const network::ClientStores stores{
+    std::make_shared<network::FileTokenStore>("unused"), std::make_shared<network::FileCalendarCache>("unused")
+  };
+  const auto four = network::make_client<FourArgumentClient>(tls, FakeConfig{"four"}, {}, stores);
+  CHECK(four->key_ == "four");
+  CHECK(four->tokens_ == stores.tokens_);
+  const auto five = network::make_client<FiveArgumentClient>(tls, FakeConfig{"five"}, {}, stores);
+  CHECK(five->key_ == "five");
+  CHECK(five->tokens_ == stores.tokens_);
+  CHECK(five->calendars_ == stores.calendars_);
 }
