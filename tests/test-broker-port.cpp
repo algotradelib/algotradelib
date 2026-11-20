@@ -962,6 +962,35 @@ struct FiveArgumentClient {
   std::shared_ptr<network::CalendarCache> calendars_;
 };
 
+/** A token store the fakes only hold; never called (the file store is POSIX only). */
+struct UnusedTokens : network::TokenStore {
+  Result<std::unique_ptr<Lock>> lock(const std::string&) override {
+    return std::unique_ptr<Lock>();
+  }
+  Result<std::optional<network::StoredToken>> load(const std::string&) override {
+    return std::optional<network::StoredToken>();
+  }
+  std::optional<BrokerError> publish(const std::string&, const network::StoredToken&) override {
+    return std::nullopt;
+  }
+  std::optional<BrokerError> discard(const std::string&, const std::string&) override {
+    return std::nullopt;
+  }
+  std::optional<BrokerError> remove(const std::string&) override {
+    return std::nullopt;
+  }
+};
+
+/** A calendar cache the fakes only hold; never called. */
+struct UnusedCalendars : network::CalendarCache {
+  Result<std::optional<TradingCalendar>> load(const std::string&) override {
+    return std::optional<TradingCalendar>();
+  }
+  std::optional<BrokerError> publish(const std::string&, const TradingCalendar&) override {
+    return std::nullopt;
+  }
+};
+
 } // namespace
 
 TEST_CASE("make_client hands each client the stores its constructor takes", "[port][make_client]") {
@@ -979,10 +1008,7 @@ TEST_CASE("make_client hands each client the stores its constructor takes", "[po
   >);
 
   ssl::context tls(ssl::context::tls_client);
-  // Neither store opens anything until its first call.
-  const network::ClientStores stores{
-    std::make_shared<network::FileTokenStore>("unused"), std::make_shared<network::FileCalendarCache>("unused")
-  };
+  const network::ClientStores stores{std::make_shared<UnusedTokens>(), std::make_shared<UnusedCalendars>()};
   const auto four = network::make_client<FourArgumentClient>(tls, FakeConfig{"four"}, {}, stores);
   CHECK(four->key_ == "four");
   CHECK(four->tokens_ == stores.tokens_);
