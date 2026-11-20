@@ -279,6 +279,25 @@ struct source_provides_working_orders<Source, std::void_t<decltype(Source::provi
 : std::bool_constant<Source::provides_working_orders> {};
 
 /**
+ * @brief Detects whether a source declares `static constexpr bool states_calendar_sessions = true`, meaning the
+ *   calendar it installs carries the session hours the adapter fills (`BrokerCaps::has_calendar_sessions`).
+ *
+ * `false` when undeclared. `PollingLoop` then takes the market phase from `strategy::stated_session_phase` for a
+ * declaring source, and from its `SessionWindow` otherwise. A source that wraps a `live::SessionSource` by
+ * composition must forward the constant: if an undeclared source installs a calendar whose open days carry
+ * `TradingDay::regular_`, the loop refuses to guess and the phase is `UNKNOWN`. It cannot see a declaring broker
+ * whose hours all failed to parse, which an undeclared source still runs on the window.
+ *
+ * @tparam Source The source type.
+ */
+template <typename Source, typename = void>
+struct source_states_calendar_sessions : std::false_type {};
+
+template <typename Source>
+struct source_states_calendar_sessions<Source, std::void_t<decltype(Source::states_calendar_sessions)>>
+: std::bool_constant<Source::states_calendar_sessions> {};
+
+/**
  * @brief Detects `Runner::keeps_sent_orders_until_listed`.
  *
  * `true` when undeclared: a runner that does not say is assumed to keep each order it sends until a
@@ -964,7 +983,8 @@ private:
  *   the market phase, and honours stop requests.
  *
  * Each iteration: check for a stop (a `StopSource` or the control file); derive and install the
- * market phase from the `SessionWindow` and the polled calendar; make sure the broker's order list
+ * market phase from the polled calendar and either the session hours it states (for a source that declares
+ * `states_calendar_sessions`) or the `SessionWindow`; make sure the broker's order list
  * has been read once (until it has, placements are held); poll whatever is due, in `all_poll_kinds`
  * order, deriving the phase again before each poll; announce a phase change; retry retained targets.
  *
@@ -1248,6 +1268,10 @@ public:
   /**
    * @brief Sets the session window the market phase is derived from (KRX by default, as in a backtest), and the
    *   one the strategy reads (`Context::session`).
+   *
+   * The window gives the phase only for a source that does not declare `states_calendar_sessions`, and never
+   * over a calendar whose open days carry session hours.
+   *
    * @param window The window.
    */
   void set_session_window(strategy::SessionWindow window) {
@@ -1866,19 +1890,45 @@ private:
     runner_->context().set_phase(iteration.phase_);
   }
 
-  // Returns the phase at `at`, from the configured window and whatever calendar has arrived.
+  // Returns the phase at `at`, from whatever calendar has arrived and either the hours it states or the
+  // configured window.
   //
-  // The composition `ReplayClock` already performs, with a polled calendar in place of a replay's
+  // A source declaring `states_calendar_sessions` gets the phase from the calendar's hours, as instants: the gap
+  // between two consecutive stated days is `POST_CLOSE` or `CLOSED` even across unlisted dates, and an instant
+  // the hours do not decide is `UNKNOWN`.
+  //
+  // Otherwise the composition `ReplayClock` already performs, with a polled calendar in place of a replay's
   // per-bar answer. An uncovered date is `UNKNOWN` and never "closed": `TradingCalendar` draws that
   // distinction because assuming closed stops a strategy on a day that is in fact open, and assuming
-  // open lets one order into a holiday.
+  // open lets one order into a holiday. The date is the *market's*, not this process's. `SessionWindow` owns
+  // the offset and derives both answers from it, so the day the calendar is asked about and the day the
+  // session boundaries are computed for cannot disagree.
   //
-  // The date is the *market's*, not this process's. `SessionWindow` owns the offset and derives both
-  // answers from it, so the day the calendar is asked about and the day the session boundaries are
-  // computed for cannot disagree.
+  // An undeclared source over a calendar with hours is `UNKNOWN`: the window would put a broker that states
+  // its own hours on KRX's.
   strategy::MarketPhase phase_at(std::chrono::system_clock::time_point at) const {
     const auto& calendar = runner_->context().calendar();
-    return session_window_.phase(at, calendar.is_trading_day(session_window_.local_date(at)));
+    if constexpr (source_states_calendar_sessions<Source>::value) {
+      return strategy::stated_session_phase(calendar, at);
+    } else {
+      if (undeclared_hours()) {
+        return strategy::MarketPhase::UNKNOWN;
+      }
+      return session_window_.phase(at, calendar.is_trading_day(session_window_.local_date(at)));
+    }
+  }
+
+  // Whether the source does not declare `states_calendar_sessions` but the installed calendar states hours on an
+  // open day: the contradiction `phase_at` refuses to resolve.
+  bool undeclared_hours() const {
+    if constexpr (source_states_calendar_sessions<Source>::value) {
+      return false;
+    } else {
+      const auto& days = runner_->context().calendar().days_;
+      return std::any_of(days.begin(), days.end(), [](const TradingDay& day) {
+        return day.open_ && day.regular_.has_value();
+      });
+    }
   }
 
   // The clause naming unreadable calendar rows, or nothing when there were none.
@@ -1895,7 +1945,7 @@ private:
       " whose date could not be read";
   }
 
-  // Says so when a run never established the phase, and names which of the three reasons applies.
+  // Says so when a run never established the phase, and names which reason applies.
   //
   // Silent otherwise, like `note_sellable_convention`: a line on every healthy run is how a report
   // stops being read. But a run that placed nothing because the phase was never known must not look
@@ -1921,12 +1971,17 @@ private:
     // spent its first run open. The verdict was right in the case that was tested and the reasoning was
     // wrong, which is the worse of the two.
     const bool ever_known = phase_ever_known_;
-    // Three reasons, not four. "The poll never came due" was here and is unreachable: `run` resets
+    // "The poll never came due" is not among the reasons, because it is unreachable: `run` resets
     // `next_due_`, so a configured cadence makes the calendar due on the first iteration of every
     // run. A branch describing a state that cannot happen is worse than no branch, because a reader
     // who sees it believes it can.
     std::string reason;
-    if (!schedule_.calendar_) {
+    if (undeclared_hours()) {
+      // First: the calendar outlives failed polls and runs, so this can hold whatever else does.
+      reason =
+        "the calendar states session hours but the source does not declare states_calendar_sessions; declare it, "
+        "or forward it from the SessionSource it wraps";
+    } else if (!schedule_.calendar_) {
       reason = "no calendar cadence is configured";
     } else if (report.failed(PollKind::CALENDAR) == report.attempted(PollKind::CALENDAR)) {
       reason = "every calendar poll failed";
@@ -1935,6 +1990,9 @@ private:
       // **not** claim to know why, because it cannot distinguish a broker that publishes none -- where
       // the request is not even compiled -- from a source that fetched one and installed nothing.
       reason = "a calendar poll succeeded but no calendar arrived (this broker may publish none)";
+      reason += unreadable_calendar_rows();
+    } else if (source_states_calendar_sessions<Source>::value) {
+      reason = "the calendar's session hours do not decide " + format_iso8601_utc(last_.at_);
       reason += unreadable_calendar_rows();
     } else {
       // Named, not merely called uncovered. "The calendar does not cover today" sends a reader to

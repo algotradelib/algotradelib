@@ -3804,6 +3804,10 @@ TEST_CASE("a failed calendar poll leaves the last answer standing") {
   // The `poll_buying_power` rule, one field over. Erasing the calendar because a reference-data
   // request timed out would take a run that knew the market was open and, with the default
   // `permitted_phases_`, refuse every order in it -- an uncovered date is `UNKNOWN`.
+  static_assert(
+    !live::SessionSource<BlockingSession<kis::KisBlockingClient>>::states_calendar_sessions,
+    "KIS fills no session hours, so its loops keep the session window"
+  );
   CalendarSession session;
   const Date today{2026, 3, 10};
   session.set_calendar(one_day_calendar(today));

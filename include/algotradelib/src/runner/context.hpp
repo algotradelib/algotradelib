@@ -341,6 +341,10 @@ public:
 
   /**
    * @brief Returns the session window the runner derives phases from, for `strategy::SessionEdges`.
+   *
+   * A live loop over a source that states calendar sessions takes the phase from the calendar's hours instead,
+   * and this stays the configured window.
+   *
    * @return The window: the replay's `ReplayConfig::session_` or the live loop's `session_window()`.
    */
   const SessionWindow& session() const noexcept {

@@ -1893,6 +1893,75 @@ TEST_CASE("a calendar missing today because its row was unreadable names the cau
   CHECK(report.notes_[0].find("; the broker sent 1 calendar row whose date could not be read") != std::string::npos);
 }
 
+namespace {
+
+/** A source whose calendar states session hours, as a `live::SessionSource` over a declaring broker does. */
+class StatedSource : public FeedingSource {
+public:
+  static constexpr bool states_calendar_sessions = true;
+};
+
+/** Runs one iteration of a loop wanting ten shares at `at`, with `calendar` installed and polled. */
+template <typename Source>
+runner::LoopReport run_over(
+  Source& source, const algotradelib::TradingCalendar& calendar, std::chrono::system_clock::time_point at
+) {
+  SendingRunner runner_instance;
+  runner_instance.context().set_instrument(samsung_reference());
+  runner_instance.context().set_last_price(samsung(), algotradelib::Decimal64::parse("70000"));
+  runner_instance.context().set_calendar(calendar);
+  source.set_calendar(calendar);
+  auto schedule = bars_each_iteration();
+  schedule.calendar_ = std::chrono::seconds(1);
+  runner::PollingLoop<SendingRunner, Source, runner::ManualClock> loop(
+    runner_instance, source, schedule, runner::ManualClock{at}
+  );
+  not_about_the_portfolio(loop);
+  StopSource stop;
+  return loop.run(stop, 1);
+}
+
+} // namespace
+
+TEST_CASE(
+  "a source stating calendar sessions takes the phase from them and refuses an opening order without them",
+  "[loop][phase][calendar]"
+) {
+  // `base_time()` is 09:00 KST on a day `krx_calendar` lists open, so the KRX window says open from there to 15:30:
+  // the refusals below are at 10:00, where only the stated path or the guard can refuse.
+  auto calendar = krx_calendar(/*trades=*/true);
+
+  SECTION("open inside the filled regular session, outside the KRX window") {
+    calendar.days_[0].regular_ =
+      algotradelib::SessionHours{base_time() + std::chrono::hours(11), base_time() + std::chrono::hours(18)};
+    StatedSource source;
+    const auto report = run_over(source, calendar, base_time() + std::chrono::hours(12));
+    CHECK(report.final_phase_ == strategy::MarketPhase::OPEN);
+    CHECK(source.placed() == 1);
+  }
+
+  SECTION("an open day without hours is unknown and an opening order is refused") {
+    StatedSource source;
+    const auto report = run_over(source, calendar, base_time() + std::chrono::hours(1));
+    CHECK(report.final_phase_ == strategy::MarketPhase::UNKNOWN);
+    CHECK(source.placed() == 0);
+    CHECK(source.last_guard_reason() == strategy::GuardReason::PHASE_NOT_PERMITTED);
+    REQUIRE(report.notes_.size() == 1);
+    CHECK(report.notes_[0].find("the calendar's session hours do not decide") != std::string::npos);
+  }
+
+  SECTION("an undeclared source over a calendar with hours is unknown and names the missing constant") {
+    calendar.days_[0].regular_ = algotradelib::SessionHours{base_time(), base_time() + std::chrono::hours(6)};
+    FeedingSource source;
+    const auto report = run_over(source, calendar, base_time() + std::chrono::hours(1));
+    CHECK(report.final_phase_ == strategy::MarketPhase::UNKNOWN);
+    CHECK(source.placed() == 0);
+    CHECK(source.last_guard_reason() == strategy::GuardReason::PHASE_NOT_PERMITTED);
+    REQUIRE(report.notes_.size() == 1);
+    CHECK(report.notes_[0].find("does not declare states_calendar_sessions") != std::string::npos);
+  }
+}
+
 TEST_CASE("a source that writes the calendar mid-poll is reported, since it cannot be stopped", "[loop][phase]") {
   // **The limit of the mechanism, made visible.** A source can replace the
   // calendar and then feed the runner inside one `poll`, and no loop code runs in between, so that

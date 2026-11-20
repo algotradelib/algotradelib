@@ -196,6 +196,12 @@ public:
   static constexpr bool provides_working_orders = Caps::has_working_orders;
 
   /**
+   * @brief `true` if the market-data session's adapter fills each open day's session hours in the calendar it
+   *   installs (`BrokerCaps::has_calendar_sessions`), so `runner::PollingLoop` takes the phase from them.
+   */
+  static constexpr bool states_calendar_sessions = MarketData::Caps::has_calendar_sessions;
+
+  /**
    * @brief Constructs a source that reads everything from one session.
    * @param session The session; borrowed, and must outlive the source.
    * @param universe The instruments to poll.
