@@ -11,6 +11,18 @@
 namespace algotradelib {
 
 /**
+ * @brief One session's bounds, as instants.
+ *
+ * The open is inclusive and the close exclusive.
+ */
+struct SessionHours {
+  /** @brief When the session opens (inclusive). */
+  std::chrono::system_clock::time_point opens_at_{};
+  /** @brief When the session closes (exclusive). */
+  std::chrono::system_clock::time_point closes_at_{};
+};
+
+/**
  * @brief One calendar date and whether the market opens on it.
  *
  * `open_` means the exchange trades that day. It is not a banking or settlement
@@ -26,6 +38,19 @@ struct TradingDay {
   Date date_{};
   /** @brief Whether the market opens on `date_`. */
   bool open_{false};
+  /**
+   * @brief The exchange's regular session on an open day, where the adapter fills it.
+   *
+   * Filled only by an adapter that declares `BrokerCaps::has_calendar_sessions`; absent otherwise.
+   */
+  std::optional<SessionHours> regular_{};
+  /**
+   * @brief From the start of the first session the broker states for the day to the end of the last, the regular
+   *   one included.
+   *
+   * Absent when only the regular session is filled.
+   */
+  std::optional<SessionHours> extended_{};
 };
 
 /**
@@ -38,8 +63,9 @@ struct TradingDay {
  *
  * Keep `days_` ascending if you fill it yourself.
  *
- * Intraday session hours are not part of this type, and the library does not expose them yet
- * (Toss publishes them).
+ * An adapter that declares `BrokerCaps::has_calendar_sessions` also fills each open day's session hours
+ * (`TradingDay::regular_` and `extended_`), from which a live loop takes the market phase
+ * (`strategy::stated_session_phase`). `is_trading_day` and the searches ignore the hours.
  */
 struct TradingCalendar {
   /** @brief The market this calendar is for. */

@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 using namespace algotradelib;
@@ -141,6 +142,74 @@ TEST_CASE("a phase name is stable for every enumerator") {
   REQUIRE(strategy::market_phase_name(strategy::MarketPhase::PRE_OPEN) == "pre_open");
   REQUIRE(strategy::market_phase_name(strategy::MarketPhase::OPEN) == "open");
   REQUIRE(strategy::market_phase_name(strategy::MarketPhase::POST_CLOSE) == "post_close");
+}
+
+TEST_CASE("filled session hours give the phase and an open day without them is unknown") {
+  using strategy::MarketPhase;
+  using strategy::stated_session_phase;
+  const auto hours = [](Clock::time_point opens, Clock::time_point closes) {
+    return SessionHours{opens, closes};
+  };
+  // New York in November 2026, winter time (UTC-5), as Alpaca states it: regular 09:30-16:00, extended
+  // 04:00-20:00; 2026-11-26 is a listed holiday, 2026-11-27 closes at 13:00, and the weekend is unlisted.
+  const auto day = [&hours](int date, int early_close_hour) {
+    TradingDay row{Date{2026, 11, static_cast<unsigned>(date)}, true};
+    row.regular_ = hours(utc(2026, 11, date, 14, 30), utc(2026, 11, date, early_close_hour, 0));
+    row.extended_ = hours(utc(2026, 11, date, 9, 0), utc(2026, 11, date + 1, 1, 0));
+    return row;
+  };
+  TradingCalendar calendar;
+  calendar.country_ = Country::US;
+  calendar.days_ = {day(24, 21), day(25, 21), TradingDay{Date{2026, 11, 26}, false}, day(27, 18), day(30, 21)};
+
+  SECTION("open exactly in the regular session, pre-open and post-close in the span around it") {
+    // 09:00 New York: a summer window (UTC-4) would already say open.
+    CHECK(stated_session_phase(calendar, utc(2026, 11, 24, 14, 0)) == MarketPhase::PRE_OPEN);
+    CHECK(stated_session_phase(calendar, utc(2026, 11, 24, 14, 30)) == MarketPhase::OPEN);
+    CHECK(stated_session_phase(calendar, utc(2026, 11, 24, 21, 0)) == MarketPhase::POST_CLOSE);
+    // 13:30 on the early close: a fixed window would say open until 16:00.
+    CHECK(stated_session_phase(calendar, utc(2026, 11, 27, 18, 30)) == MarketPhase::POST_CLOSE);
+    // A session spanning two Seoul dates (Toss's US row of 2026-03-25, 22:30-05:00 KST) is open at 23:00 KST.
+    TradingCalendar seoul;
+    seoul.days_ = {TradingDay{Date{2026, 3, 25}, true}};
+    seoul.days_[0].regular_ = hours(utc(2026, 3, 25, 13, 30), utc(2026, 3, 25, 20, 0));
+    CHECK(stated_session_phase(seoul, utc(2026, 3, 25, 14, 0)) == MarketPhase::OPEN);
+  }
+
+  SECTION("between days: post-close, closed over a listed holiday, unknown outside the rows") {
+    // 22:00 on Tuesday, before Wednesday's span.
+    CHECK(stated_session_phase(calendar, utc(2026, 11, 25, 3, 0)) == MarketPhase::POST_CLOSE);
+    // 22:00 on Wednesday, with Thursday listed closed.
+    CHECK(stated_session_phase(calendar, utc(2026, 11, 26, 3, 0)) == MarketPhase::CLOSED);
+    // The unlisted weekend between two consecutive stated days.
+    CHECK(stated_session_phase(calendar, utc(2026, 11, 28, 12, 0)) == MarketPhase::POST_CLOSE);
+    CHECK(stated_session_phase(calendar, utc(2026, 11, 24, 8, 0)) == MarketPhase::UNKNOWN);
+    CHECK(stated_session_phase(calendar, utc(2026, 12, 1, 2, 0)) == MarketPhase::UNKNOWN);
+  }
+
+  SECTION("an open day without readable hours is unknown around it") {
+    calendar.days_[1].regular_.reset();
+    CHECK(stated_session_phase(calendar, utc(2026, 11, 25, 16, 0)) == MarketPhase::UNKNOWN);
+    // A regular session that does not open before it closes is no hours either.
+    calendar.days_[1].regular_ = hours(utc(2026, 11, 25, 14, 30), utc(2026, 11, 25, 14, 30));
+    CHECK(stated_session_phase(calendar, utc(2026, 11, 25, 16, 0)) == MarketPhase::UNKNOWN);
+  }
+
+  SECTION("an unreadable row makes a gap unknown but leaves a stated session open") {
+    calendar.unreadable_days_ = 1;
+    CHECK(stated_session_phase(calendar, utc(2026, 11, 25, 3, 0)) == MarketPhase::UNKNOWN);
+    CHECK(stated_session_phase(calendar, utc(2026, 11, 24, 15, 0)) == MarketPhase::OPEN);
+  }
+
+  SECTION("overlapping spans make every instant unknown") {
+    calendar.days_[1].extended_->opens_at_ = utc(2026, 11, 25, 0, 0);
+    CHECK(stated_session_phase(calendar, utc(2026, 11, 24, 15, 0)) == MarketPhase::UNKNOWN);
+  }
+
+  SECTION("dates out of order with the hours are unknown") {
+    std::swap(calendar.days_[0].date_, calendar.days_[1].date_);
+    CHECK(stated_session_phase(calendar, utc(2026, 11, 25, 3, 0)) == MarketPhase::UNKNOWN);
+  }
 }
 
 // ---------------------------------------------------------------------------

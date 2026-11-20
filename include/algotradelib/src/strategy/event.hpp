@@ -26,19 +26,28 @@ namespace strategy {
 /**
  * @brief Where the clock stands relative to the trading session.
  *
- * Whether a date trades comes from the broker's calendar; the intraday open and close come from
- * the configured `SessionWindow`.
+ * Whether a date trades comes from the broker's calendar. The intraday open and close come from the
+ * session hours the adapter fills in that calendar where the source declares them (see
+ * `stated_session_phase`), and otherwise from the configured `SessionWindow`.
  */
 enum class MarketPhase {
-  /** @brief The calendar does not cover this date; nothing is known about it. */
+  /**
+   * @brief Nothing is known about this instant: the calendar does not cover its date, or the filled session hours
+   *   do not decide it.
+   */
   UNKNOWN,
   /** @brief A date the market does not trade. */
   CLOSED,
-  /** @brief A trading day, before the session opens. */
+  /**
+   * @brief A trading day, before the session opens; under filled session hours, the day's earlier stated sessions.
+   */
   PRE_OPEN,
   /** @brief Inside the session. */
   OPEN,
-  /** @brief A trading day, after the session closed. */
+  /**
+   * @brief A trading day, after the session closed; under filled session hours, until the next day's first session,
+   *   `CLOSED` taking over when a closed day is listed between.
+   */
   POST_CLOSE,
 };
 
@@ -108,7 +117,7 @@ static_assert(
  * session, 09:00-15:30 KST.
  *
  * @note The offset is fixed: a market that observes daylight saving needs a different window
- *   each season.
+ *   each season, or an adapter that fills each day's session hours (see `stated_session_phase`).
  */
 struct SessionWindow {
   /** @brief The session open, in minutes from local midnight. */
@@ -200,6 +209,99 @@ private:
     return std::chrono::time_point_cast<std::chrono::seconds>(std::chrono::floor<Days>(now + utc_offset_));
   }
 };
+
+/**
+ * @brief Returns the market phase at an instant from the session hours filled in a calendar.
+ *
+ * A day has hours when it is open and its `regular_` opens before it closes. Its span is its
+ * `extended_` when that contains `regular_`, and otherwise its `regular_`. Of the days with hours, `p`
+ * is the one whose span ends last at or before `now`, and `n` the one whose span starts first after
+ * `now`. The rules, first match wins:
+ *
+ * - two days' spans overlap: `UNKNOWN`;
+ * - inside a day's regular session: `OPEN`;
+ * - inside a day's span, before its regular open: `PRE_OPEN`; at or after its regular close: `POST_CLOSE`;
+ * - no `p` or no `n` (before the first span or after the last): `UNKNOWN`;
+ * - `p`'s date is not before `n`'s: `UNKNOWN`;
+ * - an open day dated strictly between `p` and `n`, or any unreadable row (`unreadable_days_`): `UNKNOWN`;
+ * - a closed day dated strictly between them: `CLOSED`;
+ * - otherwise, the gap between two consecutive stated days, unlisted dates included: `POST_CLOSE`.
+ *
+ * So `OPEN` is exactly a stated regular session, and an open day without readable hours refuses
+ * opening orders around it. A pre-session that is not contiguous with the regular one stays `PRE_OPEN`
+ * through the hole between them. The order of `days_` does not matter.
+ *
+ * @param calendar The calendar.
+ * @param now The instant.
+ * @return The phase by the rules above.
+ */
+inline MarketPhase stated_session_phase(const TradingCalendar& calendar, std::chrono::system_clock::time_point now) {
+  const auto has_hours = [](const TradingDay& day) {
+    return day.open_ && day.regular_ && day.regular_->opens_at_ < day.regular_->closes_at_;
+  };
+  const auto span_of = [](const TradingDay& day) {
+    const auto& regular = *day.regular_;
+    if (
+      day.extended_ && day.extended_->opens_at_ <= regular.opens_at_ && regular.closes_at_ <= day.extended_->closes_at_
+    ) {
+      return *day.extended_;
+    }
+    return regular;
+  };
+  const auto& days = calendar.days_;
+  for (std::size_t i = 0; i < days.size(); ++i) {
+    if (!has_hours(days[i])) {
+      continue;
+    }
+    const auto first = span_of(days[i]);
+    for (std::size_t j = i + 1; j < days.size(); ++j) {
+      if (!has_hours(days[j])) {
+        continue;
+      }
+      const auto second = span_of(days[j]);
+      if (first.opens_at_ < second.closes_at_ && second.opens_at_ < first.closes_at_) {
+        return MarketPhase::UNKNOWN;
+      }
+    }
+  }
+  const TradingDay* previous = nullptr;
+  const TradingDay* next = nullptr;
+  for (const auto& day : days) {
+    if (!has_hours(day)) {
+      continue;
+    }
+    const auto& regular = *day.regular_;
+    const auto span = span_of(day);
+    if (regular.opens_at_ <= now && now < regular.closes_at_) {
+      return MarketPhase::OPEN;
+    }
+    if (span.opens_at_ <= now && now < span.closes_at_) {
+      return now < regular.opens_at_ ? MarketPhase::PRE_OPEN : MarketPhase::POST_CLOSE;
+    }
+    if (span.closes_at_ <= now && (previous == nullptr || span_of(*previous).closes_at_ < span.closes_at_)) {
+      previous = &day;
+    }
+    if (now < span.opens_at_ && (next == nullptr || span.opens_at_ < span_of(*next).opens_at_)) {
+      next = &day;
+    }
+  }
+  if (previous == nullptr || next == nullptr || !(previous->date_ < next->date_)) {
+    return MarketPhase::UNKNOWN;
+  }
+  bool closed_between = false;
+  for (const auto& day : days) {
+    if (previous->date_ < day.date_ && day.date_ < next->date_) {
+      if (day.open_) {
+        return MarketPhase::UNKNOWN;
+      }
+      closed_between = true;
+    }
+  }
+  if (calendar.unreadable_days_ > 0) {
+    return MarketPhase::UNKNOWN;
+  }
+  return closed_between ? MarketPhase::CLOSED : MarketPhase::POST_CLOSE;
+}
 
 /**
  * @brief One bar, delivered to `on_bar`.
