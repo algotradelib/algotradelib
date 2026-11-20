@@ -90,7 +90,8 @@ struct HttpClientOptions {
 
   /**
    * @brief The rate-limit budget that paces this connection's requests, or empty (the default) for
-   *   no pacing (`AsyncHttpClient` only). The caller sets it; the broker clients pass it through.
+   *   no pacing (`AsyncHttpClient` only). The caller sets it; the broker clients pass it through, and a client
+   *   may set its own default when it is empty (`alpaca::AlpacaBlockingClient` does).
    */
   std::optional<RateLimitBudget> rate_limit_;
 

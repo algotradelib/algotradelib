@@ -32,7 +32,8 @@ struct ClientStores {
  * @tparam Config The client's configuration type, `BrokerTraits<Client>::Config`.
  * @param context The TLS context; borrowed, and must outlive the client.
  * @param config The credentials and environment.
- * @param options HTTP options, pacing included; nothing is added (unset pacing is unpaced).
+ * @param options HTTP options, pacing included; nothing is added here, and a client may choose its own pacing when
+ *   none is set (the Alpaca client does).
  * @param stores The run's stores.
  * @return The client.
  */
