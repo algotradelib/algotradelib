@@ -1400,8 +1400,9 @@ Result<AccountInfo<Client>> resolve_account(
   Client& client, std::optional<typename BrokerTraits<Client>::Account> configured, std::string_view number = {}
 ) {
   using Resolved = Result<AccountInfo<Client>>;
-  static_assert(BrokerTraits<Client>::blocking, "resolve_account requires a blocking client");
-  if constexpr (BrokerCaps<Client>::data_only) {
+  if constexpr (!BrokerTraits<Client>::blocking) {
+    static_assert(port_detail::dependent_false<Client>, "resolve_account requires a blocking client");
+  } else if constexpr (BrokerCaps<Client>::data_only) {
     static_assert(port_detail::dependent_false<Client>, "resolve_account: a data-only client acts for no account");
   } else if constexpr (BrokerCaps<Client>::has_account_discovery) {
     if (configured) {
