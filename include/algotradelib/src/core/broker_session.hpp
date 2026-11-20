@@ -13,10 +13,12 @@
 #include <boost/asio/post.hpp>
 #include <boost/asio/system_executor.hpp>
 
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -1315,6 +1317,115 @@ Result<std::vector<AccountInfo<Client>>> list_accounts(Client& client) {
       "this broker does not publish selectable accounts; its account selector comes from "
       "configuration, so gate the call with BrokerCaps<Client>::has_account_discovery"
     );
+  }
+}
+
+namespace port_detail {
+
+// An account number without the separators `resolve_account` ignores.
+inline std::string account_characters(std::string_view number) {
+  std::string kept;
+  for (const char c : number) {
+    if (c != '-' && c != ' ' && c != '.' && c != '/') {
+      kept.push_back(c);
+    }
+  }
+  return kept;
+}
+
+// A refusal of `resolve_account`.
+inline BrokerError account_refusal(const char* code, std::string message, bool reached_broker) {
+  BrokerError error;
+  error.category_ = ErrorCategory::INVALID_ARGUMENT;
+  error.reached_broker_ = reached_broker;
+  error.broker_code_ = code;
+  error.message_ = std::move(message);
+  return error;
+}
+
+// Keeps the candidates `number` names; exactly one, with a number, must remain.
+template <typename Client>
+Result<AccountInfo<Client>> pick_account(
+  std::vector<AccountInfo<Client>> candidates, std::string_view number, bool reached_broker
+) {
+  using Picked = Result<AccountInfo<Client>>;
+  if (!number.empty()) {
+    const auto wanted = account_characters(number);
+    const auto unwanted = [&wanted](const AccountInfo<Client>& candidate) {
+      return wanted.empty() || account_characters(candidate.display_number_) != wanted;
+    };
+    candidates.erase(std::remove_if(candidates.begin(), candidates.end(), unwanted), candidates.end());
+    if (candidates.empty()) {
+      return Picked(account_refusal("account_not_found", "no account has that number", reached_broker));
+    }
+  }
+  if (candidates.size() > 1) {
+    auto message = std::to_string(candidates.size()) + " accounts; choose one by its number:";
+    for (const auto& candidate : candidates) {
+      const auto shown = account_characters(candidate.display_number_);
+      message += " ..." + shown.substr(shown.size() > 4 ? shown.size() - 4 : 0);
+      message += candidate.type_.empty() ? std::string(";") : " (" + candidate.type_ + ");";
+    }
+    message.pop_back();
+    return Picked(account_refusal("several_accounts", std::move(message), reached_broker));
+  }
+  if (account_characters(candidates.front().display_number_).empty()) {
+    return Picked(account_refusal("account_without_number", "the account has no number", reached_broker));
+  }
+  return Picked(std::move(candidates.front()));
+}
+
+} // namespace port_detail
+
+/**
+ * @brief Names the one account a session should bind, or refuses; never guesses.
+ *
+ * The candidates are the broker's listing where it has one (`BrokerCaps<Client>::has_account_discovery`), else
+ * the configured account. A candidate is kept when `number` is empty, or when `number` and its `display_number_`,
+ * with the separators `-`, space, `.` and `/` removed, are equal and not empty (the rest compared exactly).
+ * Exactly one must remain, with a number. A failed listing is returned unchanged; a refusal is
+ * `INVALID_ARGUMENT` with a `broker_code_` (`account_missing`, `account_configured`, `no_accounts`,
+ * `account_not_found`, `several_accounts`, `account_without_number`), `reached_broker_` only after a listing,
+ * and at most the last four characters of an account number in its message.
+ *
+ * @tparam Client A blocking, not data-only client; without discovery, its traits need `display_of(const Account&)`.
+ * @param client The client; a listing is requested from it where the broker lists accounts.
+ * @param configured The account the configuration names: required where the broker lists none
+ *   (`account_missing`), and refused where it lists them (`account_configured`), so it is never ignored.
+ * @param number The account number to require (`1234567801` matches `12345678-01`); empty for "the only one".
+ * @return The account, or a refusal.
+ */
+template <typename Client>
+Result<AccountInfo<Client>> resolve_account(
+  Client& client, std::optional<typename BrokerTraits<Client>::Account> configured, std::string_view number = {}
+) {
+  using Resolved = Result<AccountInfo<Client>>;
+  static_assert(BrokerTraits<Client>::blocking, "resolve_account requires a blocking client");
+  if constexpr (BrokerCaps<Client>::data_only) {
+    static_assert(port_detail::dependent_false<Client>, "resolve_account: a data-only client acts for no account");
+  } else if constexpr (BrokerCaps<Client>::has_account_discovery) {
+    if (configured) {
+      return Resolved(port_detail::account_refusal("account_configured", "choose a listed account by number", false));
+    }
+    auto listed = list_accounts(client);
+    if (!listed) {
+      return Resolved(std::move(listed.error()));
+    }
+    if (listed.value().empty()) {
+      return Resolved(port_detail::account_refusal("no_accounts", "the broker lists no account", true));
+    }
+    return port_detail::pick_account<Client>(std::move(listed.value()), number, true);
+  } else {
+    static_cast<void>(client);
+    if (!configured) {
+      return Resolved(port_detail::account_refusal("account_missing", "no account is configured", false));
+    }
+    // A braced list is evaluated left to right, so the number is read before the account is moved.
+    std::vector<AccountInfo<Client>> candidates;
+    candidates.push_back(
+      AccountInfo<Client>{BrokerTraits<Client>::display_of(*configured), {}, std::move(*configured)}
+    );
+    return port_detail::pick_account<Client>(std::move(candidates), number, false);
   }
 }
 

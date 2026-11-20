@@ -871,7 +871,7 @@ TEST_CASE("a blocking session refuses a trigger to a broker without the capabili
   CHECK_FALSE(placed.error().reached_broker_);
 }
 
-TEST_CASE("a live KIS session with an empty account refuses every account path before I/O", "[port][kis][account]") {
+TEST_CASE("a live KIS session bound to no_account refuses every account path before I/O", "[port][kis][account]") {
   // The market-data session `example-live-program` builds from the real account's keys. Live, not
   // demo, because the demo client also refuses the working-order inquiry for its own reason, and a
   // test on a demo config would pass that path without the account check.
@@ -879,7 +879,7 @@ TEST_CASE("a live KIS session with an empty account refuses every account path b
   kis::KisConfig config;
   config.is_demo_ = false;
   BlockingSession<kis::KisBlockingClient> session(
-    std::make_shared<kis::KisBlockingClient>(tls, std::move(config)), kis::KisAccount{}
+    std::make_shared<kis::KisBlockingClient>(tls, std::move(config)), BrokerTraits<kis::KisBlockingClient>::no_account()
   );
 
   OrderRequest order;
@@ -990,4 +990,189 @@ TEST_CASE("make_client hands each client the stores its constructor takes", "[po
   CHECK(five->key_ == "five");
   CHECK(five->tokens_ == stores.tokens_);
   CHECK(five->calendars_ == stores.calendars_);
+}
+
+TEST_CASE("a Toss session bound to no_account refuses every account path before I/O", "[port][toss][account]") {
+  ssl::context tls(ssl::context::tls_client);
+  using Client = tossinvest::TossBlockingClient;
+  BlockingSession<Client> session(
+    std::make_shared<Client>(tls, tossinvest::TossConfig{}), BrokerTraits<Client>::no_account()
+  );
+
+  OrderRequest order;
+  order.instrument_ = samsung();
+  order.quantity_ = Decimal64::parse("1");
+  order.price_ = Decimal64::parse("70000");
+  BlockingSession<Client>::Ref ref;
+  ref.primary_ = "0000123456";
+  AmendInstruction amendment;
+  amendment.shape_.type_ = OrderType::LIMIT;
+  amendment.shape_.time_in_force_ = TimeInForce::DAY;
+  amendment.shape_.session_ = OrderSession::REGULAR;
+  amendment.shape_.price_ = Decimal64::parse("71000");
+  amendment.quantity_ = Decimal64::parse("1");
+  amendment.resting_ = amendment.shape_;
+  AmendInstruction cancellation;
+  cancellation.all_remaining_ = true;
+  OrderHistoryQuery history;
+  history.from_ = Date{2026, 10, 1};
+  history.to_ = Date{2026, 10, 1};
+
+  const auto refused = [](const auto& result, const char* path) {
+    INFO(path);
+    REQUIRE_FALSE(result);
+    CHECK(result.error().broker_code_ == "invalid_account");
+    CHECK_FALSE(result.error().reached_broker_);
+  };
+  refused(session.place(order), "place");
+  refused(session.replace(ref, amendment), "replace");
+  refused(session.cancel(ref, cancellation), "cancel");
+  refused(session.holdings(), "holdings");
+  refused(session.buying_power(Currency::krw()), "buying_power");
+  refused(session.sellable_quantity(samsung()), "sellable_quantity");
+  refused(session.commissions(), "commissions");
+  refused(session.working_orders(), "working_orders");
+  refused(session.order_history(history), "order_history");
+  refused(session.order(ref), "order");
+}
+
+namespace resolve_fakes {
+
+/** One row of the lister's account listing. */
+struct Row {
+  std::string number_;
+  std::string type_;
+  int selector_{0};
+};
+
+/** A blocking client that lists accounts: the rows or an error, and how often it was asked. */
+struct Lister {
+  Result<std::vector<Row>> listing_{std::vector<Row>{}};
+  int requests_{0};
+};
+
+/** A blocking client that lists none, as KIS: the account comes from configuration. */
+struct Configured {};
+
+} // namespace resolve_fakes
+
+namespace algotradelib {
+
+/** The lister's traits: only what resolve_account reads, plus every capability BrokerCaps reads. */
+template <>
+struct BrokerTraits<resolve_fakes::Lister> : mock_port::Capabilities {
+  using Account = int;
+  static constexpr std::string_view name = "lister";
+  static constexpr bool blocking = true;
+  static constexpr bool data_only = false;
+  static constexpr bool working_orders_state_terminal = false;
+  static constexpr bool has_account_discovery = true;
+  static Result<std::vector<resolve_fakes::Row>> accounts(resolve_fakes::Lister& client) {
+    ++client.requests_;
+    return client.listing_;
+  }
+  static int selector_of(const resolve_fakes::Row& row) {
+    return row.selector_;
+  }
+  static std::string display_of(const resolve_fakes::Row& row) {
+    return row.number_;
+  }
+  static std::string type_of(const resolve_fakes::Row& row) {
+    return row.type_;
+  }
+};
+
+/** The configured client's traits: its account's number is the account itself, none for zero. */
+template <>
+struct BrokerTraits<resolve_fakes::Configured> : mock_port::Capabilities {
+  using Account = int;
+  static constexpr std::string_view name = "configured";
+  static constexpr bool blocking = true;
+  static constexpr bool data_only = false;
+  static constexpr bool working_orders_state_terminal = false;
+  static std::string display_of(int account) {
+    return account > 0 ? std::to_string(account) : std::string();
+  }
+};
+
+} // namespace algotradelib
+
+TEST_CASE("resolve_account names one account or refuses", "[port][account]") {
+  using resolve_fakes::Row;
+  const auto refused = [](const auto& result, const char* code, bool reached_broker) {
+    REQUIRE_FALSE(result);
+    CHECK(result.error().category_ == ErrorCategory::INVALID_ARGUMENT);
+    CHECK(result.error().broker_code_ == code);
+    CHECK(result.error().reached_broker_ == reached_broker);
+  };
+  resolve_fakes::Lister lister;
+  resolve_fakes::Configured configured;
+
+  SECTION("a configured account is the one candidate where the broker lists none") {
+    const auto resolved = resolve_account(configured, 12345678);
+    REQUIRE(resolved);
+    CHECK(resolved.value().display_number_ == "12345678");
+    CHECK(resolved.value().selector_ == 12345678);
+    CHECK(resolve_account(configured, 12345678, "1234-5678"));
+    refused(resolve_account(configured, std::nullopt), "account_missing", false);
+    refused(resolve_account(configured, 12345678, "999"), "account_not_found", false);
+    refused(resolve_account(configured, 0), "account_without_number", false);
+  }
+  SECTION("a configured account is refused where the broker lists them, before any request") {
+    lister.listing_ = std::vector<Row>{{"12345678", "cash", 1}};
+    refused(resolve_account(lister, 1), "account_configured", false);
+    CHECK(lister.requests_ == 0);
+  }
+  SECTION("a failed listing is returned unchanged") {
+    BrokerError error;
+    error.category_ = ErrorCategory::TRANSPORT;
+    error.broker_code_ = "listing_failed";
+    lister.listing_ = error;
+    const auto resolved = resolve_account(lister, std::nullopt);
+    REQUIRE_FALSE(resolved);
+    CHECK(resolved.error().category_ == ErrorCategory::TRANSPORT);
+    CHECK(resolved.error().broker_code_ == "listing_failed");
+    CHECK(lister.requests_ == 1);
+  }
+  SECTION("an empty listing is no_accounts, number or not") {
+    refused(resolve_account(lister, std::nullopt, "12345678"), "no_accounts", true);
+  }
+  SECTION("the only listed account, or the one the number names") {
+    lister.listing_ = std::vector<Row>{{"12345678", "cash", 1}};
+    const auto only = resolve_account(lister, std::nullopt);
+    REQUIRE(only);
+    CHECK(only.value().selector_ == 1);
+    lister.listing_ = std::vector<Row>{{"12345678", "cash", 1}, {"87654321", "margin", 2}};
+    const auto named = resolve_account(lister, std::nullopt, "1234-5678");
+    REQUIRE(named);
+    CHECK(named.value().selector_ == 1);
+    CHECK(named.value().type_ == "cash");
+    refused(resolve_account(lister, std::nullopt, "--"), "account_not_found", true);
+    lister.listing_ = std::vector<Row>{{"DU1234567", "paper", 1}};
+    refused(resolve_account(lister, std::nullopt, "U1234567"), "account_not_found", true);
+  }
+  SECTION("several accounts are refused, showing the last four characters of each") {
+    lister.listing_ = std::vector<Row>{{"1234-5678", "cash", 1}, {"87654321", "margin", 2}};
+    const auto resolved = resolve_account(lister, std::nullopt);
+    refused(resolved, "several_accounts", true);
+    CHECK(resolved.error().message_.find("...5678 (cash)") != std::string::npos);
+    CHECK(resolved.error().message_.find("...4321 (margin)") != std::string::npos);
+    CHECK(resolved.error().message_.find("1234") == std::string::npos);
+  }
+  SECTION("an account without a number is refused") {
+    lister.listing_ = std::vector<Row>{{"", "cash", 1}};
+    refused(resolve_account(lister, std::nullopt), "account_without_number", true);
+  }
+  SECTION("KIS names its account by number and product code, and refuses one it cannot address") {
+    ssl::context tls(ssl::context::tls_client);
+    using Client = kis::KisBlockingClient;
+    Client client(tls, kis::KisConfig{});
+    const auto resolved = resolve_account(client, kis::KisAccount{"12345678", "01"}, "1234567801");
+    REQUIRE(resolved);
+    CHECK(resolved.value().display_number_ == "12345678-01");
+    CHECK(resolved.value().selector_.account_number_ == "12345678");
+    refused(resolve_account(client, BrokerTraits<Client>::no_account()), "account_without_number", false);
+    refused(resolve_account(client, kis::KisAccount{"12345678", ""}), "account_without_number", false);
+    refused(resolve_account(client, kis::KisAccount{"1234", "01"}), "account_without_number", false);
+  }
 }

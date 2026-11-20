@@ -341,6 +341,15 @@ struct Normalizers {
   static std::string type_of(const tossinvest::TossAccount& account) {
     return account.account_type_;
   }
+
+  /**
+   * @brief Returns an account sequence every account request refuses before I/O (`invalid_account`), for a
+   *   session that reads market data only.
+   * @return `0`.
+   */
+  static std::int64_t no_account() {
+    return 0;
+  }
 };
 
 /** @brief The order-related capabilities shared by Toss's asynchronous and blocking traits. */

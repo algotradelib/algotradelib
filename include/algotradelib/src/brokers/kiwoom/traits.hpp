@@ -40,7 +40,11 @@ namespace traits_detail {
 /** @brief A Kiwoom order reference (`primary_` the order number, `secondary_` the symbol). */
 using Ref = OrderRef<kiwoom::Broker>;
 
-/** @brief The capabilities and conversions shared by Kiwoom's asynchronous and blocking traits. */
+/**
+ * @brief The capabilities and conversions shared by Kiwoom's asynchronous and blocking traits.
+ *
+ * It declares no `no_account()`: the key is the account, so every `KiwoomAccount` trades.
+ */
 struct Normalizers {
   /** @brief Kiwoom publishes ten levels each side, through `ka10004`. */
   static constexpr bool has_depth = true;

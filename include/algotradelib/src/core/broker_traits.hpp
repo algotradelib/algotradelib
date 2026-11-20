@@ -29,7 +29,9 @@ namespace algotradelib {
  * | `working_orders_state_terminal` | where `has_working_orders` |
  * | `sellable_inquiry_basis` | where `sellable_source` is `INQUIRY` |
  * | `quote`, `bars`, `validate_bars`, `holdings`, `validate_place`, `place_order`, `replace_order`, `cancel_order`, `order_history`, `normalize_place`, `to_replacement`, `to_cancellation`, `to_history_query`, `rate_limit_stats` | always: every session calls them |
- * | `buying_power`, `sellable_quantity`, `commissions`, `working_orders` and `normalize_working_orders`, `instrument`, `calendar` and `validate_calendar`, `price_limits`, `trades`, `prices`, `depth`, `order_by_id`, `accounts` with `selector_of`, `display_of` and `type_of` | where the capability that gates it is claimed |
+ * | `buying_power`, `sellable_quantity`, `commissions`, `working_orders` and `normalize_working_orders`, `instrument`, `calendar` and `validate_calendar`, `price_limits`, `trades`, `prices`, `depth`, `order_by_id`, `accounts` with `selector_of`, `display_of` and `type_of` (each taking a listing row) | where the capability that gates it is claimed |
+ * | `display_of(const Account&)`, the account's number | where `has_account_discovery` is not claimed and `resolve_account` is used |
+ * | `no_account()`, an `Account` for a session that reads market data only | optional: only where every account path refuses that value before I/O |
  *
  * A blocking client (`blocking = true`) returns each result; an asynchronous one takes a
  * completion handler as its last argument. A market-data vendor can inherit `DataOnlyTraits<Tag>`,
@@ -50,6 +52,8 @@ struct AccountInfo {
   /**
    * @brief The account number as the broker reports it, for display only. Kiwoom and Toss give the full
    *   number: mask it before printing output that may be shared (the examples show the last four).
+   *   `resolve_account` also uses it as the account's identity, matched against its `number` and required
+   *   non-empty.
    */
   std::string display_number_;
   /** @brief The account type as the broker reported it; for display only. */

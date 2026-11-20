@@ -316,6 +316,27 @@ struct Normalizers {
     }
     return Result<KisHistoryRange>(KisHistoryRange{*query.from_, *query.to_});
   }
+
+  /**
+   * @brief Returns the account number as `resolve_account` matches it: `12345678-01`.
+   * @param account The account.
+   * @return The number and product code joined by `-`, or empty unless they are eight digits and two, as
+   *   every account request requires.
+   */
+  static std::string display_of(const KisAccount& account) {
+    const bool valid = broker_detail::decimal_digits(account.account_number_, 8) &&
+      broker_detail::decimal_digits(account.product_code_, 2);
+    return valid ? account.account_number_ + "-" + account.product_code_ : std::string();
+  }
+
+  /**
+   * @brief Returns an account every account request refuses before I/O (`invalid_account`), for a session
+   *   that reads market data only.
+   * @return An empty account.
+   */
+  static KisAccount no_account() {
+    return {};
+  }
 };
 
 /** @brief The order-related capabilities shared by KIS's asynchronous and blocking traits. */

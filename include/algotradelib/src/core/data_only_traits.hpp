@@ -161,6 +161,14 @@ struct DataOnlyTraits {
   /** @brief `true`: the client is a market-data source; see `BrokerCaps::data_only`. */
   static constexpr bool data_only = true;
 
+  /**
+   * @brief Returns the account a session binds; every account-side member refuses it.
+   * @return An empty account.
+   */
+  static Account no_account() {
+    return {};
+  }
+
   /// \cond ATL_DATA_ONLY_CAPABILITIES
   // Every capability is false until the vendor's own specialization says otherwise.
   static constexpr bool has_account_discovery = false;
