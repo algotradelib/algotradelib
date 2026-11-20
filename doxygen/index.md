@@ -13,7 +13,7 @@ without being rewritten — against KIS, Toss, Kiwoom or Alpaca, where a runner 
 first (see "Brokers and accounts"). Selecting a broker is choosing a type parameter.
 
 > **This library sends real orders to real accounts.** It has placed orders on KIS and Kiwoom demo
-> accounts, but has not yet run end to end on a real account. It is in development (`0.0.0.9000`, no
+> accounts and the Alpaca paper account, but has not yet run end to end on a real account. It is in development (`0.0.0.9000`, no
 > release yet). Rehearse on a demo account first, and read "Brokers and accounts" and the Disclaimer
 > below before you do.
 
@@ -319,7 +319,8 @@ That refusal is `CANCELLED` with nothing sent, so a runner keeps the instruction
 Its calendar fills each day's session hours, so a live loop over it takes the market phase from them, across daylight saving and early closes; call `set_calendar_country(Country::US)` on its `live::SessionSource` first, or the phase stays unknown.
 It declares no buying power: no Alpaca figure is cash net of resting buys without credit, so `RiskLimits::enforce_buying_power_` (off by default) would refuse every buy, and with it off a buy above the cash borrows on the account's margin; `max_order_notional_` and `max_gross_exposure_` are the guard.
 The sellable figure is each position's `qty_available`, stated as KIS states its own (`WHOLE_HOLDING`, `DEDUCT`, not verified), and a symbol listed twice fails the holdings read; a short US equity position anywhere in the account stops the read, crypto and option rows are skipped, and the fraction of a fractional position bought elsewhere cannot be sold through the library.
-Alpaca refuses a sell while a buy on the same symbol rests (its wash-trade protection, HTTP 403), and a runner does not offer a refused exit again, so a strategy that states its target once loses that exit.
+Alpaca refuses a sell limit at or below the limit of a buy resting on the same symbol (its wash-trade protection, HTTP 403; a market sell, or a sell placed after the buy is cancelled, was accepted on the paper account), and a runner does not offer a refused exit again, so a strategy that states its target once loses that exit.
+An opening order refused by the clock inside `OPEN` (an unscheduled closure) is kept the same way as a flatten and offered again after each newer holdings read, costing the reads before each try.
 
 **The mock broker reaches no broker.**
 `<algotradelib/mock>` (included by no other umbrella) is a broker client like the others, `mock::MockClient` behind a `BlockingSession`, over a `mock::Market`: bars you give, a clock you drive (`mock::MarketClock`, which a polling loop waits on), and one account's cash, holdings and orders.
@@ -380,7 +381,7 @@ The [user guide](vignettes/guide.md) is eleven pages in the order they are worth
 | 7 | [Running a strategy live](vignettes/running-a-strategy-live.md) | the three stops, the gates, the supervisor grace period |
 | 8 | [Recovering after a crash](vignettes/recovering-after-a-crash.md) | the journal, the five verdicts, reading them under pressure |
 | 9 | [The broker port](vignettes/the-broker-port.md) | `BrokerTraits`, `BrokerCaps`, order identity — read this to add a broker |
-| 10 | [Talking to a broker directly](vignettes/broker-clients.md) | the KIS, Kiwoom and Toss clients, and the order-safety rules |
+| 10 | [Talking to a broker directly](vignettes/broker-clients.md) | the KIS, Kiwoom, Toss and Alpaca clients, and the order-safety rules |
 | 11 | [Transport and request pacing](vignettes/transport-and-pacing.md) | the pacer, the traffic classes, how each broker reports a refusal |
 
 The same pages, with the API reference, build into HTML with Doxygen, in a build directory configured

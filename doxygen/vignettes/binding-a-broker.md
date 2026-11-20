@@ -283,14 +283,14 @@ own. The rule is ownership rather than size.
 ## What each broker will tell you about the account
 
 Three questions, and the brokers do not answer them the same way. `BrokerCaps` says which you can
-ask before you write the call, so one strategy source compiles against all three.
+ask before you write the call, so one strategy source compiles against all four.
 
-| | Toss | KIS | Kiwoom |
-| --- | --- | --- | --- |
-| `has_buying_power` | yes | yes | yes |
-| `has_buying_power_quantity` | no — an amount only | no — an amount only (KIS can price a quantity; this client does not ask) | yes — per margin tier, through `session.client()` |
-| `sellable_source` | `INQUIRY` — one request per instrument | `HOLDINGS` — free, on every snapshot | `NONE` — not yet: the session's holdings are refused until you assert `KiwoomConfig::holdings_position_scope_`; the rows then carry `trde_able_qty`, which `RiskGuard` uses only if `holdings_sellable_scope_` is `WHOLE_HOLDING` |
-| `has_commission_schedule` | yes | no | no |
+| | Toss | KIS | Kiwoom | Alpaca |
+| --- | --- | --- | --- | --- |
+| `has_buying_power` | yes | yes | yes | no: no figure excludes margin credit, so buys are not checked against cash |
+| `has_buying_power_quantity` | no — an amount only | no — an amount only (KIS can price a quantity; this client does not ask) | yes — per margin tier, through `session.client()` | no |
+| `sellable_source` | `INQUIRY` — one request per instrument | `HOLDINGS` — free, on every snapshot | `NONE` — not yet: the session's holdings are refused until you assert `KiwoomConfig::holdings_position_scope_`; the rows then carry `trde_able_qty`, which `RiskGuard` uses only if `holdings_sellable_scope_` is `WHOLE_HOLDING` | `HOLDINGS` — `qty_available` on every snapshot, which Alpaca already nets of resting sells |
+| `has_commission_schedule` | yes | no | no | no |
 
 `sellable_source` names a **source** rather than asking `has_*`, and the distinction is deliberate:
 KIS does publish a dedicated 매도가능수량조회, and this library does not use it, because the same

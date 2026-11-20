@@ -79,7 +79,7 @@ A budget you set is used as given, on each connection, so twice the budget acros
 The cost is time: before an order the client reads the asset, for a sell the position, and Alpaca's clock, so a buy takes about two seconds and a sell about three, and a rebalance of 20 symbols about a minute.
 A 429 on a read carries `X-RateLimit-Reset`, read into `BrokerError::retry_after_`; on an order call it leaves the outcome unknown.
 
-**Leaving `rate_limit_` unset issues requests unpaced**, which is the default. Not
+**Leaving `rate_limit_` unset issues requests unpaced**, which is the default for every client but Alpaca's. Not
 every endpoint is metered, and one that is not should not be slowed down; an
 unpaced client sends without waiting, but still in priority order (`AUTH`, then
 `TRADING`, `ACCOUNT`, `MARKET_DATA`, `REFERENCE`); arrival order holds within a class.

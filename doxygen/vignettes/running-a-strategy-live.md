@@ -958,7 +958,7 @@ and sizing against nothing.
 ## Short positions
 
 A `TargetPosition` is signed, and a replay will short if you let it. Live, **no adapter this library
-ships can open a short**: KIS, Kiwoom and Toss are bound to their cash orders. A target below zero
+ships can open a short**: KIS, Kiwoom and Toss are bound to their cash orders, and Alpaca's client reads the position before each sell and refuses one above it. A target below zero
 becomes a sale of shares the account does not hold, and the sellable check refuses it
 (`quantity_not_sellable`; at Kiwoom with no sellable scope set, `sellable_basis_unestablished`, as for any sell). A target that crosses zero, from five held to minus one, is refused whole:
 the runner does not sell the five and call it done, because turning a reversal into an exit is your

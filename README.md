@@ -14,7 +14,7 @@ A strategy is a plain struct that performs no I/O and names no broker, so one so
 Selecting a broker is choosing a type parameter.
 
 > **This library sends real orders to real accounts.**
-> It has placed orders on KIS and Kiwoom demo accounts, but has not yet run end to end on a real account.
+> It has placed orders on KIS and Kiwoom demo accounts and the Alpaca paper account, but has not yet run end to end on a real account.
 > It is in development (`0.0.0.9000`, no release yet).
 > Rehearse on a demo account first, and read "Brokers and accounts" and the Disclaimer below before you do.
 
