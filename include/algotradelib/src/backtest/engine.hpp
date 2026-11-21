@@ -866,6 +866,8 @@ public:
     }
     runner_.context().set_calendar(config_.calendar_);
     runner_.context().set_session(config_.session_);
+    // Its queue rows are the run's open orders, installed before every pass.
+    runner::runner_detail::ReplayAccess::rows_listed(runner_);
     // So a report can compare an execution's currency with the curve's.
     result_.currency_ = config_.currency_;
     result_.market_price_rule_ = fills_.market_price_rule();
@@ -904,6 +906,24 @@ public:
    */
   const ReplayResult& result() const noexcept {
     return result_;
+  }
+
+  /**
+   * @brief Returns the run's cash, with `RiskLimits::run_budget_` set (`runner::Runner::run_cash`).
+   * @return The budget less what the replay's fills spent, plus what they returned, less their costs; or
+   *   `std::nullopt` without a budget.
+   */
+  std::optional<Money> run_cash() const {
+    return runner_.run_cash();
+  }
+
+  /**
+   * @brief Returns the run's own shares of an instrument, with `RiskLimits::run_budget_` set.
+   * @param instrument The instrument.
+   * @return The shares, or `std::nullopt` without a budget.
+   */
+  std::optional<Decimal64> run_holding(const InstrumentId& instrument) const {
+    return runner_.run_holding(instrument);
   }
 
   /**
@@ -1759,6 +1779,18 @@ private:
       // Moved, not copied: the result is the only record of a replay's executions. Nothing below adds to
       // `result_.executions_` before `on_fill` returns, so the reference stays valid.
       result_.executions_.push_back(std::move(*decision.execution_));
+      // **A budgeted run books what the replay filled**, at the replay's own costs, before `on_fill` can place
+      // against it; one it cannot book halts the replay, as a fill the ledger cannot record does.
+      if (runner::runner_detail::ReplayAccess::has_run(runner_) && !book_run(result_.executions_.back())) {
+        BrokerError error;
+        error.category_ = ErrorCategory::INVALID_ARGUMENT;
+        error.reached_broker_ = false;
+        error.broker_code_ = "execution_not_representable";
+        error.message_ = "the run budget's ledger could not book an execution the model produced";
+        result_.halted_ = std::move(error);
+        abort_queue();
+        return;
+      }
       if constexpr (strategy::strategy_detail::declares_on_fill<Strategy>) {
         const auto& recorded = result_.executions_.back();
         // **No handler, nothing to show.** For a strategy without `on_fill` the install would be overwritten
@@ -1773,6 +1805,22 @@ private:
     // Closes the settlement batch: every withdrawal this bar made is now done, and so is anything
     // an `on_fill` handler placed or cancelled in response to one.
     publish_order_updates();
+  }
+
+  // Books an execution in the runner's run: its amount, and its commission, institution fee and tax as fee.
+  bool book_run(const Execution& execution) {
+    const auto& fill = execution.fill_;
+    const auto amount = decimal_multiply(fill.quantity_, fill.price_);
+    auto fee = decimal_add(execution.commission_, execution.tax_);
+    if (fee && execution.institution_fee_) {
+      fee = decimal_add(*fee, *execution.institution_fee_);
+    }
+    if (!amount || !fee) {
+      return false;
+    }
+    return runner::runner_detail::ReplayAccess::book(
+      runner_, fill.instrument_, fill.side_, fill.quantity_, Money{*amount, execution.currency_}, *fee
+    );
   }
 
   // Keeps the lowest cash an execution left in the replay's currency, when it is below zero.

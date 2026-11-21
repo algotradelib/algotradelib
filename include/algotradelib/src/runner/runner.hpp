@@ -4,6 +4,7 @@
 #include "./dispatch.hpp"
 #include "./execution.hpp"
 #include "./journal.hpp"
+#include "./run_ledger.hpp"
 
 #include "../strategy/reconcile.hpp"
 #include "../strategy/risk.hpp"
@@ -141,6 +142,9 @@ struct serializes<
     decltype(std::declval<Executor&>().record(std::declval<JournalEntry&>()))
   >
 > : std::true_type {};
+
+// How a replay books its executions in a budgeted runner's run (`RunLedger`); defined after `Runner`.
+struct ReplayAccess;
 
 } // namespace runner_detail
 
@@ -349,6 +353,9 @@ public:
    *   linear algebra backend, or the first bar fed throws `std::invalid_argument`.
    *   Unused when `records_bar_history` is `false`.
    * @param executor Where instructions are sent.
+   * @throws std::invalid_argument With `RiskLimits::run_budget_` set, if the budget is not positive,
+   *   `RiskLimits::run_fees_` is absent or states a negative rate or minimum, or the executor sends to a broker
+   *   (a live run budget is not supported yet).
    */
   explicit Runner(
     Strategy strategy = {}, strategy::RiskLimits limits = {}, std::size_t series_capacity = 512, Executor executor = {}
@@ -362,6 +369,9 @@ public:
       context_detail::PortfolioAccess::stop_bar_history(context_);
     }
 #endif
+    if (guard_.limits().run_budget_) {
+      open_run();
+    }
   }
 
   /**
@@ -713,6 +723,26 @@ public:
    */
   std::size_t orders_guard_refused() const noexcept {
     return orders_guard_refused_;
+  }
+  /**
+   * @brief Returns the run's cash, with `RiskLimits::run_budget_` set.
+   *
+   * The budget, less what the run's fills spent, plus what its sells returned, less every fee; open orders do
+   * not lower it.
+   *
+   * @return The cash, or `std::nullopt` without a budget.
+   */
+  std::optional<Money> run_cash() const {
+    return run_ ? std::optional<Money>(run_->cash()) : std::nullopt;
+  }
+  /**
+   * @brief Returns the run's own shares of an instrument, with `RiskLimits::run_budget_` set.
+   * @param instrument The instrument.
+   * @return What the run's fills bought less what they sold (zero for an instrument it never traded), or
+   *   `std::nullopt` without a budget.
+   */
+  std::optional<Decimal64> run_holding(const InstrumentId& instrument) const {
+    return run_ ? std::optional<Decimal64>(run_->holding(instrument)) : std::nullopt;
   }
   /**
    * @brief Returns how many orders the binding refused to send (no request made); see `orders_unbuildable`.
@@ -2174,6 +2204,9 @@ private:
     if (!pending.empty() && guard_.limits().max_gross_exposure_) {
       inputs.exposure_basis_ = exposure_basis_for(view(), pending);
     }
+    if (run_ && !pending.empty()) {
+      run_pass_inputs(view(), inputs);
+    }
     for (std::size_t at = 0; at < pending.size(); ++at) {
       auto& order = pending[at];
       const auto& source_instruction = *origin[at];
@@ -2241,6 +2274,11 @@ private:
       // to one: guessing here would spend one currency's budget on another's order.
       const auto* reference = context_.find_instrument(order.instrument_);
       inputs.order_currency_ = reference ? std::optional<Currency>(reference->currency_) : std::nullopt;
+      if (run_) {
+        // Per order, every order: a figure left from the previous one would bound this one's sell.
+        inputs.run_holding_ =
+          order.side_ == OrderSide::SELL ? run_holding_for(view(), order.instrument_) : std::nullopt;
+      }
       // `evaluate` rather than `check`, for one fact `check` drops: whether the phase limit admitted
       // this order only because it closes a position. Nothing downstream can recover that -- the
       // order, the portfolio and the report all look the same either way -- and it is the one thing
@@ -2315,6 +2353,7 @@ private:
           ++placements_at_broker_;
           // And it is working now, as far as anything later in this pass is concerned, and its
           // money is spent. An `INDETERMINATE` send is counted the same way below, with no reference.
+          spend_run_cash(order, inputs);
           reserve_for_later(at, order, last_ref());
           persist_reservation(order, inputs.reference_price_, inputs.order_currency_, last_ref());
           track_unconfirmed(order, last_ref(), /*indeterminate=*/false, baseline);
@@ -2349,6 +2388,7 @@ private:
           ++placements_at_broker_;
           ledger_.mark(order.instrument_, "an order request has an unknown outcome");
           ++orders_indeterminate_;
+          note_run_unknown(order, inputs);
           // **Counted as if accepted, until the sweep says what became of it.** The ledger
           // withholds the instrument meanwhile; but once a sweep finds the order in the broker's
           // listing it clears the ledger, and a market order that filled is then in no listing while
@@ -3642,6 +3682,9 @@ private:
     // with no poll between, passes twice against a ceiling one of them should have reached. That is
     // precisely the omission `max_position_quantity_` once had.
     const bool exposed = guard_.limits().max_gross_exposure_.has_value();
+    // A run budget reserves open buys and bounds sells by open sells, for the same reason: on every side, so
+    // two bars cannot each pass what fits once.
+    const bool budgeted = guard_.limits().run_budget_.has_value();
     // A stop is read by target reconciliation whatever the limits, which refuses a target while one
     // rests (`RejectReason::STOP_ORDER_RESTING`). Not persisted, a stop placed on this pass would be
     // invisible to a target on the next one until a working-order poll listed it -- and "flatten"
@@ -3650,7 +3693,7 @@ private:
     // A broker that will list the order back, reached by this runner: the listing and holdings
     // account for the row (`track_unconfirmed`), so the reservation is always written. See above for
     // why every other runner keeps the scoping.
-    if (!keeps_sent_orders_until_listed && !sells && !buys && !capped && !exposed && !conditional) {
+    if (!keeps_sent_orders_until_listed && !sells && !buys && !capped && !exposed && !budgeted && !conditional) {
       return;
     }
     // **In place, all or nothing.** `reserve` builds the row in a local first, so the append is its first
@@ -3661,6 +3704,152 @@ private:
       context_detail::PortfolioAccess::for_runner_edit(context_), order, reference_price, currency, ref,
       guard_.limits().enforce_buying_power_
     );
+  }
+
+  // Opens a new run with the budget as its cash, after checking what a budgeted runner needs.
+  void open_run() {
+    const auto& limits = guard_.limits();
+    const auto zero = Decimal64::parse("0");
+    if (!decimal_less(zero, limits.run_budget_->amount_)) {
+      throw std::invalid_argument("RiskLimits::run_budget_ must be positive");
+    }
+    if (!limits.run_fees_) {
+      throw std::invalid_argument(
+        "RiskLimits::run_budget_ needs RiskLimits::run_fees_: a budgeted run refuses to start"
+      );
+    }
+    const auto& fees = *limits.run_fees_;
+    if (
+      decimal_less(fees.commission_rate_, zero) || decimal_less(fees.commission_minimum_, zero) ||
+      (fees.institution_rate_ && decimal_less(*fees.institution_rate_, zero)) ||
+      (fees.sell_tax_rate_ && decimal_less(*fees.sell_tax_rate_, zero))
+    ) {
+      throw std::invalid_argument("RiskLimits::run_fees_ must not state a negative rate or minimum");
+    }
+    if constexpr (runner_detail::sends_to_a_broker<Executor>::value) {
+      // Nothing can keep a live run's cash across a restart yet, so a live budget is refused, not half-served.
+      throw std::invalid_argument(
+        "RiskLimits::run_budget_ is not supported yet over an executor that sends to a broker"
+      );
+    }
+    run_.emplace(*limits.run_budget_);
+  }
+
+  // The run's cash less what its open buys commit, for one pass; an order of unknown outcome, or a row that
+  // cannot be valued, leaves `run_cash_` absent, and every budgeted buy in the pass is refused.
+  //
+  // In a replay the queue's rows are the run's open orders. Anywhere else no listing carries this runner's
+  // orders (a dry run's rows are replaced by the next working-order poll), so what its accepted buys commit is
+  // kept in `run_committed_`, its own reserved rows are skipped, and the broker's open buys still count.
+  void run_pass_inputs(const strategy::Portfolio<Tag>& view, strategy::GuardInputs& inputs) {
+    // An unknown outcome holds every buy until the indeterminacy ledger no longer withholds its instrument.
+    run_unknown_.erase(
+      std::remove_if(
+        run_unknown_.begin(), run_unknown_.end(),
+        [this](const InstrumentId& id) {
+          return !ledger_.requires_reconcile(id);
+        }
+      ),
+      run_unknown_.end()
+    );
+    if (!run_unknown_.empty() || !run_committed_) {
+      return;
+    }
+    const auto& fees = *guard_.limits().run_fees_;
+    const auto zero = Decimal64::parse("0");
+    auto cash = run_->cash().amount_;
+    if (!run_rows_listed_) {
+      const auto left = decimal_subtract(cash, *run_committed_);
+      if (!left) {
+        return;
+      }
+      cash = *left;
+    }
+    for (const auto& working : view.working_) {
+      if (working.order_.side_ != OrderSide::BUY || !strategy::order_is_open(working.order_.status_)) {
+        continue;
+      }
+      if (!run_rows_listed_ && working.reserved_) {
+        continue;
+      }
+      // From reference data, never the row's own currency, which may be a default-constructed KRW.
+      const auto* reference = context_.find_instrument(working.order_.instrument_);
+      if (!reference) {
+        return;
+      }
+      if (!(reference->currency_ == run_->currency())) {
+        continue;
+      }
+      const auto& price = working.order_.price_;
+      if (!price || !decimal_less(zero, *price)) {
+        return;
+      }
+      const auto remaining = decimal_subtract(working.order_.quantity_, working.order_.execution_.filled_quantity_);
+      if (!remaining || decimal_less(*remaining, zero)) {
+        return;
+      }
+      const auto cost = strategy::risk_detail::run_buy_cost(fees, *remaining, *price);
+      const auto left = cost ? decimal_subtract(cash, *cost) : std::nullopt;
+      if (!left) {
+        return;
+      }
+      cash = *left;
+    }
+    inputs.run_cash_ = Money{cash, run_->currency()};
+  }
+
+  // The run's shares of an instrument less every open sell of the view on it, or nothing if a row's remainder
+  // is negative or the arithmetic does not fit.
+  std::optional<Decimal64> run_holding_for(const strategy::Portfolio<Tag>& view, const InstrumentId& instrument) const {
+    const auto zero = Decimal64::parse("0");
+    std::optional<Decimal64> held = run_->holding(instrument);
+    for (const auto& working : view.working_) {
+      if (
+        working.order_.side_ != OrderSide::SELL || !(working.order_.instrument_ == instrument) ||
+        !strategy::order_is_open(working.order_.status_)
+      ) {
+        continue;
+      }
+      const auto remaining = decimal_subtract(working.order_.quantity_, working.order_.execution_.filled_quantity_);
+      if (!remaining || decimal_less(*remaining, zero)) {
+        return std::nullopt;
+      }
+      held = decimal_subtract(*held, *remaining);
+      if (!held) {
+        return std::nullopt;
+      }
+    }
+    return held;
+  }
+
+  // Takes a placed buy's cost out of the pass's run cash, so a later buy in the pass cannot spend it again, and,
+  // where no listing keeps the order, into `run_committed_` for later passes.
+  void spend_run_cash(const strategy::PlannedOrder& order, strategy::GuardInputs& inputs) {
+    if (!run_ || order.side_ != OrderSide::BUY) {
+      return;
+    }
+    // The guard passed it, so the price is there and positive.
+    const auto cost = strategy::risk_detail::run_buy_cost(*guard_.limits().run_fees_, order.quantity_, *order.price_);
+    if (!run_rows_listed_ && run_committed_) {
+      run_committed_ = cost ? decimal_add(*run_committed_, *cost) : std::nullopt;
+    }
+    const auto left = cost && inputs.run_cash_ ? decimal_subtract(inputs.run_cash_->amount_, *cost) : std::nullopt;
+    if (!left) {
+      inputs.run_cash_.reset();
+      return;
+    }
+    inputs.run_cash_->amount_ = *left;
+  }
+
+  // An order of the run whose outcome is unknown: a buy commits its cost, and every buy is refused, from the rest
+  // of this pass on, until the indeterminacy ledger no longer withholds the instrument.
+  void note_run_unknown(const strategy::PlannedOrder& order, strategy::GuardInputs& inputs) {
+    if (!run_) {
+      return;
+    }
+    spend_run_cash(order, inputs);
+    run_unknown_.push_back(order.instrument_);
+    inputs.run_cash_.reset();
   }
 
   // Resolves what every instrument the exposure ceiling must value is denominated in, and marked at.
@@ -4720,6 +4909,15 @@ private:
 
   Executor executor_;
   IndeterminacyLedger ledger_;
+  // The run's cash and own shares, only with `RiskLimits::run_budget_`.
+  std::optional<RunLedger> run_;
+  // What the run's accepted buys commit where no listing keeps them (see `run_pass_inputs`); empty once the sum
+  // does not fit, which refuses every later buy.
+  std::optional<Decimal64> run_committed_{Decimal64(0, 0)};
+  // Whether a replay's queue rows carry the run's open orders (`runner_detail::ReplayAccess::rows_listed`).
+  bool run_rows_listed_{false};
+  // The instruments of the run's orders of unknown outcome, while the indeterminacy ledger withholds them.
+  std::vector<InstrumentId> run_unknown_;
   std::size_t acknowledged_journal_failures_{0};
   std::map<InstrumentId, DatedBand> price_limits_;
   // How old a band may be before it is not applied; see `set_maximum_price_limits_age`.
@@ -4825,7 +5023,37 @@ private:
   std::optional<Decimal64> portfolio_value_;
   std::optional<Currency> portfolio_value_currency_;
   strategy::TradeTolerance tolerance_;
+
+  friend struct runner_detail::ReplayAccess;
 };
+
+namespace runner_detail {
+
+// How a replay books its executions in a budgeted runner's run (`backtest::Backtester`).
+struct ReplayAccess {
+  // Whether the runner keeps a run.
+  template <typename R>
+  static bool has_run(const R& runner) noexcept {
+    return runner.run_.has_value();
+  }
+
+  // Says the replay's queue rows carry the runner's open orders, so the runner keeps no commitment of its own.
+  template <typename R>
+  static void rows_listed(R& runner) noexcept {
+    runner.run_rows_listed_ = true;
+  }
+
+  // Books one execution in the runner's run, which must be open; `false` if `RunLedger::book` refuses it.
+  template <typename R>
+  static bool book(
+    R& runner, const InstrumentId& instrument, OrderSide side, const Decimal64& filled, const Money& amount,
+    const Decimal64& fee
+  ) {
+    return runner.run_->book(instrument, side, filled, amount, fee);
+  }
+};
+
+} // namespace runner_detail
 
 /**
  * @brief A runner that sends nothing: handlers fire and instructions are recorded by a
