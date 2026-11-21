@@ -896,6 +896,9 @@ inline JournalEntry resolution_entry(
  * only after the resolution is written. Ledger entries the journal knows nothing about are left.
  * A row the journal records as another placement's order is set aside (`match_against`).
  *
+ * Called directly on the journal of a runner with `strategy::RiskLimits::run_budget_`, it is outside that
+ * runner's write stops (`Runner::run_writes_closed`), which `live::SessionSource` keeps.
+ *
  * @tparam Journal The journal type.
  * @param open The unresolved instructions.
  * @param rows The listing, which must be complete.

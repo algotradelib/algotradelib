@@ -1144,9 +1144,11 @@ private:
   // are different clocks -- the context's is local, like the journal's stamps, and the page's is the
   // broker's -- and the matcher already widens for that difference in one place. Measuring the
   // window against the broker's clock as well would apply the allowance twice.
+  //
+  // A budgeted runner's stopped journal (`Runner::run_writes_closed`) is not written either.
   template <typename Runner>
   void reconcile(Runner& runner_instance, const std::vector<OrderSnapshot>& rows) {
-    if (journal_ == nullptr) {
+    if (journal_ == nullptr || runner_instance.run_writes_closed()) {
       return;
     }
     const auto& replay = journal_->replay();
@@ -1215,20 +1217,27 @@ private:
       }
     }
 
-    reconcile_ = runner::reconcile_against(
-      open, candidates, replay, sweep_instant(runner_instance), runner_instance.ledger(), *journal_, window_,
-      // The line says what was found; this says what was read, and what the runner then does about it.
-      runner_instance.serialized() ?
-        std::string_view(
-          " (the order list and the order history of its send); that does not establish that no order was "
-          "placed, and a serialized runner keeps the order owed until dated evidence accounts for it or an "
-          "operator releases it (Runner::release_obligations)"
-        ) :
-        std::string_view(
-          " (the order list and the order history of its send); that does not establish that no order was "
-          "placed"
-        )
-    );
+    // The line says what was found; this says what was read, and what the runner then does about it.
+    const auto note = runner_instance.serialized() ?
+      std::string_view(
+        " (the order list and the order history of its send); that does not establish that no order was "
+        "placed, and a serialized runner keeps the order owed until dated evidence accounts for it or an "
+        "operator releases it (Runner::release_obligations)"
+      ) :
+      std::string_view(
+        " (the order list and the order history of its send); that does not establish that no order was "
+        "placed"
+      );
+    const auto now = sweep_instant(runner_instance);
+    if (runner_instance.guard().limits().run_budget_) {
+      // A budgeted run's sweep stops at its first failed append, which stops the runner's writes too.
+      RunJournalWrites<Runner> writes{journal_, &runner_instance};
+      reconcile_ =
+        runner::reconcile_against(open, candidates, replay, now, runner_instance.ledger(), writes, window_, note);
+    } else {
+      reconcile_ =
+        runner::reconcile_against(open, candidates, replay, now, runner_instance.ledger(), *journal_, window_, note);
+    }
     if (reconcile_.unrecorded_) {
       // The sweep decided, and the decision could not be written down. Trading on a resolution that
       // exists only in memory is how a restart re-opens a question that was already answered -- and
@@ -1326,7 +1335,11 @@ private:
         continue;
       }
       // Written before the runner hears of it, as every resolution is: a restart restores the name.
+      if (runner_instance.run_writes_closed()) {
+        return;
+      }
       if (!journal_->append(runner::resolution_entry(instruction, match, now))) {
+        runner_instance.note_run_journal_write_failed();
         runner_instance.halt_locally("the order journal could not record a reconciliation, so the hold stands");
         return;
       }
@@ -1536,6 +1549,24 @@ private:
   // The order ids in the previous working-order listing, for the disappearance diagnostic.
   std::vector<std::string> charged_listing_;
   Country calendar_country_{Country::KR};
+  // The journal a budgeted runner's sweep appends through: it refuses every append once the runner's writes are
+  // closed, and closes them at a failed one, so the sweep writes nothing after it (`Runner::run_writes_closed`).
+  template <typename Runner>
+  struct RunJournalWrites {
+    Journal* journal_;
+    Runner* runner_;
+    bool append(const runner::JournalEntry& entry) {
+      if (runner_->run_writes_closed()) {
+        return false;
+      }
+      if (journal_->append(entry)) {
+        return true;
+      }
+      runner_->note_run_journal_write_failed();
+      return false;
+    }
+  };
+
   Journal* journal_{nullptr};
   int maximum_history_pages_{20};
   runner::MatchWindow window_;

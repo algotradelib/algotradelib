@@ -823,6 +823,34 @@ public:
     return run_recovery_;
   }
   /**
+   * @brief Tests whether a budgeted runner that keeps its run in a journal has stopped writing to it: its run is
+   *   not open (not recovered, refused, or a fresh run waiting for its listing), or a write failed
+   *   (`note_run_journal_write_failed`).
+   *
+   * While it holds, the runner writes no line, accounts for no order, sends no cancellation, and refuses the
+   * run's buys and sells; `live::SessionSource` writes no reconciliation. A failed write stops it for the
+   * process's life, since the line may be on disk whole, in part or not at all; the next process's recovery
+   * reads what persisted.
+   *
+   * @return `false` for any other runner.
+   */
+  bool run_writes_closed() const noexcept {
+    if constexpr (keeps_run_in_journal) {
+      return guard_.limits().run_budget_.has_value() && (!run_ || run_journal_latched_);
+    } else {
+      return false;
+    }
+  }
+  /**
+   * @brief Records that a write to a budgeted runner's journal failed, which stops its writes for the process's
+   *   life (`run_writes_closed`); does nothing without `RiskLimits::run_budget_`.
+   *
+   * The runner calls it for its own writes and its executor's; `live::SessionSource` for its reconciliations.
+   */
+  void note_run_journal_write_failed() noexcept {
+    run_journal_latched_ = run_journal_latched_ || guard_.limits().run_budget_.has_value();
+  }
+  /**
    * @brief Returns how many orders the binding refused to send (no request made); see `orders_unbuildable`.
    * @return The count.
    */
@@ -1169,15 +1197,17 @@ public:
   ) {
     bool written = true;
     if constexpr (can_serialize) {
+      if (run_writes_closed()) {
+        return false;
+      }
       for (auto at = unconfirmed_.begin(); at != unconfirmed_.end();) {
         if (!(at->instrument_ == instrument)) {
           ++at;
           continue;
         }
         auto line = closing_line(*at, JournalOutcome::CONFIRMED, std::nullopt, "released by an operator: " + reason);
-        if (!executor_.record(line)) {
+        if (!run_record(line)) {
           written = false;
-          note_executor_failure(false);
           ++at;
           continue;
         }
@@ -3070,6 +3100,9 @@ private:
   // - rows that all say it ended (`ended_row_for`) cap what holdings must show, unless a listing still
   //   shows it open.
   void examine_evidence(const std::vector<OrderSnapshot>& evidence) {
+    if (run_writes_closed()) {
+      return;
+    }
     const auto now = freshness_instant();
     const auto differ = [](const Decimal64& a, const Decimal64& b) {
       return decimal_less(a, b) || decimal_less(b, a);
@@ -3123,6 +3156,9 @@ private:
   // account for an order (`examine_evidence`); then, as for an overlapping runner, an order consulted past
   // the timeout with no answer is noted for the next holdings read.
   void confirm_serialized_from_history(const std::vector<OrderSnapshot>& evidence) {
+    if (run_writes_closed()) {
+      return;
+    }
     examine_evidence(evidence);
     confirm_reservations();
     const auto now = freshness_instant();
@@ -3137,6 +3173,9 @@ private:
 
   // `awaits_evidence` for a serialized runner.
   bool awaits_evidence_serialized(const Unconfirmed& entry, std::chrono::system_clock::time_point now) const {
+    if (run_writes_closed()) {
+      return false;
+    }
     // An unnamed order waits for a sweep or an operator, and a held one for the operator: no history row
     // can be matched to the first or account for the second.
     if (entry.operator_only_ || entry.ref_.primary_.empty()) {
@@ -3173,6 +3212,23 @@ private:
     return line;
   }
 
+  // Writes one of this runner's own lines (a closing line, a hold, a release, a run's record): refused while the
+  // run's writes are closed, except a run's opening lines before the run is open, never after a failed write. A
+  // failure halts and stops a budgeted run's writes.
+  bool run_record([[maybe_unused]] JournalEntry& line, [[maybe_unused]] bool opening = false) {
+    if constexpr (can_serialize) {
+      if (run_journal_latched_ || (!opening && run_writes_closed())) {
+        return false;
+      }
+      if (executor_.record(line)) {
+        return true;
+      }
+      note_run_journal_write_failed();
+      note_executor_failure(false);
+    }
+    return false;
+  }
+
   // Writes the line accounting for `entry`, with a run order's booking as confirmation prepared it; on failure
   // the runner stops sending and `entry` stays.
   bool discharge(
@@ -3189,7 +3245,7 @@ private:
         line.run_ = booked->record_;
         line.detail_ += booked->note_;
       }
-      if (executor_.record(line)) {
+      if (run_record(line)) {
         if (booked) {
           run_->book_placement(
             run_placement_of(entry), *booked->record_->filled_, *booked->record_->amount_, *booked->record_->fee_
@@ -3197,7 +3253,6 @@ private:
         }
         return true;
       }
-      note_executor_failure(false);
     }
     return false;
   }
@@ -3219,13 +3274,11 @@ private:
         return;
       }
       auto line = closing_line(entry, JournalOutcome::HELD, std::nullopt, entry.unwritten_hold_);
-      if (executor_.record(line)) {
+      if (run_record(line)) {
         entry.unwritten_hold_.clear();
         if (run_ && entry.run_order_) {
           run_->hold(run_placement_of(entry));
         }
-      } else {
-        note_executor_failure(false);
       }
     }
   }
@@ -3586,7 +3639,8 @@ private:
   void confirm_reservations() {
     if constexpr (keeps_sent_orders_until_listed) {
       decide_fresh_run();
-      if (unconfirmed_.empty()) {
+      // Closed, nothing is accounted for and no reserved row is stripped: the run's writes have stopped.
+      if (unconfirmed_.empty() || run_writes_closed()) {
         return;
       }
       const auto now = freshness_instant();
@@ -3914,8 +3968,8 @@ private:
   // neither `run_committed_` nor `run_unknown_` is read for it.
   void run_pass_inputs(const strategy::Portfolio<Tag>& view, strategy::GuardInputs& inputs) {
     if (serialized()) {
-      // A live run: its own orders, from what it sent, never the account's listing.
-      const auto reserved = run_->settled() ? run_reserved() : std::nullopt;
+      // A live run: its own orders, from what it sent, never the account's listing; nothing once its writes stop.
+      const auto reserved = run_->settled() && !run_journal_latched_ ? run_reserved() : std::nullopt;
       const auto left = reserved ? decimal_subtract(run_->cash().amount_, *reserved) : std::nullopt;
       if (left) {
         inputs.run_cash_ = Money{*left, run_->currency()};
@@ -4008,7 +4062,7 @@ private:
   // A live run's shares of an instrument less every sell of the run on it not yet booked, whole; nothing while a
   // placement on it is held or released unbooked, or a sell of the run on it is unnamed or held.
   std::optional<Decimal64> run_holding_serialized(const InstrumentId& instrument) const {
-    if (!run_->settled_on(instrument)) {
+    if (run_journal_latched_ || !run_->settled_on(instrument)) {
       return std::nullopt;
     }
     std::optional<Decimal64> held = run_->holding(instrument);
@@ -4339,8 +4393,7 @@ private:
         record->amount_ = transfer.amount_;
         record->given_ = transfer.id_;
         auto line = ledger_line(std::move(record), "a transfer the operator stated");
-        if (!executor_.record(line)) {
-          note_executor_failure(false);
+        if (!run_record(line, /*opening=*/true)) {
           return refuse_run(summary, "the order journal could not record the transfer " + transfer.id_, "restart");
         }
         ++summary.transfers_applied_;
@@ -4357,7 +4410,7 @@ private:
     if constexpr (keeps_run_in_journal) {
       const auto& portfolio = context_.portfolio();
       if (
-        !run_opening_waits_ || guard_.halted(strategy::HaltReason::LOCAL_FAILURE) ||
+        !run_opening_waits_ || run_journal_latched_ || guard_.halted(strategy::HaltReason::LOCAL_FAILURE) ||
         !(run_opening_stamp_ < portfolio.working_as_of_)
       ) {
         return;
@@ -4378,8 +4431,7 @@ private:
       record->amount_ = *guard_.limits().run_budget_;
       record->given_ = *run_opening_->fresh_;
       auto line = ledger_line(std::move(record), "a fresh run opens with run_budget_", run_fresh_id_);
-      if (!executor_.record(line)) {
-        note_executor_failure(false);
+      if (!run_record(line, /*opening=*/true)) {
         return refuse_run(summary, "the order journal could not record the run's opening", "restart");
       }
       run_.emplace(RunLedger(line.id_, *guard_.limits().run_budget_, *run_opening_->fresh_));
@@ -5068,7 +5120,8 @@ private:
     // cannot make an unresolved *position* worse, which is why the ledger does not gate it -- but it
     // still goes through the journal, and a journal that cannot record it must not let it be sent
     // unrecorded.
-    if (guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
+    // A budgeted run's stopped journal too: after a failed write it may end in a torn line (`run_writes_closed`).
+    if (guard_.halted(strategy::HaltReason::LOCAL_FAILURE) || run_writes_closed()) {
       ++instructions_unavailable_;
       report.unavailable_cancel_.push_back(ref);
       return;
@@ -5436,6 +5489,8 @@ private:
   void note_executor_failure(bool refused) {
     const auto failures = executor_journal_failures();
     if (failures > acknowledged_journal_failures_) {
+      // A placement's or a cancellation's line may be on disk whole, in part, or not at all.
+      note_run_journal_write_failed();
       auto detail = executor_journal_error();
       note_local_failure(detail.empty() ? std::string("the order journal could not be written") : std::move(detail));
       return;
@@ -5495,6 +5550,8 @@ private:
   std::string run_fresh_id_;
   std::chrono::system_clock::time_point run_opening_stamp_{};
   bool run_opening_waits_{false};
+  // Set at a budgeted runner's first failed journal write, for the process's life (`run_writes_closed`).
+  bool run_journal_latched_{false};
   // Every ledger-shaped id the journal holds, so a generated one never repeats it.
   std::unordered_set<std::string> run_ids_;
   std::size_t acknowledged_journal_failures_{0};
