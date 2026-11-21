@@ -243,7 +243,9 @@ enum class GuardReason {
    * @brief The run's cash, or its shares of the instrument, is not known.
    *
    * `GuardInputs::run_cash_` (for a buy) or `GuardInputs::run_holding_` (for a sell) is absent, the run's cash is
-   * in another currency than the budget, or `RiskLimits::run_fees_` is absent.
+   * in another currency than the budget, or `RiskLimits::run_fees_` is absent. A live run leaves them absent
+   * while it is not open, its journal writes have stopped, or an order of the run is unnamed, held, or released
+   * without a booking (`runner::Runner::run_unsettled`).
    */
   RUN_LEDGER_UNSETTLED,
 };
@@ -487,8 +489,11 @@ struct RiskLimits {
    * another currency is refused.
    *
    * `runner::Runner` keeps the run's cash and shares, and refuses to construct with a budget but no `run_fees_`,
-   * or over an executor that sends to a broker. It does not turn on `enforce_buying_power_`. See "The run budget"
-   * in running-a-strategy-live.md.
+   * or over an executor that sends to a broker unless the runner keeps its run in the order journal (a serialized
+   * `runner::JournalingExecutor` over a broker that lists working orders). Such a runner opens its run at
+   * `runner::recover_runner`: it resumes the journal's run, and opens a new one with this amount only when stated
+   * fresh (`runner::RunOpening`). It does not turn on `enforce_buying_power_`. See "The run budget" in
+   * running-a-strategy-live.md.
    */
   std::optional<Money> run_budget_;
   /** @brief The fees a run budget estimates for each order; required with `run_budget_`, unread without it. */

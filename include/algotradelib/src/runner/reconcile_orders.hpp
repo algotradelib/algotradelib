@@ -2,6 +2,7 @@
 
 #include "./execution.hpp"
 #include "./journal.hpp"
+#include "./run_ledger.hpp"
 
 #include <algotradelib/core>
 
@@ -1225,6 +1226,11 @@ struct RecoveryReport {
   bool unreadable_file_{false};
   /** @brief What was found, for the operator. */
   std::string detail_;
+  /**
+   * @brief How a budgeted runner that keeps its run in the journal opened it, or why it did not
+   *   (`Runner::run_recovery`); empty for any other runner.
+   */
+  std::optional<RunRecoverySummary> run_;
 
   /**
    * @brief Tests whether nothing was owed or damaged.
@@ -1291,8 +1297,8 @@ RecoveryReport recover_into(const Journal& journal, IndeterminacyLedger& ledger)
 
 /**
  * @brief Recovers a journal into a runner at startup: marks each instrument left owed, restores a
- *   serialized runner's orders not yet accounted for (`Runner::restore_obligations`), and halts the
- *   runner when damage names no instrument.
+ *   serialized runner's orders not yet accounted for (`Runner::restore_obligations`), opens a budgeted
+ *   runner's run from it, and halts the runner when damage names no instrument.
  *
  * The runner is halted (`LOCAL_FAILURE`) when a torn line names no instrument, a complete line does
  * not parse, or the file cannot be read. An operator reads the broker's order list and calls
@@ -1309,8 +1315,9 @@ RecoveryReport recover_runner(Runner& runner_instance, const Journal& journal) {
   const auto& replay = journal.replay();
   auto report = recover_into(replay, runner_instance.ledger());
   // A serialized runner also gets back every order it may still owe (`Runner::restore_obligations`),
-  // and places nothing until this has run.
+  // and places nothing until this has run; a budgeted one opens its run there.
   runner_instance.restore_obligations(replay);
+  report.run_ = runner_instance.run_recovery();
   if (report.unattributable_) {
     runner_instance.halt_locally(
       report.detail_.empty() ? "the order journal was damaged in a way that names no instrument" : report.detail_

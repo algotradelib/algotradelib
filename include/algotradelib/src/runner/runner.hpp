@@ -16,11 +16,13 @@
 #include <cstddef>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -140,6 +142,19 @@ struct serializes<
     )),
     decltype(std::declval<const Executor&>().last_entry()),
     decltype(std::declval<Executor&>().record(std::declval<JournalEntry&>()))
+  >
+> : std::true_type {};
+
+// Whether `Executor` can keep a run budget's records in its journal: it stamps a run's placements (`set_run`)
+// and names a ledger line (`next_run_id`), as `JournalingExecutor` does. A live budgeted runner needs it.
+template <typename Executor, typename = void>
+struct can_journal_run : std::false_type {};
+
+template <typename Executor>
+struct can_journal_run<
+  Executor,
+  std::void_t<
+    decltype(std::declval<Executor&>().set_run(std::string())), decltype(std::declval<Executor&>().next_run_id())
   >
 > : std::true_type {};
 
@@ -355,7 +370,8 @@ public:
    * @param executor Where instructions are sent.
    * @throws std::invalid_argument With `RiskLimits::run_budget_` set, if the budget is not positive,
    *   `RiskLimits::run_fees_` is absent or states a negative rate or minimum, or the executor sends to a broker
-   *   (a live run budget is not supported yet).
+   *   and the runner cannot keep its run in a journal (a `JournalingExecutor` over a broker that lists working
+   *   orders can). Such a runner opens its run in `runner::recover_runner`; any other opens it here.
    */
   explicit Runner(
     Strategy strategy = {}, strategy::RiskLimits limits = {}, std::size_t series_capacity = 512, Executor executor = {}
@@ -425,12 +441,17 @@ public:
   /**
    * @brief Clears the local-failure hold, after an operator has fixed the cause.
    *
-   * It also acknowledges the journal failures seen so far, so the same failure does not halt again.
+   * It also acknowledges the journal failures seen so far, so the same failure does not halt again; a fresh run
+   * still waiting (`RunOpening::fresh_`) then opens only on a listing received after this call.
    * Other holds, such as an operator's halt, stay.
    */
   void resume_after_local_failure() {
     guard_.resume(strategy::HaltReason::LOCAL_FAILURE);
     acknowledged_journal_failures_ = executor_journal_failures();
+    // A fresh run still waiting opens only on a listing received from here.
+    if (run_opening_waits_) {
+      run_opening_stamp_ = context_.portfolio().working_as_of_;
+    }
   }
 
   /**
@@ -727,10 +748,11 @@ public:
   /**
    * @brief Returns the run's cash, with `RiskLimits::run_budget_` set.
    *
-   * The budget, less what the run's fills spent, plus what its sells returned, less every fee; open orders do
-   * not lower it.
+   * The budget, plus deposits, less withdrawals, less what the run's fills spent, plus what its sells returned,
+   * less every fee; open orders do not lower it.
    *
-   * @return The cash, or `std::nullopt` without a budget.
+   * @return The cash, or `std::nullopt` without a budget or while no run is open (a runner that keeps its run in
+   *   a journal opens it in `runner::recover_runner`).
    */
   std::optional<Money> run_cash() const {
     return run_ ? std::optional<Money>(run_->cash()) : std::nullopt;
@@ -739,10 +761,66 @@ public:
    * @brief Returns the run's own shares of an instrument, with `RiskLimits::run_budget_` set.
    * @param instrument The instrument.
    * @return What the run's fills bought less what they sold (zero for an instrument it never traded), or
-   *   `std::nullopt` without a budget.
+   *   `std::nullopt` without a budget or while no run is open. A placement on it held or released without a
+   *   booking (`run_unsettled`) is not counted.
    */
   std::optional<Decimal64> run_holding(const InstrumentId& instrument) const {
     return run_ ? std::optional<Decimal64>(run_->holding(instrument)) : std::nullopt;
+  }
+  /**
+   * @brief Lists the run's placements that leave its ledger unsettled: held for an operator, or released by
+   *   one (`release_obligations`) or confirmed by a runner without a budget, with no booking.
+   *
+   * While one is listed, every buy of the run is refused, and so are sells of its instrument
+   * (`strategy::GuardReason::RUN_LEDGER_UNSETTLED`). A released one stays listed for the run's life: what it
+   * filled is not booked, so the operator reads the account and opens a fresh run (`RunOpening::fresh_`) with
+   * the remaining cash as `RiskLimits::run_budget_`.
+   *
+   * @return The placements; empty without a run.
+   */
+  std::vector<RunPlacement> run_unsettled() const {
+    return run_ ? run_->unsettled() : std::vector<RunPlacement>{};
+  }
+  /**
+   * @brief Sets how `runner::recover_runner` opens a budgeted runner's run from its journal: resume by default
+   *   (a journal with no run halts), fresh only under an id, and deposits and withdrawals each applied once.
+   *
+   * Read only by a runner that keeps its run in a journal; any other opens a new run at construction.
+   * See `RunOpening` for when a fresh run opens.
+   *
+   * @param opening The opening.
+   * @throws std::invalid_argument for an empty fresh id, an empty transfer id, two transfers with one id, or a
+   *   transfer amount not above zero.
+   * @throws std::logic_error without `RiskLimits::run_budget_`, or after `runner::recover_runner`.
+   */
+  void set_run_opening(RunOpening opening) {
+    if (!guard_.limits().run_budget_ || recovered_) {
+      throw std::logic_error("set_run_opening needs a run budget and must come before runner::recover_runner");
+    }
+    if (opening.fresh_ && opening.fresh_->empty()) {
+      throw std::invalid_argument("a fresh run needs an id");
+    }
+    for (std::size_t at = 0; at < opening.transfers_.size(); ++at) {
+      const auto& transfer = opening.transfers_[at];
+      if (transfer.id_.empty() || !decimal_less(Decimal64::parse("0"), transfer.amount_.amount_)) {
+        throw std::invalid_argument("a run's transfer needs an id and an amount above zero");
+      }
+      for (std::size_t other = 0; other < at; ++other) {
+        if (opening.transfers_[other].id_ == transfer.id_) {
+          throw std::invalid_argument("two of a run's transfers share the id " + transfer.id_);
+        }
+      }
+    }
+    run_opening_ = std::move(opening);
+  }
+  /**
+   * @brief Returns how `runner::recover_runner` opened the run, or why it did not, or that a fresh run waits
+   *   for the account's first working-order listing (`RunRecoverySummary::waiting_`), and then how that went.
+   * @return The summary, or `std::nullopt` for a runner that does not keep its run in a journal, without
+   *   `RiskLimits::run_budget_`, or before recovery.
+   */
+  const std::optional<RunRecoverySummary>& run_recovery() const noexcept {
+    return run_recovery_;
   }
   /**
    * @brief Returns how many orders the binding refused to send (no request made); see `orders_unbuildable`.
@@ -992,9 +1070,13 @@ public:
    * can both be taken as accounted for, and a later order confirmed by another's fill. Choose it only for
    * a strategy that needs overlapping orders (an entry beside its protective stop) and accepts those.
    *
-   * @throws std::logic_error once anything was placed, or after `runner::recover_runner`.
+   * @throws std::logic_error once anything was placed, after `runner::recover_runner`, or with
+   *   `RiskLimits::run_budget_` set.
    */
   void allow_overlapping_orders() {
+    if (guard_.limits().run_budget_) {
+      throw std::logic_error("a run budget books its orders one at a time, so allow_overlapping_orders is refused");
+    }
     if (placements_at_broker_ != 0 || recovered_) {
       throw std::logic_error("allow_overlapping_orders must be chosen before recovery and before trading");
     }
@@ -1074,7 +1156,8 @@ public:
    * journal, or one whose holdings never arrived: read the broker's order list and holdings first. Each
    * order gets a `JournalOutcome::CONFIRMED` line naming `reason` and is then forgotten; the next order on
    * the instrument needs a holdings read received after this call. The indeterminacy ledger is left as it
-   * is. If a line cannot be written, that order is kept and the runner stops sending
+   * is. An order of the run budget's run is released without a booking (`run_unsettled`). If a line cannot be
+   * written, that order is kept and the runner stops sending
    * (`HaltReason::LOCAL_FAILURE`).
    *
    * @param instrument The instrument.
@@ -1100,6 +1183,10 @@ public:
         }
         set_boundary(instrument, line.recorded_at_, /*strict=*/true);
         drop_reserved_row(*at);
+        // Released with no booking: the run stays unsettled, as its journal now reads.
+        if (run_ && at->run_order_) {
+          run_->release(run_placement_of(*at));
+        }
         at = unconfirmed_.erase(at);
       }
       confirm_reservations();
@@ -1118,6 +1205,10 @@ public:
    * instrument's latest `CONFIRMED` line means only a holdings read received after it sizes the next
    * order. Does nothing else for a runner that is not serialized.
    *
+   * With `RiskLimits::run_budget_`, it then opens the run from the journal as `set_run_opening` says: only from
+   * an intact journal, a fresh one on the next working-order listing, and it halts the runner (`LOCAL_FAILURE`)
+   * whenever it does not open one (`run_recovery`).
+   *
    * @param replay The journal's contents.
    */
   void restore_obligations([[maybe_unused]] const JournalReplay& replay) {
@@ -1127,6 +1218,13 @@ public:
         return;
       }
       restore_from(replay);
+      // The run opens before anything can account for a restored order, so a run's order is booked.
+      if constexpr (keeps_run_in_journal) {
+        if (guard_.limits().run_budget_) {
+          open_run_from(replay);
+        }
+      }
+      confirm_reservations();
     }
   }
 
@@ -1154,7 +1252,7 @@ public:
     }
     return static_cast<std::size_t>(
       std::count_if(unconfirmed_.begin(), unconfirmed_.end(), [](const Unconfirmed& entry) {
-        return entry.operator_only_ || entry.residual_.coefficient() != 0;
+        return entry.operator_only_ || entry.residual_.coefficient() != 0 || entry.awaiting_booking_;
       })
     );
   }
@@ -2545,6 +2643,23 @@ private:
     }
   }
 
+  // What a run's order filled, taken from a dated history row of its own (serialized mode, a run budget).
+  struct RunBooking {
+    // Equals `expected_` when taken, and checked again when the order is accounted for.
+    Decimal64 filled_;
+    // The row's `filled_amount_`, else its average price times `filled_`, in the run's currency.
+    Money amount_;
+    // As the row states them, if it does.
+    std::optional<Money> commission_;
+    std::optional<Money> tax_;
+  };
+
+  // A run order's booking as its `CONFIRMED` line writes it, and the note when its fees are above the estimate.
+  struct RunBooked {
+    std::shared_ptr<const RunRecord> record_;
+    std::string note_;
+  };
+
   // An order the broker accepted, or one whose request failed in transit, that holdings have not yet
   // shown in full; see `unconfirmed_orders`.
   struct Unconfirmed {
@@ -2594,6 +2709,12 @@ private:
     std::chrono::system_clock::time_point baseline_at_{};
     // Why it is held for an operator, while that hold's `HELD` line is not yet written.
     std::string unwritten_hold_;
+    // A run budget's order (serialized mode): its fill is booked in the run's ledger when it is accounted for.
+    bool run_order_{false};
+    // Holdings show what it filled but no history row has booked it yet, so it is not yet accounted for.
+    bool awaiting_booking_{false};
+    // What it filled and for how much, from its own history row; cleared whenever `expected_` changes.
+    std::optional<RunBooking> booking_;
   };
 
   // ---------------------------------------------------------------------------------------------------
@@ -2626,6 +2747,8 @@ private:
     entry.sent_at_ = freshness_instant();
     entry.residual_ = order.quantity_;
     entry.journal_ = executor_.last_entry();
+    // A serialized runner's run is open only from its journal, and its executor stamped this order's lines.
+    entry.run_order_ = run_.has_value();
     if (entry.sent_at_ != std::chrono::system_clock::time_point{}) {
       entry.unexplained_since_ = entry.sent_at_;
     }
@@ -2661,6 +2784,7 @@ private:
     for (auto at = unconfirmed_.begin(); at != unconfirmed_.end();) {
       auto& entry = *at;
       persist_hold(entry);
+      entry.awaiting_booking_ = false;
       // An actual read, and not one older than the read the order was decided against.
       const bool read = portfolio.as_of_ != epoch && !(portfolio.as_of_ < entry.baseline_at_);
       // What a listing still shows of it: that part cannot have reached holdings.
@@ -2702,17 +2826,24 @@ private:
       }
       const bool is_named = !entry.ref_.primary_.empty();
       if (!entry.operator_only_ && is_named && entry.identified_ && !entry.listed_now_) {
+        // A run's order is accounted for only with what it cost, prepared here once: until a history row
+        // books it, it stays owed.
+        const bool ending = entry.expected_.coefficient() == 0 || (moved && equal(*moved, entry.expected_));
+        const auto booked = ending && run_ && entry.run_order_ ? run_booking_of(entry) : std::nullopt;
         if (entry.expected_.coefficient() == 0) {
-          if (discharge(entry, std::nullopt, "its own history row shows it ended with nothing filled")) {
+          if (discharge(entry, std::nullopt, "its own history row shows it ended with nothing filled", booked)) {
             at = unconfirmed_.erase(at);
             continue;
           }
         } else if (moved && equal(*moved, entry.expected_)) {
-          if (
+          if (run_ && entry.run_order_ && !booked) {
+            entry.awaiting_booking_ = true;
+          } else if (
             discharge(
               entry, held,
               "holdings show " + held->str() + ": its baseline " + entry.baseline_.str() + " and the " +
-                entry.expected_.str() + " it filled"
+                entry.expected_.str() + " it filled",
+              booked
             )
           ) {
             set_boundary(entry.instrument_, portfolio.as_of_, /*strict=*/false);
@@ -2735,19 +2866,22 @@ private:
         covered = decimal_less(*moved, fillable) ? *moved : fillable;
       }
       auto residual = decimal_subtract(fillable, covered).value_or(entry.expected_);
-      if (!decimal_less(zero, residual)) {
+      const bool explained = !decimal_less(zero, residual);
+      // Waiting for its booking, it is not explained: its clock runs and its timeout is counted below.
+      if (explained && !entry.awaiting_booking_) {
         mark_explained(entry);
         ++at;
         continue;
       }
-      entry.residual_ = residual;
+      entry.residual_ = explained ? zero : residual;
       // Not from the epoch: a restored order's clock starts with the first real instant.
       if (!entry.unexplained_since_ && now != epoch) {
         entry.unexplained_since_ = now;
       }
       if (
         !entry.noticed_ && !entry.operator_only_ && (entry.settled_ || entry.history_missed_ || !is_named) &&
-        timed_out(entry, now) && portfolio.as_of_ - *entry.unexplained_since_ > confirmation_timeout_
+        (!entry.awaiting_booking_ || entry.history_missed_) && timed_out(entry, now) &&
+        portfolio.as_of_ - *entry.unexplained_since_ > confirmation_timeout_
       ) {
         // A notice, not a release: the order still holds its instrument, and later evidence can still
         // account for it. A named one marks no ledger: the gate already withholds the instrument while it
@@ -2768,7 +2902,9 @@ private:
         ++at;
         continue;
       }
-      rebuild_residual_row(portfolio, entry, residual);
+      if (!explained) {
+        rebuild_residual_row(portfolio, entry, residual);
+      }
       ++at;
     }
   }
@@ -2967,14 +3103,18 @@ private:
         hold_for_operator(entry, "an order this runner sent" + named(entry) + ": " + *contradiction);
         continue;
       }
-      if (entry.settled_ || broker_row_for(context_.portfolio(), entry) != nullptr) {
-        continue;
+      if (!entry.settled_ && broker_row_for(context_.portfolio(), entry) == nullptr) {
+        if (const auto* row = ended_row_for(evidence, entry)) {
+          entry.expected_ = row->execution_.filled_quantity_;
+          entry.settled_ = true;
+          entry.booking_.reset();
+          // Holdings get a full timeout from here to show it (`confirm_serialized`).
+          entry.unexplained_since_ = now;
+        }
       }
-      if (const auto* row = ended_row_for(evidence, entry)) {
-        entry.expected_ = row->execution_.filled_quantity_;
-        entry.settled_ = true;
-        // Holdings get a full timeout from here to show it (`confirm_serialized`).
-        entry.unexplained_since_ = now;
+      // On every read, settled or not, after the cap: the booking is for the quantity it finally filled.
+      if (run_ && entry.run_order_) {
+        take_run_booking(evidence, entry);
       }
     }
   }
@@ -2988,7 +3128,7 @@ private:
     const auto now = freshness_instant();
     for (auto& entry : unconfirmed_) {
       entry.consulted_ = awaits_evidence(entry, now);
-      if (entry.consulted_ && !entry.settled_ && timed_out(entry, now)) {
+      if (entry.consulted_ && (!entry.settled_ || entry.awaiting_booking_) && timed_out(entry, now)) {
         entry.history_missed_ = true;
       }
     }
@@ -3005,6 +3145,10 @@ private:
     // A name a sweep gave needs a row of the order's own day, however much of it holdings already show.
     if (!entry.identified_) {
       return true;
+    }
+    // Its booking comes only from its own history row, until the history has had no answer past the timeout.
+    if (entry.awaiting_booking_) {
+      return !entry.history_missed_;
     }
     if (entry.residual_.coefficient() == 0 || entry.settled_ || entry.history_missed_) {
       return false;
@@ -3029,14 +3173,28 @@ private:
     return line;
   }
 
-  // Writes the line accounting for `entry`; on failure the runner stops sending and `entry` stays.
+  // Writes the line accounting for `entry`, with a run order's booking as confirmation prepared it; on failure
+  // the runner stops sending and `entry` stays.
   bool discharge(
     [[maybe_unused]] const Unconfirmed& entry, [[maybe_unused]] std::optional<Decimal64> holding,
-    [[maybe_unused]] std::string detail
+    [[maybe_unused]] std::string detail, [[maybe_unused]] const std::optional<RunBooked>& booked = std::nullopt
   ) {
     if constexpr (can_serialize) {
+      // A run's order is never accounted for without its booking, which rides on this line: one append.
+      if (run_ && entry.run_order_ && !booked) {
+        return false;
+      }
       auto line = closing_line(entry, JournalOutcome::CONFIRMED, std::move(holding), std::move(detail));
+      if (booked) {
+        line.run_ = booked->record_;
+        line.detail_ += booked->note_;
+      }
       if (executor_.record(line)) {
+        if (booked) {
+          run_->book_placement(
+            run_placement_of(entry), *booked->record_->filled_, *booked->record_->amount_, *booked->record_->fee_
+          );
+        }
         return true;
       }
       note_executor_failure(false);
@@ -3063,6 +3221,9 @@ private:
       auto line = closing_line(entry, JournalOutcome::HELD, std::nullopt, entry.unwritten_hold_);
       if (executor_.record(line)) {
         entry.unwritten_hold_.clear();
+        if (run_ && entry.run_order_) {
+          run_->hold(run_placement_of(entry));
+        }
       } else {
         note_executor_failure(false);
       }
@@ -3218,7 +3379,6 @@ private:
       }
       unconfirmed_.push_back(std::move(restored[at]));
     }
-    confirm_reservations();
   }
   // Remembers an order the broker just accepted, so a listing that lacks it cannot retire its
   // reservation; see `unconfirmed_orders`. Called right after `persist_reservation` wrote its row.
@@ -3425,6 +3585,7 @@ private:
   // `confirm_serialized` and `confirm_overlapping` say when an order counts as confirmed.
   void confirm_reservations() {
     if constexpr (keeps_sent_orders_until_listed) {
+      decide_fresh_run();
       if (unconfirmed_.empty()) {
         return;
       }
@@ -3729,10 +3890,16 @@ private:
       throw std::invalid_argument("RiskLimits::run_fees_ must not state a negative rate or minimum");
     }
     if constexpr (runner_detail::sends_to_a_broker<Executor>::value) {
-      // Nothing can keep a live run's cash across a restart yet, so a live budget is refused, not half-served.
-      throw std::invalid_argument(
-        "RiskLimits::run_budget_ is not supported yet over an executor that sends to a broker"
-      );
+      // A live run's cash lives in its journal, read at recovery (`open_run_from`); a runner that cannot keep it
+      // there is refused rather than half-served.
+      if constexpr (!keeps_run_in_journal) {
+        throw std::invalid_argument(
+          "RiskLimits::run_budget_ over an executor that sends to a broker needs a serialized runner that keeps its "
+          "run in the journal (a JournalingExecutor over a broker that lists working orders)"
+        );
+      } else {
+        return;
+      }
     }
     run_.emplace(*limits.run_budget_);
   }
@@ -3742,8 +3909,19 @@ private:
   //
   // In a replay the queue's rows are the run's open orders. Anywhere else no listing carries this runner's
   // orders (a dry run's rows are replaced by the next working-order poll), so what its accepted buys commit is
-  // kept in `run_committed_`, its own reserved rows are skipped, and the broker's open buys still count.
+  // kept in `run_committed_`, its own reserved rows are skipped, and the broker's open buys still count. A live
+  // run keeps its orders as obligations instead (`run_reserved`), restored from its journal after a restart, so
+  // neither `run_committed_` nor `run_unknown_` is read for it.
   void run_pass_inputs(const strategy::Portfolio<Tag>& view, strategy::GuardInputs& inputs) {
+    if (serialized()) {
+      // A live run: its own orders, from what it sent, never the account's listing.
+      const auto reserved = run_->settled() ? run_reserved() : std::nullopt;
+      const auto left = reserved ? decimal_subtract(run_->cash().amount_, *reserved) : std::nullopt;
+      if (left) {
+        inputs.run_cash_ = Money{*left, run_->currency()};
+      }
+      return;
+    }
     // An unknown outcome holds every buy until the indeterminacy ledger no longer withholds its instrument.
     run_unknown_.erase(
       std::remove_if(
@@ -3803,6 +3981,9 @@ private:
   // The run's shares of an instrument less every open sell of the view on it, or nothing if a row's remainder
   // is negative or the arithmetic does not fit.
   std::optional<Decimal64> run_holding_for(const strategy::Portfolio<Tag>& view, const InstrumentId& instrument) const {
+    if (serialized()) {
+      return run_holding_serialized(instrument);
+    }
     const auto zero = Decimal64::parse("0");
     std::optional<Decimal64> held = run_->holding(instrument);
     for (const auto& working : view.working_) {
@@ -3824,6 +4005,390 @@ private:
     return held;
   }
 
+  // A live run's shares of an instrument less every sell of the run on it not yet booked, whole; nothing while a
+  // placement on it is held or released unbooked, or a sell of the run on it is unnamed or held.
+  std::optional<Decimal64> run_holding_serialized(const InstrumentId& instrument) const {
+    if (!run_->settled_on(instrument)) {
+      return std::nullopt;
+    }
+    std::optional<Decimal64> held = run_->holding(instrument);
+    for (const auto& entry : unconfirmed_) {
+      if (!entry.run_order_ || entry.side_ != OrderSide::SELL || !(entry.instrument_ == instrument)) {
+        continue;
+      }
+      if (state_of(entry) != ObligationState::NAMED) {
+        return std::nullopt;
+      }
+      held = decimal_subtract(*held, entry.row_.order_.quantity_);
+      if (!held) {
+        return std::nullopt;
+      }
+    }
+    return held;
+  }
+
+  // What a live run's open buys reserve: each buy of the run not yet booked, whole, at its own limit price plus
+  // both estimates (a partial fill is booked only when the order is accounted for, so its filled part stays
+  // reserved). Nothing while an order of the run is unnamed or held, or a buy cannot be valued.
+  std::optional<Decimal64> run_reserved() const {
+    const auto& fees = *guard_.limits().run_fees_;
+    const auto zero = Decimal64::parse("0");
+    std::optional<Decimal64> total = zero;
+    for (const auto& entry : unconfirmed_) {
+      if (!entry.run_order_) {
+        continue;
+      }
+      if (state_of(entry) != ObligationState::NAMED) {
+        return std::nullopt;
+      }
+      if (entry.side_ != OrderSide::BUY) {
+        continue;
+      }
+      const auto& price = entry.row_.order_.price_;
+      if (!price || !decimal_less(zero, *price)) {
+        return std::nullopt;
+      }
+      const auto cost = strategy::risk_detail::run_buy_cost(fees, entry.row_.order_.quantity_, *price);
+      total = cost ? decimal_add(*total, *cost) : std::nullopt;
+      if (!total) {
+        return std::nullopt;
+      }
+    }
+    return total;
+  }
+
+  // A run's order as its ledger records it: its journal id, instrument, side and the quantity it was sent for.
+  static RunPlacement run_placement_of(const Unconfirmed& entry) {
+    RunPlacement placement;
+    placement.id_ = entry.journal_ ? entry.journal_->id_ : std::string();
+    placement.instrument_ = entry.instrument_;
+    placement.side_ = entry.side_;
+    placement.quantity_ = entry.journal_ ? entry.journal_->quantity_ : entry.row_.order_.quantity_;
+    return placement;
+  }
+
+  // What a dated history row of a run's own order says it filled and cost, or nothing: an amount not above zero
+  // (KIS writes zero on an unfilled row), an average price not above zero, an amount or a fee in another
+  // currency than the run's, or a fee below zero.
+  std::optional<RunBooking> run_booking_from(const OrderSnapshot& row, const Decimal64& filled) const {
+    const auto zero = Decimal64::parse("0");
+    const auto& execution = row.execution_;
+    const auto& currency = run_->currency();
+    if (execution.average_filled_price_ && !decimal_less(zero, *execution.average_filled_price_)) {
+      return std::nullopt;
+    }
+    std::optional<Money> amount = execution.filled_amount_;
+    if (!amount && execution.average_filled_price_) {
+      const auto value = decimal_multiply(*execution.average_filled_price_, filled);
+      if (value) {
+        amount = Money{*value, row.currency_};
+      }
+    }
+    if (!amount || !(amount->currency_ == currency) || !decimal_less(zero, amount->amount_)) {
+      return std::nullopt;
+    }
+    for (const auto* fee : {&execution.commission_, &execution.tax_}) {
+      if (*fee && (!((*fee)->currency_ == currency) || decimal_less((*fee)->amount_, zero))) {
+        return std::nullopt;
+      }
+    }
+    return RunBooking{filled, *amount, execution.commission_, execution.tax_};
+  }
+
+  // Takes a run order's booking from its own dated history rows that filled exactly what it now expects; two
+  // that disagree, or one that disagrees with the booking held, clear it.
+  void take_run_booking(const std::vector<OrderSnapshot>& evidence, Unconfirmed& entry) const {
+    if (entry.expected_.coefficient() == 0) {
+      return;
+    }
+    const auto differ = [](const Decimal64& a, const Decimal64& b) {
+      return decimal_less(a, b) || decimal_less(b, a);
+    };
+    const auto differ_money = [&](const std::optional<Money>& a, const std::optional<Money>& b) {
+      return a.has_value() != b.has_value() ||
+        (a && (!(a->currency_ == b->currency_) || differ(a->amount_, b->amount_)));
+    };
+    for (const auto& row : evidence) {
+      if (!own_row(row, entry) || differ(row.execution_.filled_quantity_, entry.expected_)) {
+        continue;
+      }
+      const auto candidate = run_booking_from(row, entry.expected_);
+      if (!candidate) {
+        continue;
+      }
+      if (
+        entry.booking_ &&
+        (differ_money(entry.booking_->amount_, candidate->amount_) ||
+          differ_money(entry.booking_->commission_, candidate->commission_) ||
+          differ_money(entry.booking_->tax_, candidate->tax_))
+      ) {
+        entry.booking_.reset();
+        return;
+      }
+      entry.booking_ = candidate;
+    }
+  }
+
+  // The booking of a run's order, or nothing if it cannot be booked yet: an order that filled with no booking
+  // held for exactly what it filled, a fee estimate that does not fit, or a fill the run's ledger refuses. A fee
+  // the row states is booked as stated, each component on its own; a missing one is estimated from `run_fees_`.
+  std::optional<RunBooked> run_booking_of(const Unconfirmed& entry) const {
+    const auto zero = Decimal64::parse("0");
+    const auto& fees = *guard_.limits().run_fees_;
+    auto record = std::make_shared<RunRecord>();
+    record->run_ = run_->id();
+    RunBooked booked;
+    if (entry.expected_.coefficient() == 0) {
+      record->filled_ = zero;
+      record->amount_ = Money{zero, run_->currency()};
+      record->fee_ = zero;
+    } else {
+      if (
+        !entry.booking_ || decimal_less(entry.booking_->filled_, entry.expected_) ||
+        decimal_less(entry.expected_, entry.booking_->filled_)
+      ) {
+        return std::nullopt;
+      }
+      const auto& booking = *entry.booking_;
+      const auto& value = booking.amount_.amount_;
+      const auto estimated_commission = fees.estimate_commission(value);
+      const auto estimated_tax = fees.estimate_tax(value, entry.side_);
+      const auto commission =
+        booking.commission_ ? std::optional<Decimal64>(booking.commission_->amount_) : estimated_commission;
+      const auto tax = booking.tax_ ? std::optional<Decimal64>(booking.tax_->amount_) : estimated_tax;
+      const auto fee = commission && tax ? decimal_add(*commission, *tax) : std::nullopt;
+      if (!fee) {
+        return std::nullopt;
+      }
+      record->filled_ = booking.filled_;
+      record->amount_ = booking.amount_;
+      record->fee_ = *fee;
+      // Estimated where the schedule supplied a component this side bears: a buy bears no tax.
+      record->fee_estimated_ = !booking.commission_ || (entry.side_ == OrderSide::SELL && !booking.tax_);
+      // Booked exactly, never covered by a margin; the operator is told on the line.
+      const auto estimate =
+        estimated_commission && estimated_tax ? decimal_add(*estimated_commission, *estimated_tax) : std::nullopt;
+      if (estimate && decimal_less(*estimate, *fee)) {
+        booked.note_ = "; its fees " + fee->str() + " are above the " + estimate->str() + " run_fees_ estimates";
+      }
+    }
+    if (!run_->can_book_placement(run_placement_of(entry), *record->filled_, *record->amount_, *record->fee_)) {
+      return std::nullopt;
+    }
+    booked.record_ = std::move(record);
+    return booked;
+  }
+
+  // A ledger line id no line of the journal carries.
+  std::string next_ledger_id() {
+    std::string id;
+    if constexpr (keeps_run_in_journal) {
+      // A backward clock step, or two processes in one microsecond, can repeat a prefix.
+      do {
+        id = executor_.next_run_id();
+      } while (!run_ids_.insert(id).second);
+    }
+    return id;
+  }
+
+  // A run budget's ledger line; an opening's id, generated at recovery, names its run.
+  JournalEntry ledger_line(std::shared_ptr<RunRecord> record, std::string detail, std::string id = {}) {
+    JournalEntry line;
+    line.id_ = id.empty() ? next_ledger_id() : std::move(id);
+    line.action_ = JournalAction::LEDGER;
+    line.outcome_ = JournalOutcome::RECORDED;
+    line.venue_.reset();
+    line.detail_ = std::move(detail);
+    if (record->kind_ == RunRecordKind::OPEN) {
+      record->run_ = line.id_;
+    }
+    line.run_ = std::move(record);
+    return line;
+  }
+
+  // Records why the run did not open, and halts: the run's buys and sells stay refused.
+  void refuse_run(RunRecoverySummary& summary, const std::string& cause, const char* state) {
+    for (auto& entry : unconfirmed_) {
+      entry.run_order_ = false;
+    }
+    summary.waiting_ = false;
+    summary.refused_ = cause + ": " + state;
+    run_recovery_ = summary;
+    halt_locally("the run budget's run did not open: " + summary.refused_);
+  }
+
+  // Marks the run open, and every later placement of the executor as the run's.
+  void run_opened(RunRecoverySummary& summary) {
+    executor_.set_run(run_->id());
+    summary.opened_ = true;
+    summary.id_ = run_->id();
+    summary.cash_ = run_->cash();
+    run_recovery_ = summary;
+  }
+
+  // Opens a budgeted serialized runner's run from its journal, as `set_run_opening` said; see
+  // `restore_obligations`. Resumes the journal's run, or arms a fresh one to open on the next listing
+  // (`decide_fresh_run`); every line is written before the run changes in memory, and whenever it does not
+  // open or arm a run it halts the runner, which then refuses the run's buys and sells.
+  void open_run_from([[maybe_unused]] const JournalReplay& replay) {
+    if constexpr (keeps_run_in_journal) {
+      RunRecoverySummary summary;
+      const auto opening = run_opening_.value_or(RunOpening{});
+      summary.fresh_ = opening.fresh_.has_value();
+      const char* reconcile = "reconcile the journal, or state fresh with a new id on a new journal";
+      // **Nothing is folded, opened or written from a journal not read whole**: a line it could not read may be
+      // the run's opening, a deposit or a booking, and opening again would spend a budget twice.
+      if (!replay.intact()) {
+        return refuse_run(summary, "the order journal was not read whole", reconcile);
+      }
+      for (const auto& entry : replay.entries_) {
+        if (
+          (entry.requires_operator_ && !journal_outcome_requires_operator(entry.outcome_)) ||
+          (entry.action_ != JournalAction::LEDGER && entry.instrument_.symbol_.empty())
+        ) {
+          return refuse_run(summary, "the order journal holds a damaged line", reconcile);
+        }
+        if (entry.id_.compare(0, 4, "run-") == 0) {
+          run_ids_.insert(entry.id_);
+        }
+      }
+      auto folded = RunLedger::fold(replay);
+      if (!folded.failure_.empty()) {
+        return refuse_run(summary, folded.failure_, reconcile);
+      }
+      const auto& budget = *guard_.limits().run_budget_;
+      // Applied once, by its id: the id that opened the latest run resumes it; an earlier run's id halts.
+      const bool resume = opening.fresh_ ? folded.run_ && folded.run_->given() == *opening.fresh_ : true;
+      if (!resume) {
+        const auto& fresh = *opening.fresh_;
+        if (std::find(folded.fresh_ids_.begin(), folded.fresh_ids_.end(), fresh) != folded.fresh_ids_.end()) {
+          return refuse_run(summary, "the fresh id " + fresh + " opened an earlier run", "state a new id");
+        }
+        // A lost journal cannot name the old run's orders, so none restored may be owed.
+        if (!unconfirmed_.empty()) {
+          const auto& entry = unconfirmed_.front();
+          return refuse_run(
+            summary, "the journal restores an owed order" + named(entry), "account for it before stating fresh"
+          );
+        }
+        if (!opening.transfers_.empty()) {
+          return refuse_run(summary, "a fresh run takes its cash from run_budget_", "remove the transfers");
+        }
+        // **It opens on the account's first listing received from here** (`decide_fresh_run`), if that shows no
+        // open order; the id is taken now, while the journal's ids are in hand.
+        run_fresh_id_ = next_ledger_id();
+        run_opening_stamp_ = context_.portfolio().working_as_of_;
+        run_opening_waits_ = true;
+        summary.waiting_ = true;
+        summary.id_ = run_fresh_id_;
+        run_recovery_ = summary;
+        return;
+      }
+      if (!folded.run_) {
+        return refuse_run(summary, "no run in this journal", "state fresh with an id to open one");
+      }
+      auto run = std::move(*folded.run_);
+      if (!(run.currency() == budget.currency_)) {
+        return refuse_run(
+          summary, "the journal's run is in " + run.currency().str() + ", run_budget_ in " + budget.currency_.str(),
+          "state run_budget_ in the run's currency"
+        );
+      }
+      // The restored orders of this run are its own, reserved and booked as it goes on.
+      for (auto& entry : unconfirmed_) {
+        entry.run_order_ = entry.journal_ && journal_run_of(*entry.journal_) == run.id();
+      }
+      // **The whole list is checked before any line is written**, against a copy, in order.
+      const auto reserved = run.settled() ? run_reserved() : std::nullopt;
+      auto after = run;
+      std::vector<RunTransfer> applied;
+      for (const auto& transfer : opening.transfers_) {
+        if (const auto* seen = after.transfer_of(transfer.id_)) {
+          if (seen->withdrawal_ == transfer.withdrawal_ && seen->amount_ == transfer.amount_) {
+            continue;
+          }
+          return refuse_run(
+            summary, "the transfer id " + transfer.id_ + " was applied with another amount", "state a new id"
+          );
+        }
+        const auto free = reserved ? decimal_subtract(after.cash().amount_, *reserved) : std::nullopt;
+        if (
+          transfer.withdrawal_ &&
+          (!free || decimal_less(after.cash().amount_, Decimal64::parse("0")) ||
+            decimal_less(*free, transfer.amount_.amount_))
+        ) {
+          return refuse_run(
+            summary,
+            "the withdrawal " + transfer.id_ + " is above the run's cash " + after.cash().amount_.str() +
+              " less its open buys, or the run is unsettled",
+            "state less, or withdraw once the run is settled"
+          );
+        }
+        if (!after.transfer(transfer)) {
+          return refuse_run(
+            summary, "the transfer " + transfer.id_ + " is in another currency, or does not fit",
+            "state it in the run's currency"
+          );
+        }
+        applied.push_back(transfer);
+      }
+      for (const auto& transfer : applied) {
+        auto record = std::make_shared<RunRecord>();
+        record->run_ = run.id();
+        record->kind_ = transfer.withdrawal_ ? RunRecordKind::WITHDRAWAL : RunRecordKind::DEPOSIT;
+        record->amount_ = transfer.amount_;
+        record->given_ = transfer.id_;
+        auto line = ledger_line(std::move(record), "a transfer the operator stated");
+        if (!executor_.record(line)) {
+          note_executor_failure(false);
+          return refuse_run(summary, "the order journal could not record the transfer " + transfer.id_, "restart");
+        }
+        ++summary.transfers_applied_;
+      }
+      run_.emplace(std::move(after));
+      summary.resumed_ = true;
+      run_opened(summary);
+    }
+  }
+
+  // A fresh run's opening, decided once, on the first working-order listing received after recovery (or after
+  // `resume_after_local_failure`): any order the broker lists refuses it for the process's life; none opens it.
+  void decide_fresh_run() {
+    if constexpr (keeps_run_in_journal) {
+      const auto& portfolio = context_.portfolio();
+      if (
+        !run_opening_waits_ || guard_.halted(strategy::HaltReason::LOCAL_FAILURE) ||
+        !(run_opening_stamp_ < portfolio.working_as_of_)
+      ) {
+        return;
+      }
+      run_opening_waits_ = false;
+      auto summary = *run_recovery_;
+      std::string listed;
+      for (const auto& working : portfolio.working_) {
+        if (!working.reserved_) {
+          listed += (listed.empty() ? "" : ", ") + working.order_.instrument_.symbol_ + " " + working.order_.order_id_;
+        }
+      }
+      if (!listed.empty()) {
+        return refuse_run(summary, "the account lists open orders (" + listed + ")", "account for them, then restart");
+      }
+      auto record = std::make_shared<RunRecord>();
+      record->kind_ = RunRecordKind::OPEN;
+      record->amount_ = *guard_.limits().run_budget_;
+      record->given_ = *run_opening_->fresh_;
+      auto line = ledger_line(std::move(record), "a fresh run opens with run_budget_", run_fresh_id_);
+      if (!executor_.record(line)) {
+        note_executor_failure(false);
+        return refuse_run(summary, "the order journal could not record the run's opening", "restart");
+      }
+      run_.emplace(RunLedger(line.id_, *guard_.limits().run_budget_, *run_opening_->fresh_));
+      summary.waiting_ = false;
+      summary.budget_used_ = true;
+      run_opened(summary);
+    }
+  }
+
   // Takes a placed buy's cost out of the pass's run cash, so a later buy in the pass cannot spend it again, and,
   // where no listing keeps the order, into `run_committed_` for later passes.
   void spend_run_cash(const strategy::PlannedOrder& order, strategy::GuardInputs& inputs) {
@@ -3832,7 +4397,7 @@ private:
     }
     // The guard passed it, so the price is there and positive.
     const auto cost = strategy::risk_detail::run_buy_cost(*guard_.limits().run_fees_, order.quantity_, *order.price_);
-    if (!run_rows_listed_ && run_committed_) {
+    if (!run_rows_listed_ && !serialized() && run_committed_) {
       run_committed_ = cost ? decimal_add(*run_committed_, *cost) : std::nullopt;
     }
     const auto left = cost && inputs.run_cash_ ? decimal_subtract(inputs.run_cash_->amount_, *cost) : std::nullopt;
@@ -3850,7 +4415,10 @@ private:
       return;
     }
     spend_run_cash(order, inputs);
-    run_unknown_.push_back(order.instrument_);
+    // A live run's unnamed order holds every buy as an obligation, which its journal restores (`run_reserved`).
+    if (!serialized()) {
+      run_unknown_.push_back(order.instrument_);
+    }
     inputs.run_cash_.reset();
   }
 
@@ -4911,7 +5479,8 @@ private:
 
   Executor executor_;
   IndeterminacyLedger ledger_;
-  // The run's cash and own shares, only with `RiskLimits::run_budget_`.
+  // The run's cash and own shares, only with `RiskLimits::run_budget_`; a runner that keeps its run in a journal
+  // opens it at recovery (`open_run_from`).
   std::optional<RunLedger> run_;
   // What the run's accepted buys commit where no listing keeps them (see `run_pass_inputs`); empty once the sum
   // does not fit, which refuses every later buy.
@@ -4920,6 +5489,14 @@ private:
   bool run_rows_listed_{false};
   // The instruments of the run's orders of unknown outcome, while the indeterminacy ledger withholds them.
   std::vector<InstrumentId> run_unknown_;
+  std::optional<RunOpening> run_opening_;
+  std::optional<RunRecoverySummary> run_recovery_;
+  // A fresh run armed at recovery: its id, and the listing stamp its opening must come after.
+  std::string run_fresh_id_;
+  std::chrono::system_clock::time_point run_opening_stamp_{};
+  bool run_opening_waits_{false};
+  // Every ledger-shaped id the journal holds, so a generated one never repeats it.
+  std::unordered_set<std::string> run_ids_;
   std::size_t acknowledged_journal_failures_{0};
   std::map<InstrumentId, DatedBand> price_limits_;
   // How old a band may be before it is not applied; see `set_maximum_price_limits_age`.
@@ -4978,6 +5555,9 @@ private:
   std::vector<Unconfirmed> unconfirmed_;
   // Serialized mode; see `serialized`.
   static constexpr bool can_serialize = keeps_sent_orders_until_listed && runner_detail::serializes<Executor>::value;
+  // Whether a run budget's run can live in this runner's journal; a live budgeted runner needs it.
+  static constexpr bool keeps_run_in_journal =
+    journals_to_a_broker && can_serialize && runner_detail::can_journal_run<Executor>::value;
   bool overlapping_{false};
   bool recovered_{false};
   std::vector<Boundary> boundaries_;
