@@ -1,5 +1,6 @@
 #pragma once
 
+#include "alpaca"
 #include "kis"
 #include "kiwoom"
 #include "tossinvest"

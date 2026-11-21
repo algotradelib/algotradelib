@@ -206,7 +206,7 @@ Kiwoom declares none, since its key is its account, and such a line does not com
 
 A broker named at run time (a command-line word, a configuration field) becomes a type once; everything after is a template.
 `with_broker<List>(name, visit)` calls `visit(type_tag<Client>{})` for the client in `List` whose `BrokerTraits<Client>::name` is `name`, and returns its result in a `std::optional`, empty when no client has that name.
-`builtin_brokers`, from `<algotradelib/builtin_brokers>`, lists the library's blocking clients (`kis`, `kiwoom`, `tossinvest`); a list of your own is a `type_list` of any clients with distinct names.
+`builtin_brokers`, from `<algotradelib/builtin_brokers>`, lists the library's blocking clients (`kis`, `kiwoom`, `tossinvest`, `alpaca`); a list of your own is a `type_list` of any clients with distinct names.
 
 ```cpp
 #include <algotradelib/builtin_brokers>
@@ -244,7 +244,7 @@ int run(std::string_view broker, ssl::context& tls, const network::ClientStores&
 Where the broker lists accounts, the candidates are the listing (a configured account is refused there); otherwise the configured account (`BrokerTraits<Client>::display_of(const Account&)` gives its number).
 The number is compared with `-`, space, `.` and `/` removed.
 
-Every listed client's `visit` is compiled where `with_broker` is called, and `<algotradelib/builtin_brokers>` parses all three adapters.
+Every listed client's `visit` is compiled where `with_broker` is called, and `<algotradelib/builtin_brokers>` parses every listed adapter.
 To compile each broker in its own translation unit, let the visitor call a function template declared `extern template` beside the dispatch and explicitly instantiated in that broker's source; a broker added to `builtin_brokers` later then needs a unit of its own.
 
 ## Where to go next
