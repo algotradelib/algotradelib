@@ -553,6 +553,7 @@ inline bool run_entry_key(std::string_view key) {
     "fee",
     "fee_estimated",
     "given",
+    "of",
   };
   for (const auto candidate : known) {
     if (candidate == key) {
@@ -774,6 +775,9 @@ inline void write_run_keys(json::object& row, const RunRecord& record) {
   if (!record.given_.empty()) {
     row["given"] = record.given_;
   }
+  if (!record.of_.empty()) {
+    row["of"] = record.of_;
+  }
   if (record.amount_) {
     row["amount"] = record.amount_->amount_.str();
     row["currency"] = record.amount_->currency_.str();
@@ -906,6 +910,7 @@ inline RunKeys run_keys_from(const json::object& row) {
     keys.unreadable_ = keys.unreadable_ || !keys.record_.kind_;
   }
   text("given", keys.record_.given_);
+  text("of", keys.record_.of_);
   std::optional<Decimal64> amount;
   number("amount", amount);
   keys.has_amount_ = amount.has_value();
@@ -943,7 +948,7 @@ inline bool booking_figures_hold(const RunRecord& record) {
 }
 
 /**
- * Whether the run keys an order's line carries fit it: `ledger` and `given` belong to ledger lines; a
+ * Whether the run keys an order's line carries fit it: `ledger`, `given` and `of` belong to ledger lines; a
  * booking only to a run's `CONFIRMED` line, and whole (`filled`, `amount`, `currency`, `fee`); none to a
  * cancellation; no line but a ledger record is `RECORDED`.
  */
@@ -951,7 +956,7 @@ inline bool run_keys_fit_order_line(JournalAction action, JournalOutcome outcome
   const auto& record = keys.record_;
   if (
     outcome == JournalOutcome::RECORDED || (action == JournalAction::CANCEL && keys.present_) || record.kind_ ||
-    !record.given_.empty()
+    !record.given_.empty() || !record.of_.empty()
   ) {
     return false;
   }
@@ -999,11 +1004,13 @@ inline std::optional<JournalEntry> ledger_entry_from(
   ) {
     return std::nullopt;
   }
-  if (
-    !decimal_less(Decimal64::parse("0"), record.amount_->amount_) || record.filled_ || record.fee_ ||
-    keys.has_fee_estimated_ || (*record.kind_ == RunRecordKind::OPEN && record.run_ != *id) ||
-    (*record.kind_ != RunRecordKind::OPEN && record.given_.empty())
-  ) {
+  // A booking of a released placement names it and carries the booking; any other record is an amount.
+  const bool holds = *record.kind_ == RunRecordKind::FILL ?
+    !record.of_.empty() && record.filled_ && record.fee_ && record.given_.empty() && booking_figures_hold(record) :
+    decimal_less(Decimal64::parse("0"), record.amount_->amount_) && !record.filled_ && !record.fee_ &&
+      !keys.has_fee_estimated_ && record.of_.empty() && (*record.kind_ != RunRecordKind::OPEN || record.run_ == *id) &&
+      (*record.kind_ == RunRecordKind::OPEN || !record.given_.empty());
+  if (!holds) {
     return std::nullopt;
   }
   JournalEntry entry;

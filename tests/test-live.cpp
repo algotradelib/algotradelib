@@ -6231,6 +6231,29 @@ TEST_CASE("a run opens fresh and books its orders and resumes and applies a depo
     CHECK_FALSE(repeated.runner_instance.run_cash().has_value());
   }
 
+  SECTION("a held order released and booked by an operator stays settled after a restart") {
+    auto held = opened_run();
+    held->session.order_ids_ = {"H"};
+    held->bar(1, {limit_target("10", "70000")});
+    held->show(polled(2, "15", {}));
+    held->runner_instance.refresh_unconfirmed();
+    REQUIRE(held->owed() == runner::ObligationState::OPERATOR);
+    const auto id = held->runner_instance.run_unsettled().front().id_;
+    const auto amount = Money{Decimal64::parse("700000"), Currency::krw()};
+    const auto ten = Decimal64::parse("10");
+    // Still owed, it is released first.
+    CHECK_FALSE(held->runner_instance.book_run_fill(id, ten, amount, Decimal64::parse("700"), "x"));
+    CHECK(held->runner_instance.release_obligations(samsung(), "read the broker's history"));
+    CHECK(held->runner_instance.run_unsettled().front().state_ == runner::RunPlacementState::UNBOOKED);
+    CHECK(held->runner_instance.book_run_fill(id, ten, amount, Decimal64::parse("700"), "its row"));
+    CHECK_FALSE(held->runner_instance.book_run_fill(id, ten, amount, Decimal64::parse("700"), "again"));
+    CHECK(held->runner_instance.run_unsettled().empty());
+    CHECK(cash_of(*held) == "299300");
+    SerialRig restarted(held->journal.records(), true, budgeted());
+    CHECK(restarted.runner_instance.run_unsettled().empty());
+    CHECK(cash_of(restarted) == "299300");
+  }
+
   SECTION("a listing with an open order refuses the fresh run for the process's life") {
     SerialRig waiting({}, true, budgeted(), fresh("f-2"));
     waiting.show(polled(1, "0", {listed_row("X", OrderSide::BUY, "10", "0", OrderType::LIMIT)}));

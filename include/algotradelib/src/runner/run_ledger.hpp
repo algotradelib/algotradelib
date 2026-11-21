@@ -268,7 +268,7 @@ private:
     return settle_state(placement, RunPlacementState::HELD);
   }
 
-  // Records a placement accounted for without a booking; it leaves the run unsettled for good.
+  // Records a placement accounted for without a booking, until `book_released` books it.
   bool release(const RunPlacement& placement) {
     return settle_state(placement, RunPlacementState::UNBOOKED);
   }
@@ -293,6 +293,26 @@ private:
     book(placement.instrument_, placement.side_, filled, amount, fee);
     settle_state(placement, RunPlacementState::BOOKED);
     return true;
+  }
+
+  // Tests whether `book_released` would book a placement released without a booking.
+  bool can_book_released(
+    const std::string& id, const Decimal64& filled, const Money& amount, const Decimal64& fee
+  ) const {
+    const auto* known = placement(id);
+    return known != nullptr && known->state_ == RunPlacementState::UNBOOKED &&
+      !decimal_less(known->quantity_, filled) &&
+      booked(known->instrument_, known->side_, filled, amount, fee).has_value();
+  }
+
+  // Books a placement released without a booking, as a `RunRecordKind::FILL` record does.
+  bool book_released(const std::string& id, const Decimal64& filled, const Money& amount, const Decimal64& fee) {
+    if (!can_book_released(id, filled, amount, fee)) {
+      return false;
+    }
+    const auto released = *placement(id);
+    book(released.instrument_, released.side_, filled, amount, fee);
+    return settle_state(released, RunPlacementState::BOOKED);
   }
 
   // The cash and the instrument's shares after a fill, or nothing if `book` refuses it.
@@ -328,7 +348,8 @@ private:
     return std::make_pair(*cash, *shares);
   }
 
-  // Moves a placement to `state`, recording it if new; refused once it is booked.
+  // Moves a placement to `state`, recording it if new; refused once it is booked (a released one is booked only by
+  // `book_released`).
   bool settle_state(const RunPlacement& placement, RunPlacementState state) {
     const auto at = placement_at_.find(placement.id_);
     if (at == placement_at_.end()) {
@@ -343,7 +364,7 @@ private:
     if (known.state_ == RunPlacementState::BOOKED) {
       return false;
     }
-    // Leaving `HELD` for `BOOKED` settles it.
+    // Leaving `HELD` or `UNBOOKED` for `BOOKED` settles it.
     if (state == RunPlacementState::BOOKED) {
       --unsettled_;
     }
@@ -464,7 +485,7 @@ inline run_detail::Fold RunLedger::fold(const JournalReplay& replay) {
     const RunPlacement placement{entry.id_, entry.instrument_, entry.side_, entry.quantity_, RunPlacementState::HELD};
     // What the file reader guarantees, checked again for a journal held in memory.
     const bool whole = entry.action_ == JournalAction::LEDGER ?
-      record.kind_ && record.amount_ :
+      record.kind_ && record.amount_ && (*record.kind_ != RunRecordKind::FILL || (record.filled_ && record.fee_)) :
       !record.filled_ || (record.amount_ && record.fee_);
     if (!whole) {
       return fail(entry, "is incomplete");
@@ -473,7 +494,13 @@ inline run_detail::Fold RunLedger::fold(const JournalReplay& replay) {
       if (*record.kind_ == RunRecordKind::OPEN) {
         return fail(entry, "opens its run a second time");
       }
-      if (!run.transfer(RunTransfer{record.given_, *record.amount_, *record.kind_ == RunRecordKind::WITHDRAWAL})) {
+      if (*record.kind_ == RunRecordKind::FILL) {
+        if (!run.book_released(record.of_, *record.filled_, *record.amount_, *record.fee_)) {
+          return fail(entry, "books a placement that was not released unbooked, or a fill it cannot take");
+        }
+      } else if (
+        !run.transfer(RunTransfer{record.given_, *record.amount_, *record.kind_ == RunRecordKind::WITHDRAWAL})
+      ) {
         return fail(entry, "repeats a transfer id, or is in another currency, or does not fit");
       }
       continue;

@@ -1523,6 +1523,15 @@ TEST_CASE(
   CHECK(read_open->run_->kind_ == runner::RunRecordKind::OPEN);
   CHECK(read_open->run_->given_ == "2026-11-23");
   CHECK(*read_open->run_->amount_ == open.amount_);
+  auto filling = opening;
+  filling.id_ = "run-1-2";
+  auto fill = booking;
+  fill.kind_ = runner::RunRecordKind::FILL;
+  fill.of_ = "1700000000000000-3";
+  filling.run_ = std::make_shared<const runner::RunRecord>(fill);
+  const auto read_fill = runner::journal_entry_from_line(runner::journal_entry_to_line(filling));
+  REQUIRE(read_fill.has_value());
+  CHECK(read_fill->run_->of_ == "1700000000000000-3");
   // Not an instruction: nothing is left open by it.
   runner::JournalReplay ledger_only;
   ledger_only.entries_ = {*read_open};
@@ -1561,7 +1570,7 @@ TEST_CASE(
   // A changed run line beside its pending line halts recovery, rather than closing it as an orphan.
   auto pending = booked;
   pending.outcome_ = JournalOutcome::PENDING;
-  pending.run_ = std::make_shared<const runner::RunRecord>(runner::RunRecord{"run-1-1", {}, {}, {}, {}, false, {}});
+  pending.run_ = std::make_shared<const runner::RunRecord>(runner::RunRecord{"run-1-1", {}, {}, {}, {}, false, {}, {}});
   runner::JournalBytes bytes;
   bytes.status_ = runner::JournalReadStatus::READ;
   bytes.text_ = runner::journal_entry_to_line(pending) + "\n" + unreadable[0] + "\n";

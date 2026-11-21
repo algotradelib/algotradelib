@@ -772,9 +772,7 @@ public:
    *   one (`release_obligations`) or confirmed by a runner without a budget, with no booking.
    *
    * While one is listed, every buy of the run is refused, and so are sells of its instrument
-   * (`strategy::GuardReason::RUN_LEDGER_UNSETTLED`). A released one stays listed for the run's life: what it
-   * filled is not booked, so the operator reads the account and opens a fresh run (`RunOpening::fresh_`) with
-   * the remaining cash as `RiskLimits::run_budget_`.
+   * (`strategy::GuardReason::RUN_LEDGER_UNSETTLED`); `book_run_fill` books a released one.
    *
    * @return The placements; empty without a run.
    */
@@ -849,6 +847,46 @@ public:
    */
   void note_run_journal_write_failed() noexcept {
     run_journal_latched_ = run_journal_latched_ || guard_.limits().run_budget_.has_value();
+  }
+  /**
+   * @brief Books, on an operator's word, what a placement of the run released without a booking filled.
+   *
+   * Read the broker's history for the fill first. The journal's `RunRecordKind::FILL` record is written before
+   * the ledger changes; if it cannot be written the run's writes stop (`run_writes_closed`).
+   *
+   * @param placement_id The placement's journal id, as `run_unsettled` lists it released (`UNBOOKED`).
+   * @param filled The quantity filled, from zero to the placement's quantity; for a sell, at most the run's shares.
+   * @param amount What it traded for, in the run's currency: above zero when something filled, zero otherwise.
+   * @param fee Its commission and taxes together, zero or more.
+   * @param reason Why, for the journal.
+   * @return `true` if booked; `false`, writing nothing, for a placement not released unbooked or a fill that
+   *   does not fit it or the run, while the run's writes are closed, or when the record could not be written.
+   */
+  bool book_run_fill(
+    [[maybe_unused]] const std::string& placement_id, [[maybe_unused]] const Decimal64& filled,
+    [[maybe_unused]] const Money& amount, [[maybe_unused]] const Decimal64& fee,
+    [[maybe_unused]] const std::string& reason
+  ) {
+    if constexpr (keeps_run_in_journal) {
+      const auto zero = Decimal64::parse("0");
+      if (
+        run_writes_closed() || !run_ || decimal_less(zero, filled) != decimal_less(zero, amount.amount_) ||
+        !run_->can_book_released(placement_id, filled, amount, fee)
+      ) {
+        return false;
+      }
+      auto record = std::make_shared<RunRecord>();
+      record->run_ = run_->id();
+      record->kind_ = RunRecordKind::FILL;
+      record->of_ = placement_id;
+      record->amount_ = amount;
+      record->filled_ = filled;
+      record->fee_ = fee;
+      auto line = ledger_line(std::move(record), "booked by an operator: " + reason);
+      return run_record(line) && run_->book_released(placement_id, filled, amount, fee);
+    } else {
+      return false;
+    }
   }
   /**
    * @brief Returns how many orders the binding refused to send (no request made); see `orders_unbuildable`.
@@ -1184,8 +1222,8 @@ public:
    * journal, or one whose holdings never arrived: read the broker's order list and holdings first. Each
    * order gets a `JournalOutcome::CONFIRMED` line naming `reason` and is then forgotten; the next order on
    * the instrument needs a holdings read received after this call. The indeterminacy ledger is left as it
-   * is. An order of the run budget's run is released without a booking (`run_unsettled`). If a line cannot be
-   * written, that order is kept and the runner stops sending
+   * is. An order of the run budget's run is released without a booking (`run_unsettled`, `book_run_fill`). If a
+   * line cannot be written, that order is kept and the runner stops sending
    * (`HaltReason::LOCAL_FAILURE`).
    *
    * @param instrument The instrument.
@@ -1213,7 +1251,7 @@ public:
         }
         set_boundary(instrument, line.recorded_at_, /*strict=*/true);
         drop_reserved_row(*at);
-        // Released with no booking: the run stays unsettled, as its journal now reads.
+        // Released with no booking: the run stays unsettled until `book_run_fill`, as its journal now reads.
         if (run_ && at->run_order_) {
           run_->release(run_placement_of(*at));
         }

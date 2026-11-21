@@ -395,13 +395,16 @@ enum class RunRecordKind {
   DEPOSIT,
   /** @brief Cash taken from the run, under the operator's id (`RunRecord::given_`). */
   WITHDRAWAL,
+  /** @brief An operator's booking of a placement released without one (`runner::Runner::book_run_fill`). */
+  FILL,
 };
 
 /** @brief Every `RunRecordKind`, in declaration order. */
-inline constexpr std::array<RunRecordKind, 3> all_run_record_kinds{
+inline constexpr std::array<RunRecordKind, 4> all_run_record_kinds{
   RunRecordKind::OPEN,
   RunRecordKind::DEPOSIT,
   RunRecordKind::WITHDRAWAL,
+  RunRecordKind::FILL,
 };
 
 /**
@@ -417,6 +420,8 @@ inline constexpr std::string_view run_record_kind_name(RunRecordKind kind) noexc
       return "deposit";
     case RunRecordKind::WITHDRAWAL:
       return "withdrawal";
+    case RunRecordKind::FILL:
+      return "fill";
   }
   return "";
 }
@@ -462,6 +467,8 @@ struct RunRecord {
   bool fee_estimated_{false};
   /** @brief The operator's id of a transfer or of a fresh opening, which makes it apply once. */
   std::string given_;
+  /** @brief The journal id of the placement a `RunRecordKind::FILL` books. */
+  std::string of_;
 };
 
 /**
