@@ -6167,7 +6167,7 @@ std::unique_ptr<SerialRig> opened_run() {
 
 } // namespace
 
-TEST_CASE("a run opens fresh, books its orders, resumes and applies a deposit once", "[serialized][run-budget]") {
+TEST_CASE("a run opens fresh and books its orders and resumes and applies a deposit once", "[serialized][run-budget]") {
   // A resume on a journal with no run halts, writing nothing.
   SerialRig none({}, true, budgeted());
   CHECK(none.runner_instance.local_failure().has_value());
@@ -6222,6 +6222,14 @@ TEST_CASE("a run opens fresh, books its orders, resumes and applies a deposit on
   SerialRig again(resumed.journal.records(), true, budgeted(), transfer("d-1", "1000"));
   CHECK(again.journal.attempts_ == resumed.journal.records().size());
   CHECK(cash_of(again) == "1009590");
+
+  SECTION("an opening line repeated later halts the next recovery") {
+    auto lines = again.journal.records();
+    lines.push_back(lines.front());
+    SerialRig repeated(lines, true, budgeted());
+    CHECK(repeated.runner_instance.local_failure().has_value());
+    CHECK_FALSE(repeated.runner_instance.run_cash().has_value());
+  }
 
   SECTION("a listing with an open order refuses the fresh run for the process's life") {
     SerialRig waiting({}, true, budgeted(), fresh("f-2"));

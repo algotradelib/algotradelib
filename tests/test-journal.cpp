@@ -1457,7 +1457,7 @@ TEST_CASE("a changed terminal line halts recovery rather than being dropped as a
 }
 
 TEST_CASE(
-  "a run's records round-trip strictly, and a run without a budget writes main's lines", "[journal][run-budget]"
+  "a run's records round-trip strictly and a run without a budget writes main's lines", "[journal][run-budget]"
 ) {
   JournalEntry plain;
   plain.id_ = "1700000000000000-3";
