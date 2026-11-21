@@ -1839,6 +1839,124 @@ TEST_CASE("the exposure ceiling is per currency and neither currency leaks into 
   REQUIRE(refused->attempted_ == std::optional<Decimal64>(Decimal64::parse("10150000")));
 }
 
+TEST_CASE("the spending and selling checks take the smaller of the broker's and the run's bound") {
+  // A run of 5,000 dollars, a commission of 0.1% with a minimum of 1 an order, and 10 shares of its own.
+  const auto usd = Currency{"USD"};
+  RiskLimits limits;
+  limits.run_budget_ = Money{Decimal64::parse("5000"), usd};
+  strategy::RunFees fees;
+  fees.commission_rate_ = Decimal64::parse("0.001");
+  fees.commission_minimum_ = Decimal64::parse("1");
+  limits.run_fees_ = fees;
+  const RiskGuard guard(limits);
+
+  // The account holds 100 sellable, the broker's buying power is ample.
+  ProbePortfolio portfolio;
+  portfolio.sellable_basis_ = whole_holding_basis();
+  portfolio.positions_.push_back(sellable_holding("100"));
+  portfolio.buying_power_.push_back(BuyingPower{Money{Decimal64::parse("1000000"), usd}, {}});
+  auto inputs = open_market();
+  inputs.order_currency_ = usd;
+  inputs.run_cash_ = Money{Decimal64::parse("4955"), usd};
+  inputs.run_holding_ = Decimal64::parse("10");
+  const auto refused = [&](const RiskGuard& with, const PlannedOrder& order) {
+    return with.check(order, portfolio, inputs);
+  };
+  const auto is =
+    [](
+      const std::optional<strategy::GuardRejection>& rejection, GuardReason reason, const char* limit,
+      const char* attempted
+    ) {
+      REQUIRE(rejection);
+      CHECK(rejection->reason_ == reason);
+      CHECK(rejection->limit_ == std::optional<Decimal64>(Decimal64::parse(limit)));
+      CHECK(rejection->attempted_ == std::optional<Decimal64>(Decimal64::parse(attempted)));
+    };
+
+  // 10 at 495 is 4,950 and a fee of 5: the room is 4,950, and equal passes.
+  CHECK_FALSE(refused(guard, planned("10", "495")));
+  // 11 at 495 is 5,445 and a fee of 6: the room is 4,949.
+  is(refused(guard, planned("11", "495")), GuardReason::RUN_BUDGET_EXCEEDED, "4949", "5445");
+  // A market buy has no cap to reserve against.
+  CHECK(refused(guard, planned("1"))->reason_ == GuardReason::RUN_BUY_NEEDS_LIMIT);
+  // A sell past the run's shares while the broker shows more, and one the broker's room bounds first.
+  is(refused(guard, planned("11", nullptr, OrderSide::SELL)), GuardReason::RUN_HOLDING_EXCEEDED, "10", "11");
+  CHECK_FALSE(refused(guard, planned("10", nullptr, OrderSide::SELL)));
+  portfolio.positions_.front() = sellable_holding("5");
+  is(refused(guard, planned("6", nullptr, OrderSide::SELL)), GuardReason::QUANTITY_NOT_SELLABLE, "5", "6");
+  is(refused(guard, planned("11", nullptr, OrderSide::SELL)), GuardReason::QUANTITY_NOT_SELLABLE, "5", "11");
+  // A buy in won against a dollar run: the run's cash, and no attempted figure.
+  inputs.order_currency_ = Currency::krw();
+  const auto foreign = refused(guard, planned("1", "495"));
+  REQUIRE(foreign);
+  CHECK(foreign->reason_ == GuardReason::RUN_BUDGET_EXCEEDED);
+  CHECK(foreign->limit_ == std::optional<Decimal64>(Decimal64::parse("4955")));
+  CHECK_FALSE(foreign->attempted_);
+  inputs.order_currency_ = usd;
+  // Absent run figures refuse.
+  auto unknown = inputs;
+  unknown.run_cash_.reset();
+  unknown.run_holding_.reset();
+  CHECK(guard.check(planned("1", "495"), portfolio, unknown)->reason_ == GuardReason::RUN_LEDGER_UNSETTLED);
+  CHECK(
+    guard.check(planned("1", nullptr, OrderSide::SELL), portfolio, unknown)->reason_ ==
+    GuardReason::RUN_LEDGER_UNSETTLED
+  );
+
+  SECTION("with the broker's buying power enforced, the smaller bound is named and the broker's on a tie") {
+    auto both_limits = limits;
+    both_limits.enforce_buying_power_ = true;
+    const RiskGuard both(both_limits);
+    const auto reading = [&](const char* amount) {
+      portfolio.buying_power_.front() = BuyingPower{Money{Decimal64::parse(amount), usd}, {}};
+    };
+    reading("4000");
+    is(refused(both, planned("10", "495")), GuardReason::INSUFFICIENT_BUYING_POWER, "4000", "4950");
+    reading("3000");
+    is(refused(both, planned("11", "495")), GuardReason::INSUFFICIENT_BUYING_POWER, "3000", "5445");
+    reading("5000");
+    is(refused(both, planned("11", "495")), GuardReason::RUN_BUDGET_EXCEEDED, "4949", "5445");
+    reading("4949");
+    is(refused(both, planned("11", "495")), GuardReason::INSUFFICIENT_BUYING_POWER, "4949", "5445");
+    // An unknown reading refuses although the run fits.
+    portfolio.buying_power_.clear();
+    CHECK(refused(both, planned("1", "495"))->reason_ == GuardReason::INSUFFICIENT_BUYING_POWER);
+  }
+
+  SECTION("both selling bounds failing name the smaller room and the broker's on a tie") {
+    portfolio.positions_.front() = sellable_holding("10");
+    is(refused(guard, planned("11", nullptr, OrderSide::SELL)), GuardReason::QUANTITY_NOT_SELLABLE, "10", "11");
+    inputs.run_holding_ = Decimal64::parse("4");
+    is(refused(guard, planned("11", nullptr, OrderSide::SELL)), GuardReason::RUN_HOLDING_EXCEEDED, "4", "11");
+    // With the broker's check off, the run's shares alone bound a sell.
+    auto unchecked = limits;
+    unchecked.enforce_sellable_quantity_ = false;
+    is(
+      refused(RiskGuard(unchecked), planned("5", nullptr, OrderSide::SELL)), GuardReason::RUN_HOLDING_EXCEEDED, "4", "5"
+    );
+  }
+
+  SECTION("a market buy with a notional ceiling and no quote is refused as unknown first") {
+    auto capped = limits;
+    capped.max_order_notional_ = Decimal64::parse("1000000");
+    inputs.reference_price_.reset();
+    CHECK(refused(RiskGuard(capped), planned("1"))->reason_ == GuardReason::VALUE_NOT_KNOWN);
+  }
+
+  SECTION("a direct caller without fees or with cash in another currency is unsettled") {
+    auto bare = limits;
+    bare.run_fees_.reset();
+    CHECK(refused(RiskGuard(bare), planned("1", "495"))->reason_ == GuardReason::RUN_LEDGER_UNSETTLED);
+    inputs.run_cash_ = Money{Decimal64::parse("4955"), Currency::krw()};
+    CHECK(refused(guard, planned("1", "495"))->reason_ == GuardReason::RUN_LEDGER_UNSETTLED);
+  }
+
+  SECTION("a run below zero refuses every buy and shows its room unclamped") {
+    inputs.run_cash_ = Money{Decimal64::parse("-1"), usd};
+    is(refused(guard, planned("1", "1")), GuardReason::RUN_BUDGET_EXCEEDED, "-2", "1");
+  }
+}
+
 TEST_CASE("the order rate is counted over a sliding window, not reset on a boundary") {
   // A counter reset on a boundary lets twice the limit through across one, which is the classic
   // way a rate limit is wrong. The window slides instead.
@@ -1941,6 +2059,10 @@ TEST_CASE("every guard reason has a stable name") {
   REQUIRE(strategy::guard_reason_name(GuardReason::QUANTITY_NOT_SELLABLE) == "quantity_not_sellable");
   REQUIRE(strategy::guard_reason_name(GuardReason::SELLABLE_BASIS_UNESTABLISHED) == "sellable_basis_unestablished");
   REQUIRE(strategy::guard_reason_name(GuardReason::INSUFFICIENT_BUYING_POWER) == "insufficient_buying_power");
+  REQUIRE(strategy::guard_reason_name(GuardReason::RUN_BUDGET_EXCEEDED) == "run_budget_exceeded");
+  REQUIRE(strategy::guard_reason_name(GuardReason::RUN_BUY_NEEDS_LIMIT) == "run_buy_needs_limit");
+  REQUIRE(strategy::guard_reason_name(GuardReason::RUN_HOLDING_EXCEEDED) == "run_holding_exceeded");
+  REQUIRE(strategy::guard_reason_name(GuardReason::RUN_LEDGER_UNSETTLED) == "run_ledger_unsettled");
 }
 
 TEST_CASE("the tolerance measures the drift, not the quantity that would be sent") {

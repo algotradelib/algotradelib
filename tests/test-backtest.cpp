@@ -819,6 +819,68 @@ TEST_CASE("an order is never filled from the bar that produced it") {
   REQUIRE(engine.strategy().fill_prices_[0] == Decimal64::parse("80000"));
 }
 
+namespace {
+
+/** Buys ten at 500, tries one more, sells the ten, then spends the proceeds, a step a bar. */
+struct SpendsItsCash {
+  int bars_{0};
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    ++bars_;
+    const auto order = [&](OrderSide side, const char* quantity, const char* price) {
+      const auto limit = strategy::Price::checked(Decimal64::parse(price), krx_grid());
+      ctx.submit(
+        strategy::OrderIntent::limit(
+          bar.instrument_, side, strategy::SizeSpec::quantity(Decimal64::parse(quantity)), *limit
+        )
+      );
+    };
+    if (bars_ == 1) {
+      order(OrderSide::BUY, "10", "500");
+    } else if (bars_ == 2) {
+      order(OrderSide::BUY, "1", "500");
+    } else if (bars_ == 3) {
+      order(OrderSide::SELL, "10", "600");
+    } else if (bars_ == 4) {
+      order(OrderSide::BUY, "12", "500");
+    }
+  }
+};
+
+} // namespace
+
+TEST_CASE("a replay books its executions in the run ledger") {
+  auto config = replay_config();
+  config.cash_ = Decimal64::parse("5000");
+  config.currency_ = Currency{"USD"};
+  auto reference = samsung_reference();
+  reference.currency_ = Currency{"USD"};
+  config.instruments_ = {reference};
+  config.limits_.run_budget_ = Money{Decimal64::parse("5000"), Currency{"USD"}};
+  config.limits_.run_fees_ = strategy::RunFees{};
+  backtest::Backtester<SpendsItsCash> engine(SpendsItsCash{}, config);
+
+  engine.feed(moving_bar(utc(2026, 3, 10, 6, 30), BarInterval::ONE_DAY, "500", "500"));
+  engine.feed(moving_bar(utc(2026, 3, 11, 6, 30), BarInterval::ONE_DAY, "500", "500"));
+  // The ten filled at 500: no cash is left, and the eleventh share is refused.
+  REQUIRE(engine.run_cash() == std::optional<Money>(Money{Decimal64::parse("0"), Currency{"USD"}}));
+  REQUIRE(engine.run_holding(samsung()) == std::optional<Decimal64>(Decimal64::parse("10")));
+  REQUIRE(engine.result().refused_.size() == 1);
+  CHECK(engine.result().refused_.front().reason_ == strategy::GuardReason::RUN_BUDGET_EXCEEDED);
+  CHECK(engine.result().refused_.front().attempted_ == std::optional<Decimal64>(Decimal64::parse("500")));
+
+  // Sold at 600, the proceeds are the run's to spend.
+  engine.feed(moving_bar(utc(2026, 3, 12, 6, 30), BarInterval::ONE_DAY, "600", "600"));
+  engine.feed(moving_bar(utc(2026, 3, 13, 6, 30), BarInterval::ONE_DAY, "600", "600"));
+  REQUIRE(engine.run_cash() == std::optional<Money>(Money{Decimal64::parse("6000"), Currency{"USD"}}));
+  engine.feed(moving_bar(utc(2026, 3, 16, 6, 30), BarInterval::ONE_DAY, "500", "500"));
+  engine.finish();
+  CHECK(engine.result().refused_.size() == 1);
+  CHECK(engine.run_cash() == std::optional<Money>(Money{Decimal64::parse("0"), Currency{"USD"}}));
+  CHECK(engine.run_holding(samsung()) == std::optional<Decimal64>(Decimal64::parse("12")));
+}
+
 TEST_CASE("a replay that fills a buy its cash cannot pay for says it borrowed", "[overdraft]") {
   // Default limits: nothing refuses the buy, so the ledger goes below zero. Counted, not refused.
   auto config = replay_config();

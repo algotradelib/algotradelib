@@ -249,6 +249,8 @@ TEST_CASE("an Alpaca client is paper unless live is stated, and declares what it
 
 TEST_CASE("an Alpaca calendar anchored by default brackets now on both sides") {
   static_assert(live::SessionSource<BlockingSession<AlpacaBlockingClient>>::states_calendar_sessions);
+  // And no buying power, so a loop over it holds without a run budget.
+  static_assert(!live::SessionSource<BlockingSession<AlpacaBlockingClient>>::reports_buying_power);
   struct Instant {
     const char* now_;
     const char* start_;

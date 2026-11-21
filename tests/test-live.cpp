@@ -5112,6 +5112,211 @@ TEST_CASE("a live run's report says why reconciliation could not build an instru
   CHECK(live_runner.last_unbuildable().has_value());
 }
 
+namespace {
+
+/** A broker that reports no buying power, as Alpaca's adapter does. */
+struct WithoutBuyingPower : strategy::NoCaps {
+  static constexpr bool has_client_order_id = true;
+};
+
+/** Wraps a `SessionSource` by composition and does not forward `reports_buying_power`. */
+template <typename Session>
+class ForgetsBuyingPower {
+public:
+  ForgetsBuyingPower(Session& session, std::vector<InstrumentId> universe) : inner_(session, std::move(universe)) {}
+
+  template <typename Runner>
+  runner::PollOutcome poll(runner::PollKind kind, Runner& runner_instance) {
+    return inner_.poll(kind, runner_instance);
+  }
+
+  template <typename Runner>
+  runner::PollOutcome read_order_list(Runner& runner_instance) {
+    return inner_.read_order_list(runner_instance);
+  }
+
+private:
+  live::SessionSource<Session> inner_;
+};
+
+/** A runner that sends to the fake broker. */
+template <typename Caps>
+using BrokerRunner = runner::Runner<LimitBuy, Caps, FakeBroker, live::SessionExecutor<FakeSession<Caps>>>;
+/** A runner that records what it would send. */
+template <typename Caps>
+using RecordingRunner = runner::Runner<LimitBuy, Caps, FakeBroker, runner::RecordingExecutor<FakeBroker>>;
+
+/** Any phase and Samsung only; with a budget, one in `currency` with no fees. */
+strategy::RiskLimits budget_limits(bool budgeted, const char* budget = "1000000", const char* currency = "KRW") {
+  strategy::RiskLimits limits;
+  limits.permitted_phases_ = std::nullopt;
+  limits.permitted_universe_ = std::vector<InstrumentId>{samsung()};
+  if (budgeted) {
+    limits.run_budget_ = Money{Decimal64::parse(budget), Currency{currency}};
+    limits.run_fees_ = strategy::RunFees{};
+  }
+  return limits;
+}
+
+/** Runs a loop over `Source` for one iteration and returns its report. */
+template <typename Source, typename Caps, typename LoopRunner>
+runner::LoopReport budget_loop(FakeSession<Caps>& session, LoopRunner& live_runner) {
+  session.set_bars(two_bars("70000", "71000"));
+  live_runner.context().set_instrument(samsung_reference());
+  live_runner.context().set_last_price(samsung(), Decimal64::parse("70000"));
+  live_runner.context().set_portfolio(held_position<Caps>("0", nullptr));
+  Source source(session, {samsung()});
+  runner::PollSchedule schedule;
+  schedule.bars_ = std::chrono::seconds(1);
+  schedule.tick_ = std::chrono::seconds(1);
+  schedule.calendar_.reset();
+  runner::PollingLoop<LoopRunner, Source, runner::ManualClock> loop(
+    live_runner, source, schedule, runner::ManualClock{}
+  );
+  loop.allow_unbounded_portfolio_age();
+  runner::StopSource stop;
+  return loop.run(stop, 1);
+}
+
+bool notes_name(const runner::LoopReport& report, const char* name) {
+  for (const auto& note : report.notes_) {
+    if (note.find(name) != std::string::npos) {
+      return true;
+    }
+  }
+  return false;
+}
+
+} // namespace
+
+TEST_CASE("a broker that reports no buying power holds a run without a budget and runs one with it") {
+  // Nothing else bounds a buy there, so the loop fails closed until the operator states a budget.
+  static_assert(!live::SessionSource<FakeSession<WithoutBuyingPower>>::reports_buying_power);
+  using Bare = live::SessionSource<FakeSession<WithoutBuyingPower>>;
+
+  SECTION("without a budget, nothing is placed and the note names the budget") {
+    FakeSession<WithoutBuyingPower> session;
+    BrokerRunner<WithoutBuyingPower> live_runner(
+      LimitBuy{}, budget_limits(false), 512, live::SessionExecutor<FakeSession<WithoutBuyingPower>>(session)
+    );
+    const auto report = budget_loop<Bare>(session, live_runner);
+    CHECK(report.final_gate_ == std::optional<strategy::HaltReason>(strategy::HaltReason::BUYING_POWER_UNREAD));
+    CHECK(session.placed().empty());
+    CHECK(notes_name(report, "run_budget_"));
+  }
+
+  SECTION("a source that does not declare it holds the same way, and the note names the declaration") {
+    // Over a broker that does report buying power: the wrapper's silence is what holds it.
+    FakeSession<WithKey> session;
+    BrokerRunner<WithKey> live_runner(
+      LimitBuy{}, budget_limits(false), 512, live::SessionExecutor<FakeSession<WithKey>>(session)
+    );
+    const auto report = budget_loop<ForgetsBuyingPower<FakeSession<WithKey>>>(session, live_runner);
+    CHECK(report.final_gate_ == std::optional<strategy::HaltReason>(strategy::HaltReason::BUYING_POWER_UNREAD));
+    CHECK(session.placed().empty());
+    CHECK(notes_name(report, "reports_buying_power"));
+  }
+
+  SECTION("a runner that sends to a broker does not take a budget") {
+    FakeSession<WithoutBuyingPower> session;
+    using Live = BrokerRunner<WithoutBuyingPower>;
+    CHECK_THROWS_AS(
+      Live(LimitBuy{}, budget_limits(true), 512, live::SessionExecutor<FakeSession<WithoutBuyingPower>>(session)),
+      std::invalid_argument
+    );
+  }
+
+  SECTION("a dry run with a budget passes the gate and places, unless the buying-power check is on") {
+    FakeSession<WithoutBuyingPower> session;
+    RecordingRunner<WithoutBuyingPower> dry(LimitBuy{}, budget_limits(true));
+    const auto report = budget_loop<Bare>(session, dry);
+    CHECK_FALSE(report.final_gate_);
+    CHECK(dry.executor().placed().size() == 1);
+    CHECK(report.orders_guard_refused_ == 0);
+
+    auto checked = budget_limits(true);
+    checked.enforce_buying_power_ = true;
+    FakeSession<WithoutBuyingPower> other;
+    RecordingRunner<WithoutBuyingPower> held(LimitBuy{}, checked);
+    const auto refused = budget_loop<Bare>(other, held);
+    CHECK(refused.final_gate_ == std::optional<strategy::HaltReason>(strategy::HaltReason::BUYING_POWER_UNREAD));
+    CHECK(held.executor().placed().empty());
+    CHECK(notes_name(refused, "enforce_buying_power_"));
+  }
+
+  SECTION("a dry run in dollars counts the buy it placed on the pass before") {
+    // Room for one buy at 80,000: the second pass sees the first's reserved row and is refused.
+    runner::DryRunner<LimitBuy> dry(LimitBuy{}, budget_limits(true, "100000", "USD"));
+    auto reference = samsung_reference();
+    reference.currency_ = Currency{"USD"};
+    dry.context().set_instrument(reference);
+    REQUIRE(dry.feed(bar_at(1, "70000")).would_place_.size() == 1);
+    // A working-order listing replaces the rows, and cannot carry a dry run's order: the run keeps it itself.
+    dry.context().set_portfolio(strategy::Portfolio<runner::DryTag>{});
+    const auto second = dry.feed(bar_at(2, "70000"));
+    CHECK(second.would_place_.empty());
+    REQUIRE(second.refused_.size() == 1);
+    CHECK(second.refused_.front().reason_ == strategy::GuardReason::RUN_BUDGET_EXCEEDED);
+    CHECK(second.refused_.front().limit_ == std::optional<Decimal64>(Decimal64::parse("20000")));
+  }
+}
+
+namespace {
+
+/** Buys one Samsung and one Hynix at 80,000 on every bar. */
+struct BuysTwo {
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent&) {
+    for (const auto& id : {samsung(), InstrumentId{Country::KR, Venue::COMBINED, "000660"}}) {
+      const auto limit = strategy::Price::checked(Decimal64::parse("80000"), krx::equity_price_rule());
+      ctx.submit(
+        strategy::OrderIntent::limit(id, OrderSide::BUY, strategy::SizeSpec::quantity(Decimal64::parse("1")), *limit)
+      );
+    }
+  }
+};
+
+/** Reaches no broker, and answers its first placement with an unknown outcome. */
+struct UnknownFirst {
+  static constexpr bool reaches_a_broker = false;
+  std::size_t placed_{0};
+  runner::SendOutcome place(const strategy::PlannedOrder&) {
+    return ++placed_ == 1 ? runner::SendOutcome::INDETERMINATE : runner::SendOutcome::ACCEPTED;
+  }
+  runner::SendOutcome cancel(const WorkingOrder<runner::DryTag>&) {
+    return runner::SendOutcome::ACCEPTED;
+  }
+};
+
+} // namespace
+
+TEST_CASE("an unknown outcome refuses every budgeted buy until it is resolved") {
+  // Two of the 80,000 buys: the unknown one and exactly one more.
+  auto limits = budget_limits(true, "160000");
+  limits.permitted_universe_.reset();
+  runner::Runner<BuysTwo, strategy::NoCaps, runner::DryTag, UnknownFirst> dry(BuysTwo{}, limits);
+  dry.context().set_instrument(samsung_reference());
+  auto hynix = samsung_reference();
+  hynix.id_ = InstrumentId{Country::KR, Venue::COMBINED, "000660"};
+  dry.context().set_instrument(hynix);
+  // In the same pass: Samsung's send is unknown, so Hynix's buy, which the cash covers, is refused.
+  const auto first = dry.feed(bar_at(1, "70000"));
+  CHECK(first.indeterminate_.size() == 1);
+  REQUIRE(first.refused_.size() == 1);
+  CHECK(first.refused_.front().reason_ == strategy::GuardReason::RUN_LEDGER_UNSETTLED);
+  // And on the next pass, while the ledger withholds Samsung.
+  const auto second = dry.feed(bar_at(2, "70000"));
+  CHECK(second.would_place_.empty());
+  REQUIRE(second.refused_.size() == 1);
+  CHECK(second.refused_.front().reason_ == strategy::GuardReason::RUN_LEDGER_UNSETTLED);
+  // Resolved: the unknown buy still holds its 80,000, so one of the two buys fits and the other is refused.
+  dry.ledger().resolve_after_reading_orders(samsung());
+  const auto third = dry.feed(bar_at(3, "70000"));
+  CHECK(third.would_place_.size() == 1);
+  REQUIRE(third.refused_.size() == 1);
+  CHECK(third.refused_.front().reason_ == strategy::GuardReason::RUN_BUDGET_EXCEEDED);
+}
+
 TEST_CASE("a file journal reads back a resolution a startup sweep wrote", "[recovery][file]") {
   // Through the reader that failed: a `RESOLVED` line stamped at the epoch was damage to
   // `FileJournal`, so the next open counted it as a line this library did not write and recovery halted.
