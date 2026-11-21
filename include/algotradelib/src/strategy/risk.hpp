@@ -1132,8 +1132,9 @@ public:
    * sellable quantity, buying power, position ceiling, gross exposure ceiling.
    *
    * With `RiskLimits::run_budget_`, the sellable and buying-power checks also apply the run's bounds (the
-   * broker's figures still only where enforced), and refuse naming the smaller bound, the broker's on a tie. A budgeted market buy may be refused by an earlier check (`VALUE_NOT_KNOWN` without a
-   * reference price where another limit needs a value, or `ORDER_NOTIONAL_TOO_LARGE`) before
+   * broker's figures still only where enforced), and refuse naming the smaller bound, the broker's on a tie.
+   * A budgeted market buy may be refused by an earlier check (`VALUE_NOT_KNOWN` without a reference price
+   * where another limit needs a value, or `ORDER_NOTIONAL_TOO_LARGE`) before
    * `GuardReason::RUN_BUY_NEEDS_LIMIT`. A caller that sets a budget but fills no `GuardInputs::run_cash_` or
    * `GuardInputs::run_holding_` has every buy and sell refused, as `RUN_LEDGER_UNSETTLED` unless an earlier
    * check refuses first.

@@ -369,8 +369,8 @@ not unless you set `Runner::set_portfolio_value`, so it is refused on every pass
 `RiskLimits::enforce_buying_power_` and the loop refuses to send while it has no answer from the
 broker about what may be spent, reporting `buying_power_unread`. Set a cadence with
 `PollSchedule::buying_power_` and the currencies with `SessionSource::set_buying_power_currencies`,
-and optionally an age with `set_maximum_buying_power_age`. A loop that never asked for the check is
-never held by it.
+and optionally an age with `set_maximum_buying_power_age`. Over a broker that reports buying power, a loop
+that never asked for the check is never held by it; over one that reports none, see "The run budget".
 
 **Every currency you configure has to answer.** The gate holds until each one the source was told to
 poll has a reading the age rule accepts — not merely until one of them does. An account trading two
@@ -1125,7 +1125,8 @@ The budget does not turn on `enforce_buying_power_`; the fee estimate lowers onl
 | reports none | on | the same hold | the loop holds, with a note: the check can never be met, so turn it off |
 
 The loop decides the last two rows at compile time from the source's `reports_buying_power`, which `SessionSource` takes from `BrokerCaps::has_buying_power`.
-Since a runner that sends to a broker does not take a budget yet, a live loop over Alpaca places nothing; a dry run over it does.
+The hold stands from before the startup order-list read, and through a stop: a flatten still withdraws, but its closing orders are refused, the report counts them in `closing_refused_` and `closing_complete()` is false.
+Since a runner that sends to a broker does not take a budget yet, a live loop over Alpaca places nothing; a budgeted dry run over it does.
 A program that calls `Runner::feed` itself, without `PollingLoop`, gets the guard's check only: over a broker that reports no buying power, check `BrokerCaps<Client>::has_buying_power` before running it without a budget.
 
 **How it differs from the exposure ceiling.**
