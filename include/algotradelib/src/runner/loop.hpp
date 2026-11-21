@@ -1035,8 +1035,9 @@ private:
  * **Over a broker that reports no buying power, every placement is held as `BUYING_POWER_UNREAD`** unless
  * `strategy::RiskLimits::run_budget_` is set and `enforce_buying_power_` is off, as it is for a source that does
  * not declare `reports_buying_power` (see `source_reports_buying_power`). The hold stands before the startup
- * order-list read and through a stop's closing pass, which still withdraws but places no close. A runner that
- * sends to a broker does not take a budget yet, so over such a broker only a budgeted dry run places.
+ * order-list read and through a stop's closing pass, which still withdraws but places no close. Over such a
+ * broker a live runner places only with a budget, which it takes when serialized and journaled
+ * (`Runner::set_run_opening`); a budgeted dry run places too.
  *
  * A phase the loop cannot establish is reported (`final_phase_` and a note), not held. A stop is
  * honoured with a closing pass (see `StopIntent`); `LoopReport::closing_complete()` says whether

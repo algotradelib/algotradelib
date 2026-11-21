@@ -1104,8 +1104,8 @@ Name it: `Currency` defaults to KRW, so a budget written without one is a won bu
 A buy priced in another currency is refused with `run_budget_exceeded` and no attempted figure.
 
 **When the run's cash is not known, buys stop.**
-An open buy whose instrument has no reference data, whose price is missing or not positive, or whose remainder is negative cannot be reserved, and every budgeted buy of that pass is refused with `run_ledger_unsettled`.
-An open sell whose remainder is negative refuses the budgeted sells of its instrument the same way.
+In a replay or a dry run, the run's open orders are the listing's rows: an open buy whose instrument has no reference data, whose price is missing or not positive, or whose remainder is negative cannot be reserved, and every budgeted buy of that pass is refused with `run_ledger_unsettled`; an open sell whose remainder is negative refuses the budgeted sells of its instrument the same way.
+A live run reserves its own orders from its journal instead, whole until booked, and the account's other listed rows do not unset its cash.
 So is every budgeted buy after an order of the run whose outcome is unknown (`SendOutcome::INDETERMINATE`), from the rest of that pass on: in a dry run until the indeterminacy ledger no longer withholds its instrument (`Runner::ledger`); in a live run until a sweep names the order, which its journal keeps across a restart.
 
 **Replays and dry runs.**

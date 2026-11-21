@@ -199,8 +199,9 @@ public:
    * @brief `true` if the trading session's broker reports buying power (`BrokerCaps::has_buying_power`).
    *
    * `false` (Alpaca): `runner::PollingLoop` then holds every placement unless
-   * `strategy::RiskLimits::run_budget_` is set and `enforce_buying_power_` is off, which a runner that sends to
-   * a broker does not take yet. A source wrapping this one by composition must forward it.
+   * `strategy::RiskLimits::run_budget_` is set and `enforce_buying_power_` is off; a runner that sends to a broker
+   * takes a budget only when serialized and journaled (`runner::Runner::set_run_opening`). A source wrapping this
+   * one by composition must forward it.
    */
   static constexpr bool reports_buying_power = Caps::has_buying_power;
 

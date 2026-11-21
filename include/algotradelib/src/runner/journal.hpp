@@ -449,8 +449,9 @@ inline std::optional<RunRecordKind> run_record_kind_from(std::string_view text) 
  * @brief What a journal line says about a run budget's ledger (`strategy::RiskLimits::run_budget_`).
  *
  * On a run's `PLACE` lines it names the run alone; on a `CONFIRMED` line it also books the fill; on a
- * `JournalAction::LEDGER` line it is the whole record. A runner without a budget writes none, so its lines
- * are those of a journal from before run budgets.
+ * `JournalAction::LEDGER` line it is the whole record. A runner without a budget writes none on its own lines,
+ * which are then those of a journal from before run budgets; a line it writes to close a restored order of a run
+ * keeps that order's run, so a budgeted recovery reads the order as released without a booking.
  */
 struct RunRecord {
   /** @brief The run's id: the id of its `RunRecordKind::OPEN` line. */
@@ -543,7 +544,10 @@ struct JournalEntry {
    * account's orders. Stamped by the journal.
    */
   std::string scope_;
-  /** @brief What the line says about a run budget's ledger; null on every line of a runner without one. */
+  /**
+   * @brief What the line says about a run budget's ledger; null on a line of a runner without one, except one
+   *   closing a restored order of a run, which keeps that order's run.
+   */
   std::shared_ptr<const RunRecord> run_;
 };
 
