@@ -110,7 +110,7 @@ Before `--live`, read [Running a strategy live](doxygen/vignettes/running-a-stra
 - **The mock broker sends nothing.** It fills orders against bars you give, by the backtest's rule, as a clock you drive passes them, and can fail calls on purpose for tests. It is not a broker's demo account.
 - **Kiwoom places nothing as shipped.** Its holdings inquiry and its strategy orders refuse until you state what the inquiry covers and which venue orders go to, and with no calendar the default limits open no position.
 - **Alpaca sends an order only while its clock says the regular session is on**, and refuses OTC and other assets not listed on a US national exchange before any order request.
-  It declares no buying power, so a buy above the cash borrows on the account's margin; a live loop over it holds every placement unless `RiskLimits::run_budget_` is set, which a runner that sends to a broker does not take yet.
+  It declares no buying power, so a buy above the cash borrows on the account's margin; a live loop over it holds every placement unless `RiskLimits::run_budget_`, the run's starting cash kept in the order journal, is set.
   Live trading is the same code path as paper, but has been checked on paper only.
 - **SOR (`Venue::COMBINED`) is opt-in**, and KRX or NXT is the safer choice until SOR has been seen on an account.
 

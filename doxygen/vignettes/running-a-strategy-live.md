@@ -1106,13 +1106,39 @@ A buy priced in another currency is refused with `run_budget_exceeded` and no at
 **When the run's cash is not known, buys stop.**
 An open buy whose instrument has no reference data, whose price is missing or not positive, or whose remainder is negative cannot be reserved, and every budgeted buy of that pass is refused with `run_ledger_unsettled`.
 An open sell whose remainder is negative refuses the budgeted sells of its instrument the same way.
-So is every budgeted buy after an order of the run whose outcome is unknown (`SendOutcome::INDETERMINATE`), from the rest of that pass until the indeterminacy ledger no longer withholds its instrument (`Runner::ledger`).
+So is every budgeted buy after an order of the run whose outcome is unknown (`SendOutcome::INDETERMINATE`), from the rest of that pass on: in a dry run until the indeterminacy ledger no longer withholds its instrument (`Runner::ledger`); in a live run until a sweep names the order, which its journal keeps across a restart.
 
-**Replays and dry runs only, for now.**
-A runner over an executor that sends to a broker throws `std::invalid_argument` at construction when a budget is set: nothing keeps a live run's cash across a restart yet.
+**Replays and dry runs.**
 A replay (`backtest::Backtester`) books every execution, and `Backtester::run_cash` and `Backtester::run_holding` read the result.
 A dry run (`DryRunner`) keeps what the buys it would send commit for the rest of the run, whatever a later working-order listing shows, since no listing carries them; it never fills, so its cash never moves and the commitment never ends.
 `Runner::run_cash` and `Runner::run_holding` read any runner's.
+
+**A live run keeps its ledger in the order journal.**
+A runner that sends to a broker takes a budget only when it is serialized and journaled (`live::bind_journaled`, or a `JournalingExecutor` over a broker that lists working orders); any other throws `std::invalid_argument` at construction.
+Its run opens in `runner::recover_runner`, never before, as `Runner::set_run_opening` says; `RecoveryReport::run_` and `Runner::run_recovery` say how.
+
+```cpp
+runner::RunOpening opening;
+opening.fresh_ = "2026-11-23-a"; // the first run on this account; leave it out to resume
+live_runner.set_run_opening(opening); // before recovery
+const auto recovery = runner::recover_runner(live_runner, journal);
+// recovery.run_->waiting_: it opens on the next working-order listing that shows no open order
+```
+
+- **A run opens only when stated fresh**, the first one on an account included, since an empty journal cannot tell a first start from a lost one.
+  Fresh is refused while the journal restores an owed order, and opens only on the first working-order listing received after recovery: any order the broker lists then refuses it for the process's life; none opens it with the full budget and no shares.
+  "No open order" is what the adapter lists: Toss omits some order types placed outside the API, and Alpaca lists US equity rows.
+  A restart with the same id resumes the run it opened; an id an earlier run used halts.
+- **Resume is the default.** Recovery resumes the journal's latest run at its own cash and shares, whatever `run_budget_` now says; a journal with no run halts (`LOCAL_FAILURE`).
+- **Deposits and withdrawals, once each.** `RunOpening::transfers_` are applied to a resumed run in order, each recorded once under its id; one the run already holds is skipped, and one reused with another amount halts.
+  The whole list is checked before anything is written: a withdrawal more than the cash less the open buys' reservations, or while the cash is below zero or the run is unsettled, halts and writes nothing.
+- **A fill is booked from the order's own history row**, once per order: the amount (`filled_amount_`, else the average price times the quantity) and the commission and tax the row states, each missing one estimated from `run_fees_` on the order's amount.
+  Until a row books it, the order is still owed and counted as unexplained; the booking rides on its `confirmed` line, and a fee above the estimate is booked as charged and noted there.
+- **What an operator releases stays unbooked.** An order held for an operator, or released by one (`release_obligations`), refuses every buy of the run and sells of its instrument (`Runner::run_unsettled`), for the run's life.
+  To trade on, read the account and open a fresh run with a new id and the remaining cash as `run_budget_`.
+- **A failed journal write stops the run's writes.** The line may be on disk whole, in part or not at all, so the runner writes nothing more, sends no cancellation and refuses the run's orders until a new process recovers what persisted (`Runner::run_writes_closed`); `resume_after_local_failure` does not lift it.
+- **A damaged journal stops the run.** A line recovery cannot read, a torn last line, or a line recovered from damage opens no run, on every start, and nothing is written to it; reconcile the file, or state fresh on a new one.
+- **Many processes, one run.** Every process on the account with the same budget and fees resumes the same run, one at a time (the journal's lock); a runner without a budget that accounts for a run's order leaves it unbooked.
 
 **Beside the broker's buying power.**
 The budget does not turn on `enforce_buying_power_`; the fee estimate lowers only the run's room, and the broker's reading keeps its meaning.
@@ -1126,7 +1152,7 @@ The budget does not turn on `enforce_buying_power_`; the fee estimate lowers onl
 
 The loop decides the last two rows at compile time from the source's `reports_buying_power`, which `SessionSource` takes from `BrokerCaps::has_buying_power`.
 The hold stands from before the startup order-list read, and through a stop: a flatten still withdraws, but its closing orders are refused, the report counts them in `closing_refused_` and `closing_complete()` is false.
-Since a runner that sends to a broker does not take a budget yet, a live loop over Alpaca places nothing; a budgeted dry run over it does.
+A live loop over Alpaca therefore needs a journaled runner with a budget; a budgeted dry run over it places too.
 A program that calls `Runner::feed` itself, without `PollingLoop`, gets the guard's check only: over a broker that reports no buying power, check `BrokerCaps<Client>::has_buying_power` before running it without a budget.
 
 **How it differs from the exposure ceiling.**
@@ -1148,7 +1174,7 @@ Both apply when both are set, as does `max_order_notional_`, which caps one orde
   and if KIS reuses a number across days, the previous day's cancelled order can release the target
   before today's stop is in the history. The second sell is then one the broker should refuse for want
   of shares.
-- **Keep a live run's budget.** A runner that sends to a broker refuses `RiskLimits::run_budget_` ("The run budget", above).
+- **Run several budgets on one account.** One account journal keeps one run ("The run budget", above).
 - **Stream.** It polls; streaming would plug into the same source seam.
 - **Run more than one loop.** One loop, one thread.
 - **Tell you whether the sellable figure already excludes your resting orders.** No broker this
