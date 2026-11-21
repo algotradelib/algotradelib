@@ -5187,6 +5187,46 @@ bool notes_name(const runner::LoopReport& report, const char* name) {
   return false;
 }
 
+/** A source over a broker that reports no buying power, whose order-list read can feed a bar, as a source may. */
+template <typename R>
+struct FeedsWithoutBuyingPower : runner::ManualSource<R> {
+  static constexpr bool reports_buying_power = false;
+  bool feeds_on_read_{false};
+  runner::PollOutcome read_order_list(R& runner_instance) {
+    if (feeds_on_read_) {
+      runner_instance.feed(bar_at(10, "70000"));
+    }
+    return runner::ManualSource<R>::read_order_list(runner_instance);
+  }
+};
+
+/** A recording runner holding ten sellable Samsung, under `limits`, and a loop over `source` for it. */
+template <typename Caps>
+struct HeldTen {
+  RecordingRunner<Caps> runner_instance;
+  FeedsWithoutBuyingPower<RecordingRunner<Caps>> source;
+  runner::PollingLoop<RecordingRunner<Caps>, FeedsWithoutBuyingPower<RecordingRunner<Caps>>, runner::ManualClock> loop;
+
+  explicit HeldTen(strategy::RiskLimits limits)
+  : runner_instance(LimitBuy{}, std::move(limits)),
+    loop(
+      runner_instance, source, schedule(),
+      runner::ManualClock{std::chrono::system_clock::time_point{} + std::chrono::hours(500020)}
+    ) {
+    runner_instance.context().set_instrument(samsung_reference());
+    runner_instance.context().set_last_price(samsung(), Decimal64::parse("70000"));
+    runner_instance.context().set_portfolio(held_position<Caps>("10", "10"));
+    loop.allow_unbounded_portfolio_age();
+  }
+
+  static runner::PollSchedule schedule() {
+    runner::PollSchedule every;
+    every.tick_ = std::chrono::seconds(1);
+    every.calendar_.reset();
+    return every;
+  }
+};
+
 } // namespace
 
 TEST_CASE("a broker that reports no buying power holds a run without a budget and runs one with it") {
@@ -5258,6 +5298,37 @@ TEST_CASE("a broker that reports no buying power holds a run without a budget an
     REQUIRE(second.refused_.size() == 1);
     CHECK(second.refused_.front().reason_ == strategy::GuardReason::RUN_BUDGET_EXCEEDED);
     CHECK(second.refused_.front().limit_ == std::optional<Decimal64>(Decimal64::parse("20000")));
+  }
+
+  SECTION("an order-list read that feeds, and a flatten pending or later, place nothing") {
+    // No budget, or a budget with the buying-power check on: held before any call into the source, and through
+    // a stop's closing pass.
+    auto checked = budget_limits(true);
+    checked.enforce_buying_power_ = true;
+    for (const auto& limits : {budget_limits(false), checked}) {
+      CAPTURE(limits.run_budget_.has_value());
+      {
+        HeldTen<WithoutBuyingPower> rig(limits);
+        rig.source.feeds_on_read_ = true;
+        runner::StopSource stop;
+        const auto report = rig.loop.run(stop, 1);
+        CHECK(report.final_gate_ == std::optional<strategy::HaltReason>(strategy::HaltReason::BUYING_POWER_UNREAD));
+        CHECK(rig.runner_instance.executor().placed().empty());
+      }
+      for (const bool pending : {true, false}) {
+        CAPTURE(pending);
+        HeldTen<WithoutBuyingPower> rig(limits);
+        runner::StopSource stop;
+        if (!pending) {
+          REQUIRE(rig.loop.run(stop, 1).final_gate_);
+        }
+        stop.request(runner::StopIntent::FLATTEN);
+        const auto report = rig.loop.run(stop, 1);
+        CHECK(rig.runner_instance.executor().placed().empty());
+        CHECK(report.closing_refused_ == 1);
+        CHECK_FALSE(report.closing_complete());
+      }
+    }
   }
 }
 
