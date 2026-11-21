@@ -443,6 +443,13 @@ inline run_detail::Fold RunLedger::fold(const JournalReplay& replay) {
     folded.failure_ = "the run's opening line " + replay.entries_[*opened].id_ + " is incomplete";
     return folded;
   }
+  // A line of the run before its latest opening: the opening repeated, which would restart the run at its budget.
+  for (std::size_t at = 0; at < *opened; ++at) {
+    if (replay.entries_[at].run_ && replay.entries_[at].run_->run_ == open.run_) {
+      folded.failure_ = "the run's opening line " + open.run_ + " is repeated";
+      return folded;
+    }
+  }
   RunLedger run(open.run_, *open.amount_, open.given_);
   const auto fail = [&folded](const JournalEntry& entry, const char* why) {
     folded.failure_ = "the run's journal line " + entry.id_ + " " + why;
