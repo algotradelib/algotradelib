@@ -273,6 +273,7 @@ class FeedingSourceFor {
 public:
   /** It stands for a real working-order listing, as both supported brokers publish one. */
   static constexpr bool provides_working_orders = true;
+  static constexpr bool reports_buying_power = true;
 
   /** Sets what the order-list read returns. */
   void set_order_list(runner::PollOutcome outcome) {
@@ -1688,6 +1689,7 @@ namespace {
 class HistoryOnlySource {
 public:
   static constexpr bool provides_working_orders = false;
+  static constexpr bool reports_buying_power = true;
 
   runner::PollOutcome poll(runner::PollKind, InertRunner&) {
     return runner::PollOutcome::UNCHANGED;
@@ -2067,6 +2069,7 @@ namespace {
 class AccountingSource {
 public:
   static constexpr bool provides_working_orders = true;
+  static constexpr bool reports_buying_power = true;
 
   const runner::ManualClock* clock_{nullptr};
   /** What a holdings poll shows, or nothing for a poll that reports no new answer. */
@@ -2754,6 +2757,7 @@ using HoldsTenAtStartRunner = runner::DryRunner<HoldsTenAtStart>;
 /** Answers the holdings poll with a dated, empty account once told to. */
 struct HoldingsWhenTold {
   static constexpr bool provides_working_orders = true;
+  static constexpr bool reports_buying_power = true;
   bool serve_{false};
 
   runner::PollOutcome poll(runner::PollKind kind, HoldsTenAtStartRunner& runner_instance) {
@@ -2850,6 +2854,7 @@ using RecordsRunner = runner::DryRunner<ReadsRecords>;
 /** Feeds one minute bar per bars poll, each a second after the last, ending before the loop's clock. */
 class BarPerPoll {
 public:
+  static constexpr bool reports_buying_power = true;
   runner::PollOutcome poll(runner::PollKind kind, RecordsRunner& runner_instance) {
     if (kind != runner::PollKind::BARS) {
       return runner::PollOutcome::UNCHANGED;

@@ -196,6 +196,15 @@ public:
   static constexpr bool provides_working_orders = Caps::has_working_orders;
 
   /**
+   * @brief `true` if the trading session's broker reports buying power (`BrokerCaps::has_buying_power`).
+   *
+   * `false` (Alpaca): `runner::PollingLoop` then holds every placement unless
+   * `strategy::RiskLimits::run_budget_` is set and `enforce_buying_power_` is off, which a runner that sends to
+   * a broker does not take yet. A source wrapping this one by composition must forward it.
+   */
+  static constexpr bool reports_buying_power = Caps::has_buying_power;
+
+  /**
    * @brief `true` if the market-data session's adapter fills each open day's session hours in the calendar it
    *   installs (`BrokerCaps::has_calendar_sessions`), so `runner::PollingLoop` takes the phase from them.
    */

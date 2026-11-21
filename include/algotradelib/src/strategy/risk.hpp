@@ -62,7 +62,11 @@ enum class HaltReason {
   /**
    * @brief A buying-power limit is enforced, but there is no current reading to check it against.
    *
-   * The reading was never polled, has not returned yet, or has aged out.
+   * The reading was never polled, has not returned yet, or has aged out. `runner::PollingLoop` also
+   * holds this over a source whose broker reports no buying power, or that does not say
+   * (`runner::source_reports_buying_power`): without `RiskLimits::run_budget_`, since nothing would
+   * then bound a buy, and with one while `RiskLimits::enforce_buying_power_` is on, since no reading
+   * will ever arrive.
    */
   BUYING_POWER_UNREAD,
   /** @brief A poll kept failing and the loop gave up, as opposed to `STOPPING` on request. */

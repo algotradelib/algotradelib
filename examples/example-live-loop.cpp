@@ -86,6 +86,9 @@ using LoopRunner = runner::DryRunner<CountBars>;
  */
 class ScriptedSource {
 public:
+  /** `true`: it stands for no broker, and a runner that sends nothing spends nothing. */
+  static constexpr bool reports_buying_power = true;
+
   explicit ScriptedSource(int bars) : remaining_(bars) {}
 
   runner::PollOutcome poll(runner::PollKind kind, LoopRunner& live_runner) {

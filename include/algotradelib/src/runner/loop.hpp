@@ -209,7 +209,8 @@ struct PollSchedule {
    * @brief How often to read buying power.
    *
    * With `RiskLimits::enforce_buying_power_` on and this unset, every placement is held
-   * (`BUYING_POWER_UNREAD`).
+   * (`BUYING_POWER_UNREAD`). Read only from a source whose broker reports buying power
+   * (`source_reports_buying_power`).
    */
   std::optional<std::chrono::nanoseconds> buying_power_;
   /** @brief The loop's step, which bounds how quickly a stop is noticed; not a poll. */
@@ -296,6 +297,36 @@ struct source_states_calendar_sessions : std::false_type {};
 template <typename Source>
 struct source_states_calendar_sessions<Source, std::void_t<decltype(Source::states_calendar_sessions)>>
 : std::bool_constant<Source::states_calendar_sessions> {};
+
+/**
+ * @brief Detects whether a source declares `static constexpr bool reports_buying_power = true`, meaning its
+ *   broker reports buying power (`BrokerCaps::has_buying_power`).
+ *
+ * `false` when undeclared, as for a broker that reports none: `PollingLoop` then holds every placement as
+ * `strategy::HaltReason::BUYING_POWER_UNREAD` unless `strategy::RiskLimits::run_budget_` is set, and also
+ * with one while `strategy::RiskLimits::enforce_buying_power_` is on (no reading will arrive), with a note
+ * naming the missing declaration. `live::SessionSource` declares it; a source that wraps one by composition
+ * must forward the constant.
+ *
+ * @tparam Source The source type.
+ */
+template <typename Source, typename = void>
+struct source_reports_buying_power : std::false_type {};
+
+template <typename Source>
+struct source_reports_buying_power<Source, std::void_t<decltype(Source::reports_buying_power)>>
+: std::bool_constant<Source::reports_buying_power> {};
+
+namespace loop_detail {
+
+// Whether a source declares `reports_buying_power` at all, which only words the loop's note.
+template <typename Source, typename = void>
+struct source_declares_buying_power : std::false_type {};
+
+template <typename Source>
+struct source_declares_buying_power<Source, std::void_t<decltype(Source::reports_buying_power)>> : std::true_type {};
+
+} // namespace loop_detail
 
 /**
  * @brief Detects `Runner::keeps_sent_orders_until_listed`.
@@ -834,6 +865,8 @@ class ManualSource {
 public:
   /** @brief `true`: its outcomes stand for a real working-order listing. */
   static constexpr bool provides_working_orders = true;
+  /** @brief `true`: its caller installs whatever buying power it has; it stands for no broker. */
+  static constexpr bool reports_buying_power = true;
 
   /**
    * @brief Queues the outcome of the next poll of a kind.
@@ -998,6 +1031,11 @@ private:
  *
  * **State a holdings age policy** (`set_maximum_portfolio_age` or `allow_unbounded_portfolio_age`):
  * without one, every placement is held as `PORTFOLIO_STALE`.
+ *
+ * **Over a broker that reports no buying power, every placement is held as `BUYING_POWER_UNREAD`** unless
+ * `strategy::RiskLimits::run_budget_` is set and `enforce_buying_power_` is off, as it is for a source that does
+ * not declare `reports_buying_power` (see `source_reports_buying_power`). A runner that sends to a broker does
+ * not take a budget yet, so over such a broker only a dry run places.
  *
  * A phase the loop cannot establish is reported (`final_phase_` and a note), not held. A stop is
  * honoured with a closing pass (see `StopIntent`); `LoopReport::closing_complete()` says whether
@@ -2193,6 +2231,32 @@ private:
         return strategy::HaltReason::PORTFOLIO_STALE;
       }
     }
+    if constexpr (!source_reports_buying_power<Source>::value) {
+      // The broker reports no buying power (or the source does not say): the run budget is the only
+      // figure that bounds a buy, and a reading for `enforce_buying_power_` never arrives
+      // (`live::SessionSource::poll_buying_power`). A source that reports it compiles none of this.
+      constexpr bool declared = loop_detail::source_declares_buying_power<Source>::value;
+      const auto& limits = runner_->guard().limits();
+      if (!limits.run_budget_) {
+        say_buying_power_once(
+          1U, report,
+          declared ?
+            "the broker reports no buying power: set RiskLimits::run_budget_, the run's starting cash" :
+            "the source does not declare reports_buying_power: declare or forward it, or set run_budget_"
+        );
+        return strategy::HaltReason::BUYING_POWER_UNREAD;
+      }
+      if (limits.enforce_buying_power_) {
+        say_buying_power_once(
+          2U, report,
+          declared ?
+            "the broker reports no buying power: turn enforce_buying_power_ off; run_budget_ limits buys" :
+            "the source does not declare reports_buying_power: declare or forward it for enforce_buying_power_"
+        );
+        return strategy::HaltReason::BUYING_POWER_UNREAD;
+      }
+      return std::nullopt;
+    }
     if (runner_->guard().limits().enforce_buying_power_) {
       // Checked only when the caller asked for the limit. A loop with no buying-power cadence and
       // no check configured is an ordinary loop, and must not be held for a reading nobody wants.
@@ -2248,12 +2312,21 @@ private:
     return std::nullopt;
   }
 
+  // Adds a configuration note once per loop; `bit` names which.
+  void say_buying_power_once(unsigned bit, LoopReport& report, const char* note) {
+    if ((said_buying_power_ & bit) == 0) {
+      said_buying_power_ |= bit;
+      report.notes_.emplace_back(note);
+    }
+  }
+
   // Sets how old a buying-power reading may be before the gate closes on it.
 public:
   /**
    * @brief Sets how old buying-power readings may be.
    *
-   * Used only with `RiskLimits::enforce_buying_power_` on. Then a missing or too-old reading holds
+   * Used only with `RiskLimits::enforce_buying_power_` on, over a source whose broker reports buying
+   * power (`source_reports_buying_power`). Then a missing or too-old reading holds
    * every placement, sells included (`BUYING_POWER_UNREAD`); named cancellations still go. The
    * readings needed: one per currency the source names
    * (`live::SessionSource::set_buying_power_currencies`), or, if it names none, at least one, with
@@ -3100,6 +3173,8 @@ private:
   bool said_no_age_policy_{false};
   // Which of `listing_missing`'s notes have been given, so each is said once per loop.
   unsigned said_listing_{0};
+  // Which of the no-buying-power notes have been given, so each is said once per loop.
+  unsigned said_buying_power_{0};
   // The runner's discarded-history count when this run began; see `note_warmup_discarded`.
   std::size_t warmup_discarded_at_start_{0};
   // The runner's dropped-kept-intent count when this run began; see `note_kept_intents_dropped`.

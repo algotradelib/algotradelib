@@ -120,8 +120,9 @@ struct BrokerTraits<alpaca::AlpacaBlockingClient> {
 
   /**
    * @brief `false`: no Alpaca figure is cash net of resting buys without credit (`buying_power` counts margin), so
-   *   buys are not checked against cash; a buy above the cash borrows on the account's margin unless
-   *   `RiskLimits::max_order_notional_` or `max_gross_exposure_` stops it.
+   *   buys are not checked against cash; a buy above the cash borrows on the account's margin. `runner::PollingLoop`
+   *   over it holds every placement unless `RiskLimits::run_budget_` is set, which a runner that sends to a broker
+   *   does not take yet.
    */
   static constexpr bool has_buying_power = false;
 

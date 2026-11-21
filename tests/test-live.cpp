@@ -34,6 +34,7 @@ struct FakeBroker {};
 /** Capabilities a fake session can be given, to exercise both sides of a gate. */
 struct WithKey : strategy::NoCaps {
   static constexpr bool has_client_order_id = true;
+  static constexpr bool has_buying_power = true;
 };
 struct WithoutKey : strategy::NoCaps {
   static constexpr bool has_client_order_id = false;
@@ -48,6 +49,7 @@ struct WithoutKey : strategy::NoCaps {
  */
 struct WithWorkingOrders : strategy::NoCaps {
   static constexpr bool has_working_orders = true;
+  static constexpr bool has_buying_power = true;
 };
 struct WithoutWorkingOrders : strategy::NoCaps {
   static constexpr bool has_working_orders = false;
@@ -101,6 +103,7 @@ struct WithoutPriceLimits : strategy::NoCaps {
 struct WithCalendar : strategy::NoCaps {
   static constexpr bool has_calendar = true;
   static constexpr bool has_working_orders = true;
+  static constexpr bool has_buying_power = true;
 };
 struct WithoutCalendar : strategy::NoCaps {
   static constexpr bool has_calendar = false;
@@ -2143,6 +2146,7 @@ template <typename Session, typename Clock>
 class FreshHoldingsSource {
 public:
   static constexpr bool provides_working_orders = true;
+  static constexpr bool reports_buying_power = Session::Caps::has_buying_power;
 
   FreshHoldingsSource(Session& session, std::vector<InstrumentId> universe, const Clock* clock)
   : inner_(session, std::move(universe)), session_(&session), clock_(clock) {}
@@ -3231,6 +3235,7 @@ template <typename Session>
 class StoppingSource {
 public:
   static constexpr bool provides_working_orders = true;
+  static constexpr bool reports_buying_power = Session::Caps::has_buying_power;
 
   StoppingSource(Session& session, std::vector<InstrumentId> universe, runner::StopSource& stop)
   : inner_(session, std::move(universe)), session_(&session), stop_(&stop) {}
@@ -4970,6 +4975,7 @@ namespace {
 class ListingMovesAfterStartup {
 public:
   static constexpr bool provides_working_orders = true;
+  static constexpr bool reports_buying_power = WorkingSession::Caps::has_buying_power;
 
   explicit ListingMovesAfterStartup(WorkingSession& session) : inner_(session, {samsung()}), session_(&session) {}
 
@@ -6800,6 +6806,7 @@ using SerialRunner = SerialRunnerOf<WithWorkingOrders>;
  */
 struct QuietSource {
   static constexpr bool provides_working_orders = true;
+  static constexpr bool reports_buying_power = true;
   std::size_t working_polls_{0};
   std::size_t act_on_working_poll_{0};
   std::function<void()> act_;
