@@ -300,6 +300,10 @@ cash below zero, `first_overdrawn_` says when it started and `lowest_cash_` how 
 before a ranking. They measure cash in the replay's currency only: a short's proceeds count as cash,
 so leverage through shorts is not in them (see "Borrow availability" above).
 
+`RiskLimits::run_budget_` is the other way to keep a replay from borrowing.
+The run starts with that cash, a buy must carry a limit price and is refused when its value is more than the cash left less its estimated fee (`RiskLimits::run_fees_`), a sell is refused past the shares the run bought, and `Backtester::run_cash` says what is left; each fill books the replay's own costs.
+See "The run budget" in [running a strategy live](running-a-strategy-live.md).
+
 Borrowing can lose more than the opening equity. A period whose preceding recorded equity is zero or
 negative has no return (`EquityPoint::period_return_` is missing); returns resume once equity is
 positive again. If any recorded equity point before the last is zero or negative, `summarize` reports

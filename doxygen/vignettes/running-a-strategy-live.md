@@ -686,8 +686,10 @@ re-derives the phase before every call it makes that could send, but nothing of 
 it stood when that poll began. `SessionSource::poll_calendar` installs a calendar and feeds nothing,
 which is the shape with no edge.
 
-A source that wraps a `SessionSource` by composition must also forward its `states_calendar_sessions`.
-If a source that does not declare it installs a calendar whose open days carry session hours, the loop does not fall back to the window: the phase is `UNKNOWN`, every opening order is refused, and a note names the missing constant.
+A source that wraps a `SessionSource` by composition must also forward its `states_calendar_sessions`, and its `reports_buying_power`.
+A source that does not declare `reports_buying_power` is treated as one over a broker that reports no buying power: without `RiskLimits::run_budget_`, every placement is held as `buying_power_unread`, and a note names the missing constant (see "The run budget").
+A source of your own that stands for no broker declares `static constexpr bool reports_buying_power = true`.
+If a source that does not declare `states_calendar_sessions` installs a calendar whose open days carry session hours, the loop does not fall back to the window: the phase is `UNKNOWN`, every opening order is refused, and a note names the missing constant.
 The loop cannot see the one case left: over a declaring broker whose hours all failed to parse, such a source still runs on the window.
 
 The same rule applies to a **strategy**: `on_phase` and `on_stop` receive a mutable context, and
@@ -773,8 +775,8 @@ checks above (and `SessionSource` feeds a cold start's history as history, above
 can send at all). A dry run and `live::bind_observer` send to no broker, so their rows carry
 no broker reference — a later opposing target would ask to withdraw an order identified by nothing — and
 for them an order stays counted across passes only when `enforce_buying_power_`,
-`enforce_sellable_quantity_`, `max_position_quantity_` or `max_gross_exposure_` reads it, or it is a
-stop; otherwise they report a restated target again on every pass.
+`enforce_sellable_quantity_`, `max_position_quantity_`, `max_gross_exposure_` or `run_budget_` reads it,
+or it is a stop; otherwise they report a restated target again on every pass.
 
 A listing alone does not end it. A market order that filled at once is in no listing, a
 resting order may not be listed yet, and a listed one can fill and leave; in each case a holdings answer
@@ -1055,6 +1057,81 @@ needs registered reference data, and a mark. One that has neither is not quietly
 it would under-count, which is the direction a risk limit must not err in — so the order is refused
 with `GuardReason::VALUE_NOT_KNOWN` until you register it.
 
+## The run budget
+
+`RiskLimits::run_budget_` is the run's starting cash, as if a sub-account were opened when the run began: "this run may use $5,000".
+
+```cpp
+strategy::RiskLimits limits;
+limits.run_budget_ = Money{Decimal64::parse("5000"), Currency{"USD"}};
+limits.run_fees_ = strategy::RunFees{}; // the broker charges no commission
+```
+
+Buys spend the cash, sells return their proceeds, and the run never borrows.
+With $5,000, a buy of 10 shares at a $500 limit leaves no cash, and the next buy is refused with `run_budget_exceeded` until a sell brings cash back.
+A fall in price frees no room: the cash moves only with the run's own fills.
+It is not a loss limit either: a run that sells at a loss has less to spend, and one that sells at a gain has more.
+
+**Buys carry a limit price.**
+A budgeted buy that is not a limit or stop-limit order with a positive price (a market order, a broker's own price such as best or closing, or a conditional limit, which becomes a market order at the close) is refused with `run_buy_needs_limit`, since there is no cap to reserve against.
+A strategy that wants a market-like buy places a marketable limit.
+Sells may be market orders.
+
+**A buy spends the smaller of two bounds.**
+The run's room is its cash less what its open buys reserve less this buy's estimated fee.
+With `enforce_buying_power_` on, the broker's buying power is the other bound, and a buy is checked against the smaller; with it off, against the room alone.
+A buy whose limit price times its quantity is more is refused, naming the smaller bound: `run_budget_exceeded` (the room and the value) when the run's is smaller, `insufficient_buying_power` (the reading and the value) when the broker's is smaller or equal; equal passes.
+A buy fills at or below its limit, so what it books is never more than what it reserved, except by a charged fee above the estimate; that is booked as charged, and can take the cash below zero, which refuses every buy until a sell lifts it.
+A budgeted market buy is refused either way, but another limit can refuse it first: with no quote and a notional or exposure ceiling, or `enforce_buying_power_`, it is `value_not_known`, and one past `max_order_notional_` is `order_notional_too_large`.
+
+**Fees are required.**
+A runner with a budget and no `run_fees_` refuses to construct.
+`RunFees` states a commission rate with a minimum per order, an institution rate charged on top, and a sell tax rate.
+The minimum and the rounding apply once to an order's traded value, however many fills make it up.
+Each charge rounds up to a whole currency unit, so in dollars the commission and the institution fee together can reserve up to two dollars an order more than charges in cents.
+State the broker's real schedule; per-share fees have no field yet.
+In a replay, each fill books the replay's own commission, institution fee and tax.
+
+**The run owns only what it bought.**
+The run starts flat, and a sell is checked against the smaller of the run's own shares less its open sells and, with `enforce_sellable_quantity_` on, the broker's sellable quantity less resting sells.
+A sell past the run's shares is refused with `run_holding_exceeded`, also while the account holds more from before the run; when the broker's room is smaller or equal, it is `quantity_not_sellable` with the broker's figures.
+So a budgeted run is long-only, also with the sellable check off.
+A strategy still sizes its targets from the account's holdings: on a symbol the account holds outside the run, a target plans sells of those shares, which are refused on every pass, and a buy toward a target the account already meets never comes.
+Give a budgeted run symbols the account does not otherwise hold.
+
+**One currency.**
+Name it: `Currency` defaults to KRW, so a budget written without one is a won budget.
+A buy priced in another currency is refused with `run_budget_exceeded` and no attempted figure.
+
+**When the run's cash is not known, buys stop.**
+An open buy whose instrument has no reference data, whose price is missing or not positive, or whose remainder is negative cannot be reserved, and every budgeted buy of that pass is refused with `run_ledger_unsettled`.
+An open sell whose remainder is negative refuses the budgeted sells of its instrument the same way.
+So is every budgeted buy after an order of the run whose outcome is unknown (`SendOutcome::INDETERMINATE`), from the rest of that pass until the indeterminacy ledger no longer withholds its instrument (`Runner::ledger`).
+
+**Replays and dry runs only, for now.**
+A runner over an executor that sends to a broker throws `std::invalid_argument` at construction when a budget is set: nothing keeps a live run's cash across a restart yet.
+A replay (`backtest::Backtester`) books every execution, and `Backtester::run_cash` and `Backtester::run_holding` read the result.
+A dry run (`DryRunner`) keeps what the buys it would send commit for the rest of the run, whatever a later working-order listing shows, since no listing carries them; it never fills, so its cash never moves and the commitment never ends.
+`Runner::run_cash` and `Runner::run_holding` read any runner's.
+
+**Beside the broker's buying power.**
+The budget does not turn on `enforce_buying_power_`; the fee estimate lowers only the run's room, and the broker's reading keeps its meaning.
+
+| Broker | `enforce_buying_power_` | No budget | With a budget |
+| --- | --- | --- | --- |
+| reports buying power (KIS, Kiwoom, Toss) | off | as before | the room limits buys; the broker still refuses a buy past its own buying power |
+| reports buying power | on | as before | the smaller of the reading and the room limits buys |
+| reports none (Alpaca) | off | the loop holds every placement, sells included, as `buying_power_unread`, with a note naming the budget | the room alone limits buys |
+| reports none | on | the same hold | the loop holds, with a note: the check can never be met, so turn it off |
+
+The loop decides the last two rows at compile time from the source's `reports_buying_power`, which `SessionSource` takes from `BrokerCaps::has_buying_power`.
+Since a runner that sends to a broker does not take a budget yet, a live loop over Alpaca places nothing; a dry run over it does.
+A program that calls `Runner::feed` itself, without `PollingLoop`, gets the guard's check only: over a broker that reports no buying power, check `BrokerCaps<Client>::has_buying_power` before running it without a budget.
+
+**How it differs from the exposure ceiling.**
+`max_gross_exposure_` is account-wide, counts both sides at market value, and applies the same number to each currency; the budget is one run's cash in one currency.
+Both apply when both are set, as does `max_order_notional_`, which caps one order.
+
 ## What this does not do yet
 
 - **Remember an unconfirmed order across a restart, for a runner that overlaps orders.** A serialized
@@ -1070,6 +1147,7 @@ with `GuardReason::VALUE_NOT_KNOWN` until you register it.
   and if KIS reuses a number across days, the previous day's cancelled order can release the target
   before today's stop is in the history. The second sell is then one the broker should refuse for want
   of shares.
+- **Keep a live run's budget.** A runner that sends to a broker refuses `RiskLimits::run_budget_` ("The run budget", above).
 - **Stream.** It polls; streaming would plug into the same source seam.
 - **Run more than one loop.** One loop, one thread.
 - **Tell you whether the sellable figure already excludes your resting orders.** No broker this
@@ -1112,5 +1190,8 @@ of these:
   trading.
 - **A calendar written during `PollKind::CALENDAR` only**, and no bar fed from that poll ("The market
   phase, and what the loop needs to know it", above).
+- **`reports_buying_power` declared**, from the broker's `BrokerCaps::has_buying_power`: a source that does
+  not declare it is held without `RiskLimits::run_budget_` ("The run budget", above). The example's source
+  declares `true`, since it stands for no broker.
 - **For a journaling binding, listings handed to the journal's reconciliation**
   (`SessionSource::set_journal`).

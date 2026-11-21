@@ -469,11 +469,12 @@ struct RiskLimits {
    * The run starts flat and owns only the shares it buys. A buy must carry a positive limit price
    * (`GuardReason::RUN_BUY_NEEDS_LIMIT`). The buying-power check then spends the smaller of the broker's buying
    * power (with `enforce_buying_power_`) and the run's room: its cash less what its open buys reserve less this
-   * buy's estimated fee (`run_fees_`); a buy whose limit price times its quantity is more is refused, naming the
-   * smaller bound (`GuardReason::RUN_BUDGET_EXCEEDED`, or `INSUFFICIENT_BUYING_POWER` on a tie); equal passes.
-   * The sellable check sells the smaller of the broker's sellable quantity less resting sells (with
-   * `enforce_sellable_quantity_`) and the run's own shares less its open sells (`GuardReason::RUN_HOLDING_EXCEEDED`,
-   * or `QUANTITY_NOT_SELLABLE` on a tie). Always name the currency (`Currency` defaults to KRW); a buy priced in
+   * buy's estimated fee (`run_fees_`). A buy whose limit price times its quantity is more is refused, naming the
+   * smaller bound: `GuardReason::RUN_BUDGET_EXCEEDED` when the room is smaller, `INSUFFICIENT_BUYING_POWER` when
+   * the broker's is smaller or equal; equal passes. The sellable check bounds a sell by the smaller of the
+   * broker's sellable quantity less resting sells (with `enforce_sellable_quantity_`) and the run's own shares
+   * less its open sells: `GuardReason::RUN_HOLDING_EXCEEDED` when the run's is smaller, `QUANTITY_NOT_SELLABLE`
+   * when the broker's is smaller or equal. Always name the currency (`Currency` defaults to KRW); a buy priced in
    * another currency is refused.
    *
    * `runner::Runner` keeps the run's cash and shares, and refuses to construct with a budget but no `run_fees_`,

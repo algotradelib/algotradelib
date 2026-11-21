@@ -287,7 +287,7 @@ ask before you write the call, so one strategy source compiles against all four.
 
 | | Toss | KIS | Kiwoom | Alpaca |
 | --- | --- | --- | --- | --- |
-| `has_buying_power` | yes | yes | yes | no: no figure excludes margin credit, so buys are not checked against cash |
+| `has_buying_power` | yes | yes | yes | no: no figure excludes margin credit, so buys are not checked against cash; a live loop holds without `RiskLimits::run_budget_` |
 | `has_buying_power_quantity` | no — an amount only | no — an amount only (KIS can price a quantity; this client does not ask) | yes — per margin tier, through `session.client()` | no |
 | `sellable_source` | `INQUIRY` — one request per instrument | `HOLDINGS` — free, on every snapshot | `NONE` — not yet: the session's holdings are refused until you assert `KiwoomConfig::holdings_position_scope_`; the rows then carry `trde_able_qty`, which `RiskGuard` uses only if `holdings_sellable_scope_` is `WHOLE_HOLDING` | `HOLDINGS` — `qty_available` on every snapshot, which Alpaca already nets of resting sells |
 | `has_commission_schedule` | yes | no | no | no |
