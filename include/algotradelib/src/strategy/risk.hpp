@@ -212,6 +212,36 @@ enum class GuardReason {
   SELLABLE_BASIS_UNESTABLISHED,
   /** @brief The buy costs more than the broker's buying power, or the broker gave none. */
   INSUFFICIENT_BUYING_POWER,
+  /**
+   * @brief The buy's value is more than the run's room (`RiskLimits::run_budget_`).
+   *
+   * The room is the run's cash less what its open buys reserve less this buy's estimated fee
+   * (`RiskLimits::run_fees_`); the value is its quantity times its limit price. `GuardRejection::limit_` is the
+   * room, below zero when the run is, and `GuardRejection::attempted_` the value. Also a buy priced in another
+   * currency than the run's: then `limit_` is the run's cash, in its own currency, and `attempted_` is absent.
+   */
+  RUN_BUDGET_EXCEEDED,
+  /**
+   * @brief A budgeted run's buy carries no positive limit price of its own, so there is no cap to reserve
+   *   against.
+   *
+   * Only a limit or a stop-limit with a positive price passes: every other type (market, best, primary, mid,
+   * closing, unknown, and a conditional limit, which becomes a market order at the close) is refused.
+   */
+  RUN_BUY_NEEDS_LIMIT,
+  /**
+   * @brief The sell is more than the run's own shares of the instrument less its open sells.
+   *
+   * Shares the account held before the run are not the run's. `GuardRejection::limit_` is never below zero.
+   */
+  RUN_HOLDING_EXCEEDED,
+  /**
+   * @brief The run's cash, or its shares of the instrument, is not known.
+   *
+   * `GuardInputs::run_cash_` (for a buy) or `GuardInputs::run_holding_` (for a sell) is absent, the run's cash is
+   * in another currency than the budget, or `RiskLimits::run_fees_` is absent.
+   */
+  RUN_LEDGER_UNSETTLED,
 };
 
 /**
@@ -243,6 +273,14 @@ inline constexpr std::string_view guard_reason_name(GuardReason reason) noexcept
       return "sellable_basis_unestablished";
     case GuardReason::INSUFFICIENT_BUYING_POWER:
       return "insufficient_buying_power";
+    case GuardReason::RUN_BUDGET_EXCEEDED:
+      return "run_budget_exceeded";
+    case GuardReason::RUN_BUY_NEEDS_LIMIT:
+      return "run_buy_needs_limit";
+    case GuardReason::RUN_HOLDING_EXCEEDED:
+      return "run_holding_exceeded";
+    case GuardReason::RUN_LEDGER_UNSETTLED:
+      return "run_ledger_unsettled";
   }
   return "unknown";
 }
@@ -261,6 +299,91 @@ struct GuardRejection {
   std::optional<Decimal64> limit_;
   /** @brief The value the order would have reached, where the reason has one. */
   std::optional<Decimal64> attempted_;
+};
+
+/**
+ * @brief The fees a run budget estimates for an order (`RiskLimits::run_fees_`).
+ *
+ * The same shapes as the backtest's `CommissionModel`, institution rate and `SellTax`, stated here because a
+ * budget needs them before any fill. They apply per order: the minimum and the rounding apply once to the
+ * order's traded value, however many fills make it up. Each charge rounds up to a whole currency unit (an exact
+ * zero stays zero), so it is never below a charge truncated to whole units; for a currency with cents the
+ * commission and the institution fee, each rounded up, can over-reserve up to two units an order. Per-share fees
+ * have no shape here. Default-constructed, it states no fees at all.
+ */
+struct RunFees {
+  /** @brief The fraction of traded value charged on buys and sells (`0.00015`, not `0.015`). */
+  Decimal64 commission_rate_{Decimal64::parse("0")};
+  /** @brief The least commission on one order. */
+  Decimal64 commission_minimum_{Decimal64::parse("0")};
+  /** @brief A fraction of traded value charged on top of the commission (an institution fee), if any. */
+  std::optional<Decimal64> institution_rate_;
+  /** @brief The fraction of a sell's value charged as tax, if any. */
+  std::optional<Decimal64> sell_tax_rate_;
+
+  /**
+   * @brief Estimates the commission on one order.
+   * @param value The order's traded value.
+   * @return `max(ceil(value x commission_rate_), commission_minimum_) + ceil(value x institution_rate_)`, each
+   *   `ceil` to a whole unit and the minimum as stated; `std::nullopt` if the value, a rate or the minimum is
+   *   negative, or the arithmetic does not fit.
+   */
+  std::optional<Decimal64> estimate_commission(const Decimal64& value) const {
+    const auto zero = Decimal64::parse("0");
+    if (
+      decimal_less(value, zero) || decimal_less(commission_rate_, zero) || decimal_less(commission_minimum_, zero) ||
+      (institution_rate_ && decimal_less(*institution_rate_, zero))
+    ) {
+      return std::nullopt;
+    }
+    auto commission = charged_on(value, commission_rate_);
+    if (!commission) {
+      return std::nullopt;
+    }
+    if (decimal_less(*commission, commission_minimum_)) {
+      commission = commission_minimum_;
+    }
+    if (!institution_rate_) {
+      return commission;
+    }
+    const auto institution = charged_on(value, *institution_rate_);
+    if (!institution) {
+      return std::nullopt;
+    }
+    return decimal_add(*commission, *institution);
+  }
+
+  /**
+   * @brief Estimates the tax on one order.
+   * @param value The order's traded value.
+   * @param side The order's side.
+   * @return `ceil(value x sell_tax_rate_)` on a sell, in whole units, and zero on a buy or without a rate;
+   *   `std::nullopt` if the value or the rate is negative, or the arithmetic does not fit.
+   */
+  std::optional<Decimal64> estimate_tax(const Decimal64& value, OrderSide side) const {
+    const auto zero = Decimal64::parse("0");
+    if (decimal_less(value, zero) || (sell_tax_rate_ && decimal_less(*sell_tax_rate_, zero))) {
+      return std::nullopt;
+    }
+    if (side != OrderSide::SELL || !sell_tax_rate_) {
+      return zero;
+    }
+    return charged_on(value, *sell_tax_rate_);
+  }
+
+private:
+  // `value x rate`, rounded up to a whole unit; both are not negative.
+  static std::optional<Decimal64> charged_on(const Decimal64& value, const Decimal64& rate) {
+    const auto exact = decimal_multiply(value, rate);
+    if (!exact) {
+      return std::nullopt;
+    }
+    const auto whole = decimal_divide(*exact, Decimal64::parse("1"), 0);
+    if (!whole) {
+      return std::nullopt;
+    }
+    return decimal_less(*whole, *exact) ? decimal_add(*whole, Decimal64::parse("1")) : whole;
+  }
 };
 
 /**
@@ -335,6 +458,27 @@ struct RiskLimits {
    * against this.
    */
   std::optional<std::vector<MarketPhase>> permitted_phases_{std::vector<MarketPhase>{MarketPhase::OPEN}};
+  /**
+   * @brief The run's starting cash, in one currency: buys spend it, sells return their proceeds, and the run
+   *   never borrows.
+   *
+   * The run starts flat and owns only the shares it buys. A buy must carry a positive limit price
+   * (`GuardReason::RUN_BUY_NEEDS_LIMIT`). The buying-power check then spends the smaller of the broker's buying
+   * power (with `enforce_buying_power_`) and the run's room: its cash less what its open buys reserve less this
+   * buy's estimated fee (`run_fees_`); a buy whose limit price times its quantity is more is refused, naming the
+   * smaller bound (`GuardReason::RUN_BUDGET_EXCEEDED`, or `INSUFFICIENT_BUYING_POWER` on a tie); equal passes.
+   * The sellable check sells the smaller of the broker's sellable quantity less resting sells (with
+   * `enforce_sellable_quantity_`) and the run's own shares less its open sells (`GuardReason::RUN_HOLDING_EXCEEDED`,
+   * or `QUANTITY_NOT_SELLABLE` on a tie). Always name the currency (`Currency` defaults to KRW); a buy priced in
+   * another currency is refused.
+   *
+   * `runner::Runner` keeps the run's cash and shares, and refuses to construct with a budget but no `run_fees_`,
+   * or over an executor that sends to a broker. It does not turn on `enforce_buying_power_`. See "The run budget"
+   * in running-a-strategy-live.md.
+   */
+  std::optional<Money> run_budget_;
+  /** @brief The fees a run budget estimates for each order; required with `run_budget_`, unread without it. */
+  std::optional<RunFees> run_fees_;
 };
 
 /**
@@ -373,9 +517,22 @@ struct GuardInputs {
    * @brief The currency the order is priced in, from its reference data.
    *
    * Needed by the buying-power check (absent refuses with `INSUFFICIENT_BUYING_POWER`) and by the
-   * gross-exposure ceiling (absent refuses with `VALUE_NOT_KNOWN`).
+   * gross-exposure ceiling and a run budget's buy (absent refuses with `VALUE_NOT_KNOWN`).
    */
   std::optional<Currency> order_currency_;
+  /**
+   * @brief The run's cash less what its open buys reserve, read by a budgeted buy (`RiskLimits::run_budget_`).
+   *
+   * The guard takes the buy's own estimated fee off it. The runner fills it; absent, or in another currency than
+   * the budget, refuses a budgeted buy with `GuardReason::RUN_LEDGER_UNSETTLED`.
+   */
+  std::optional<Money> run_cash_;
+  /**
+   * @brief The run's own shares of the order's instrument less its open sells, read by a budgeted sell.
+   *
+   * The runner fills it; absent refuses a budgeted sell with `GuardReason::RUN_LEDGER_UNSETTLED`.
+   */
+  std::optional<Decimal64> run_holding_;
 };
 
 namespace risk_detail {
@@ -392,6 +549,13 @@ inline std::optional<Decimal64> decimal_magnitude(const Decimal64& value) {
     return value;
   }
   return decimal_subtract(zero, value);
+}
+
+/** What a run budget reserves for a buy: `quantity x price` plus the commission `fees` estimate on it, or nothing. */
+inline std::optional<Decimal64> run_buy_cost(const RunFees& fees, const Decimal64& quantity, const Decimal64& price) {
+  const auto value = decimal_multiply(quantity, price);
+  const auto commission = value ? fees.estimate_commission(*value) : std::nullopt;
+  return commission ? decimal_add(*value, *commission) : std::nullopt;
 }
 
 } // namespace risk_detail
@@ -699,7 +863,10 @@ public:
    * @brief Constructs a guard.
    * @param limits The limits to enforce.
    */
-  explicit RiskGuard(RiskLimits limits = {}) : limits_(std::move(limits)) {}
+  explicit RiskGuard(RiskLimits limits = {})
+  : limits_(std::move(limits)),
+    checks_selling_(limits_.enforce_sellable_quantity_ || limits_.run_budget_.has_value()),
+    checks_spending_(limits_.enforce_buying_power_ || limits_.run_budget_.has_value()) {}
 
   /**
    * @brief Copies a guard.
@@ -959,6 +1126,13 @@ public:
    * permitted phases (with the closing-toward-flat exception), order rate, order notional,
    * sellable quantity, buying power, position ceiling, gross exposure ceiling.
    *
+   * With `RiskLimits::run_budget_`, the sellable and buying-power checks also apply the run's bounds (the
+   * broker's figures still only where enforced), and refuse naming the smaller bound, the broker's on a tie. A budgeted market buy may be refused by an earlier check (`VALUE_NOT_KNOWN` without a
+   * reference price where another limit needs a value, or `ORDER_NOTIONAL_TOO_LARGE`) before
+   * `GuardReason::RUN_BUY_NEEDS_LIMIT`. A caller that sets a budget but fills no `GuardInputs::run_cash_` or
+   * `GuardInputs::run_holding_` has every buy and sell refused, as `RUN_LEDGER_UNSETTLED` unless an earlier
+   * check refuses first.
+   *
    * @tparam Broker The portfolio's broker tag.
    * @param order The order to check.
    * @param portfolio The current positions and working orders.
@@ -1059,47 +1233,59 @@ public:
       return refuse_with(GuardReason::ORDER_NOTIONAL_TOO_LARGE, *limits_.max_order_notional_, *value);
     }
 
-    if (limits_.enforce_sellable_quantity_ && order.side_ == OrderSide::SELL) {
-      // One read, so the figure and its basis come from the same row.
-      const auto reading = portfolio.sellable_reading_for(order.instrument_);
-      const auto& sellable = reading.quantity_;
-      if (!sellable) {
-        // Absent is unknown, and unknown refuses; the held quantity is not substituted.
-        return refuse(GuardReason::QUANTITY_NOT_SELLABLE);
-      }
-      // A figure whose basis is not established refuses even though present; this fails closed for
-      // an adapter the library has never seen.
-      if (!reading.basis_.is_enforceable()) {
-        return refuse(GuardReason::SELLABLE_BASIS_UNESTABLISHED);
-      }
-      // Every open sell (the broker's rows and this library's reservations) counts against the
-      // figure. That over-refuses where the broker already deducted them and never under-refuses;
-      // see `SellableBasis::DEDUCT`.
-      const auto resting = portfolio.working_quantity(order.instrument_, OrderSide::SELL);
-      const auto committed = decimal_add(resting, order.quantity_);
-      if (!committed) {
-        return refuse(GuardReason::QUANTITY_NOT_SELLABLE);
-      }
-      if (decimal_less(*sellable, *committed)) {
-        return refuse_with(GuardReason::QUANTITY_NOT_SELLABLE, *sellable, *committed);
+    if (checks_selling_ && order.side_ == OrderSide::SELL) {
+      if (limits_.run_budget_) {
+        if (auto refused = refuse_run_sell(order, portfolio, inputs)) {
+          return *refused;
+        }
+      } else {
+        // One read, so the figure and its basis come from the same row.
+        const auto reading = portfolio.sellable_reading_for(order.instrument_);
+        const auto& sellable = reading.quantity_;
+        if (!sellable) {
+          // Absent is unknown, and unknown refuses; the held quantity is not substituted.
+          return refuse(GuardReason::QUANTITY_NOT_SELLABLE);
+        }
+        // A figure whose basis is not established refuses even though present; this fails closed for
+        // an adapter the library has never seen.
+        if (!reading.basis_.is_enforceable()) {
+          return refuse(GuardReason::SELLABLE_BASIS_UNESTABLISHED);
+        }
+        // Every open sell (the broker's rows and this library's reservations) counts against the
+        // figure. That over-refuses where the broker already deducted them and never under-refuses;
+        // see `SellableBasis::DEDUCT`.
+        const auto resting = portfolio.working_quantity(order.instrument_, OrderSide::SELL);
+        const auto committed = decimal_add(resting, order.quantity_);
+        if (!committed) {
+          return refuse(GuardReason::QUANTITY_NOT_SELLABLE);
+        }
+        if (decimal_less(*sellable, *committed)) {
+          return refuse_with(GuardReason::QUANTITY_NOT_SELLABLE, *sellable, *committed);
+        }
       }
     }
 
-    if (limits_.enforce_buying_power_ && order.side_ == OrderSide::BUY) {
-      if (!value) {
-        // A price is present (`needs_value`), so the multiplication itself failed.
-        return refuse(GuardReason::VALUE_NOT_KNOWN);
-      }
-      if (!inputs.order_currency_) {
-        return refuse(GuardReason::INSUFFICIENT_BUYING_POWER);
-      }
-      const auto available = portfolio.buying_power_in(*inputs.order_currency_);
-      if (!available) {
-        // Absent is unknown, and unknown refuses. (`cash_in` is empty live, so no fallback.)
-        return refuse(GuardReason::INSUFFICIENT_BUYING_POWER);
-      }
-      if (decimal_less(*available, *value)) {
-        return refuse_with(GuardReason::INSUFFICIENT_BUYING_POWER, *available, *value);
+    if (checks_spending_ && order.side_ == OrderSide::BUY) {
+      if (limits_.run_budget_) {
+        if (auto refused = refuse_run_buy(order, portfolio, inputs, value)) {
+          return *refused;
+        }
+      } else {
+        if (!value) {
+          // A price is present (`needs_value`), so the multiplication itself failed.
+          return refuse(GuardReason::VALUE_NOT_KNOWN);
+        }
+        if (!inputs.order_currency_) {
+          return refuse(GuardReason::INSUFFICIENT_BUYING_POWER);
+        }
+        const auto available = portfolio.buying_power_in(*inputs.order_currency_);
+        if (!available) {
+          // Absent is unknown, and unknown refuses. (`cash_in` is empty live, so no fallback.)
+          return refuse(GuardReason::INSUFFICIENT_BUYING_POWER);
+        }
+        if (decimal_less(*available, *value)) {
+          return refuse_with(GuardReason::INSUFFICIENT_BUYING_POWER, *available, *value);
+        }
       }
     }
 
@@ -1172,6 +1358,129 @@ public:
   }
 
 private:
+  // A decision refusing `order` for `reason`, with the figures where the reason has them.
+  static GuardDecision refusal(
+    const PlannedOrder& order, GuardReason reason, std::optional<Decimal64> limit = std::nullopt,
+    std::optional<Decimal64> attempted = std::nullopt
+  ) {
+    GuardRejection rejection;
+    rejection.reason_ = reason;
+    rejection.instrument_ = order.instrument_;
+    rejection.tag_ = order.tag_;
+    rejection.limit_ = std::move(limit);
+    rejection.attempted_ = std::move(attempted);
+    return GuardDecision{std::optional<GuardRejection>(std::move(rejection)), false};
+  }
+
+  // The selling check with a run budget: the smaller of the broker's sellable room (where enforced) and the run's
+  // own shares less its open sells, the broker's named on a tie.
+  template <typename Broker>
+  std::optional<GuardDecision> refuse_run_sell(
+    const PlannedOrder& order, const Portfolio<Broker>& portfolio, const GuardInputs& inputs
+  ) const {
+    const auto zero = Decimal64::parse("0");
+    if (!decimal_less(zero, order.quantity_)) {
+      return refusal(order, GuardReason::VALUE_NOT_KNOWN);
+    }
+    // The broker's figures as main's block reads them.
+    std::optional<Decimal64> sellable;
+    std::optional<Decimal64> resting;
+    std::optional<Decimal64> committed;
+    if (limits_.enforce_sellable_quantity_) {
+      const auto reading = portfolio.sellable_reading_for(order.instrument_);
+      sellable = reading.quantity_;
+      if (!sellable) {
+        return refusal(order, GuardReason::QUANTITY_NOT_SELLABLE);
+      }
+      if (!reading.basis_.is_enforceable()) {
+        return refusal(order, GuardReason::SELLABLE_BASIS_UNESTABLISHED);
+      }
+      resting = portfolio.working_quantity(order.instrument_, OrderSide::SELL);
+      committed = decimal_add(*resting, order.quantity_);
+      if (!committed) {
+        return refusal(order, GuardReason::QUANTITY_NOT_SELLABLE);
+      }
+    }
+    if (!inputs.run_holding_) {
+      return refusal(order, GuardReason::RUN_LEDGER_UNSETTLED);
+    }
+    const bool broker_over = sellable && decimal_less(*sellable, *committed);
+    const bool run_over = decimal_less(*inputs.run_holding_, order.quantity_);
+    if (!broker_over && !run_over) {
+      return std::nullopt;
+    }
+    bool names_run = !broker_over;
+    if (broker_over && run_over) {
+      // The broker's room is formed only here; a subtraction that fails names the broker.
+      const auto room = decimal_subtract(*sellable, *resting);
+      names_run = room && decimal_less(*inputs.run_holding_, *room);
+    }
+    if (names_run) {
+      return refusal(
+        order, GuardReason::RUN_HOLDING_EXCEEDED, risk_detail::decimal_max(*inputs.run_holding_, zero), order.quantity_
+      );
+    }
+    return refusal(order, GuardReason::QUANTITY_NOT_SELLABLE, *sellable, *committed);
+  }
+
+  // The spending check with a run budget: the smaller of the broker's buying power (where enforced) and the run's
+  // room, its cash less this buy's estimated fee, the broker's named on a tie. `value` is quantity x limit price.
+  template <typename Broker>
+  std::optional<GuardDecision> refuse_run_buy(
+    const PlannedOrder& order, const Portfolio<Broker>& portfolio, const GuardInputs& inputs,
+    const std::optional<Decimal64>& value
+  ) const {
+    const auto zero = Decimal64::parse("0");
+    if (!decimal_less(zero, order.quantity_)) {
+      return refusal(order, GuardReason::VALUE_NOT_KNOWN);
+    }
+    // Not a conditional limit, which carries a price but becomes a market order at the close.
+    if (
+      (order.type_ != OrderType::LIMIT && order.type_ != OrderType::STOP_LIMIT) || !order.price_ ||
+      !decimal_less(zero, *order.price_)
+    ) {
+      return refusal(order, GuardReason::RUN_BUY_NEEDS_LIMIT);
+    }
+    if (!value) {
+      return refusal(order, GuardReason::VALUE_NOT_KNOWN);
+    }
+    std::optional<Decimal64> available;
+    if (limits_.enforce_buying_power_) {
+      if (!inputs.order_currency_) {
+        return refusal(order, GuardReason::INSUFFICIENT_BUYING_POWER);
+      }
+      available = portfolio.buying_power_in(*inputs.order_currency_);
+      if (!available) {
+        return refusal(order, GuardReason::INSUFFICIENT_BUYING_POWER);
+      }
+    }
+    // A direct caller bypasses the runner's validation, so each run figure is checked before any arithmetic.
+    if (!limits_.run_fees_ || !inputs.run_cash_ || !(inputs.run_cash_->currency_ == limits_.run_budget_->currency_)) {
+      return refusal(order, GuardReason::RUN_LEDGER_UNSETTLED);
+    }
+    if (!inputs.order_currency_) {
+      return refusal(order, GuardReason::VALUE_NOT_KNOWN);
+    }
+    if (!(*inputs.order_currency_ == inputs.run_cash_->currency_)) {
+      // Amounts in two currencies are never compared, so there is no attempted figure.
+      return refusal(order, GuardReason::RUN_BUDGET_EXCEEDED, inputs.run_cash_->amount_);
+    }
+    const auto fee = limits_.run_fees_->estimate_commission(*value);
+    const auto room = fee ? decimal_subtract(inputs.run_cash_->amount_, *fee) : std::nullopt;
+    if (!room) {
+      return refusal(order, GuardReason::VALUE_NOT_KNOWN);
+    }
+    const bool broker_over = available && decimal_less(*available, *value);
+    const bool run_over = decimal_less(*room, *value);
+    if (broker_over && (!run_over || !decimal_less(*room, *available))) {
+      return refusal(order, GuardReason::INSUFFICIENT_BUYING_POWER, *available, *value);
+    }
+    if (run_over) {
+      return refusal(order, GuardReason::RUN_BUDGET_EXCEEDED, *room, *value);
+    }
+    return std::nullopt;
+  }
+
   // `reason`'s slot in the hold arrays.
   static constexpr std::size_t index_of(HaltReason reason) noexcept {
     return static_cast<std::size_t>(reason);
@@ -1186,6 +1495,9 @@ private:
   std::deque<std::chrono::system_clock::time_point> sent_;
   // Whether `sent_` has never had a send earlier than the one before it.
   bool in_time_order_{true};
+  // Whether `evaluate` enters the sellable and the buying-power blocks; fixed with `limits_`.
+  bool checks_selling_{true};
+  bool checks_spending_{false};
   std::size_t total_sent_{0};
 };
 
