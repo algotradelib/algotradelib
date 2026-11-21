@@ -12,6 +12,8 @@
 #include <cstddef>
 #include <cstdio>
 #include <deque>
+#include <limits>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -5691,12 +5693,16 @@ struct Batched {
   }
 };
 
-/** A journal whose writes can be made to fail from a chosen moment. */
+/** A journal whose writes can be made to fail from a chosen moment, and that counts every attempt. */
 struct SwitchableJournal : runner::MemoryJournal {
   using runner::MemoryJournal::MemoryJournal;
   bool fail_{false};
+  // From this attempt on, an append writes the line and answers `false`, as a failed `fsync` does.
+  std::size_t written_but_failed_from_{std::numeric_limits<std::size_t>::max()};
+  std::size_t attempts_{0};
   bool append(const runner::JournalEntry& entry) {
-    return !fail_ && runner::MemoryJournal::append(entry);
+    const auto attempt = attempts_++;
+    return !fail_ && runner::MemoryJournal::append(entry) && attempt < written_but_failed_from_;
   }
 };
 
@@ -5762,9 +5768,12 @@ struct SerialRigOf {
   std::chrono::system_clock::time_point journal_now{at_hour(0)};
   SerialRunnerOf<CapsType> runner_instance;
 
-  explicit SerialRigOf(const std::vector<runner::JournalEntry>& lines = {}, bool recover = true)
+  explicit SerialRigOf(
+    const std::vector<runner::JournalEntry>& lines = {}, bool recover = true, strategy::RiskLimits limits = {},
+    std::optional<runner::RunOpening> opening = std::nullopt
+  )
   : runner_instance(
-      Batched{&script}, {}, 512,
+      Batched{&script}, std::move(limits), 512,
       SerialExecutorOf<CapsType>(
         live::SessionExecutor<FakeSession<CapsType>>(session), journal, SharedClock{&journal_now}
       )
@@ -5776,6 +5785,9 @@ struct SerialRigOf {
     runner_instance.context().set_instrument(samsung_reference());
     runner_instance.context().set_phase(strategy::MarketPhase::OPEN);
     runner_instance.context().set_last_price(samsung(), Decimal64::parse("70000"));
+    if (opening) {
+      runner_instance.set_run_opening(std::move(*opening));
+    }
     if (recover) {
       runner::recover_runner(runner_instance, journal);
     }
@@ -6075,6 +6087,257 @@ TEST_CASE("an order whose reply was lost is named only by the sweep that matched
   // A late answer to an order already accounted for changes nothing.
   rig.runner_instance.resolve_indeterminate_placement(samsung(), OrderSide::BUY, std::string("B"), line);
   CHECK(rig.runner_instance.unconfirmed_orders() == 0);
+}
+
+namespace {
+
+/** A run of 1,000,000 KRW, a 0.1% commission estimated where a row states none. */
+strategy::RiskLimits budgeted() {
+  strategy::RiskLimits limits;
+  limits.run_budget_ = Money{Decimal64::parse("1000000"), Currency::krw()};
+  strategy::RunFees fees;
+  fees.commission_rate_ = Decimal64::parse("0.001");
+  limits.run_fees_ = fees;
+  return limits;
+}
+
+/** A dated history row of order `id`, filled whole (ten) at `price`. */
+OrderSnapshot filled_row(const char* id, OrderSide side, std::chrono::system_clock::time_point at, const char* price) {
+  auto row = ended_row(id, side, "10", "10");
+  row.status_ = OrderStatus::FILLED;
+  row.ordered_at_ = at;
+  row.execution_.average_filled_price_ = Decimal64::parse(price);
+  return row;
+}
+
+runner::RunOpening fresh(const char* id) {
+  runner::RunOpening opening;
+  opening.fresh_ = id;
+  return opening;
+}
+
+runner::RunOpening transfer(const char* id, const char* amount, bool withdrawal = false) {
+  runner::RunOpening opening;
+  opening.transfers_.push_back(runner::RunTransfer{id, Money{Decimal64::parse(amount), Currency::krw()}, withdrawal});
+  return opening;
+}
+
+/** A line of run `run-a`: its opening, or `line` stamped as one of its placements. */
+runner::JournalEntry of_run(runner::JournalEntry line) {
+  runner::RunRecord record;
+  record.run_ = "run-a";
+  line.run_ = std::make_shared<const runner::RunRecord>(record);
+  return line;
+}
+
+runner::JournalEntry run_opening() {
+  runner::JournalEntry line;
+  line.id_ = "run-a";
+  line.action_ = runner::JournalAction::LEDGER;
+  line.outcome_ = runner::JournalOutcome::RECORDED;
+  line.recorded_at_ = at_hour(-2);
+  runner::RunRecord record;
+  record.run_ = "run-a";
+  record.kind_ = runner::RunRecordKind::OPEN;
+  record.amount_ = Money{Decimal64::parse("1000000"), Currency::krw()};
+  record.given_ = "f-0";
+  line.run_ = std::make_shared<const runner::RunRecord>(record);
+  return line;
+}
+
+std::size_t ledger_lines(const SwitchableJournal& journal) {
+  return static_cast<std::size_t>(
+    std::count_if(journal.records().begin(), journal.records().end(), [](const runner::JournalEntry& entry) {
+      return entry.action_ == runner::JournalAction::LEDGER;
+    })
+  );
+}
+
+std::string cash_of(const SerialRig& rig) {
+  const auto cash = rig.runner_instance.run_cash();
+  return cash ? cash->amount_.str() : std::string("none");
+}
+
+/** A rig whose fresh run opened on an empty listing. */
+std::unique_ptr<SerialRig> opened_run() {
+  auto rig = std::make_unique<SerialRig>(std::vector<runner::JournalEntry>{}, true, budgeted(), fresh("f-1"));
+  rig->runner_instance.refresh_unconfirmed();
+  return rig;
+}
+
+} // namespace
+
+TEST_CASE("a run opens fresh, books its orders, resumes and applies a deposit once", "[serialized][run-budget]") {
+  // A resume on a journal with no run halts, writing nothing.
+  SerialRig none({}, true, budgeted());
+  CHECK(none.runner_instance.local_failure().has_value());
+  CHECK(none.journal.attempts_ == 0);
+
+  // Fresh waits for a listing received after recovery, and opens on one that shows no open order.
+  SerialRig rig({}, true, budgeted(), fresh("f-1"));
+  REQUIRE(rig.runner_instance.run_recovery().has_value());
+  CHECK(rig.runner_instance.run_recovery()->waiting_);
+  CHECK(rig.runner_instance.run_writes_closed());
+  CHECK(rig.journal.attempts_ == 0);
+  rig.runner_instance.refresh_unconfirmed();
+  CHECK(rig.runner_instance.run_recovery()->opened_);
+  CHECK(ledger_lines(rig.journal) == 1);
+  CHECK(cash_of(rig) == "1000000");
+
+  // A resting limit buy asks for no history; filled, holdings alone do not account for it until a row books it.
+  rig.session.order_ids_ = {"B"};
+  rig.bar(1, {limit_target("10", "70000")});
+  REQUIRE(rig.session.placed().size() == 1);
+  const auto bought_at = rig.runner_instance.context().now();
+  rig.show(polled(2, "0", {listed_row("B", OrderSide::BUY, "10", "0", OrderType::LIMIT)}));
+  rig.runner_instance.refresh_unconfirmed();
+  CHECK_FALSE(rig.runner_instance.unconfirmed_awaiting_evidence().has_value());
+  rig.show(polled(3, "10", {}));
+  rig.runner_instance.refresh_unconfirmed();
+  CHECK(rig.owed() == runner::ObligationState::NAMED);
+  CHECK(rig.runner_instance.obligations_unexplained() == 1);
+  rig.runner_instance.confirm_from_history({filled_row("B", OrderSide::BUY, bought_at, "70000")});
+  CHECK(rig.owed() == runner::ObligationState::NONE);
+  REQUIRE(rig.lines(runner::JournalOutcome::CONFIRMED).size() == 1);
+  CHECK(rig.lines(runner::JournalOutcome::CONFIRMED).front().run_->fee_estimated_);
+  CHECK(cash_of(rig) == "299300");
+  CHECK(rig.runner_instance.run_holding(samsung())->str() == "10");
+
+  // A market sell, booked the same way: its proceeds less the estimated commission.
+  rig.session.order_ids_ = {"S"};
+  rig.bar(4, {target_of("0")});
+  REQUIRE(rig.session.placed().size() == 2);
+  const auto sold_at = rig.runner_instance.context().now();
+  rig.show(polled(5, "0", {}));
+  rig.runner_instance.refresh_unconfirmed();
+  rig.runner_instance.confirm_from_history({filled_row("S", OrderSide::SELL, sold_at, "71000")});
+  CHECK(cash_of(rig) == "1008590");
+  CHECK(rig.runner_instance.run_holding(samsung())->str() == "0");
+
+  // A restart resumes the run; a deposit is written once, and skipped on the next restart.
+  SerialRig resumed(rig.journal.records(), true, budgeted(), transfer("d-1", "1000"));
+  CHECK(resumed.runner_instance.run_recovery()->resumed_);
+  CHECK(resumed.runner_instance.run_recovery()->transfers_applied_ == 1);
+  CHECK(cash_of(resumed) == "1009590");
+  SerialRig again(resumed.journal.records(), true, budgeted(), transfer("d-1", "1000"));
+  CHECK(again.journal.attempts_ == resumed.journal.records().size());
+  CHECK(cash_of(again) == "1009590");
+
+  SECTION("a listing with an open order refuses the fresh run for the process's life") {
+    SerialRig waiting({}, true, budgeted(), fresh("f-2"));
+    waiting.show(polled(1, "0", {listed_row("X", OrderSide::BUY, "10", "0", OrderType::LIMIT)}));
+    waiting.runner_instance.refresh_unconfirmed();
+    CHECK(waiting.runner_instance.local_failure().has_value());
+    CHECK_FALSE(waiting.runner_instance.run_recovery()->refused_.empty());
+    waiting.runner_instance.resume_after_local_failure();
+    waiting.show(polled(2, "0", {}));
+    waiting.runner_instance.refresh_unconfirmed();
+    CHECK_FALSE(waiting.runner_instance.run_cash().has_value());
+    CHECK(waiting.journal.attempts_ == 0);
+  }
+
+  SECTION("an order of unknown outcome refuses the next buy in its pass") {
+    auto unknown = opened_run();
+    auto other = samsung_reference();
+    other.id_ = hynix();
+    unknown->runner_instance.context().set_instrument(other);
+    unknown->session.fail_place_with(reply_lost());
+    const auto limit = strategy::Price::checked(Decimal64::parse("70000"), krx::equity_price_rule());
+    const auto one = strategy::SizeSpec::quantity(Decimal64::parse("1"));
+    const auto report = unknown->bar(
+      1,
+      {strategy::OrderIntent::limit(samsung(), OrderSide::BUY, one, *limit),
+        strategy::OrderIntent::limit(hynix(), OrderSide::BUY, one, *limit)}
+    );
+    CHECK(unknown->session.placed().size() == 1);
+    REQUIRE(report.refused_.size() == 1);
+    CHECK(report.refused_.front().reason_ == strategy::GuardReason::RUN_LEDGER_UNSETTLED);
+  }
+
+  SECTION("a cancellation whose answer cannot be written stops the run's writes, across a local resume") {
+    auto run = opened_run();
+    run->show(polled(1, "0", {listed_row("X", OrderSide::BUY, "10", "0", OrderType::LIMIT)}));
+    run->journal.written_but_failed_from_ = run->journal.attempts_ + 1;
+    run->bar(2, {target_of("0")});
+    REQUIRE(run->session.canceled().size() == 1);
+    const auto attempts = run->journal.attempts_;
+    run->runner_instance.resume_after_local_failure();
+    CHECK(run->runner_instance.run_writes_closed());
+    run->bar(3, {target_of("0")});
+    CHECK(run->session.canceled().size() == 1);
+    CHECK(run->journal.attempts_ == attempts);
+  }
+
+  SECTION("a booking written whole but answered false is written once, and the next process folds it once") {
+    auto run = opened_run();
+    run->session.order_ids_ = {"B"};
+    run->bar(1, {limit_target("10", "70000")});
+    const auto at = run->runner_instance.context().now();
+    run->show(polled(2, "10", {}));
+    run->runner_instance.refresh_unconfirmed();
+    run->journal.written_but_failed_from_ = run->journal.attempts_;
+    run->runner_instance.confirm_from_history({filled_row("B", OrderSide::BUY, at, "70000")});
+    const auto attempts = run->journal.attempts_;
+    CHECK(run->runner_instance.run_writes_closed());
+    run->runner_instance.resume_after_local_failure();
+    run->runner_instance.confirm_from_history({filled_row("B", OrderSide::BUY, at, "70000")});
+    run->runner_instance.refresh_unconfirmed();
+    CHECK(run->journal.attempts_ == attempts);
+    SerialRig next(run->journal.records(), true, budgeted());
+    CHECK(cash_of(next) == "299300");
+    CHECK(next.runner_instance.run_holding(samsung())->str() == "10");
+    CHECK(next.owed() == runner::ObligationState::NONE);
+  }
+
+  SECTION("a sweep stops at its first failed resolution, and writes nothing at the next poll") {
+    auto other = of_run(serial_line("p-2", runner::JournalOutcome::PENDING));
+    other.instrument_ = hynix();
+    SerialRig swept(
+      {run_opening(), of_run(serial_line("p-1", runner::JournalOutcome::PENDING)), other}, true, budgeted()
+    );
+    REQUIRE(swept.runner_instance.run_recovery()->opened_);
+    swept.session.set_working_orders(WorkingOrders<FakeBroker>{});
+    swept.session.set_history(OrderPage{});
+    live::SessionSource<SerialSession, SwitchableJournal> source(swept.session, {samsung(), hynix()});
+    source.set_journal(swept.journal);
+    swept.runner_instance.context().set_now(at_hour(5));
+    const auto before = swept.journal.attempts_;
+    swept.journal.written_but_failed_from_ = before;
+    source.read_order_list(swept.runner_instance);
+    CHECK(swept.journal.attempts_ == before + 1);
+    swept.runner_instance.resume_after_local_failure();
+    source.read_order_list(swept.runner_instance);
+    CHECK(swept.journal.attempts_ == before + 1);
+  }
+
+  SECTION("a damaged journal, or a refused opening, writes nothing for a restored order") {
+    const std::vector<runner::JournalEntry> lines = {
+      run_opening(), of_run(serial_line("p-1", runner::JournalOutcome::PENDING)),
+      of_run(serial_line("p-1", runner::JournalOutcome::ACCEPTED, "B"))
+    };
+    auto damaged = lines;
+    runner::JournalEntry torn;
+    torn.id_ = "x~damaged";
+    torn.outcome_ = runner::JournalOutcome::CONFIRMED;
+    torn.requires_operator_ = true;
+    torn.recorded_at_ = at_hour(-1);
+    damaged.push_back(torn);
+    SerialRig broken(damaged, true, budgeted());
+    SerialRig overdrawn(lines, true, budgeted(), transfer("w-1", "2000000", true));
+    for (auto* refused : {&broken, &overdrawn}) {
+      CHECK(refused->runner_instance.local_failure().has_value());
+      const auto attempts = refused->journal.attempts_;
+      refused->show(polled(1, "10", {}));
+      refused->runner_instance.refresh_unconfirmed();
+      CHECK_FALSE(refused->runner_instance.unconfirmed_awaiting_evidence().has_value());
+      refused->runner_instance.confirm_from_history({dated_row("B", at_hour(-1), "10", OrderStatus::FILLED)});
+      live::SessionSource<SerialSession, SwitchableJournal> source(refused->session, {samsung()});
+      source.set_journal(refused->journal);
+      refused->session.set_working_orders(WorkingOrders<FakeBroker>{});
+      source.read_order_list(refused->runner_instance);
+      CHECK(refused->journal.attempts_ == attempts);
+    }
+  }
 }
 
 TEST_CASE("a restart restores every order the journal leaves unaccounted for", "[serialized]") {
