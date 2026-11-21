@@ -2138,6 +2138,9 @@ private:
       }
       if (owed) {
         hold(strategy::HaltReason::STOPPING);
+      } else if (const auto configured = buying_power_configuration_hold(report)) {
+        // A source that reports no buying power is held before its read, which may feed and place.
+        hold(*configured);
       }
       if (!read_order_list_once(at, report)) {
         return unread;
@@ -2232,30 +2235,7 @@ private:
       }
     }
     if constexpr (!source_reports_buying_power<Source>::value) {
-      // The broker reports no buying power (or the source does not say): the run budget is the only
-      // figure that bounds a buy, and a reading for `enforce_buying_power_` never arrives
-      // (`live::SessionSource::poll_buying_power`). A source that reports it compiles none of this.
-      constexpr bool declared = loop_detail::source_declares_buying_power<Source>::value;
-      const auto& limits = runner_->guard().limits();
-      if (!limits.run_budget_) {
-        say_buying_power_once(
-          1U, report,
-          declared ?
-            "the broker reports no buying power: set RiskLimits::run_budget_, the run's starting cash" :
-            "the source does not declare reports_buying_power: declare or forward it, or set run_budget_"
-        );
-        return strategy::HaltReason::BUYING_POWER_UNREAD;
-      }
-      if (limits.enforce_buying_power_) {
-        say_buying_power_once(
-          2U, report,
-          declared ?
-            "the broker reports no buying power: turn enforce_buying_power_ off; run_budget_ limits buys" :
-            "the source does not declare reports_buying_power: declare or forward it for enforce_buying_power_"
-        );
-        return strategy::HaltReason::BUYING_POWER_UNREAD;
-      }
-      return std::nullopt;
+      return buying_power_configuration_hold(report);
     }
     if (runner_->guard().limits().enforce_buying_power_) {
       // Checked only when the caller asked for the limit. A loop with no buying-power cadence and
@@ -2310,6 +2290,40 @@ private:
       }
     }
     return std::nullopt;
+  }
+
+  // The hold over a source that reports no buying power (or does not say): the run budget is then the only
+  // figure that bounds a buy, and a reading for `enforce_buying_power_` never arrives
+  // (`live::SessionSource::poll_buying_power`). `BUYING_POWER_UNREAD` without a budget, or with one while
+  // `enforce_buying_power_` is on; nothing otherwise, and nothing for a source that reports it, which compiles
+  // none of this. Installed before every call into the source.
+  std::optional<strategy::HaltReason> buying_power_configuration_hold(LoopReport& report) {
+    if constexpr (source_reports_buying_power<Source>::value) {
+      (void)report;
+      return std::nullopt;
+    } else {
+      constexpr bool declared = loop_detail::source_declares_buying_power<Source>::value;
+      const auto& limits = runner_->guard().limits();
+      if (!limits.run_budget_) {
+        say_buying_power_once(
+          1U, report,
+          declared ?
+            "the broker reports no buying power: set RiskLimits::run_budget_, the run's starting cash" :
+            "the source does not declare reports_buying_power: declare or forward it, or set run_budget_"
+        );
+        return strategy::HaltReason::BUYING_POWER_UNREAD;
+      }
+      if (limits.enforce_buying_power_) {
+        say_buying_power_once(
+          2U, report,
+          declared ?
+            "the broker reports no buying power: turn enforce_buying_power_ off; run_budget_ limits buys" :
+            "the source does not declare reports_buying_power: declare or forward it for enforce_buying_power_"
+        );
+        return strategy::HaltReason::BUYING_POWER_UNREAD;
+      }
+      return std::nullopt;
+    }
   }
 
   // Adds a configuration note once per loop; `bit` names which.
