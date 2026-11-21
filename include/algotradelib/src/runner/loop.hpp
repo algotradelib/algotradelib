@@ -1034,8 +1034,9 @@ private:
  *
  * **Over a broker that reports no buying power, every placement is held as `BUYING_POWER_UNREAD`** unless
  * `strategy::RiskLimits::run_budget_` is set and `enforce_buying_power_` is off, as it is for a source that does
- * not declare `reports_buying_power` (see `source_reports_buying_power`). A runner that sends to a broker does
- * not take a budget yet, so over such a broker only a dry run places.
+ * not declare `reports_buying_power` (see `source_reports_buying_power`). The hold stands before the startup
+ * order-list read and through a stop's closing pass, which still withdraws but places no close. A runner that
+ * sends to a broker does not take a budget yet, so over such a broker only a budgeted dry run places.
  *
  * A phase the loop cannot establish is reported (`final_phase_` and a note), not held. A stop is
  * honoured with a closing pass (see `StopIntent`); `LoopReport::closing_complete()` says whether
@@ -2296,7 +2297,7 @@ private:
   // figure that bounds a buy, and a reading for `enforce_buying_power_` never arrives
   // (`live::SessionSource::poll_buying_power`). `BUYING_POWER_UNREAD` without a budget, or with one while
   // `enforce_buying_power_` is on; nothing otherwise, and nothing for a source that reports it, which compiles
-  // none of this. Installed before every call into the source.
+  // none of this. Installed before every call into the source and kept through a stop's closing pass.
   std::optional<strategy::HaltReason> buying_power_configuration_hold(LoopReport& report) {
     if constexpr (source_reports_buying_power<Source>::value) {
       (void)report;
@@ -2643,8 +2644,9 @@ private:
     // cancellations through the same holds in `Runner::send_cancel` -- and the closing counts say
     // so, so `closing_complete()` is false and the notes say the position is still held. A stop
     // arriving by signal or control file therefore cannot send anything through a halt somebody had
-    // already set.
-    hold(std::nullopt);
+    // already set. Over a source that reports no buying power, the configuration's hold stays
+    // (`buying_power_configuration_hold`): a closing placement is refused while a withdrawal still goes.
+    hold(buying_power_configuration_hold(report));
     // **Derived once more, immediately before the only call that can send during a stop.** `on_stop` ran
     // a few lines above with a mutable context, so it may have revised the calendar -- and unlike a
     // strategy's write inside `on_phase`, this one the loop *can* answer, because `settle_closing` is a
