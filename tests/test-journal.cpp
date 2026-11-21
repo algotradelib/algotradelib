@@ -225,6 +225,7 @@ TEST_CASE("every journal and control-file name round-trips through its strict re
   require_round_trip(all_order_sessions, detail::order_session_name, detail::known_order_session_from);
   require_round_trip(runner::all_journal_actions, runner::journal_action_name, runner::journal_action_from);
   require_round_trip(runner::all_journal_outcomes, runner::journal_outcome_name, runner::journal_outcome_from);
+  require_round_trip(runner::all_run_record_kinds, runner::run_record_kind_name, runner::run_record_kind_from);
   require_round_trip(runner::all_stop_intents, runner::stop_intent_name, runner::stop_intent_from);
 }
 
@@ -312,6 +313,7 @@ TEST_CASE("each journal outcome pairs with an open line as recovery reads it", "
     {JournalOutcome::RESOLVED, 0, 0, 1, 0, false},
     {JournalOutcome::CONFIRMED, 0, 0, 1, 0, false},
     {JournalOutcome::HELD, 0, 0, 1, 0, false},
+    {JournalOutcome::RECORDED, 0, 0, 1, 0, false},
   };
   REQUIRE(std::size(expected) == runner::all_journal_outcomes.size());
   for (const auto& row : expected) {
@@ -1452,6 +1454,121 @@ TEST_CASE("a changed terminal line halts recovery rather than being dropped as a
   const auto annotated = body + ",\"crc\":\"" + crc + "\"}";
   REQUIRE(runner::journal_detail::checksum_matches(annotated));
   CHECK_FALSE(runner::journal_entry_from_line(annotated).has_value());
+}
+
+TEST_CASE(
+  "a run's records round-trip strictly, and a run without a budget writes main's lines", "[journal][run-budget]"
+) {
+  JournalEntry plain;
+  plain.id_ = "1700000000000000-3";
+  plain.outcome_ = JournalOutcome::CONFIRMED;
+  plain.recorded_at_ = Clock::time_point{} + std::chrono::microseconds(1774830600123456LL);
+  plain.instrument_ = InstrumentId{Country::KR, Venue::KRX, "005930"};
+  plain.side_ = OrderSide::SELL;
+  plain.quantity_ = Decimal64::parse("10");
+  plain.price_ = Decimal64::parse("70100");
+  plain.baseline_ = Decimal64::parse("0");
+  plain.order_id_ = "0001234";
+  plain.detail_ = "holdings show 0";
+  plain.scope_ = "kis:demo:1";
+  // The bytes the library wrote before run budgets (main at 08a1579), checksum included.
+  CHECK(
+    runner::journal_entry_to_line(plain) ==
+    R"({"id":"1700000000000000-3","action":"place","outcome":"confirmed","country":"KR","venue":"KRX",)"
+    R"("symbol":"005930","side":"SELL","type":"LIMIT","time_in_force":"DAY","session":"REGULAR",)"
+    R"("route":"UNSPECIFIED","quantity":"10","price":"70100","baseline":"0","at":1774830600123456,)"
+    R"("at_text":"2026-03-30T00:30:00Z","order_id":"0001234","detail":"holdings show 0","scope":"kis:demo:1",)"
+    R"("crc":"7fff567b"})"
+  );
+
+  // A booked `CONFIRMED` line and a ledger record read back as written.
+  runner::RunRecord booking;
+  booking.run_ = "run-1-1";
+  booking.amount_ = Money{Decimal64::parse("701000"), Currency::krw()};
+  booking.filled_ = Decimal64::parse("10");
+  booking.fee_ = Decimal64::parse("1368");
+  booking.fee_estimated_ = true;
+  auto booked = plain;
+  booked.run_ = std::make_shared<const runner::RunRecord>(booking);
+  const auto booked_line = runner::journal_entry_to_line(booked);
+  const auto read = runner::journal_entry_from_line(booked_line);
+  REQUIRE(read.has_value());
+  REQUIRE(read->run_ != nullptr);
+  CHECK(read->instrument_ == plain.instrument_);
+  CHECK(read->run_->run_ == "run-1-1");
+  CHECK(*read->run_->amount_ == booking.amount_);
+  CHECK(read->run_->filled_->str() == "10");
+  CHECK(read->run_->fee_->str() == "1368");
+  CHECK(read->run_->fee_estimated_);
+
+  JournalEntry opening;
+  opening.id_ = "run-1-1";
+  opening.action_ = JournalAction::LEDGER;
+  opening.outcome_ = JournalOutcome::RECORDED;
+  opening.recorded_at_ = plain.recorded_at_;
+  runner::RunRecord open;
+  open.run_ = "run-1-1";
+  open.kind_ = runner::RunRecordKind::OPEN;
+  open.amount_ = Money{Decimal64::parse("5000"), Currency::usd()};
+  open.given_ = "2026-11-23";
+  opening.run_ = std::make_shared<const runner::RunRecord>(open);
+  const auto opening_line = runner::journal_entry_to_line(opening);
+  CHECK(opening_line.find("symbol") == std::string::npos);
+  CHECK(opening_line.find("quantity") == std::string::npos);
+  const auto read_open = runner::journal_entry_from_line(opening_line);
+  REQUIRE(read_open.has_value());
+  CHECK(read_open->action_ == JournalAction::LEDGER);
+  CHECK(read_open->instrument_.symbol_.empty());
+  REQUIRE(read_open->run_ != nullptr);
+  CHECK(read_open->run_->kind_ == runner::RunRecordKind::OPEN);
+  CHECK(read_open->run_->given_ == "2026-11-23");
+  CHECK(*read_open->run_->amount_ == open.amount_);
+  // Not an instruction: nothing is left open by it.
+  runner::JournalReplay ledger_only;
+  ledger_only.entries_ = {*read_open};
+  CHECK(runner::unresolved_instructions(ledger_only).empty());
+
+  // **Unreadable, never `~damaged` and never a throw**: a damaged run key, a partial booking, a damaged order
+  // field beside a run key, or an order key on a ledger record.
+  const auto edited = [](const std::string& line, const std::string& from, const std::string& to) {
+    auto body = without_checksum(line);
+    const auto at = body.find(from);
+    REQUIRE(at != std::string::npos);
+    body.replace(at, from.size(), to);
+    return body;
+  };
+  const std::string unreadable[] = {
+    edited(booked_line, R"("amount":"701000")", R"("amount":"70?000")"),
+    edited(booked_line, R"(,"fee":"1368")", ""),
+    edited(booked_line, R"("currency":"KRW")", R"("currency":"krw")"),
+    edited(booked_line, R"("side":"SELL")", R"("side":"SEL?")"),
+    edited(booked_line, R"("fee_estimated":true)", R"("fee_estimated":"yes")"),
+    edited(booked_line, R"("filled":"10")", R"("filled":"-10")"),
+    edited(opening_line, R"("at":)", R"("symbol":"005930","at":)"),
+    edited(opening_line, R"("ledger":"open")", R"("ledger":"opened")"),
+    // Read although no run key is there: a ledger action, or a `recorded` outcome on an order's line.
+    edited(runner::journal_entry_to_line(plain), R"("action":"place")", R"("action":"ledger")"),
+    edited(runner::journal_entry_to_line(plain), R"("outcome":"confirmed")", R"("outcome":"recorded")"),
+    // No run key on a cancellation.
+    edited(booked_line, R"("action":"place")", R"("action":"cancel")"),
+  };
+  for (const auto& line : unreadable) {
+    INFO(line);
+    std::optional<JournalEntry> parsed;
+    REQUIRE_NOTHROW(parsed = runner::journal_entry_from_line(line));
+    CHECK_FALSE(parsed.has_value());
+  }
+  // A changed run line beside its pending line halts recovery, rather than closing it as an orphan.
+  auto pending = booked;
+  pending.outcome_ = JournalOutcome::PENDING;
+  pending.run_ = std::make_shared<const runner::RunRecord>(runner::RunRecord{"run-1-1", {}, {}, {}, {}, false, {}});
+  runner::JournalBytes bytes;
+  bytes.status_ = runner::JournalReadStatus::READ;
+  bytes.text_ = runner::journal_entry_to_line(pending) + "\n" + unreadable[0] + "\n";
+  runner::IndeterminacyLedger ledger;
+  const auto recovery = runner::recover_into(runner::parse_journal_bytes(bytes), ledger);
+  CHECK(recovery.unreadable_lines_ == 1);
+  CHECK_FALSE(recovery.clean());
 }
 
 TEST_CASE(

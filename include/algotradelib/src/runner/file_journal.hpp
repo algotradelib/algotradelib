@@ -354,6 +354,15 @@ inline std::optional<Decimal64> known_decimal_from(std::string_view text) noexce
   }
 }
 
+/** Returns the currency `text` names, or nothing: `Currency`'s constructor throws, as `Decimal64::parse` does. */
+inline std::optional<Currency> known_currency_from(std::string_view text) noexcept {
+  try {
+    return Currency(text);
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
 inline std::optional<Country> known_country_from(std::string_view text) noexcept {
   return value_named(all_countries, country_name, text);
 }
@@ -530,6 +539,29 @@ inline bool known_entry_key(std::string_view key) {
   return false;
 }
 
+/**
+ * A run budget's keys (`RunRecord`), written only by a runner with one; looked up only for a key
+ * `known_entry_key` does not know, so a line without them costs what it did before run budgets.
+ */
+inline bool run_entry_key(std::string_view key) {
+  static constexpr std::string_view known[] = {
+    "run",
+    "ledger",
+    "amount",
+    "currency",
+    "filled",
+    "fee",
+    "fee_estimated",
+    "given",
+  };
+  for (const auto candidate : known) {
+    if (candidate == key) {
+      return true;
+    }
+  }
+  return false;
+}
+
 #if !defined(_WIN32)
 /**
  * @brief Owns a file descriptor and closes it on destruction unless released.
@@ -697,19 +729,10 @@ struct JournalBytes {
   std::string detail_;
 };
 
-/**
- * @brief Renders one entry as a journal line: a JSON object ending in a CRC-32 checksum member.
- * @param entry The entry.
- * @return The line, without a newline.
- */
-inline std::string journal_entry_to_line(const JournalEntry& entry) {
-  json::object row;
-  // Ordered so that the fields a damaged line most needs to yield come first. A truncated write
-  // keeps its prefix, so putting the instrument ahead of the detail text is what makes salvage
-  // work in practice rather than only in principle.
-  row["id"] = entry.id_;
-  row["action"] = std::string(journal_action_name(entry.action_));
-  row["outcome"] = std::string(journal_outcome_name(entry.outcome_));
+namespace journal_detail {
+
+/** Writes an order's keys, the instrument first: a torn line keeps its prefix, which salvage reads. */
+inline void write_order_keys(json::object& row, const JournalEntry& entry) {
   row["country"] = std::string(journal_detail::country_name(entry.instrument_.country_));
   row["venue"] = std::string(journal_detail::venue_name(entry.instrument_.venue_));
   row["symbol"] = entry.instrument_.symbol_;
@@ -740,12 +763,58 @@ inline std::string journal_entry_to_line(const JournalEntry& entry) {
   if (entry.baseline_) {
     row["baseline"] = entry.baseline_->str();
   }
+}
+
+/** Writes a run budget's keys (`RunRecord`), each only when present. */
+inline void write_run_keys(json::object& row, const RunRecord& record) {
+  row["run"] = record.run_;
+  if (record.kind_) {
+    row["ledger"] = std::string(run_record_kind_name(*record.kind_));
+  }
+  if (!record.given_.empty()) {
+    row["given"] = record.given_;
+  }
+  if (record.amount_) {
+    row["amount"] = record.amount_->amount_.str();
+    row["currency"] = record.amount_->currency_.str();
+  }
+  if (record.filled_) {
+    row["filled"] = record.filled_->str();
+  }
+  if (record.fee_) {
+    row["fee"] = record.fee_->str();
+  }
+  if (record.fee_estimated_) {
+    row["fee_estimated"] = true;
+  }
+}
+
+} // namespace journal_detail
+
+/**
+ * @brief Renders one entry as a journal line: a JSON object ending in a CRC-32 checksum member.
+ * @param entry The entry.
+ * @return The line, without a newline.
+ */
+inline std::string journal_entry_to_line(const JournalEntry& entry) {
+  json::object row;
+  // Ordered so that the fields a damaged line most needs to yield come first. A truncated write
+  // keeps its prefix, so putting the instrument ahead of the detail text is what makes salvage
+  // work in practice rather than only in principle.
+  row["id"] = entry.id_;
+  row["action"] = std::string(journal_action_name(entry.action_));
+  row["outcome"] = std::string(journal_outcome_name(entry.outcome_));
+  // A ledger record names no order, so it carries none of an order's keys: torn, it salvages to no instrument.
+  const bool order = entry.action_ != JournalAction::LEDGER;
+  if (order) {
+    journal_detail::write_order_keys(row, entry);
+  }
   // The authoritative instant, exact on every platform. `at_text` beside it is for the operator
   // reading the file with `tail`, is only second-resolution, and is never read back: one field is
   // the record and the other is the caption.
   row["at"] = journal_detail::micros_of(entry.recorded_at_);
   row["at_text"] = format_iso8601_utc(entry.recorded_at_);
-  if (!entry.order_id_.empty()) {
+  if (order && !entry.order_id_.empty()) {
     row["order_id"] = entry.order_id_;
   }
   if (!entry.detail_.empty()) {
@@ -756,6 +825,10 @@ inline std::string journal_entry_to_line(const JournalEntry& entry) {
   }
   if (!entry.scope_.empty()) {
     row["scope"] = entry.scope_;
+  }
+  // Only on a budgeted runner's lines, so a journal without a run budget is byte for byte as before.
+  if (entry.run_) {
+    journal_detail::write_run_keys(row, *entry.run_);
   }
   // **Last, and over the line as it reads without it** -- the whole object, closing brace included,
   // which the member then replaces. See `journal_detail::line_checksum` for what it detects
@@ -786,6 +859,166 @@ inline JournalEntry unattributable_journal_entry(std::string_view line) {
     std::string(line.substr(0, line.size() < 120 ? line.size() : 120));
   return entry;
 }
+
+namespace journal_detail {
+
+/** A run budget's keys as a line carries them (`RunRecord`). */
+struct RunKeys {
+  /** Whether the line carries any of them. */
+  bool present_{false};
+  /** Whether one is there and cannot be read: not a string, an empty string, or a value that does not parse. */
+  bool unreadable_{false};
+  /** The keys read; `amount_` needs both `amount` and `currency`. */
+  RunRecord record_;
+  bool has_run_{false};
+  bool has_amount_{false};
+  bool has_currency_{false};
+  bool has_fee_estimated_{false};
+};
+
+/** Reads a line's run budget keys, each strictly; see `RunKeys`. */
+inline RunKeys run_keys_from(const json::object& row) {
+  RunKeys keys;
+  const auto text = [&](std::string_view key, std::string& out) {
+    if (!has_field(row, key)) {
+      return false;
+    }
+    keys.present_ = true;
+    const auto value = readable_string(row, key);
+    if (!value) {
+      keys.unreadable_ = true;
+      return false;
+    }
+    out = *value;
+    return true;
+  };
+  const auto number = [&](std::string_view key, std::optional<Decimal64>& out) {
+    std::string value;
+    if (text(key, value)) {
+      out = known_decimal_from(value);
+      keys.unreadable_ = keys.unreadable_ || !out;
+    }
+  };
+  keys.has_run_ = text("run", keys.record_.run_);
+  std::string kind;
+  if (text("ledger", kind)) {
+    keys.record_.kind_ = run_record_kind_from(kind);
+    keys.unreadable_ = keys.unreadable_ || !keys.record_.kind_;
+  }
+  text("given", keys.record_.given_);
+  std::optional<Decimal64> amount;
+  number("amount", amount);
+  keys.has_amount_ = amount.has_value();
+  std::string code;
+  std::optional<Currency> currency;
+  if (text("currency", code)) {
+    currency = known_currency_from(code);
+    keys.unreadable_ = keys.unreadable_ || !currency;
+  }
+  keys.has_currency_ = currency.has_value();
+  if (amount && currency) {
+    keys.record_.amount_ = Money{*amount, *currency};
+  }
+  number("filled", keys.record_.filled_);
+  number("fee", keys.record_.fee_);
+  if (const auto estimated = row.if_contains("fee_estimated")) {
+    keys.present_ = true;
+    keys.has_fee_estimated_ = true;
+    if (!estimated->is_bool()) {
+      keys.unreadable_ = true;
+    } else {
+      keys.record_.fee_estimated_ = estimated->as_bool();
+    }
+  }
+  return keys;
+}
+
+/** Whether a booking's figures are possible: none negative, and an amount exactly when something filled. */
+inline bool booking_figures_hold(const RunRecord& record) {
+  const auto zero = Decimal64::parse("0");
+  const auto& filled = *record.filled_;
+  const auto& amount = record.amount_->amount_;
+  return !decimal_less(filled, zero) && !decimal_less(amount, zero) && !decimal_less(*record.fee_, zero) &&
+    decimal_less(zero, filled) == decimal_less(zero, amount);
+}
+
+/**
+ * Whether the run keys an order's line carries fit it: `ledger` and `given` belong to ledger lines; a
+ * booking only to a run's `CONFIRMED` line, and whole (`filled`, `amount`, `currency`, `fee`); none to a
+ * cancellation; no line but a ledger record is `RECORDED`.
+ */
+inline bool run_keys_fit_order_line(JournalAction action, JournalOutcome outcome, const RunKeys& keys) {
+  const auto& record = keys.record_;
+  if (
+    outcome == JournalOutcome::RECORDED || (action == JournalAction::CANCEL && keys.present_) || record.kind_ ||
+    !record.given_.empty()
+  ) {
+    return false;
+  }
+  const bool booking =
+    keys.has_amount_ || keys.has_currency_ || record.filled_ || record.fee_ || keys.has_fee_estimated_;
+  if (!booking) {
+    return true;
+  }
+  return outcome == JournalOutcome::CONFIRMED && keys.has_run_ && record.filled_ && record.amount_ && record.fee_ &&
+    booking_figures_hold(record);
+}
+
+/**
+ * Reads a `JournalAction::LEDGER` line, or nothing: it must be `RECORDED`, carry an id, `run`, `ledger`,
+ * `amount` and `currency`, no order key and no operator flag, and the keys its kind takes and no others.
+ */
+inline std::optional<JournalEntry> ledger_entry_from(
+  const json::object& row, JournalOutcome outcome, bool marked, std::int64_t at, const RunKeys& keys
+) {
+  static constexpr std::string_view order_keys[] = {
+    "country",
+    "venue",
+    "session",
+    "symbol",
+    "side",
+    "type",
+    "time_in_force",
+    "route",
+    "quantity",
+    "price",
+    "trigger",
+    "baseline",
+    "order_id",
+  };
+  for (const auto key : order_keys) {
+    if (has_field(row, key)) {
+      return std::nullopt;
+    }
+  }
+  const auto id = readable_string(row, "id");
+  const auto& record = keys.record_;
+  if (
+    outcome != JournalOutcome::RECORDED || marked || has_field(row, "requires_operator") || !id || !keys.has_run_ ||
+    !record.kind_ || !record.amount_
+  ) {
+    return std::nullopt;
+  }
+  if (
+    !decimal_less(Decimal64::parse("0"), record.amount_->amount_) || record.filled_ || record.fee_ ||
+    keys.has_fee_estimated_ || (*record.kind_ == RunRecordKind::OPEN && record.run_ != *id) ||
+    (*record.kind_ != RunRecordKind::OPEN && record.given_.empty())
+  ) {
+    return std::nullopt;
+  }
+  JournalEntry entry;
+  entry.id_ = *id;
+  entry.action_ = JournalAction::LEDGER;
+  entry.outcome_ = outcome;
+  entry.venue_.reset();
+  entry.recorded_at_ = instant_from(at);
+  entry.detail_ = string_field(row, "detail");
+  entry.scope_ = string_field(row, "scope");
+  entry.run_ = std::make_shared<const RunRecord>(record);
+  return entry;
+}
+
+} // namespace journal_detail
 
 /**
  * @brief Parses one journal line.
@@ -863,9 +1096,14 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   const bool checksum_holds = !journal_detail::has_field(row, "crc") ||
     (journal_detail::ends_in_checksum(line) && journal_detail::checksum_matches(line));
   bool unknown_key = false;
+  bool run_key = false;
   for (const auto& member : row) {
     if (!journal_detail::known_entry_key(member.key())) {
-      unknown_key = true;
+      if (journal_detail::run_entry_key(member.key())) {
+        run_key = true;
+      } else {
+        unknown_key = true;
+      }
     }
   }
   // **A line whose bytes changed is not read at all**, rather than read as a damaged entry. A damaged
@@ -876,6 +1114,24 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   // is counted by `parse_journal_bytes` and halts recovery outright, whatever it was.
   if (!checksum_holds || unknown_key) {
     return std::nullopt;
+  }
+
+  // **A run budget's keys are read strictly**: one that is unparseable, of the wrong type, or inconsistent
+  // with the line makes the whole line unreadable, so recovery halts. Never a `~damaged` entry, which a
+  // damaged `CONFIRMED` would become and then be dropped as an orphan, its booking lost. Read only on a line
+  // that carries one or is a ledger record, so an ordinary line pays nothing for them.
+  std::optional<journal_detail::RunKeys> run;
+  if (run_key || *action == JournalAction::LEDGER || *outcome == JournalOutcome::RECORDED) {
+    run = journal_detail::run_keys_from(row);
+    if (run->unreadable_) {
+      return std::nullopt;
+    }
+    if (*action == JournalAction::LEDGER) {
+      return journal_detail::ledger_entry_from(row, *outcome, marked, at->as_int64(), *run);
+    }
+    if (!journal_detail::run_keys_fit_order_line(*action, *outcome, *run)) {
+      return std::nullopt;
+    }
   }
 
   const auto symbol = read("symbol");
@@ -922,6 +1178,10 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   // conclude anything from one, which leaves it withheld for an operator while
   // its own terminal line still closes it when the refusal was ordinary.
   if (damaged) {
+    // A run's line whose order cannot be read: its booking or its run would be lost with it.
+    if (run && run->present_) {
+      return std::nullopt;
+    }
     auto unattributable = unattributable_journal_entry(line);
     const auto id = journal_detail::string_field(row, "id");
     unattributable.id_ = (id.empty() ? std::string("unknown") : id) + "~damaged";
@@ -975,6 +1235,9 @@ inline std::optional<JournalEntry> journal_entry_from_line(std::string_view line
   entry.detail_ = journal_detail::string_field(row, "detail");
   entry.requires_operator_ = marked;
   entry.scope_ = journal_detail::string_field(row, "scope");
+  if (run && run->present_) {
+    entry.run_ = std::make_shared<const RunRecord>(run->record_);
+  }
   return entry;
 }
 

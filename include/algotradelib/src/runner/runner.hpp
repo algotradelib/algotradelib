@@ -3082,12 +3082,13 @@ private:
     const auto same = [](const std::optional<Decimal64>& a, const std::optional<Decimal64>& b) {
       return a.has_value() == b.has_value() && (!a || (!decimal_less(*a, *b) && !decimal_less(*b, *a)));
     };
-    // Every line repeats the instruction; a `CONFIRMED` or `HELD` line carries another holding.
+    // Every line repeats the instruction, and the run it belongs to; a `CONFIRMED` or `HELD` line carries
+    // another holding.
     const auto same_instruction = [&](const JournalEntry& a, const JournalEntry& b) {
       return a.instrument_ == b.instrument_ && a.side_ == b.side_ && a.type_ == b.type_ &&
         a.time_in_force_ == b.time_in_force_ && a.session_ == b.session_ && a.venue_ == b.venue_ &&
         same(a.quantity_, b.quantity_) && same(a.price_, b.price_) && same(a.trigger_price_, b.trigger_price_) &&
-        same(a.baseline_, b.baseline_);
+        same(a.baseline_, b.baseline_) && journal_run_of(a) == journal_run_of(b);
     };
     struct Fold {
       JournalEntry line_;
@@ -3151,6 +3152,7 @@ private:
           break;
         case JournalOutcome::PENDING:
         case JournalOutcome::INDETERMINATE:
+        case JournalOutcome::RECORDED:
           break;
       }
     }

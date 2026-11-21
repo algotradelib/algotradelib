@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -32,10 +33,21 @@ enum class JournalAction {
   PLACE,
   /** @brief A cancellation of a resting order. */
   CANCEL,
+  /**
+   * @brief A record of a run budget's ledger (`RunRecord`), not an instruction: it sends nothing and names
+   *   no order.
+   *
+   * Written only by a runner with `strategy::RiskLimits::run_budget_`, always with `JournalOutcome::RECORDED`.
+   */
+  LEDGER,
 };
 
 /** @brief Every `JournalAction`, in declaration order. */
-inline constexpr std::array<JournalAction, 2> all_journal_actions{JournalAction::PLACE, JournalAction::CANCEL};
+inline constexpr std::array<JournalAction, 3> all_journal_actions{
+  JournalAction::PLACE,
+  JournalAction::CANCEL,
+  JournalAction::LEDGER,
+};
 
 /**
  * @brief Returns an action's name as written to the journal (`"place"`, `"cancel"`).
@@ -48,6 +60,8 @@ inline constexpr std::string_view journal_action_name(JournalAction action) noex
       return "place";
     case JournalAction::CANCEL:
       return "cancel";
+    case JournalAction::LEDGER:
+      return "ledger";
   }
   return "";
 }
@@ -67,13 +81,14 @@ static_assert(
  *   rather than by its attributes.
  * @param action The action.
  * @return `true` for `CANCEL` (it names the order it cancels); `false` for `PLACE` (matched by instrument,
- *   side, shape, quantity and time).
+ *   side, shape, quantity and time) and for `LEDGER` (no instruction).
  */
 inline constexpr bool journal_action_matches_by_order_id(JournalAction action) noexcept {
   switch (action) {
     case JournalAction::CANCEL:
       return true;
     case JournalAction::PLACE:
+    case JournalAction::LEDGER:
       return false;
   }
   return false;
@@ -132,10 +147,12 @@ enum class JournalOutcome {
    *   operator may account for it (`Runner::release_obligations`). Written with `requires_operator_`.
    */
   HELD,
+  /** @brief A run budget's ledger record (`JournalAction::LEDGER`); it answers no instruction. */
+  RECORDED,
 };
 
 /** @brief Every `JournalOutcome`, in declaration order. */
-inline constexpr std::array<JournalOutcome, 7> all_journal_outcomes{
+inline constexpr std::array<JournalOutcome, 8> all_journal_outcomes{
   JournalOutcome::PENDING,
   JournalOutcome::ACCEPTED,
   JournalOutcome::REJECTED,
@@ -143,6 +160,7 @@ inline constexpr std::array<JournalOutcome, 7> all_journal_outcomes{
   JournalOutcome::RESOLVED,
   JournalOutcome::CONFIRMED,
   JournalOutcome::HELD,
+  JournalOutcome::RECORDED,
 };
 
 /**
@@ -166,6 +184,8 @@ inline constexpr std::string_view journal_outcome_name(JournalOutcome outcome) n
       return "confirmed";
     case JournalOutcome::HELD:
       return "held";
+    case JournalOutcome::RECORDED:
+      return "recorded";
   }
   return "";
 }
@@ -230,6 +250,7 @@ inline constexpr bool journal_outcome_is_terminal(JournalOutcome outcome) noexce
     case JournalOutcome::RESOLVED:
     case JournalOutcome::CONFIRMED:
     case JournalOutcome::HELD:
+    case JournalOutcome::RECORDED:
       return true;
   }
   return true;
@@ -251,6 +272,7 @@ inline constexpr bool journal_outcome_answers_send(JournalOutcome outcome) noexc
     case JournalOutcome::RESOLVED:
     case JournalOutcome::CONFIRMED:
     case JournalOutcome::HELD:
+    case JournalOutcome::RECORDED:
       return false;
   }
   return false;
@@ -271,6 +293,7 @@ inline constexpr bool journal_outcome_names_order(JournalOutcome outcome) noexce
     case JournalOutcome::INDETERMINATE:
     case JournalOutcome::CONFIRMED:
     case JournalOutcome::HELD:
+    case JournalOutcome::RECORDED:
       return false;
   }
   return false;
@@ -291,6 +314,7 @@ inline constexpr bool journal_outcome_refuses(JournalOutcome outcome) noexcept {
     case JournalOutcome::RESOLVED:
     case JournalOutcome::CONFIRMED:
     case JournalOutcome::HELD:
+    case JournalOutcome::RECORDED:
       return false;
   }
   return false;
@@ -312,6 +336,7 @@ inline constexpr bool journal_outcome_is_closing_account(JournalOutcome outcome)
     case JournalOutcome::REJECTED:
     case JournalOutcome::INDETERMINATE:
     case JournalOutcome::RESOLVED:
+    case JournalOutcome::RECORDED:
       return false;
   }
   return false;
@@ -333,6 +358,7 @@ inline constexpr bool journal_outcome_requires_operator(JournalOutcome outcome) 
     case JournalOutcome::INDETERMINATE:
     case JournalOutcome::RESOLVED:
     case JournalOutcome::CONFIRMED:
+    case JournalOutcome::RECORDED:
       return false;
   }
   return false;
@@ -355,10 +381,88 @@ inline constexpr bool journal_outcome_leaves_open(JournalOutcome outcome) noexce
     case JournalOutcome::RESOLVED:
     case JournalOutcome::CONFIRMED:
     case JournalOutcome::HELD:
+    case JournalOutcome::RECORDED:
       return false;
   }
   return true;
 }
+
+/** @brief What a run budget's `JournalAction::LEDGER` line records (`RunRecord::kind_`). */
+enum class RunRecordKind {
+  /** @brief A run begins; its amount is the budget, the run's first deposit, and its line's id is the run's id. */
+  OPEN,
+  /** @brief Cash added to the run, under the operator's id (`RunRecord::given_`). */
+  DEPOSIT,
+  /** @brief Cash taken from the run, under the operator's id (`RunRecord::given_`). */
+  WITHDRAWAL,
+};
+
+/** @brief Every `RunRecordKind`, in declaration order. */
+inline constexpr std::array<RunRecordKind, 3> all_run_record_kinds{
+  RunRecordKind::OPEN,
+  RunRecordKind::DEPOSIT,
+  RunRecordKind::WITHDRAWAL,
+};
+
+/**
+ * @brief Returns a record kind's name as written to the journal (`"open"`, ...).
+ * @param kind The kind.
+ * @return The name; empty for a value that is not a `RunRecordKind`.
+ */
+inline constexpr std::string_view run_record_kind_name(RunRecordKind kind) noexcept {
+  switch (kind) {
+    case RunRecordKind::OPEN:
+      return "open";
+    case RunRecordKind::DEPOSIT:
+      return "deposit";
+    case RunRecordKind::WITHDRAWAL:
+      return "withdrawal";
+  }
+  return "";
+}
+
+static_assert(
+  lists_every_value(
+    all_run_record_kinds,
+    [](RunRecordKind kind) {
+      return !run_record_kind_name(kind).empty();
+    }
+  ),
+  "all_run_record_kinds must list every RunRecordKind"
+);
+
+/**
+ * @brief Parses a record kind's name.
+ * @param text The name.
+ * @return The kind, or `std::nullopt` if `text` names none.
+ */
+inline std::optional<RunRecordKind> run_record_kind_from(std::string_view text) noexcept {
+  return value_named(all_run_record_kinds, run_record_kind_name, text);
+}
+
+/**
+ * @brief What a journal line says about a run budget's ledger (`strategy::RiskLimits::run_budget_`).
+ *
+ * On a run's `PLACE` lines it names the run alone; on a `CONFIRMED` line it also books the fill; on a
+ * `JournalAction::LEDGER` line it is the whole record. A runner without a budget writes none, so its lines
+ * are those of a journal from before run budgets.
+ */
+struct RunRecord {
+  /** @brief The run's id: the id of its `RunRecordKind::OPEN` line. */
+  std::string run_;
+  /** @brief What a `LEDGER` line records; empty on every other line. */
+  std::optional<RunRecordKind> kind_;
+  /** @brief A transfer's amount, an opening's budget, or what a booked fill traded for. */
+  std::optional<Money> amount_;
+  /** @brief A booked fill's quantity. */
+  std::optional<Decimal64> filled_;
+  /** @brief A booked fill's commission and taxes together, in `amount_`'s currency. */
+  std::optional<Decimal64> fee_;
+  /** @brief Whether part of `fee_` was estimated from `strategy::RiskLimits::run_fees_`. */
+  bool fee_estimated_{false};
+  /** @brief The operator's id of a transfer or of a fresh opening, which makes it apply once. */
+  std::string given_;
+};
 
 /**
  * @brief One journal line: an instruction and what was known about it when the line was written.
@@ -432,7 +536,18 @@ struct JournalEntry {
    * account's orders. Stamped by the journal.
    */
   std::string scope_;
+  /** @brief What the line says about a run budget's ledger; null on every line of a runner without one. */
+  std::shared_ptr<const RunRecord> run_;
 };
+
+/**
+ * @brief Returns the run budget's run a journal line belongs to.
+ * @param entry The line.
+ * @return The run's id (`RunRecord::run_`), or empty for a line that names none.
+ */
+inline std::string_view journal_run_of(const JournalEntry& entry) noexcept {
+  return entry.run_ ? std::string_view(entry.run_->run_) : std::string_view();
+}
 
 /**
  * @brief Whether a journal file could be read.
@@ -537,7 +652,7 @@ struct OpenInstruction {
  * @brief Lists the instructions whose outcome is unknown, in the order they were opened.
  *
  * A `PENDING` line with no answer, or one answered `INDETERMINATE`, is listed; `ACCEPTED` and
- * `REJECTED` answers resolve it. An answer is paired with the first open line carrying its id, so
+ * `REJECTED` answers resolve it; a `JournalAction::LEDGER` line is skipped. An answer is paired with the first open line carrying its id, so
  * ids must be unique (see `JournalingExecutor::set_id_prefix`). An `INDETERMINATE` line whose `PENDING` line is missing (a rotated or
  * edited file) is listed too.
  *
@@ -547,6 +662,10 @@ struct OpenInstruction {
 inline std::vector<OpenInstruction> unresolved_instructions(const JournalReplay& replay) {
   std::vector<OpenInstruction> open;
   for (const auto& entry : replay.entries_) {
+    // A ledger record answers no instruction, whatever its id.
+    if (entry.action_ == JournalAction::LEDGER) {
+      continue;
+    }
     if (!journal_outcome_is_terminal(entry.outcome_)) {
       OpenInstruction instruction;
       instruction.entry_ = entry;
@@ -740,6 +859,33 @@ public:
   }
 
   /**
+   * @brief Names the run budget's run that every later placement belongs to (`RunRecord::run_`).
+   *
+   * Only `place` stamps it, on the placement's lines; a line passed to `record` keeps what it carries, so a
+   * closing line written for an older order does not take the run's id. A budgeted `Runner` calls it once
+   * its run is open.
+   *
+   * @param run The run's id; empty stops stamping.
+   */
+  void set_run(std::string run) {
+    if (run.empty()) {
+      run_.reset();
+      return;
+    }
+    auto record = std::make_shared<RunRecord>();
+    record->run_ = std::move(run);
+    run_ = std::move(record);
+  }
+
+  /**
+   * @brief Returns a new id for a run budget's ledger line: `run-`, the prefix, a hyphen and the counter.
+   * @return The id; never one this executor returned before.
+   */
+  std::string next_run_id() {
+    return "run-" + next_id();
+  }
+
+  /**
    * @brief Returns the venue the wrapped executor says an order will reach.
    *
    * Call it as `route_of(order, 0)`; the second argument selects this overload over the fallback,
@@ -808,6 +954,7 @@ public:
     entry.price_ = order.price_;
     entry.trigger_price_ = order.trigger_price_;
     entry.baseline_ = std::move(baseline);
+    entry.run_ = run_;
     if (!journal_->append(entry)) {
       return refuse_unjournaled();
     }
@@ -1058,6 +1205,7 @@ private:
   Journal* journal_;
   Clock clock_;
   std::optional<JournalEntry> last_entry_;
+  std::shared_ptr<const RunRecord> run_;
   std::string prefix_;
   std::string journal_error_;
   std::size_t refusals_{0};
