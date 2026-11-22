@@ -52,18 +52,16 @@ struct RunTransfer {
  * @brief How a budgeted runner opens its run when `runner::recover_runner` reads its journal
  *   (`Runner::set_run_opening`).
  *
- * By default the journal's latest run is resumed; a journal with no run halts, since an empty file cannot tell
- * a first start from a lost journal. A run opens only when stated fresh.
+ * By default a new run opens with `strategy::RiskLimits::run_budget_`, labelled by the library. If the journal
+ * holds an earlier run, it is closed first: its open orders are cancelled (or waited for), each is accounted
+ * for and booked to it as usual, and only then is the new run's opening written. The old run's remaining shares
+ * are the account's, not the new run's.
  */
 struct RunOpening {
-  /**
-   * @brief Set: open a new run under this operator's id, with `strategy::RiskLimits::run_budget_`.
-   *
-   * It is refused while any order the journal restores is owed, and opens only on the account's first
-   * working-order listing after recovery, if that listing shows no open order. A later start with the same id
-   * resumes the run it opened; an id an earlier run used halts.
-   */
-  std::optional<std::string> fresh_;
+  /** @brief Resume the journal's latest run instead of opening a new one; a journal with no run then halts. */
+  bool resume_{false};
+  /** @brief For a new run: wait for the old run's open orders to end, instead of cancelling them. */
+  bool wait_for_open_orders_{false};
   /** @brief Deposits and withdrawals for a resumed run, each applied once by its id, in order. */
   std::vector<RunTransfer> transfers_;
 };
@@ -73,21 +71,19 @@ struct RunRecoverySummary {
   /** @brief Whether the run is open. */
   bool opened_{false};
   /**
-   * @brief Whether a fresh run waits for the account's first working-order listing after recovery: neither
-   *   opened nor refused yet (`Runner::run_recovery` says which, once it arrives).
+   * @brief Whether a new run waits for the old run's open orders to be accounted for: not opened yet
+   *   (`Runner::run_recovery` says when it is).
    */
-  bool waiting_{false};
+  bool closing_{false};
   /** @brief Whether a run found in the journal was resumed; `false` for a new run. */
   bool resumed_{false};
-  /** @brief Whether the opening was stated fresh (`RunOpening::fresh_`); with `resumed_`, it resumed its own run. */
-  bool fresh_{false};
   /** @brief The run's id. */
   std::string id_;
   /** @brief The run's cash once open. */
   std::optional<Money> cash_;
   /** @brief How many transfers were written now. */
   std::size_t transfers_applied_{0};
-  /** @brief Whether `strategy::RiskLimits::run_budget_` was used: only a fresh run opens with it. */
+  /** @brief Whether `strategy::RiskLimits::run_budget_` was used: only a new run opens with it. */
   bool budget_used_{false};
   /** @brief Why the run did not open; empty when it did. The runner is then halted (`LOCAL_FAILURE`). */
   std::string refused_;
@@ -185,16 +181,10 @@ private:
   friend class Runner;
 
   // Opens a new run recorded in a journal.
-  RunLedger(std::string id, Money opening, std::string given)
-  : id_(std::move(id)), given_(std::move(given)), cash_(std::move(opening)) {}
+  RunLedger(std::string id, Money opening) : id_(std::move(id)), cash_(std::move(opening)) {}
 
   // Reads a journal's run: its latest `RunRecordKind::OPEN` record and every line of that run after it.
   static run_detail::Fold fold(const JournalReplay& replay);
-
-  // Returns the operator's id of the fresh opening that began the run.
-  const std::string& given() const noexcept {
-    return given_;
-  }
 
   // Tests whether every placement of the run is booked or still owed: none held or released unbooked.
   bool settled() const noexcept {
@@ -419,7 +409,6 @@ private:
   }
 
   std::string id_;
-  std::string given_;
   Money cash_;
   std::vector<Shares> shares_;
   id_detail::PositionTable table_;
@@ -436,8 +425,6 @@ namespace run_detail {
 struct Fold {
   // The run, or none if the journal holds no opening (or `failure_` is set).
   std::optional<RunLedger> run_;
-  // Every opening's fresh id (`RunRecord::given_`), in file order, so a fresh id is applied once.
-  std::vector<std::string> fresh_ids_;
   // Why the run's records do not add up; empty when they do. Recovery then halts.
   std::string failure_;
 };
@@ -451,9 +438,6 @@ inline run_detail::Fold RunLedger::fold(const JournalReplay& replay) {
     const auto& entry = replay.entries_[at];
     if (entry.action_ == JournalAction::LEDGER && entry.run_ && entry.run_->kind_ == RunRecordKind::OPEN) {
       opened = at;
-      if (!entry.run_->given_.empty()) {
-        folded.fresh_ids_.push_back(entry.run_->given_);
-      }
     }
   }
   if (!opened) {
@@ -471,7 +455,7 @@ inline run_detail::Fold RunLedger::fold(const JournalReplay& replay) {
       return folded;
     }
   }
-  RunLedger run(open.run_, *open.amount_, open.given_);
+  RunLedger run(open.run_, *open.amount_);
   const auto fail = [&folded](const JournalEntry& entry, const char* why) {
     folded.failure_ = "the run's journal line " + entry.id_ + " " + why;
     return std::move(folded);

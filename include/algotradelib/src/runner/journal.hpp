@@ -466,7 +466,7 @@ struct RunRecord {
   std::optional<Decimal64> fee_;
   /** @brief Whether part of `fee_` was estimated from `strategy::RiskLimits::run_fees_`. */
   bool fee_estimated_{false};
-  /** @brief The operator's id of a transfer or of a fresh opening, which makes it apply once. */
+  /** @brief The operator's id of a transfer, which makes it apply once. */
   std::string given_;
   /** @brief The journal id of the placement a `RunRecordKind::FILL` books. */
   std::string of_;

@@ -1009,7 +1009,7 @@ inline std::optional<JournalEntry> ledger_entry_from(
     !record.of_.empty() && record.filled_ && record.fee_ && record.given_.empty() && booking_figures_hold(record) :
     decimal_less(Decimal64::parse("0"), record.amount_->amount_) && !record.filled_ && !record.fee_ &&
       !keys.has_fee_estimated_ && record.of_.empty() && (*record.kind_ != RunRecordKind::OPEN || record.run_ == *id) &&
-      (*record.kind_ == RunRecordKind::OPEN || !record.given_.empty());
+      (*record.kind_ == RunRecordKind::OPEN) == record.given_.empty();
   if (!holds) {
     return std::nullopt;
   }

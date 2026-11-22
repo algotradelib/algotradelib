@@ -441,17 +441,12 @@ public:
   /**
    * @brief Clears the local-failure hold, after an operator has fixed the cause.
    *
-   * It also acknowledges the journal failures seen so far, so the same failure does not halt again; a fresh run
-   * still waiting (`RunOpening::fresh_`) then opens only on a listing received after this call.
+   * It also acknowledges the journal failures seen so far, so the same failure does not halt again.
    * Other holds, such as an operator's halt, stay.
    */
   void resume_after_local_failure() {
     guard_.resume(strategy::HaltReason::LOCAL_FAILURE);
     acknowledged_journal_failures_ = executor_journal_failures();
-    // A fresh run still waiting opens only on a listing received from here.
-    if (run_opening_waits_) {
-      run_opening_stamp_ = context_.portfolio().working_as_of_;
-    }
   }
 
   /**
@@ -752,10 +747,10 @@ public:
    * less every fee; open orders do not lower it.
    *
    * @return The cash, or `std::nullopt` without a budget or while no run is open (a runner that keeps its run in
-   *   a journal opens it in `runner::recover_runner`).
+   *   a journal opens it in `runner::recover_runner`, a new one once the old run's orders are accounted for).
    */
   std::optional<Money> run_cash() const {
-    return run_ ? std::optional<Money>(run_->cash()) : std::nullopt;
+    return run_ && !run_closing_ ? std::optional<Money>(run_->cash()) : std::nullopt;
   }
   /**
    * @brief Returns the run's own shares of an instrument, with `RiskLimits::run_budget_` set.
@@ -765,7 +760,7 @@ public:
    *   booking (`run_unsettled`) is not counted.
    */
   std::optional<Decimal64> run_holding(const InstrumentId& instrument) const {
-    return run_ ? std::optional<Decimal64>(run_->holding(instrument)) : std::nullopt;
+    return run_ && !run_closing_ ? std::optional<Decimal64>(run_->holding(instrument)) : std::nullopt;
   }
   /**
    * @brief Lists the run's placements that leave its ledger unsettled: held for an operator, or released by
@@ -780,23 +775,24 @@ public:
     return run_ ? run_->unsettled() : std::vector<RunPlacement>{};
   }
   /**
-   * @brief Sets how `runner::recover_runner` opens a budgeted runner's run from its journal: resume by default
-   *   (a journal with no run halts), fresh only under an id, and deposits and withdrawals each applied once.
+   * @brief Sets how `runner::recover_runner` opens a budgeted runner's run from its journal: a new run by default,
+   *   closing the journal's earlier run first; resume only when stated, with deposits and withdrawals each
+   *   applied once.
    *
    * Read only by a runner that keeps its run in a journal; any other opens a new run at construction.
-   * See `RunOpening` for when a fresh run opens.
+   * See `RunOpening`.
    *
    * @param opening The opening.
-   * @throws std::invalid_argument for an empty fresh id, an empty transfer id, two transfers with one id, or a
-   *   transfer amount not above zero.
+   * @throws std::invalid_argument for transfers without `RunOpening::resume_`, an empty transfer id, two
+   *   transfers with one id, or a transfer amount not above zero.
    * @throws std::logic_error without `RiskLimits::run_budget_`, or after `runner::recover_runner`.
    */
   void set_run_opening(RunOpening opening) {
     if (!guard_.limits().run_budget_ || recovered_) {
       throw std::logic_error("set_run_opening needs a run budget and must come before runner::recover_runner");
     }
-    if (opening.fresh_ && opening.fresh_->empty()) {
-      throw std::invalid_argument("a fresh run needs an id");
+    if (!opening.resume_ && !opening.transfers_.empty()) {
+      throw std::invalid_argument("a new run takes its cash from run_budget_: transfers apply to a resumed run");
     }
     for (std::size_t at = 0; at < opening.transfers_.size(); ++at) {
       const auto& transfer = opening.transfers_[at];
@@ -812,8 +808,8 @@ public:
     run_opening_ = std::move(opening);
   }
   /**
-   * @brief Returns how `runner::recover_runner` opened the run, or why it did not, or that a fresh run waits
-   *   for the account's first working-order listing (`RunRecoverySummary::waiting_`), and then how that went.
+   * @brief Returns how `runner::recover_runner` opened the run, or why it did not, or that a new run waits for
+   *   the old run's open orders (`RunRecoverySummary::closing_`), and then how that went.
    * @return The summary, or `std::nullopt` for a runner that does not keep its run in a journal, without
    *   `RiskLimits::run_budget_`, or before recovery.
    */
@@ -822,7 +818,7 @@ public:
   }
   /**
    * @brief Tests whether a budgeted runner that keeps its run in a journal has stopped writing to it: its run is
-   *   not open (not recovered, refused, or a fresh run waiting for its listing), or a write failed
+   *   not open (not recovered, or refused), or a write failed
    *   (`note_run_journal_write_failed`).
    *
    * While it holds, the runner writes no line, accounts for no order, sends no cancellation, and refuses the
@@ -1274,7 +1270,7 @@ public:
    * order. Does nothing else for a runner that is not serialized.
    *
    * With `RiskLimits::run_budget_`, it then opens the run from the journal as `set_run_opening` says: only from
-   * an intact journal, a fresh one on the next working-order listing, and it halts the runner (`LOCAL_FAILURE`)
+   * an intact journal, a new one once the old run's orders are accounted for, and it halts the runner (`LOCAL_FAILURE`)
    * whenever it does not open one (`run_recovery`).
    *
    * @param replay The journal's contents.
@@ -2102,6 +2098,7 @@ private:
     confirm_reservations();
 
     Report report;
+    cancel_closing_run_orders(report);
     // **One index of the portfolio's rows for a pass with many instructions**, so each target finds its own
     // rows instead of scanning all of them (`strategy::PortfolioRows`). It describes the portfolio as it is
     // now; `plan_for` uses it only while the context's portfolio has been neither replaced nor edited since
@@ -3676,7 +3673,7 @@ private:
   // `confirm_serialized` and `confirm_overlapping` say when an order counts as confirmed.
   void confirm_reservations() {
     if constexpr (keeps_sent_orders_until_listed) {
-      decide_fresh_run();
+      open_new_run_once_closed();
       // Closed, nothing is accounted for and no reserved row is stripped: the run's writes have stopped.
       if (unconfirmed_.empty() || run_writes_closed()) {
         return;
@@ -4007,7 +4004,7 @@ private:
   void run_pass_inputs(const strategy::Portfolio<Tag>& view, strategy::GuardInputs& inputs) {
     if (serialized()) {
       // A live run: its own orders, from what it sent, never the account's listing; nothing once its writes stop.
-      const auto reserved = run_->settled() && !run_journal_latched_ ? run_reserved() : std::nullopt;
+      const auto reserved = run_->settled() && !run_journal_latched_ && !run_closing_ ? run_reserved() : std::nullopt;
       const auto left = reserved ? decimal_subtract(run_->cash().amount_, *reserved) : std::nullopt;
       if (left) {
         inputs.run_cash_ = Money{*left, run_->currency()};
@@ -4100,7 +4097,7 @@ private:
   // A live run's shares of an instrument less every sell of the run on it not yet booked, whole; nothing while a
   // placement on it is held or released unbooked, or a sell of the run on it is unnamed or held.
   std::optional<Decimal64> run_holding_serialized(const InstrumentId& instrument) const {
-    if (run_journal_latched_ || !run_->settled_on(instrument)) {
+    if (run_journal_latched_ || run_closing_ || !run_->settled_on(instrument)) {
       return std::nullopt;
     }
     std::optional<Decimal64> held = run_->holding(instrument);
@@ -4303,7 +4300,9 @@ private:
     for (auto& entry : unconfirmed_) {
       entry.run_order_ = false;
     }
-    summary.waiting_ = false;
+    run_.reset();
+    run_closing_ = false;
+    summary.closing_ = false;
     summary.refused_ = cause + ": " + state;
     run_recovery_ = summary;
     halt_locally("the run budget's run did not open: " + summary.refused_);
@@ -4319,15 +4318,14 @@ private:
   }
 
   // Opens a budgeted serialized runner's run from its journal, as `set_run_opening` said; see
-  // `restore_obligations`. Resumes the journal's run, or arms a fresh one to open on the next listing
-  // (`decide_fresh_run`); every line is written before the run changes in memory, and whenever it does not
-  // open or arm a run it halts the runner, which then refuses the run's buys and sells.
+  // `restore_obligations`. Resumes the journal's run when stated; otherwise opens a new one, closing the old run
+  // first (`open_new_run_once_closed`). Every line is written before the run changes in memory, and whenever it
+  // does not open a run it halts the runner, which then refuses the run's buys and sells.
   void open_run_from([[maybe_unused]] const JournalReplay& replay) {
     if constexpr (keeps_run_in_journal) {
       RunRecoverySummary summary;
       const auto opening = run_opening_.value_or(RunOpening{});
-      summary.fresh_ = opening.fresh_.has_value();
-      const char* reconcile = "reconcile the journal, or state fresh with a new id on a new journal";
+      const char* reconcile = "reconcile the journal, or start on a new journal";
       // **Nothing is folded, opened or written from a journal not read whole**: a line it could not read may be
       // the run's opening, a deposit or a booking, and opening again would spend a budget twice.
       if (!replay.intact()) {
@@ -4348,47 +4346,33 @@ private:
       if (!folded.failure_.empty()) {
         return refuse_run(summary, folded.failure_, reconcile);
       }
-      const auto& budget = *guard_.limits().run_budget_;
-      // Applied once, by its id: the id that opened the latest run resumes it; an earlier run's id halts.
-      const bool resume = opening.fresh_ ? folded.run_ && folded.run_->given() == *opening.fresh_ : true;
-      if (!resume) {
-        const auto& fresh = *opening.fresh_;
-        if (std::find(folded.fresh_ids_.begin(), folded.fresh_ids_.end(), fresh) != folded.fresh_ids_.end()) {
-          return refuse_run(summary, "the fresh id " + fresh + " opened an earlier run", "state a new id");
-        }
-        // A lost journal cannot name the old run's orders, so none restored may be owed.
-        if (!unconfirmed_.empty()) {
-          const auto& entry = unconfirmed_.front();
-          return refuse_run(
-            summary, "the journal restores an owed order" + named(entry), "account for it before stating fresh"
-          );
-        }
-        if (!opening.transfers_.empty()) {
-          return refuse_run(summary, "a fresh run takes its cash from run_budget_", "remove the transfers");
-        }
-        // **It opens on the account's first listing received from here** (`decide_fresh_run`), if that shows no
-        // open order; the id is taken now, while the journal's ids are in hand.
-        run_fresh_id_ = next_ledger_id();
-        run_opening_stamp_ = context_.portfolio().working_as_of_;
-        run_opening_waits_ = true;
-        summary.waiting_ = true;
-        summary.id_ = run_fresh_id_;
-        run_recovery_ = summary;
-        return;
-      }
       if (!folded.run_) {
-        return refuse_run(summary, "no run in this journal", "state fresh with an id to open one");
+        if (opening.resume_) {
+          return refuse_run(summary, "no run to resume in this journal", "start without resume to open a new run");
+        }
+        return open_new_run(summary);
       }
       auto run = std::move(*folded.run_);
+      // The restored orders of the journal's run are its own, reserved and booked as it goes on, or as it closes.
+      for (auto& entry : unconfirmed_) {
+        entry.run_order_ = entry.journal_ && journal_run_of(*entry.journal_) == run.id();
+      }
+      if (!opening.resume_) {
+        // **The old run closes first**: its orders are cancelled (or waited for) and booked to it as they end,
+        // and the new run opens once none is owed. Until then it spends nothing.
+        run_.emplace(std::move(run));
+        run_closing_ = true;
+        summary.closing_ = true;
+        run_recovery_ = summary;
+        open_new_run_once_closed();
+        return;
+      }
+      const auto& budget = *guard_.limits().run_budget_;
       if (!(run.currency() == budget.currency_)) {
         return refuse_run(
           summary, "the journal's run is in " + run.currency().str() + ", run_budget_ in " + budget.currency_.str(),
           "state run_budget_ in the run's currency"
         );
-      }
-      // The restored orders of this run are its own, reserved and booked as it goes on.
-      for (auto& entry : unconfirmed_) {
-        entry.run_order_ = entry.journal_ && journal_run_of(*entry.journal_) == run.id();
       }
       // **The whole list is checked before any line is written**, against a copy, in order.
       const auto reserved = run.settled() ? run_reserved() : std::nullopt;
@@ -4442,40 +4426,60 @@ private:
     }
   }
 
-  // A fresh run's opening, decided once, on the first working-order listing received after recovery (or after
-  // `resume_after_local_failure`): any order the broker lists refuses it for the process's life; none opens it.
-  void decide_fresh_run() {
+  // Writes a new run's opening, labelled by the library, and opens it with `run_budget_`.
+  void open_new_run(RunRecoverySummary summary) {
+    auto record = std::make_shared<RunRecord>();
+    record->kind_ = RunRecordKind::OPEN;
+    record->amount_ = *guard_.limits().run_budget_;
+    auto line = ledger_line(std::move(record), "a new run opens with run_budget_");
+    if (!run_record(line, /*opening=*/true)) {
+      return refuse_run(summary, "the order journal could not record the run's opening", "restart");
+    }
+    run_.emplace(RunLedger(line.id_, *guard_.limits().run_budget_));
+    run_closing_ = false;
+    summary.closing_ = false;
+    summary.budget_used_ = true;
+    run_opened(summary);
+  }
+
+  // While the old run closes: opens the new run once none of the old run's orders is owed, never while locally
+  // halted or after a failed write. Its remaining shares are the account's.
+  void open_new_run_once_closed() {
     if constexpr (keeps_run_in_journal) {
-      const auto& portfolio = context_.portfolio();
-      if (
-        !run_opening_waits_ || run_journal_latched_ || guard_.halted(strategy::HaltReason::LOCAL_FAILURE) ||
-        !(run_opening_stamp_ < portfolio.working_as_of_)
-      ) {
+      if (!run_closing_ || run_journal_latched_ || guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
         return;
       }
-      run_opening_waits_ = false;
-      auto summary = *run_recovery_;
-      std::string listed;
-      for (const auto& working : portfolio.working_) {
-        if (!working.reserved_) {
-          listed += (listed.empty() ? "" : ", ") + working.order_.instrument_.symbol_ + " " + working.order_.order_id_;
+      for (const auto& entry : unconfirmed_) {
+        if (entry.run_order_) {
+          return;
         }
       }
-      if (!listed.empty()) {
-        return refuse_run(summary, "the account lists open orders (" + listed + ")", "account for them, then restart");
+      open_new_run(*run_recovery_);
+    }
+  }
+
+  // While the old run closes, cancels each of its orders a listing still shows, once, unless the opening said
+  // to wait for them.
+  void cancel_closing_run_orders([[maybe_unused]] Report& report) {
+    if constexpr (keeps_run_in_journal) {
+      if (!run_closing_ || run_opening_.value_or(RunOpening{}).wait_for_open_orders_) {
+        return;
       }
-      auto record = std::make_shared<RunRecord>();
-      record->kind_ = RunRecordKind::OPEN;
-      record->amount_ = *guard_.limits().run_budget_;
-      record->given_ = *run_opening_->fresh_;
-      auto line = ledger_line(std::move(record), "a fresh run opens with run_budget_", run_fresh_id_);
-      if (!run_record(line, /*opening=*/true)) {
-        return refuse_run(summary, "the order journal could not record the run's opening", "restart");
+      // Collected first: a cancellation's outcome may change what is owed.
+      std::vector<OrderRef<Tag>> refs;
+      for (const auto& entry : unconfirmed_) {
+        if (!entry.run_order_ || !entry.journal_ || broker_row_for(context_.portfolio(), entry) == nullptr) {
+          continue;
+        }
+        const auto& id = entry.journal_->id_;
+        if (std::find(run_cancels_sent_.begin(), run_cancels_sent_.end(), id) == run_cancels_sent_.end()) {
+          run_cancels_sent_.push_back(id);
+          refs.push_back(entry.ref_);
+        }
       }
-      run_.emplace(RunLedger(line.id_, *guard_.limits().run_budget_, *run_opening_->fresh_));
-      summary.waiting_ = false;
-      summary.budget_used_ = true;
-      run_opened(summary);
+      for (const auto& ref : refs) {
+        send_cancel(ref, report);
+      }
     }
   }
 
@@ -5584,10 +5588,10 @@ private:
   std::vector<InstrumentId> run_unknown_;
   std::optional<RunOpening> run_opening_;
   std::optional<RunRecoverySummary> run_recovery_;
-  // A fresh run armed at recovery: its id, and the listing stamp its opening must come after.
-  std::string run_fresh_id_;
-  std::chrono::system_clock::time_point run_opening_stamp_{};
-  bool run_opening_waits_{false};
+  // A new run waits while `run_` is the old run, closing: its orders are booked to it, and it spends nothing.
+  bool run_closing_{false};
+  // The old run's orders whose cancellation was sent, by journal id, so each is sent once per process.
+  std::vector<std::string> run_cancels_sent_;
   // Set at a budgeted runner's first failed journal write, for the process's life (`run_writes_closed`).
   bool run_journal_latched_{false};
   // Every ledger-shaped id the journal holds, so a generated one never repeats it.

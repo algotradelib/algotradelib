@@ -491,9 +491,9 @@ struct RiskLimits {
    * `runner::Runner` keeps the run's cash and shares, and refuses to construct with a budget but no `run_fees_`,
    * or over an executor that sends to a broker unless the runner keeps its run in the order journal (a serialized
    * `runner::JournalingExecutor` over a broker that lists working orders). Such a runner opens its run at
-   * `runner::recover_runner`: it resumes the journal's run, and opens a new one with this amount only when stated
-   * fresh (`runner::RunOpening`). It does not turn on `enforce_buying_power_`. See "The run budget" in
-   * running-a-strategy-live.md.
+   * `runner::recover_runner`: a new run with this amount by default, once the journal's earlier run is closed, or
+   * the journal's run resumed when stated (`runner::RunOpening`). It does not turn on `enforce_buying_power_`.
+   * See "The run budget" in running-a-strategy-live.md.
    */
   std::optional<Money> run_budget_;
   /** @brief The fees a run budget estimates for each order; required with `run_budget_`, unread without it. */
