@@ -818,8 +818,7 @@ public:
   }
   /**
    * @brief Tests whether a budgeted runner that keeps its run in a journal has stopped writing to it: its run is
-   *   not open (not recovered, or refused; not a resume on an intact journal with no run, where the run's buys
-   *   and sells are refused and withdrawals go as without a budget), or a write failed
+   *   not open (not recovered, or refused other than `RunRefusal::NO_RUN`), or a write failed
    *   (`note_run_journal_write_failed`).
    *
    * While it holds, the runner writes no line, accounts for no order, sends no cancellation, and refuses the
@@ -4357,9 +4356,7 @@ private:
       }
       if (!folded.run_) {
         if (opening.resume_) {
-          // **Not damage**: an intact journal that holds no run. There is nothing to spend or sell, so the run's
-          // figures stay absent and its buys and sells are refused; the journal's own lines (a withdrawal, an
-          // accounting of an order of no run) write as without a budget. No halt.
+          // **Not damage**: nothing to spend or sell (figures absent), and the journal writes as without a budget.
           run_absent_ = true;
           summary.refusal_ = RunRefusal::NO_RUN;
           summary.refused_ = "no run to resume in this journal: start without resume to open a new run";
@@ -4387,7 +4384,7 @@ private:
       if (!(run.currency() == budget.currency_)) {
         return refuse_run(
           summary, RunRefusal::CURRENCY,
-          "the journal's run is in " + run.currency().str() + ", run_budget_ in " + budget.currency_.str(),
+          "the run is in " + run.currency().str() + ", run_budget_ in " + budget.currency_.str(),
           "state run_budget_ in the run's currency"
         );
       }
@@ -4401,8 +4398,7 @@ private:
             continue;
           }
           return refuse_run(
-            summary, RunRefusal::TRANSFER, "the transfer id " + transfer.id_ + " was applied with another amount",
-            "state a new id"
+            summary, RunRefusal::TRANSFER, "transfer id " + transfer.id_ + " reused, other amount", "state a new id"
           );
         }
         const auto free = reserved ? decimal_subtract(after.cash().amount_, *reserved) : std::nullopt;
@@ -4413,8 +4409,7 @@ private:
         ) {
           return refuse_run(
             summary, RunRefusal::TRANSFER,
-            "the withdrawal " + transfer.id_ + " is above the run's cash " + after.cash().amount_.str() +
-              " less its open buys, or the run is unsettled",
+            "withdrawal " + transfer.id_ + " over cash " + after.cash().amount_.str() + " less open buys, or unsettled",
             "state less, or withdraw once the run is settled"
           );
         }
@@ -4434,9 +4429,7 @@ private:
         record->given_ = transfer.id_;
         auto line = ledger_line(std::move(record), "a transfer the operator stated");
         if (!run_record(line, /*opening=*/true)) {
-          return refuse_run(
-            summary, RunRefusal::WRITE, "the order journal could not record the transfer " + transfer.id_, "restart"
-          );
+          return refuse_run(summary, RunRefusal::WRITE, "could not record the transfer " + transfer.id_, "restart");
         }
         ++summary.transfers_applied_;
       }

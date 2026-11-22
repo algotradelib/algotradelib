@@ -58,12 +58,7 @@ struct RunTransfer {
  * are the account's, not the new run's.
  */
 struct RunOpening {
-  /**
-   * @brief Resume the journal's latest run instead of opening a new one.
-   *
-   * On an intact journal with no run nothing opens (`RunRecoverySummary::refused_` says so): the run's buys and
-   * sells are refused, and withdrawals go as without a budget.
-   */
+  /** @brief Resume the journal's latest run instead of opening a new one (none: `RunRefusal::NO_RUN`). */
   bool resume_{false};
   /** @brief For a new run: wait for the old run's open orders to end, instead of cancelling them. */
   bool wait_for_open_orders_{false};
@@ -75,10 +70,7 @@ struct RunOpening {
 enum class RunRefusal {
   /** @brief None: the run opened, or a new run waits for the old run to close. */
   NONE,
-  /**
-   * @brief A resume found an intact journal with no run. Not damage, and no halt: the run's buys and sells are
-   *   refused, and withdrawals go as without a budget.
-   */
+  /** @brief A resume found an intact journal with no run: no halt, buys and sells refused, withdrawals as usual. */
   NO_RUN,
   /** @brief The journal was not read whole, or holds a damaged line. */
   DAMAGED,
@@ -111,10 +103,7 @@ struct RunRecoverySummary {
   std::size_t transfers_applied_{0};
   /** @brief Whether `strategy::RiskLimits::run_budget_` was used: only a new run opens with it. */
   bool budget_used_{false};
-  /**
-   * @brief Why the run did not open, by kind; `RunRefusal::NONE` when it did. Every kind but `NO_RUN` halts the
-   *   runner (`LOCAL_FAILURE`) and stops the journal's writes.
-   */
+  /** @brief Why the run did not open; every kind but `NO_RUN` halts (`LOCAL_FAILURE`) and stops its writes. */
   RunRefusal refusal_{RunRefusal::NONE};
   /** @brief Why the run did not open, for the operator; empty when it did. */
   std::string refused_;
