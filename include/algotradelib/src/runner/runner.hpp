@@ -818,7 +818,8 @@ public:
   }
   /**
    * @brief Tests whether a budgeted runner that keeps its run in a journal has stopped writing to it: its run is
-   *   not open (not recovered, or refused), or a write failed
+   *   not open (not recovered, or refused; not a resume on an intact journal with no run, where the run's buys
+   *   and sells are refused and withdrawals go as without a budget), or a write failed
    *   (`note_run_journal_write_failed`).
    *
    * While it holds, the runner writes no line, accounts for no order, sends no cancellation, and refuses the
@@ -830,7 +831,7 @@ public:
    */
   bool run_writes_closed() const noexcept {
     if constexpr (keeps_run_in_journal) {
-      return guard_.limits().run_budget_.has_value() && (!run_ || run_journal_latched_);
+      return guard_.limits().run_budget_.has_value() && ((!run_ && !run_absent_) || run_journal_latched_);
     } else {
       return false;
     }
@@ -4355,7 +4356,13 @@ private:
       }
       if (!folded.run_) {
         if (opening.resume_) {
-          return refuse_run(summary, "no run to resume in this journal", "start without resume to open a new run");
+          // **Not damage**: an intact journal that holds no run. There is nothing to spend or sell, so the run's
+          // figures stay absent and its buys and sells are refused; the journal's own lines (a withdrawal, an
+          // accounting of an order of no run) write as without a budget. No halt.
+          run_absent_ = true;
+          summary.refused_ = "no run to resume in this journal: start without resume to open a new run";
+          run_recovery_ = summary;
+          return;
         }
         return open_new_run(summary);
       }
@@ -5607,6 +5614,8 @@ private:
   std::vector<InstrumentId> run_unknown_;
   std::optional<RunOpening> run_opening_;
   std::optional<RunRecoverySummary> run_recovery_;
+  // A resume found an intact journal with no run: nothing is spent or sold, and the journal writes as without a budget.
+  bool run_absent_{false};
   // A new run waits while `run_` is the old run, closing: its orders are booked to it, and it spends nothing.
   bool run_closing_{false};
   // The old run's orders whose cancellation was sent, by journal id, so each is sent once per process.

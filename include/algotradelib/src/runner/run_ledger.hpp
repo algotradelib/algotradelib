@@ -58,7 +58,12 @@ struct RunTransfer {
  * are the account's, not the new run's.
  */
 struct RunOpening {
-  /** @brief Resume the journal's latest run instead of opening a new one; a journal with no run then halts. */
+  /**
+   * @brief Resume the journal's latest run instead of opening a new one.
+   *
+   * On an intact journal with no run nothing opens (`RunRecoverySummary::refused_` says so): the run's buys and
+   * sells are refused, and withdrawals go as without a budget.
+   */
   bool resume_{false};
   /** @brief For a new run: wait for the old run's open orders to end, instead of cancelling them. */
   bool wait_for_open_orders_{false};
@@ -85,7 +90,10 @@ struct RunRecoverySummary {
   std::size_t transfers_applied_{0};
   /** @brief Whether `strategy::RiskLimits::run_budget_` was used: only a new run opens with it. */
   bool budget_used_{false};
-  /** @brief Why the run did not open; empty when it did. The runner is then halted (`LOCAL_FAILURE`). */
+  /**
+   * @brief Why the run did not open; empty when it did. The runner is then halted (`LOCAL_FAILURE`), except for a
+   *   resume on an intact journal with no run (`RunOpening::resume_`).
+   */
   std::string refused_;
 };
 
