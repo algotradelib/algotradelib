@@ -333,10 +333,10 @@ struct RunFees {
    *   negative, or the arithmetic does not fit.
    */
   std::optional<Decimal64> estimate_commission(const Decimal64& value) const {
-    const auto zero = Decimal64::parse("0");
+    // A decimal's sign is its coefficient's.
     if (
-      decimal_less(value, zero) || decimal_less(commission_rate_, zero) || decimal_less(commission_minimum_, zero) ||
-      (institution_rate_ && decimal_less(*institution_rate_, zero))
+      value.coefficient() < 0 || commission_rate_.coefficient() < 0 || commission_minimum_.coefficient() < 0 ||
+      (institution_rate_ && institution_rate_->coefficient() < 0)
     ) {
       return std::nullopt;
     }
@@ -365,12 +365,11 @@ struct RunFees {
    *   `std::nullopt` if the value or the rate is negative, or the arithmetic does not fit.
    */
   std::optional<Decimal64> estimate_tax(const Decimal64& value, OrderSide side) const {
-    const auto zero = Decimal64::parse("0");
-    if (decimal_less(value, zero) || (sell_tax_rate_ && decimal_less(*sell_tax_rate_, zero))) {
+    if (value.coefficient() < 0 || (sell_tax_rate_ && sell_tax_rate_->coefficient() < 0)) {
       return std::nullopt;
     }
     if (side != OrderSide::SELL || !sell_tax_rate_) {
-      return zero;
+      return Decimal64(0, 0);
     }
     return charged_on(value, *sell_tax_rate_);
   }
@@ -378,15 +377,25 @@ struct RunFees {
 private:
   // `value x rate`, rounded up to a whole unit; both are not negative.
   static std::optional<Decimal64> charged_on(const Decimal64& value, const Decimal64& rate) {
+    if (rate.coefficient() == 0) {
+      return Decimal64(0, 0);
+    }
     const auto exact = decimal_multiply(value, rate);
     if (!exact) {
       return std::nullopt;
     }
-    const auto whole = decimal_divide(*exact, Decimal64::parse("1"), 0);
-    if (!whole) {
+    // Rounded up on the coefficient: `coefficient / 10^scale`, plus one for any remainder. A scale of 19 or more
+    // has no `int64` power of ten, and gives no estimate.
+    const auto scale = exact->scale();
+    if (scale > 18) {
       return std::nullopt;
     }
-    return decimal_less(*whole, *exact) ? decimal_add(*whole, Decimal64::parse("1")) : whole;
+    std::int64_t unit = 1;
+    for (std::uint8_t step = 0; step < scale; ++step) {
+      unit *= 10;
+    }
+    const auto coefficient = exact->coefficient();
+    return Decimal64(coefficient / unit + (coefficient % unit != 0 ? 1 : 0), 0);
   }
 };
 
@@ -1384,7 +1393,7 @@ private:
   std::optional<GuardDecision> refuse_run_sell(
     const PlannedOrder& order, const Portfolio<Broker>& portfolio, const GuardInputs& inputs
   ) const {
-    const auto zero = Decimal64::parse("0");
+    const auto zero = Decimal64(0, 0);
     if (!decimal_less(zero, order.quantity_)) {
       return refusal(order, GuardReason::VALUE_NOT_KNOWN);
     }
@@ -1436,7 +1445,7 @@ private:
     const PlannedOrder& order, const Portfolio<Broker>& portfolio, const GuardInputs& inputs,
     const std::optional<Decimal64>& value
   ) const {
-    const auto zero = Decimal64::parse("0");
+    const auto zero = Decimal64(0, 0);
     if (!decimal_less(zero, order.quantity_)) {
       return refusal(order, GuardReason::VALUE_NOT_KNOWN);
     }
