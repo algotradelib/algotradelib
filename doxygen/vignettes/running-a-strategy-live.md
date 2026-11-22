@@ -1126,7 +1126,8 @@ const auto recovery = runner::recover_runner(live_runner, journal);
 ```
 
 - **A new run is the default**, with `run_budget_` and no shares, labelled by the library (`run-...`); a journal with no run, the first start or a lost journal, opens one at once.
-  If the journal holds an earlier run, the old run closes first: each of its orders a listing shows is cancelled (or waited for, with `RunOpening::wait_for_open_orders_`), each is accounted for and booked to the old run as usual, and only then is the new run's opening written.
+  If the journal holds an earlier run, the old run closes first: each of its orders a listing shows is cancelled (or waited for, with `RunOpening::wait_for_open_orders_`), each is accounted for and booked to the old run as usual (one you release waits for `Runner::book_run_fill`), and only then is the new run's opening written.
+  The cancellation goes out once per process, by the broker row's own reference, and not while a hold refuses withdrawals; one the broker refuses is not resent.
   Until then the new run spends nothing (`RecoveryReport::run_->closing_`); the old run's remaining shares are the account's, and orders you placed by hand do not hold it back.
 - **Resume only when stated** (`RunOpening::resume_`): recovery resumes the journal's latest run at its own cash and shares, whatever `run_budget_` now says; a journal with no run halts (`LOCAL_FAILURE`, "no run to resume").
 - **Deposits and withdrawals, once each.** `RunOpening::transfers_` are applied to a resumed run in order, each recorded once under its id; one the run already holds is skipped, and one reused with another amount halts.
