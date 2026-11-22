@@ -4462,7 +4462,13 @@ private:
   // to wait for them.
   void cancel_closing_run_orders([[maybe_unused]] Report& report) {
     if constexpr (keeps_run_in_journal) {
-      if (!run_closing_ || run_opening_.value_or(RunOpening{}).wait_for_open_orders_) {
+      // Not while a withdrawal could not be sent (`send_cancel`'s gates): the one attempt is kept for a cancellation
+      // that reaches the broker, and is taken again once the hold lifts.
+      if (
+        !run_closing_ || run_opening_.value_or(RunOpening{}).wait_for_open_orders_ ||
+        guard_.halted(strategy::HaltReason::LOCAL_FAILURE) || run_writes_closed() ||
+        guard_.blocking_reason_for(strategy::InstructionClass::WITHDRAWAL)
+      ) {
         return;
       }
       // Collected first: a cancellation's outcome may change what is owed. The broker row's own reference, whole:
