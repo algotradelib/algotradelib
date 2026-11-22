@@ -71,6 +71,27 @@ struct RunOpening {
   std::vector<RunTransfer> transfers_;
 };
 
+/** @brief Why recovery opened no run (`RunRecoverySummary::refusal_`). */
+enum class RunRefusal {
+  /** @brief None: the run opened, or a new run waits for the old run to close. */
+  NONE,
+  /**
+   * @brief A resume found an intact journal with no run. Not damage, and no halt: the run's buys and sells are
+   *   refused, and withdrawals go as without a budget.
+   */
+  NO_RUN,
+  /** @brief The journal was not read whole, or holds a damaged line. */
+  DAMAGED,
+  /** @brief The run's records do not add up (a repeated opening, a double booking, an invalid booking or transfer). */
+  LEDGER,
+  /** @brief The journal's run is in another currency than `strategy::RiskLimits::run_budget_`. */
+  CURRENCY,
+  /** @brief A stated transfer was refused (an id reused with another amount, a withdrawal past free cash, ...). */
+  TRANSFER,
+  /** @brief A line of the opening could not be written. */
+  WRITE,
+};
+
 /** @brief How recovery opened a budgeted runner's run, or why it did not (`RecoveryReport::run_`). */
 struct RunRecoverySummary {
   /** @brief Whether the run is open. */
@@ -91,9 +112,11 @@ struct RunRecoverySummary {
   /** @brief Whether `strategy::RiskLimits::run_budget_` was used: only a new run opens with it. */
   bool budget_used_{false};
   /**
-   * @brief Why the run did not open; empty when it did. The runner is then halted (`LOCAL_FAILURE`), except for a
-   *   resume on an intact journal with no run (`RunOpening::resume_`).
+   * @brief Why the run did not open, by kind; `RunRefusal::NONE` when it did. Every kind but `NO_RUN` halts the
+   *   runner (`LOCAL_FAILURE`) and stops the journal's writes.
    */
+  RunRefusal refusal_{RunRefusal::NONE};
+  /** @brief Why the run did not open, for the operator; empty when it did. */
   std::string refused_;
 };
 

@@ -4304,13 +4304,14 @@ private:
   }
 
   // Records why the run did not open, and halts: the run's buys and sells stay refused.
-  void refuse_run(RunRecoverySummary& summary, const std::string& cause, const char* state) {
+  void refuse_run(RunRecoverySummary& summary, RunRefusal refusal, const std::string& cause, const char* state) {
     for (auto& entry : unconfirmed_) {
       entry.run_order_ = false;
     }
     run_.reset();
     run_closing_ = false;
     summary.closing_ = false;
+    summary.refusal_ = refusal;
     summary.refused_ = cause + ": " + state;
     run_recovery_ = summary;
     halt_locally("the run budget's run did not open: " + summary.refused_);
@@ -4337,14 +4338,14 @@ private:
       // **Nothing is folded, opened or written from a journal not read whole**: a line it could not read may be
       // the run's opening, a deposit or a booking, and opening again would spend a budget twice.
       if (!replay.intact()) {
-        return refuse_run(summary, "the order journal was not read whole", reconcile);
+        return refuse_run(summary, RunRefusal::DAMAGED, "the order journal was not read whole", reconcile);
       }
       for (const auto& entry : replay.entries_) {
         if (
           (entry.requires_operator_ && !journal_outcome_requires_operator(entry.outcome_)) ||
           (entry.action_ != JournalAction::LEDGER && entry.instrument_.symbol_.empty())
         ) {
-          return refuse_run(summary, "the order journal holds a damaged line", reconcile);
+          return refuse_run(summary, RunRefusal::DAMAGED, "the order journal holds a damaged line", reconcile);
         }
         if (entry.id_.compare(0, 4, "run-") == 0) {
           run_ids_.insert(entry.id_);
@@ -4352,7 +4353,7 @@ private:
       }
       auto folded = RunLedger::fold(replay);
       if (!folded.failure_.empty()) {
-        return refuse_run(summary, folded.failure_, reconcile);
+        return refuse_run(summary, RunRefusal::LEDGER, folded.failure_, reconcile);
       }
       if (!folded.run_) {
         if (opening.resume_) {
@@ -4360,6 +4361,7 @@ private:
           // figures stay absent and its buys and sells are refused; the journal's own lines (a withdrawal, an
           // accounting of an order of no run) write as without a budget. No halt.
           run_absent_ = true;
+          summary.refusal_ = RunRefusal::NO_RUN;
           summary.refused_ = "no run to resume in this journal: start without resume to open a new run";
           run_recovery_ = summary;
           return;
@@ -4384,7 +4386,8 @@ private:
       const auto& budget = *guard_.limits().run_budget_;
       if (!(run.currency() == budget.currency_)) {
         return refuse_run(
-          summary, "the journal's run is in " + run.currency().str() + ", run_budget_ in " + budget.currency_.str(),
+          summary, RunRefusal::CURRENCY,
+          "the journal's run is in " + run.currency().str() + ", run_budget_ in " + budget.currency_.str(),
           "state run_budget_ in the run's currency"
         );
       }
@@ -4398,7 +4401,8 @@ private:
             continue;
           }
           return refuse_run(
-            summary, "the transfer id " + transfer.id_ + " was applied with another amount", "state a new id"
+            summary, RunRefusal::TRANSFER, "the transfer id " + transfer.id_ + " was applied with another amount",
+            "state a new id"
           );
         }
         const auto free = reserved ? decimal_subtract(after.cash().amount_, *reserved) : std::nullopt;
@@ -4408,7 +4412,7 @@ private:
             decimal_less(*free, transfer.amount_.amount_))
         ) {
           return refuse_run(
-            summary,
+            summary, RunRefusal::TRANSFER,
             "the withdrawal " + transfer.id_ + " is above the run's cash " + after.cash().amount_.str() +
               " less its open buys, or the run is unsettled",
             "state less, or withdraw once the run is settled"
@@ -4416,7 +4420,7 @@ private:
         }
         if (!after.transfer(transfer)) {
           return refuse_run(
-            summary, "the transfer " + transfer.id_ + " is in another currency, or does not fit",
+            summary, RunRefusal::TRANSFER, "the transfer " + transfer.id_ + " is in another currency, or does not fit",
             "state it in the run's currency"
           );
         }
@@ -4430,7 +4434,9 @@ private:
         record->given_ = transfer.id_;
         auto line = ledger_line(std::move(record), "a transfer the operator stated");
         if (!run_record(line, /*opening=*/true)) {
-          return refuse_run(summary, "the order journal could not record the transfer " + transfer.id_, "restart");
+          return refuse_run(
+            summary, RunRefusal::WRITE, "the order journal could not record the transfer " + transfer.id_, "restart"
+          );
         }
         ++summary.transfers_applied_;
       }
@@ -4447,7 +4453,7 @@ private:
     record->amount_ = *guard_.limits().run_budget_;
     auto line = ledger_line(std::move(record), "a new run opens with run_budget_");
     if (!run_record(line, /*opening=*/true)) {
-      return refuse_run(summary, "the order journal could not record the run's opening", "restart");
+      return refuse_run(summary, RunRefusal::WRITE, "the order journal could not record the run's opening", "restart");
     }
     run_.emplace(RunLedger(line.id_, *guard_.limits().run_budget_));
     run_closing_ = false;
