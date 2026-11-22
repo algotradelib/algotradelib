@@ -2,6 +2,7 @@
 # to GHCR as an OCI artifact, not a container image, so any runner can pull it:
 #
 #   ghcr.io/algotradelib/algotradelib:main-linux-x64     ubuntu-latest, GCC
+#   ghcr.io/algotradelib/algotradelib:main-linux-arm64   ubuntu:26.04 on ubuntu-24.04-arm, GCC
 #   ghcr.io/algotradelib/algotradelib:main-macos-arm64   macos-latest, Apple Clang
 #   ghcr.io/algotradelib/algotradelib:main-windows-x64   windows-latest, MSVC (Release and Debug)
 #
@@ -17,7 +18,7 @@
 # The annotation org.opencontainers.image.revision names the library commit.
 # Before the first release only the latest build is kept: each publish deletes the untagged builds it replaced, so a
 # digest whose tag has moved lasts only until the next publish; a fixed build waits for a release.
-# The three tags are pushed one by one, so after a failed push they can name different commits.
+# The four tags are pushed one by one, so after a failed push they can name different commits.
 
 name: package
 
@@ -57,11 +58,16 @@ jobs:
       matrix:
         include:
           - {os: ubuntu-latest, platform: linux-x64, configs: 'Release'}
+          # GitHub has no 26.04 arm runner, so the build runs in ubuntu:26.04: the GCC and libstdc++ of ubuntu-latest, which the bundled Boost must match.
+          - {os: ubuntu-24.04-arm, platform: linux-arm64, configs: 'Release', container: 'ubuntu:26.04'}
           - {os: macos-latest, platform: macos-arm64, configs: 'Release'}
           # A /MDd (Debug) consumer cannot link a /MD (Release) Boost, so Windows carries both.
           - {os: windows-latest, platform: windows-x64, configs: 'Release Debug'}
 
     name: build (${{ matrix.platform }})
+
+    # Empty, so no container, for every entry without one.
+    container: ${{ matrix.container }}
 
     # No concurrency group: cancellation goes by arrival, not by commit, so a rerun of an older commit could
     # cancel the builds of main's head, which would then never publish.
@@ -75,6 +81,14 @@ jobs:
       CONFIGS: ${{ matrix.configs }}
 
     steps:
+      # The container has none of the runner's tools.
+      # git comes first, so the checkout clones instead of downloading an archive.
+      - name: Toolchain (container)
+        if: matrix.container
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential cmake git curl ca-certificates libssl-dev
+
       - uses: actions/checkout@v7
 
       - name: Pins match cmake/deps.cmake
@@ -86,7 +100,7 @@ jobs:
           done
 
       - name: OpenSSL (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && !matrix.container
         run: sudo apt-get update && sudo apt-get install -y libssl-dev
 
       - name: OpenSSL (macOS)
@@ -218,11 +232,11 @@ jobs:
             echo "::notice::$GITHUB_SHA is not main's head ($head), whose own run publishes; nothing pushed."
             exit 0
           fi
-          for platform in linux-x64 macos-arm64 windows-x64; do
+          for platform in linux-x64 linux-arm64 macos-arm64 windows-x64; do
             [ -f "algotradelib-$platform.tar.gz" ] || { echo "::error::algotradelib-$platform.tar.gz is missing"; exit 1; }
           done
           printf '%s' "$TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          for platform in linux-x64 macos-arm64 windows-x64; do
+          for platform in linux-x64 linux-arm64 macos-arm64 windows-x64; do
             oras push "$PACKAGE:main-$platform" \
               --artifact-type application/vnd.algotradelib.package.v1 \
               --annotation "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
@@ -231,8 +245,8 @@ jobs:
           done
           echo "pushed=true" >> "$GITHUB_OUTPUT"
 
-      # Each push above leaves the build it replaced as an untagged version; this deletes them, so only the three
-      # tags remain. It runs only after all three pushes succeeded, inside the publish queue, so no other publish of
+      # Each push above leaves the build it replaced as an untagged version; this deletes them, so only the four
+      # tags remain. It runs only after all four pushes succeeded, inside the publish queue, so no other publish of
       # this workflow interleaves. Untagged is safe to delete here because every version is a standalone manifest
       # (oras push: no index, no subject), so no tagged version refers to one; a publisher that adds indexes or
       # referrers must not reuse this as is. Best effort: a refused list or delete warns, and the publish stands.
