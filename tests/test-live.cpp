@@ -6165,9 +6165,10 @@ std::unique_ptr<SerialRig> opened_run() {
 } // namespace
 
 TEST_CASE("a run opens new and books its orders and resumes and applies a deposit once", "[serialized][run-budget]") {
-  // A resume on a journal with no run halts, writing nothing.
+  // A resume on an intact journal with no run opens nothing and writes nothing, without a halt.
   SerialRig none({}, true, budgeted(), resume());
-  CHECK(none.runner_instance.local_failure().has_value());
+  CHECK_FALSE(none.runner_instance.local_failure().has_value());
+  CHECK_FALSE(none.runner_instance.run_recovery()->refused_.empty());
   CHECK(none.journal.attempts_ == 0);
 
   // A new run is the default, and opens at once on a journal with no run.
@@ -6311,6 +6312,29 @@ TEST_CASE("a run opens new and books its orders and resumes and applies a deposi
         runner::RunRecordKind::OPEN, runner::RunRecordKind::FILL, runner::RunRecordKind::OPEN
       }
     );
+  }
+
+  SECTION("a resume with no run refuses placements and still withdraws a journaled resting order") {
+    const std::vector<runner::JournalEntry> lines = {
+      serial_line("p-1", runner::JournalOutcome::PENDING), serial_line("p-1", runner::JournalOutcome::ACCEPTED, "X")
+    };
+    SerialRig resumed(lines, true, budgeted(), resume());
+    REQUIRE_FALSE(resumed.runner_instance.local_failure().has_value());
+    resumed.show(polled(1, "0", {listed_row("X", OrderSide::BUY, "10", "0")}));
+    resumed.runner_instance.context().cancel(OrderRef<FakeBroker>{"X", ""}, "operator");
+    resumed.bar(2, {});
+    REQUIRE(resumed.session.canceled_refs().size() == 1);
+    CHECK(resumed.session.canceled_refs().front().primary_ == "X");
+    auto other = samsung_reference();
+    other.id_ = hynix();
+    resumed.runner_instance.context().set_instrument(other);
+    const auto limit = strategy::Price::checked(Decimal64::parse("70000"), krx::equity_price_rule());
+    const auto one = strategy::SizeSpec::quantity(Decimal64::parse("1"));
+    const auto report = resumed.bar(3, {strategy::OrderIntent::limit(hynix(), OrderSide::BUY, one, *limit)});
+    CHECK(resumed.session.placed().empty());
+    REQUIRE(report.refused_.size() == 1);
+    CHECK(report.refused_.front().reason_ == strategy::GuardReason::RUN_LEDGER_UNSETTLED);
+    CHECK(resumed.session.canceled_refs().size() == 1);
   }
 
   SECTION("an order of unknown outcome refuses the next buy in its pass") {
