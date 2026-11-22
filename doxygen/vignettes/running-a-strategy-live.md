@@ -1119,17 +1119,16 @@ Its run opens in `runner::recover_runner`, never before, as `Runner::set_run_ope
 
 ```cpp
 runner::RunOpening opening;
-opening.fresh_ = "2026-11-23-a"; // the first run on this account; leave it out to resume
+opening.resume_ = true; // leave it out (the default) for a new run
 live_runner.set_run_opening(opening); // before recovery
 const auto recovery = runner::recover_runner(live_runner, journal);
-// recovery.run_->waiting_: it opens on the next working-order listing that shows no open order
+// recovery.run_: opened, resumed, or closing_ (the old run's orders are still owed)
 ```
 
-- **A run opens only when stated fresh**, the first one on an account included, since an empty journal cannot tell a first start from a lost one.
-  Fresh is refused while the journal restores an owed order, and opens only on the first working-order listing received after recovery: any order the broker lists then refuses it for the process's life; none opens it with the full budget and no shares.
-  "No open order" is what the adapter lists: Toss omits some order types placed outside the API, and Alpaca lists US equity rows.
-  A restart with the same id resumes the run it opened; an id an earlier run used halts.
-- **Resume is the default.** Recovery resumes the journal's latest run at its own cash and shares, whatever `run_budget_` now says; a journal with no run halts (`LOCAL_FAILURE`).
+- **A new run is the default**, with `run_budget_` and no shares, labelled by the library (`run-...`); a journal with no run, the first start or a lost journal, opens one at once.
+  If the journal holds an earlier run, the old run closes first: each of its orders a listing shows is cancelled (or waited for, with `RunOpening::wait_for_open_orders_`), each is accounted for and booked to the old run as usual, and only then is the new run's opening written.
+  Until then the new run spends nothing (`RecoveryReport::run_->closing_`); the old run's remaining shares are the account's, and orders you placed by hand do not hold it back.
+- **Resume only when stated** (`RunOpening::resume_`): recovery resumes the journal's latest run at its own cash and shares, whatever `run_budget_` now says; a journal with no run halts (`LOCAL_FAILURE`, "no run to resume").
 - **Deposits and withdrawals, once each.** `RunOpening::transfers_` are applied to a resumed run in order, each recorded once under its id; one the run already holds is skipped, and one reused with another amount halts.
   The whole list is checked before anything is written: a withdrawal more than the cash less the open buys' reservations, or while the cash is below zero or the run is unsettled, halts and writes nothing.
 - **A fill is booked from the order's own history row**, once per order: the amount (`filled_amount_`, else the average price times the quantity) and the commission and tax the row states, each missing one estimated from `run_fees_` on the order's amount.
@@ -1137,8 +1136,8 @@ const auto recovery = runner::recover_runner(live_runner, journal);
 - **What only an operator can settle.** An order held for an operator, or released by one (`release_obligations`), refuses every buy of the run and sells of its instrument (`Runner::run_unsettled`); so does a placement whose request never reached the broker, which a serialized runner keeps owed until you release it.
   After reading the broker's history, `Runner::book_run_fill` books a released one (zero for one that never filled), written to the journal first.
 - **A failed journal write stops the run's writes.** The line may be on disk whole, in part or not at all, so the runner writes nothing more, sends no cancellation and refuses the run's orders until a new process recovers what persisted (`Runner::run_writes_closed`); `resume_after_local_failure` does not lift it.
-- **A damaged journal stops the run.** A line recovery cannot read, a torn last line, or a line recovered from damage opens no run, on every start, and nothing is written to it; reconcile the file, or state fresh on a new one.
-- **Many processes, one run.** Every process on the account with the same budget and fees resumes the same run, one at a time (the journal's lock); a runner without a budget that accounts for a run's order leaves it unbooked.
+- **A damaged journal stops the run.** A line recovery cannot read, a torn last line, or a line recovered from damage opens no run, on every start, and nothing is written to it; reconcile the file, or start on a new one.
+- **Many processes, one run.** Every process on the account that states `resume_`, with the same budget and fees, resumes the same run, one at a time (the journal's lock); one started without it closes that run and opens a new one; a runner without a budget that accounts for a run's order leaves it unbooked.
 
 **Beside the broker's buying power.**
 The budget does not turn on `enforce_buying_power_`; the fee estimate lowers only the run's room, and the broker's reading keeps its meaning.
