@@ -6338,6 +6338,27 @@ TEST_CASE("a run opens new and books its orders and resumes and applies a deposi
     CHECK(resumed.session.canceled_refs().size() == 1);
   }
 
+  SECTION("a run's lines with no opening refuse the run and write nothing, even after a local resume") {
+    std::vector<runner::JournalEntry> lines;
+    for (
+      const auto& line :
+      {of_run(serial_line("p-1", runner::JournalOutcome::PENDING)),
+        of_run(serial_line("p-1", runner::JournalOutcome::ACCEPTED, "X"))}
+    ) {
+      lines.push_back(*runner::journal_entry_from_line(runner::journal_entry_to_line(line)));
+    }
+    SerialRig orphan(lines, true, budgeted(), resume());
+    CHECK(orphan.runner_instance.run_recovery()->refusal_ == runner::RunRefusal::LEDGER);
+    CHECK(orphan.runner_instance.run_writes_closed());
+    orphan.runner_instance.resume_after_local_failure();
+    orphan.show(polled(1, "0", {listed_row("X", OrderSide::BUY, "10", "0")}));
+    orphan.runner_instance.context().cancel(OrderRef<FakeBroker>{"X", ""}, "operator");
+    orphan.bar(2, {});
+    CHECK_FALSE(orphan.runner_instance.release_obligations(samsung(), "operator"));
+    CHECK(orphan.session.canceled_refs().empty());
+    CHECK(orphan.journal.attempts_ == lines.size());
+  }
+
   SECTION("an order of unknown outcome refuses the next buy in its pass") {
     auto unknown = opened_run();
     auto other = samsung_reference();
