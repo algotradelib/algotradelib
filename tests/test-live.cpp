@@ -6168,7 +6168,7 @@ TEST_CASE("a run opens new and books its orders and resumes and applies a deposi
   // A resume on an intact journal with no run opens nothing and writes nothing, without a halt.
   SerialRig none({}, true, budgeted(), resume());
   CHECK_FALSE(none.runner_instance.local_failure().has_value());
-  CHECK_FALSE(none.runner_instance.run_recovery()->refused_.empty());
+  CHECK(none.runner_instance.run_recovery()->refusal_ == runner::RunRefusal::NO_RUN);
   CHECK(none.journal.attempts_ == 0);
 
   // A new run is the default, and opens at once on a journal with no run.
@@ -6223,6 +6223,7 @@ TEST_CASE("a run opens new and books its orders and resumes and applies a deposi
     lines.push_back(lines.front());
     SerialRig repeated(lines, true, budgeted());
     CHECK(repeated.runner_instance.local_failure().has_value());
+    CHECK(repeated.runner_instance.run_recovery()->refusal_ == runner::RunRefusal::LEDGER);
     CHECK_FALSE(repeated.runner_instance.run_cash().has_value());
   }
 
@@ -6425,6 +6426,8 @@ TEST_CASE("a run opens new and books its orders and resumes and applies a deposi
     damaged.push_back(torn);
     SerialRig broken(damaged, true, budgeted());
     SerialRig overdrawn(lines, true, budgeted(), transfer("w-1", "2000000", true));
+    CHECK(broken.runner_instance.run_recovery()->refusal_ == runner::RunRefusal::DAMAGED);
+    CHECK(overdrawn.runner_instance.run_recovery()->refusal_ == runner::RunRefusal::TRANSFER);
     for (auto* refused : {&broken, &overdrawn}) {
       CHECK(refused->runner_instance.local_failure().has_value());
       const auto attempts = refused->journal.attempts_;
