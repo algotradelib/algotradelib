@@ -6256,16 +6256,61 @@ TEST_CASE("a run opens new and books its orders and resumes and applies a deposi
     SerialRig next(old->journal.records(), true, budgeted());
     REQUIRE(next.runner_instance.run_recovery()->closing_);
     CHECK_FALSE(next.runner_instance.run_cash().has_value());
-    next.show(polled(2, "0", {listed_row("R", OrderSide::BUY, "10", "0", OrderType::LIMIT)}));
+    // Listed with a second part to its reference, as KIS (branch) and Kiwoom (symbol) list theirs.
+    auto listed = listed_row("R", OrderSide::BUY, "10", "0", OrderType::LIMIT);
+    listed.ref_.secondary_ = "01234";
+    next.show(polled(2, "0", {listed}));
+    // An operator's hold sends nothing and keeps the attempt; once it lifts, the cancellation goes out once.
+    next.runner_instance.guard().halt();
     next.bar(3, {target_of("10")});
+    CHECK(next.session.canceled_refs().empty());
+    next.runner_instance.guard().resume();
+    next.bar(4, {target_of("10")});
+    next.bar(5, {});
     CHECK(next.session.placed().empty());
-    REQUIRE(next.session.canceled().size() == 1);
-    next.show(polled(4, "0", {}));
+    REQUIRE(next.session.canceled_refs().size() == 1);
+    CHECK(next.session.canceled_refs().front() == listed.ref_);
+    next.show(polled(6, "0", {}));
     next.runner_instance.confirm_from_history({dated_row("R", sent, "0")});
     next.runner_instance.refresh_unconfirmed();
     CHECK(next.runner_instance.run_recovery()->opened_);
     CHECK(ledger_lines(next.journal) == 2);
     CHECK(cash_of(next) == "1000000");
+  }
+
+  SECTION("a released old-run order waits for its booking before the new run opens, across a restart") {
+    auto old = opened_run();
+    old->session.order_ids_ = {"H"};
+    old->bar(1, {limit_target("10", "70000")});
+    old->show(polled(2, "15", {}));
+    old->runner_instance.refresh_unconfirmed();
+    REQUIRE(old->owed() == runner::ObligationState::OPERATOR);
+    SerialRig next(old->journal.records(), true, budgeted());
+    REQUIRE(next.runner_instance.run_recovery()->closing_);
+    CHECK(next.runner_instance.release_obligations(samsung(), "read the broker's history"));
+    CHECK_FALSE(next.runner_instance.run_recovery()->opened_);
+    // A restart between the release and the booking still closes the old run.
+    SerialRig again(next.journal.records(), true, budgeted());
+    REQUIRE(again.runner_instance.run_recovery()->closing_);
+    REQUIRE(again.runner_instance.run_unsettled().size() == 1);
+    const auto id = again.runner_instance.run_unsettled().front().id_;
+    const auto amount = Money{Decimal64::parse("700000"), Currency::krw()};
+    CHECK(again.runner_instance.book_run_fill(id, Decimal64::parse("10"), amount, Decimal64::parse("700"), "its row"));
+    REQUIRE(again.runner_instance.run_recovery()->opened_);
+    CHECK(cash_of(again) == "1000000");
+    // Exactly one booking of the old order, written before the new run's opening.
+    std::vector<runner::RunRecordKind> kinds;
+    for (const auto& entry : again.journal.records()) {
+      if (entry.action_ == runner::JournalAction::LEDGER) {
+        kinds.push_back(*entry.run_->kind_);
+      }
+    }
+    CHECK(
+      kinds ==
+      std::vector<runner::RunRecordKind>{
+        runner::RunRecordKind::OPEN, runner::RunRecordKind::FILL, runner::RunRecordKind::OPEN
+      }
+    );
   }
 
   SECTION("an order of unknown outcome refuses the next buy in its pass") {
