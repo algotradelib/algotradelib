@@ -4465,16 +4465,19 @@ private:
       if (!run_closing_ || run_opening_.value_or(RunOpening{}).wait_for_open_orders_) {
         return;
       }
-      // Collected first: a cancellation's outcome may change what is owed.
+      // Collected first: a cancellation's outcome may change what is owed. The broker row's own reference, whole:
+      // a restored order knows only its number, and a broker may need more to cancel it (KIS's branch, Kiwoom's
+      // symbol); the journal id only keeps each to one attempt.
       std::vector<OrderRef<Tag>> refs;
       for (const auto& entry : unconfirmed_) {
-        if (!entry.run_order_ || !entry.journal_ || broker_row_for(context_.portfolio(), entry) == nullptr) {
+        const auto* row = entry.run_order_ && entry.journal_ ? broker_row_for(context_.portfolio(), entry) : nullptr;
+        if (row == nullptr) {
           continue;
         }
         const auto& id = entry.journal_->id_;
         if (std::find(run_cancels_sent_.begin(), run_cancels_sent_.end(), id) == run_cancels_sent_.end()) {
           run_cancels_sent_.push_back(id);
-          refs.push_back(entry.ref_);
+          refs.push_back(row->ref_);
         }
       }
       for (const auto& ref : refs) {
