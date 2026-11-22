@@ -1510,7 +1510,6 @@ TEST_CASE(
   open.run_ = "run-1-1";
   open.kind_ = runner::RunRecordKind::OPEN;
   open.amount_ = Money{Decimal64::parse("5000"), Currency::usd()};
-  open.given_ = "2026-11-23";
   opening.run_ = std::make_shared<const runner::RunRecord>(open);
   const auto opening_line = runner::journal_entry_to_line(opening);
   CHECK(opening_line.find("symbol") == std::string::npos);
@@ -1521,7 +1520,7 @@ TEST_CASE(
   CHECK(read_open->instrument_.symbol_.empty());
   REQUIRE(read_open->run_ != nullptr);
   CHECK(read_open->run_->kind_ == runner::RunRecordKind::OPEN);
-  CHECK(read_open->run_->given_ == "2026-11-23");
+  CHECK(read_open->run_->given_.empty());
   CHECK(*read_open->run_->amount_ == open.amount_);
   auto filling = opening;
   filling.id_ = "run-1-2";
@@ -1555,6 +1554,8 @@ TEST_CASE(
     edited(booked_line, R"("filled":"10")", R"("filled":"-10")"),
     edited(opening_line, R"("at":)", R"("symbol":"005930","at":)"),
     edited(opening_line, R"("ledger":"open")", R"("ledger":"opened")"),
+    // An opening names no operator's id: the library labels runs itself.
+    edited(opening_line, R"("ledger":"open")", R"("ledger":"open","given":"x")"),
     // Read although no run key is there: a ledger action, or a `recorded` outcome on an order's line.
     edited(runner::journal_entry_to_line(plain), R"("action":"place")", R"("action":"ledger")"),
     edited(runner::journal_entry_to_line(plain), R"("outcome":"confirmed")", R"("outcome":"recorded")"),

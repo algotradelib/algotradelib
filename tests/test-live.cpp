@@ -6110,14 +6110,14 @@ OrderSnapshot filled_row(const char* id, OrderSide side, std::chrono::system_clo
   return row;
 }
 
-runner::RunOpening fresh(const char* id) {
+runner::RunOpening resume() {
   runner::RunOpening opening;
-  opening.fresh_ = id;
+  opening.resume_ = true;
   return opening;
 }
 
 runner::RunOpening transfer(const char* id, const char* amount, bool withdrawal = false) {
-  runner::RunOpening opening;
+  auto opening = resume();
   opening.transfers_.push_back(runner::RunTransfer{id, Money{Decimal64::parse(amount), Currency::krw()}, withdrawal});
   return opening;
 }
@@ -6140,7 +6140,6 @@ runner::JournalEntry run_opening() {
   record.run_ = "run-a";
   record.kind_ = runner::RunRecordKind::OPEN;
   record.amount_ = Money{Decimal64::parse("1000000"), Currency::krw()};
-  record.given_ = "f-0";
   line.run_ = std::make_shared<const runner::RunRecord>(record);
   return line;
 }
@@ -6158,29 +6157,24 @@ std::string cash_of(const SerialRig& rig) {
   return cash ? cash->amount_.str() : std::string("none");
 }
 
-/** A rig whose fresh run opened on an empty listing. */
+/** A rig whose new run opened on an empty journal. */
 std::unique_ptr<SerialRig> opened_run() {
-  auto rig = std::make_unique<SerialRig>(std::vector<runner::JournalEntry>{}, true, budgeted(), fresh("f-1"));
-  rig->runner_instance.refresh_unconfirmed();
-  return rig;
+  return std::make_unique<SerialRig>(std::vector<runner::JournalEntry>{}, true, budgeted());
 }
 
 } // namespace
 
-TEST_CASE("a run opens fresh and books its orders and resumes and applies a deposit once", "[serialized][run-budget]") {
+TEST_CASE("a run opens new and books its orders and resumes and applies a deposit once", "[serialized][run-budget]") {
   // A resume on a journal with no run halts, writing nothing.
-  SerialRig none({}, true, budgeted());
+  SerialRig none({}, true, budgeted(), resume());
   CHECK(none.runner_instance.local_failure().has_value());
   CHECK(none.journal.attempts_ == 0);
 
-  // Fresh waits for a listing received after recovery, and opens on one that shows no open order.
-  SerialRig rig({}, true, budgeted(), fresh("f-1"));
+  // A new run is the default, and opens at once on a journal with no run.
+  SerialRig rig({}, true, budgeted());
   REQUIRE(rig.runner_instance.run_recovery().has_value());
-  CHECK(rig.runner_instance.run_recovery()->waiting_);
-  CHECK(rig.runner_instance.run_writes_closed());
-  CHECK(rig.journal.attempts_ == 0);
-  rig.runner_instance.refresh_unconfirmed();
   CHECK(rig.runner_instance.run_recovery()->opened_);
+  CHECK(rig.runner_instance.run_recovery()->budget_used_);
   CHECK(ledger_lines(rig.journal) == 1);
   CHECK(cash_of(rig) == "1000000");
 
@@ -6249,22 +6243,29 @@ TEST_CASE("a run opens fresh and books its orders and resumes and applies a depo
     CHECK_FALSE(held->runner_instance.book_run_fill(id, ten, amount, Decimal64::parse("700"), "again"));
     CHECK(held->runner_instance.run_unsettled().empty());
     CHECK(cash_of(*held) == "299300");
-    SerialRig restarted(held->journal.records(), true, budgeted());
+    SerialRig restarted(held->journal.records(), true, budgeted(), resume());
     CHECK(restarted.runner_instance.run_unsettled().empty());
     CHECK(cash_of(restarted) == "299300");
   }
 
-  SECTION("a listing with an open order refuses the fresh run for the process's life") {
-    SerialRig waiting({}, true, budgeted(), fresh("f-2"));
-    waiting.show(polled(1, "0", {listed_row("X", OrderSide::BUY, "10", "0", OrderType::LIMIT)}));
-    waiting.runner_instance.refresh_unconfirmed();
-    CHECK(waiting.runner_instance.local_failure().has_value());
-    CHECK_FALSE(waiting.runner_instance.run_recovery()->refused_.empty());
-    waiting.runner_instance.resume_after_local_failure();
-    waiting.show(polled(2, "0", {}));
-    waiting.runner_instance.refresh_unconfirmed();
-    CHECK_FALSE(waiting.runner_instance.run_cash().has_value());
-    CHECK(waiting.journal.attempts_ == 0);
+  SECTION("a new run cancels the old run's resting order and books it to the old run before it opens") {
+    auto old = opened_run();
+    old->session.order_ids_ = {"R"};
+    old->bar(1, {limit_target("10", "70000")});
+    const auto sent = old->runner_instance.context().now();
+    SerialRig next(old->journal.records(), true, budgeted());
+    REQUIRE(next.runner_instance.run_recovery()->closing_);
+    CHECK_FALSE(next.runner_instance.run_cash().has_value());
+    next.show(polled(2, "0", {listed_row("R", OrderSide::BUY, "10", "0", OrderType::LIMIT)}));
+    next.bar(3, {target_of("10")});
+    CHECK(next.session.placed().empty());
+    REQUIRE(next.session.canceled().size() == 1);
+    next.show(polled(4, "0", {}));
+    next.runner_instance.confirm_from_history({dated_row("R", sent, "0")});
+    next.runner_instance.refresh_unconfirmed();
+    CHECK(next.runner_instance.run_recovery()->opened_);
+    CHECK(ledger_lines(next.journal) == 2);
+    CHECK(cash_of(next) == "1000000");
   }
 
   SECTION("an order of unknown outcome refuses the next buy in its pass") {
@@ -6314,7 +6315,7 @@ TEST_CASE("a run opens fresh and books its orders and resumes and applies a depo
     run->runner_instance.confirm_from_history({filled_row("B", OrderSide::BUY, at, "70000")});
     run->runner_instance.refresh_unconfirmed();
     CHECK(run->journal.attempts_ == attempts);
-    SerialRig next(run->journal.records(), true, budgeted());
+    SerialRig next(run->journal.records(), true, budgeted(), resume());
     CHECK(cash_of(next) == "299300");
     CHECK(next.runner_instance.run_holding(samsung())->str() == "10");
     CHECK(next.owed() == runner::ObligationState::NONE);
@@ -6324,7 +6325,7 @@ TEST_CASE("a run opens fresh and books its orders and resumes and applies a depo
     auto other = of_run(serial_line("p-2", runner::JournalOutcome::PENDING));
     other.instrument_ = hynix();
     SerialRig swept(
-      {run_opening(), of_run(serial_line("p-1", runner::JournalOutcome::PENDING)), other}, true, budgeted()
+      {run_opening(), of_run(serial_line("p-1", runner::JournalOutcome::PENDING)), other}, true, budgeted(), resume()
     );
     REQUIRE(swept.runner_instance.run_recovery()->opened_);
     swept.session.set_working_orders(WorkingOrders<FakeBroker>{});
