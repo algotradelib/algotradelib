@@ -1278,7 +1278,7 @@ public:
    *
    * With `RiskLimits::run_budget_`, it then opens the run from the journal as `set_run_opening` says: only from
    * an intact journal, a new one once the old run's orders are accounted for, and it halts the runner (`LOCAL_FAILURE`)
-   * whenever it does not open one (`run_recovery`).
+   * whenever it does not open one, except a resume on a journal with no run (`RunRefusal::NO_RUN`; `run_recovery`).
    *
    * @param replay The journal's contents.
    */
@@ -4309,6 +4309,7 @@ private:
     }
     run_.reset();
     run_closing_ = false;
+    run_absent_ = false;
     summary.closing_ = false;
     summary.refusal_ = refusal;
     summary.refused_ = cause + ": " + state;
@@ -4327,8 +4328,8 @@ private:
 
   // Opens a budgeted serialized runner's run from its journal, as `set_run_opening` said; see
   // `restore_obligations`. Resumes the journal's run when stated; otherwise opens a new one, closing the old run
-  // first (`open_new_run_once_closed`). Every line is written before the run changes in memory, and whenever it
-  // does not open a run it halts the runner, which then refuses the run's buys and sells.
+  // first (`open_new_run_once_closed`). Every line is written before the run changes in memory; whenever it does not
+  // open a run the run's buys and sells are refused, and it halts the runner except for `RunRefusal::NO_RUN`.
   void open_run_from([[maybe_unused]] const JournalReplay& replay) {
     if constexpr (keeps_run_in_journal) {
       RunRecoverySummary summary;
@@ -4355,6 +4356,12 @@ private:
         return refuse_run(summary, RunRefusal::LEDGER, folded.failure_, reconcile);
       }
       if (!folded.run_) {
+        // A run's lines with no opening: the opening was lost, not a journal without a run.
+        for (const auto& entry : replay.entries_) {
+          if (entry.run_) {
+            return refuse_run(summary, RunRefusal::LEDGER, "the run's lines have no opening", reconcile);
+          }
+        }
         if (opening.resume_) {
           // **Not damage**: nothing to spend or sell (figures absent), and the journal writes as without a budget.
           run_absent_ = true;
