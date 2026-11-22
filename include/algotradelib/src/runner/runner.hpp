@@ -848,7 +848,9 @@ public:
    * @brief Books, on an operator's word, what a placement of the run released without a booking filled.
    *
    * Read the broker's history for the fill first. The journal's `RunRecordKind::FILL` record is written before
-   * the ledger changes; if it cannot be written the run's writes stop (`run_writes_closed`).
+   * the ledger changes; if it cannot be written the run's writes stop (`run_writes_closed`). While a new run waits
+   * for the old run to close (`RunRecoverySummary::closing_`), it books the old run's order, and the new run opens
+   * once the old run is settled.
    *
    * @param placement_id The placement's journal id, as `run_unsettled` lists it released (`UNBOOKED`).
    * @param filled The quantity filled, from zero to the placement's quantity; for a sell, at most the run's shares.
@@ -879,7 +881,12 @@ public:
       record->filled_ = filled;
       record->fee_ = fee;
       auto line = ledger_line(std::move(record), "booked by an operator: " + reason);
-      return run_record(line) && run_->book_released(placement_id, filled, amount, fee);
+      if (!run_record(line) || !run_->book_released(placement_id, filled, amount, fee)) {
+        return false;
+      }
+      // The old run's last booking lets a new run waiting on it open.
+      open_new_run_once_closed();
+      return true;
     } else {
       return false;
     }
@@ -4442,11 +4449,14 @@ private:
     run_opened(summary);
   }
 
-  // While the old run closes: opens the new run once none of the old run's orders is owed, never while locally
-  // halted or after a failed write. Its remaining shares are the account's.
+  // While the old run closes: opens the new run once none of the old run's orders is owed and its ledger is
+  // settled (none held, or released and not yet booked by `book_run_fill`), never while locally halted or after a
+  // failed write. Its remaining shares are the account's.
   void open_new_run_once_closed() {
     if constexpr (keeps_run_in_journal) {
-      if (!run_closing_ || run_journal_latched_ || guard_.halted(strategy::HaltReason::LOCAL_FAILURE)) {
+      if (
+        !run_closing_ || run_journal_latched_ || guard_.halted(strategy::HaltReason::LOCAL_FAILURE) || !run_->settled()
+      ) {
         return;
       }
       for (const auto& entry : unconfirmed_) {
