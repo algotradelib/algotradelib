@@ -19,12 +19,12 @@ int main() {
   socket.open(boost::asio::ip::tcp::v4());
   socket.close();
 
-  // Eigen, the analytics backend.
-  algotradelib::math::Vector prices(3);
-  prices << 100.0, 110.0, 99.0;
-  const auto returns = algotradelib::analytics::returns(prices);
+  // Eigen, the analytics backend: mean 0.02 over a sample deviation of 0.01.
+  algotradelib::math::Vector returns(3);
+  returns << 0.01, 0.02, 0.03;
+  const auto sharpe = algotradelib::analytics::sharpe(returns);
 
-  const bool ok = value.at("ok").as_int64() == 1 && std::abs(returns[1] - 0.1) < 1e-12;
+  const bool ok = value.at("ok").as_int64() == 1 && std::abs(sharpe - 2.0) < 1e-12;
   std::cout << "algotradelib " << ATL_VERSION_STRING << (ok ? ": ok" : ": FAILED") << '\n';
   return ok ? 0 : 1;
 }

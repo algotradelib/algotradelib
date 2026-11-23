@@ -13,7 +13,7 @@ namespace analytics {
  * @file
  * @brief Re-exports `math::Scalar`, `math::missing` and `math::observed` into `analytics`.
  */
-// Kept apart from conversion.hpp so indicator headers do not include the trading types.
+// Kept apart from conversion.hpp so the metrics do not include the trading types.
 
 /** @brief The floating-point type analytics computes in; see `math::Scalar`. */
 using math::Scalar;

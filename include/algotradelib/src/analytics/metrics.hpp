@@ -32,10 +32,9 @@ struct Summary {
 /**
  * Summarizes `values`, masking absent entries once and reducing vectorized.
  *
- * Two passes, for the reason `rolling_stdev` takes two: the one-pass `E[x²] - E[x]²` form loses
- * almost all its significant digits when the mean is large relative to the dispersion. The second
- * pass is a single expression, because subtracting `mean * present_` leaves an absent row
- * contributing exactly zero.
+ * Two passes: the one-pass `E[x²] - E[x]²` form loses almost all its significant digits when the
+ * mean is large relative to the dispersion. The second pass is a single expression, because
+ * subtracting `mean * present_` leaves an absent row contributing exactly zero.
  */
 inline Summary summarize(math::SeriesView values) {
   const auto parts = math::observed_parts(values);

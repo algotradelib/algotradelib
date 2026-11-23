@@ -6,10 +6,10 @@
 //
 // It walks the whole path a strategy takes:
 //
-//   BarSeries -> SeriesFrame -> indicators -> a metric -> back to a Decimal64 price
+//   BarSeries -> SeriesFrame -> your own computation -> a metric -> back to a Decimal64 price
 //
-// and prints the warm-up region explicitly, because "the first N rows are blank and that
-// is deliberate" is the single most important thing to understand about these functions.
+// and prints the absent values explicitly, because "a missing value stays missing, and is
+// never a zero" is the single most important thing to understand about this layer.
 //
 // Run it as:
 //
@@ -20,6 +20,7 @@
 #include <algotradelib/krx>
 
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <iomanip>
 #include <iostream>
@@ -54,6 +55,59 @@ std::string cell(Scalar value) {
   std::ostringstream text;
   text << std::fixed << std::setprecision(2) << std::setw(7) << value;
   return text.str();
+}
+
+/**
+ * @brief Each row's simple return on the row before.
+ *
+ * Absent on row 0, on a row next to an absent price, and after a price not above zero (from a
+ * negative base the sign would reverse). The rows are not compressed around a gap first: a return
+ * across it would span two periods.
+ */
+math::Vector period_returns(math::SeriesView prices) {
+  math::Vector result = math::Vector::Constant(prices.size(), analytics::missing());
+  for (math::Index row = 1; row < prices.size(); ++row) {
+    if (observed(prices[row]) && observed(prices[row - 1]) && prices[row - 1] > 0) {
+      result[row] = prices[row] / prices[row - 1] - 1;
+    }
+  }
+  return result;
+}
+
+/** @brief The mean and the sample deviation of the observed values. */
+struct Moments {
+  /** @brief The mean, or absent with no observation. */
+  Scalar mean_{analytics::missing()};
+  /** @brief The sample deviation, or absent with fewer than two observations. */
+  Scalar deviation_{analytics::missing()};
+};
+
+/** @brief Computes `Moments` over `values`, skipping what is absent. */
+Moments moments(math::SeriesView values) {
+  Moments result;
+  Scalar sum = 0;
+  Scalar count = 0;
+  for (math::Index row = 0; row < values.size(); ++row) {
+    if (observed(values[row])) {
+      sum += values[row];
+      ++count;
+    }
+  }
+  if (count < 1) {
+    return result;
+  }
+  result.mean_ = sum / count;
+  if (count < 2) {
+    return result;
+  }
+  Scalar squares = 0;
+  for (math::Index row = 0; row < values.size(); ++row) {
+    if (observed(values[row])) {
+      squares += (values[row] - result.mean_) * (values[row] - result.mean_);
+    }
+  }
+  result.deviation_ = std::sqrt(squares / (count - 1));
+  return result;
 }
 
 /**
@@ -144,7 +198,7 @@ BarSeries fixture() {
     Bar bar;
     bar.timestamp_ = start + std::chrono::hours(24 * static_cast<int>(day));
     // The fourth day has no open, which is what a session with no trade at the auction
-    // looks like. It stays unobserved through the frame and every indicator masks it.
+    // looks like. It stays unobserved through the frame and every computation masks it.
     if (day != 3) {
       bar.open_ = Decimal64::parse(closes[day]);
     }
@@ -170,47 +224,37 @@ int main() {
   // contiguous, which is what `SeriesView` is for.
   const math::SeriesView close = frame.close();
   const math::SeriesView open = frame.open();
-  const math::Vector average = analytics::sma(close, 5);
-  const math::Vector smoothed = analytics::ema(close, analytics::alpha_from_span(5));
-  const math::Vector strength = analytics::rsi(close, 5);
-  const math::Vector score = analytics::zscore(close, 5);
-  const math::Vector spread = analytics::rolling_stdev(close, 5);
-  const math::Vector period_returns = analytics::returns(close);
+  const math::Vector returns = period_returns(close);
 
   std::cout << bars.instrument_.symbol_ << ", " << bars.bars_.size() << " daily bars, no network\n\n";
-  std::cout << "row   close     open     sma5     ema5     rsi5    zscore   stdev5   return\n";
+  std::cout << "row   close     open   return\n";
   for (math::Index row = 0; row < close.size(); ++row) {
     std::cout
-      << std::setw(3) << row << " " << cell(close[row]) << " " << cell(open[row]) << " " << cell(average[row]) << " "
-      << cell(smoothed[row]) << " " << cell(strength[row]) << " " << cell(score[row]) << " " << cell(spread[row]) << " "
-      << cell(period_returns[row] * 100.0) << "\n";
+      << std::setw(3) << row << " " << cell(close[row]) << " " << cell(open[row]) << " " << cell(returns[row] * 100.0)
+      << "\n";
   }
 
-  // Row 3 has no open. Notice it is a dash above rather than a zero, and that the
-  // indicators over the close column are unaffected by it.
-  std::cout
-    << "\nThe dashes are the point. A window reports nothing until it holds "
-    << "enough\nobservations, and row 3 has no open at all.\n";
+  // Row 3 has no open. Notice it is a dash above rather than a zero, and that the close
+  // column and its returns are unaffected by it.
+  std::cout << "\nThe dashes are the point. Row 0 has no return, and row 3 has no open at all.\n";
 
-  // A window as long as the series is the whole series. Row 0 has no return, so one fewer
-  // observation is demanded than there are rows.
-  const auto rows = static_cast<std::size_t>(close.size());
-  const auto last = close.size() - 1;
+  const auto daily = moments(returns);
   std::cout
     << "\nOver the whole series:\n"
-    << "  mean daily return     " << std::fixed << std::setprecision(4)
-    << analytics::rolling_mean(period_returns, rows, rows - 1)[last] * 100.0 << " %\n"
-    << "  daily volatility      " << analytics::rolling_stdev(period_returns, rows, rows - 1)[last] * 100.0 << " %\n"
-    << "  per-period Sharpe     " << analytics::sharpe(period_returns) << "\n"
-    << "  annualized Sharpe     " << analytics::annualize_ratio(analytics::sharpe(period_returns), 245.0) << "\n"
+    << "  mean daily return     " << std::fixed << std::setprecision(4) << daily.mean_ * 100.0 << " %\n"
+    << "  daily volatility      " << daily.deviation_ * 100.0 << " %\n"
+    << "  per-period Sharpe     " << analytics::sharpe(returns) << "\n"
+    << "  annualized Sharpe     " << analytics::annualize_ratio(analytics::sharpe(returns), 245.0) << "\n"
     << "  worst drawdown        " << analytics::max_drawdown(close).magnitude_ * 100.0 << " %\n";
 
   // The one sanctioned route back to something a broker will accept. Two deviations above the
-  // average is a computed scalar; an order needs an exact decimal on the instrument's own tick grid.
+  // average of the last five closes is a computed scalar; an order needs an exact decimal on the
+  // instrument's own tick grid.
+  const auto recent = moments(close.tail(5));
   const auto rule = algotradelib::krx::equity_price_rule();
-  const auto limit = analytics::round_scalar_to_tick(average[last] + 2.0 * spread[last], rule, OrderSide::SELL);
+  const auto limit = analytics::round_scalar_to_tick(recent.mean_ + 2.0 * recent.deviation_, rule, OrderSide::SELL);
   std::cout
-    << "\nA sell limit two deviations above the average, rounded onto the KRX tick grid: "
+    << "\nA sell limit two deviations above the last five closes' average, rounded onto the KRX tick grid: "
     << (limit ? limit->str() : std::string("refused")) << "\n";
 
   return 0;

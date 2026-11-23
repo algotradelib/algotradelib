@@ -451,7 +451,7 @@ TEST_CASE("a series buffer takes a bar the way a live loop receives one") {
 }
 
 // ---------------------------------------------------------------------------
-// Returns and trailing statistics
+// Series built from literals
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -468,138 +468,9 @@ math::Vector series(std::initializer_list<Scalar> values) {
 
 } // namespace
 
-TEST_CASE("a simple return refuses a negative prior price") {
-  // From a negative base the sign reverses: -10 to -20 would read as +100%.
-  const math::Vector prices = series({-10.0, -20.0, 5.0, 6.0});
-  const math::Vector result = analytics::returns(prices);
-
-  REQUIRE_FALSE(observed(result[1]));
-  REQUIRE_FALSE(observed(result[2]));
-  REQUIRE(result[3] == Catch::Approx(0.2));
-}
-
-TEST_CASE("trailing statistics report nothing until their window is full") {
-  const math::Vector values = series({1.0, 2.0, 3.0, 4.0, 5.0});
-
-  const math::Vector mean = analytics::rolling_mean(values, 3);
-  const math::Vector smallest = analytics::rolling_min(values, 3);
-  const math::Vector largest = analytics::rolling_max(values, 3);
-
-  // The warm-up region is asserted explicitly. An indicator that answers from a
-  // partially filled window is a lookahead bug that looks like a good backtest.
-  for (math::Index row = 0; row < 2; ++row) {
-    REQUIRE_FALSE(observed(mean[row]));
-    REQUIRE_FALSE(observed(smallest[row]));
-    REQUIRE_FALSE(observed(largest[row]));
-  }
-
-  REQUIRE(mean[2] == Catch::Approx(2.0));
-  REQUIRE(mean[4] == Catch::Approx(4.0));
-  REQUIRE(smallest[2] == Catch::Approx(1.0));
-  REQUIRE(smallest[4] == Catch::Approx(3.0));
-  REQUIRE(largest[2] == Catch::Approx(3.0));
-  REQUIRE(largest[4] == Catch::Approx(5.0));
-}
-
-TEST_CASE("an impossible window is refused rather than answered with nothing") {
-  const math::Vector values = series({1.0, 2.0, 3.0});
-
-  // Both of these would otherwise produce an all-unobserved column, which looks
-  // identical to a series that simply had no data.
-  REQUIRE_THROWS_AS(analytics::rolling_mean(values, 0), std::invalid_argument);
-  REQUIRE_THROWS_AS(analytics::rolling_mean(values, 3, 4), std::invalid_argument);
-}
-
-namespace {
-
-/** Whether `ema(view, smoothing)` is a well-formed call. */
-template <typename Smoothing, typename = void>
-struct ema_accepts : std::false_type {};
-template <typename Smoothing>
-struct ema_accepts<
-  Smoothing, std::void_t<decltype(analytics::ema(std::declval<math::SeriesView>(), std::declval<Smoothing>()))>
-> : std::true_type {};
-
-} // namespace
-
-// An integer where the smoothing factor goes is an old span. It must not compile as alpha = 12,
-// which would only be refused when the call first runs -- possibly inside a live loop.
-static_assert(ema_accepts<Scalar>::value, "ema takes a smoothing factor");
-static_assert(ema_accepts<float>::value, "a float is promoted, not ambiguous");
-static_assert(!ema_accepts<int>::value, "an int is a span: alpha_from_span");
-static_assert(!ema_accepts<std::size_t>::value, "a size_t is a span: alpha_from_span");
-
-TEST_CASE("an exponential average refuses a smoothing factor not above 0 or above 1") {
-  const math::Vector values = series({1.0, 2.0, 3.0});
-  const math::Vector empty = series({});
-  for (const Scalar alpha : {0.0, -0.5, 1.5, std::numeric_limits<Scalar>::quiet_NaN()}) {
-    REQUIRE_THROWS_AS(analytics::ema(values, alpha), std::invalid_argument);
-    // Before anything is read: an empty series refuses too.
-    REQUIRE_THROWS_AS(analytics::ema(empty, alpha), std::invalid_argument);
-  }
-}
-
-TEST_CASE("the exponential average keeps its arithmetic, digit for digit") {
-  // `level + alpha * (value - level)`, in that order. The algebraically equal
-  // `alpha * value + (1 - alpha) * level` rounds differently on values like these, and would move
-  // every EMA and crossover line in the last place.
-  const math::Vector values = series({54.689, 897.428});
-  REQUIRE(analytics::ema(values, analytics::alpha_from_span(3))[1] == 476.05850000000004);
-}
-
 // ---------------------------------------------------------------------------
 // Named indicators
 // ---------------------------------------------------------------------------
-
-TEST_CASE("the relative strength index matches Wilder's published series") {
-  // Wilder's own fixture, as reproduced in every reference table for the indicator. The
-  // point of testing against a published series rather than a second implementation of
-  // our own is that it catches a wrong *convention*, not just a wrong loop.
-  const math::Vector closes = series({
-    44.34,
-    44.09,
-    44.15,
-    43.61,
-    44.33,
-    44.83,
-    45.10,
-    45.42,
-    45.84,
-    46.08,
-    45.89,
-    46.03,
-    45.61,
-    46.28,
-    46.28,
-    46.00,
-    46.03,
-    46.41,
-    46.22,
-    45.64,
-  });
-  const math::Vector strength = analytics::rsi(closes, 14);
-
-  // Row 0 has no change, and the smoothing needs fourteen changes before it has a seed.
-  for (math::Index row = 0; row < 14; ++row) {
-    REQUIRE_FALSE(observed(strength[row]));
-  }
-  REQUIRE(strength[14] == Catch::Approx(70.46413502109705).epsilon(1e-10));
-  REQUIRE(strength[15] == Catch::Approx(66.24961855355505).epsilon(1e-10));
-  REQUIRE(strength[16] == Catch::Approx(66.48094183471265).epsilon(1e-10));
-  REQUIRE(strength[19] == Catch::Approx(57.91502067008556).epsilon(1e-10));
-}
-
-TEST_CASE("the relative strength index decides its degenerate cases instead of dividing") {
-  const math::Vector rising = series({1.0, 2.0, 3.0, 4.0});
-  REQUIRE(analytics::rsi(rising, 3)[3] == Catch::Approx(100.0));
-
-  const math::Vector falling = series({4.0, 3.0, 2.0, 1.0});
-  REQUIRE(analytics::rsi(falling, 3)[3] == Catch::Approx(0.0));
-
-  // Neither strength nor weakness. Any other answer here would read as a signal.
-  const math::Vector flat = series({2.0, 2.0, 2.0, 2.0});
-  REQUIRE(analytics::rsi(flat, 3)[3] == Catch::Approx(50.0));
-}
 
 // ---------------------------------------------------------------------------
 // Decompositions, used directly
@@ -662,13 +533,6 @@ TEST_CASE("a drawdown over nothing observable reports nothing rather than zero")
 // ---------------------------------------------------------------------------
 
 TEST_CASE("a statistic that cannot exist says so, distinctly from having no data") {
-  // A flat window: the data is there and the z-score does not exist for it.
-  const math::Vector flat = series({5.0, 5.0, 5.0, 5.0});
-  const math::Vector score = analytics::zscore(flat, 3);
-  REQUIRE_FALSE(observed(score[0]));
-  REQUIRE_FALSE(math::is_undefined(score[0])); // warm-up: simply absent
-  REQUIRE(math::is_undefined(score[2])); // computed, and undefined
-
   // Returns that never varied have no risk-adjusted return; too few returns have no answer yet.
   REQUIRE(math::is_undefined(analytics::sharpe(series({0.01, 0.01, 0.01}))));
   REQUIRE_FALSE(math::is_undefined(analytics::sharpe(series({0.01}))));
@@ -682,17 +546,16 @@ TEST_CASE("a statistic that cannot exist says so, distinctly from having no data
 
 TEST_CASE("equal values that are not binary fractions are still a constant window") {
   // The computed mean of {0.1, 0.1, 0.1} is an ulp away from 0.1, so a deviation about it is tiny but
-  // not zero. A test for zero alone read it as dispersion: a z-score near -0.8, a Sharpe near 1e15.
-  // (`rolling_stdev` reports that tiny deviation as it is; nothing divides by it there.)
+  // not zero. A test for zero alone read it as dispersion: a Sharpe near 1e15.
   const math::Vector tenth = series({0.1, 0.1, 0.1});
-  REQUIRE(analytics::rolling_mean(tenth, 3)[2] != 0.1); // the premise
-  CHECK(math::is_undefined(analytics::zscore(tenth, 3)[2]));
+  REQUIRE(tenth.sum() / 3.0 != 0.1); // the premise
   CHECK(math::is_undefined(analytics::sharpe(tenth)));
 
-  // A decimal price level, with a gap in the window: the gap's row must not count as a value.
+  // Equal values with a gap between them: the gap's row must not count as a value. It is zero-filled
+  // for the sums, so a check that read it would find a zero beside the 12.34s and call them dispersed.
   const math::Vector level = series({12.34, missing(), 12.34, 12.34});
-  REQUIRE(analytics::rolling_mean(level, 4, 2)[3] != 12.34); // the premise
-  CHECK(math::is_undefined(analytics::zscore(level, 4, 2)[3]));
+  REQUIRE(series({12.34, 0.0, 12.34, 12.34}).sum() / 3.0 != 12.34); // the premise: a nonzero deviation
+  CHECK(math::is_undefined(analytics::sharpe(level)));
 }
 
 TEST_CASE("a window of values one ulp apart keeps its dispersion") {
@@ -701,28 +564,7 @@ TEST_CASE("a window of values one ulp apart keeps its dispersion") {
   const Scalar one = 1.0;
   const Scalar next = std::nextafter(one, 2.0);
   const math::Vector close = series({one, next, one});
-  CHECK(analytics::rolling_stdev(close, 3)[2] > 0.0);
-  CHECK(observed(analytics::zscore(close, 3)[2]));
   CHECK(observed(analytics::sharpe(close)));
-}
-
-TEST_CASE("the window overloads say what the three-argument form spells out") {
-  const math::Vector values = series({1.0, missing(), 3.0, 4.0, 5.0});
-
-  // Two arguments demands every row of the window. There is no zero-means-all sentinel any more.
-  for (math::Index row = 0; row < values.size(); ++row) {
-    const Scalar strict = analytics::rolling_mean(values, 3)[row];
-    const Scalar spelt = analytics::rolling_mean(values, 3, 3)[row];
-    REQUIRE(observed(strict) == observed(spelt));
-    if (observed(strict)) {
-      REQUIRE(strict == spelt);
-    }
-  }
-
-  // And zero observations is now refused rather than meaning "all".
-  REQUIRE_THROWS_AS(analytics::rolling_mean(values, 3, 0), std::invalid_argument);
-  REQUIRE_THROWS_AS(analytics::rolling_stdev(values, 3, 0), std::invalid_argument);
-  REQUIRE_THROWS_AS(analytics::ema(values, 0.5, 0), std::invalid_argument);
 }
 
 // ---------------------------------------------------------------------------

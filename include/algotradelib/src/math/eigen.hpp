@@ -101,18 +101,6 @@ inline Observed observed_parts(SeriesView values) {
   return parts;
 }
 
-/**
- * @brief Replaces every unobserved entry of a series.
- *
- * @param values The series; any `NaN` counts as unobserved.
- * @param filler The value to put in place of each unobserved entry.
- * @return A copy of `values` with each `NaN` replaced by `filler` (so it has no `NaN` unless
- *   `filler` is one).
- */
-inline Vector observed_or(SeriesView values, Scalar filler) {
-  return (values.array() == values.array()).select(values, filler);
-}
-
 // The decompositions below have no caller in the library. They are commented out because
 // `thin_svd`, a non-template inline function, made every file that includes this header
 // instantiate Eigen's SVD (about two seconds of compile time each).

@@ -23,7 +23,6 @@ namespace analytics {
  *
  * `column()` returns the trailing values of one field, oldest first, as one contiguous view
  * of the buffer's own storage. Storage is allocated once at construction and never grows.
- * The trailing statistics themselves are the `rolling_*` functions in `rolling.hpp`.
  *
  * @note Not thread-safe: use one buffer from one strategy (one strand).
  */
