@@ -19,12 +19,11 @@ graph TD
 
   subgraph L["the library"]
     direction TB
-    V["<b>&lt;vanilla&gt;</b><br/>reference strategies"]
     ST["<b>&lt;strategy&gt;</b><br/>events, intents, portfolio,<br/>risk limits, reconciliation"]
     RU["<b>&lt;runner&gt;</b><br/>Runner, context, dispatch,<br/>PollingLoop, journal, stops"]
     BT["<b>&lt;backtest&gt;</b><br/>ReplayClock, fill and cost<br/>models, ledger, report"]
     LV["<b>&lt;live&gt;</b><br/>SessionExecutor,<br/>SessionSource, bind"]
-    AN["<b>&lt;analytics&gt;</b><br/>frames, indicators, metrics"]
+    AN["<b>&lt;analytics&gt;</b><br/>frames, conversions, metrics"]
     MA["<b>&lt;math&gt;</b><br/>Scalar, matrices"]
     BR["<b>&lt;broker&gt;</b><br/>BrokerTraits, BrokerCaps,<br/>BrokerSession"]
     CO["<b>&lt;core&gt;</b><br/>Decimal64, Money, InstrumentId,<br/>bars, calendar, Result, BrokerError"]
@@ -37,7 +36,6 @@ graph TD
   X(("KIS / Toss / Kiwoom / Alpaca<br/>HTTPS"))
 
   S --> ST
-  V --> ST
   ST --> CO
   RU --> ST
   BT --> RU
@@ -61,7 +59,7 @@ graph TD
   classDef io fill:#fdeee6,stroke:#a4663c,color:#123
   classDef you fill:#e7eefc,stroke:#3f5f9e,color:#123
   class S you
-  class V,ST,RU,BT,AN,MA,CO pure
+  class ST,RU,BT,AN,MA,CO pure
   class BR,NW,KT,LV,MK,BB io
 ```
 
@@ -94,10 +92,8 @@ Two other edges are worth reading off the picture:
   exact claim.
 - **`<analytics>` is the only layer that *implements* against a linear-algebra backend**, and it is
   optional — but turning it off reaches further than that one box. With `ATL_USE_EIGEN=OFF`,
-  `<algotradelib/analytics>` is a deliberate `#error` naming the option, `backtest::summarize` and
-  `backtest::Report` are gone, and `<algotradelib/vanilla>` ships only `BuyAndHold` and
-  `TimedLiquidation`, because every other vanilla sits in a header that needs
-  `<algotradelib/analytics>`. The replay engine itself still runs, so such a build can execute a
+  `<algotradelib/analytics>` is a deliberate `#error` naming the option, and `backtest::summarize`
+  and `backtest::Report` are gone. The replay engine itself still runs, so such a build can execute a
   strategy; it cannot score one.
 
 ## The dependency rule, and the rule underneath it

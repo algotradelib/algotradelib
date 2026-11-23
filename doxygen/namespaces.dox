@@ -15,7 +15,7 @@
 
 /**
  * @namespace algotradelib::analytics
- * @brief Returns, rolling statistics, indicators and performance metrics over numeric series.
+ * @brief Series buffers and frames, the conversions to and from exact decimals, and performance metrics.
  *
  * Needs a build with a linear algebra backend (`ATL_USE_EIGEN=ON`).
  */

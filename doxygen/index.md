@@ -138,9 +138,8 @@ any release.
 
 `ATL_USE_EIGEN=OFF` does not make analytics slower — it removes them.
 `<algotradelib/analytics>` becomes a deliberate `#error` naming the option to set,
-`backtest::summarize` and `backtest::Report` are gone, and `<algotradelib/vanilla>` ships only
-`BuyAndHold` and `TimedLiquidation`, since every other vanilla sits in a header that needs
-`<algotradelib/analytics>`. The replay engine itself runs either way, so a build without a backend can still execute a strategy; it just
+and `backtest::summarize` and `backtest::Report` are gone.
+The replay engine itself runs either way, so a build without a backend can still execute a strategy; it just
 cannot score one.
 
 To build and run the library's own checks:
@@ -367,7 +366,7 @@ The [user guide](vignettes/guide.md) is eleven pages in the order they are worth
 | 2 | [Writing a strategy](vignettes/writing-a-strategy.md) | the handlers, warm-up, prices, reaching a broker-specific feature |
 | 3 | [Binding a broker](vignettes/binding-a-broker.md) | the limits, how finely a target is chased, what killing the process does |
 | 4 | [Market data](vignettes/market-data.md) | bars and paging, the stamp conventions, the price grid, the calendar |
-| 5 | [Analytics conventions](vignettes/analytics-conventions.md) | two numeric types, two kinds of absence, the smoothing constants |
+| 5 | [Analytics conventions](vignettes/analytics-conventions.md) | two numeric types, two kinds of absence, what this layer leaves to you |
 | 6 | [Reading a backtest honestly](vignettes/reading-a-backtest.md) | what the fill model assumes, and what to distrust first |
 | 7 | [Running a strategy live](vignettes/running-a-strategy-live.md) | the three stops, the gates, the supervisor grace period |
 | 8 | [Recovering after a crash](vignettes/recovering-after-a-crash.md) | the journal, the five verdicts, reading them under pressure |

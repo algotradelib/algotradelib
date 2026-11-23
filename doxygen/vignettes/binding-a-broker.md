@@ -6,18 +6,13 @@ real one.
 
 See @ref writing-a-strategy for writing the strategy itself.
 
-## Four umbrellas, and the line between them
+## Three umbrellas, and the line between them
 
 | Header | What it gives you | Reaches transport? |
 | --- | --- | --- |
 | `<algotradelib/strategy>` | the surface a strategy is written against | no |
-| `<algotradelib/vanilla>` | the strategies this library ships | no |
 | `<algotradelib/runner>` | the context, the dispatcher, `DryRunner` | **no** |
 | `<algotradelib/live>` | `SessionExecutor`, over a bound `BlockingSession` | yes |
-
-`<algotradelib/vanilla>` is named for the namespace it fills, `strategy::vanilla`, rather than as a
-plural of `strategy` — two headers differing only in an `s` are indistinguishable in an autocomplete
-list.
 
 The split is load-bearing rather than tidy. `<algotradelib/runner>` reaches no broker adapter, no
 Boost.Asio, and no OpenSSL, asserted at compile time from a translation unit that includes nothing
@@ -37,17 +32,11 @@ Including `<algotradelib/live>` deliberately gives up the compile-time half as w
 
 ```cpp
 #include <algotradelib/runner>
-#include <algotradelib/vanilla>
 
 namespace runner = algotradelib::runner;
 namespace strategy = algotradelib::strategy;
-namespace vanilla = algotradelib::strategy::vanilla;
 
-vanilla::BuyAndHold holding;
-holding.params_.instrument_ = instrument;
-holding.params_.quantity_ = algotradelib::Decimal64::parse("10");
-
-runner::DryRunner<vanilla::BuyAndHold> dry(holding);
+runner::DryRunner<MyStrategy> dry(MyStrategy{});
 dry.context().set_instrument(reference); // reference data, with its PriceRule
 dry.context().set_phase(strategy::MarketPhase::OPEN); // one pass, driven by hand: see below
 dry.context().set_last_price(instrument, last_close);
@@ -158,7 +147,7 @@ Two defaults are deliberately not "unlimited". `permitted_phases_` defaults to t
 market is `OPEN`, and an absent value explicitly means any phase, so `MarketPhase::UNKNOWN` — an
 uncovered calendar date — is refused unless you ask for it. That limit is two-sided: it refuses an
 order that opens or increases a position, and permits one that reduces a held position toward flat,
-so an exit is expressible in any phase and `vanilla::TimedLiquidation` works under the default. The
+so an exit is expressible in any phase and a flatten at the close works under the default. The
 rate limit counts over a sliding window rather than resetting on a boundary, and budget is consumed
 when an order is *sent*, not when it is checked.
 
@@ -384,14 +373,14 @@ kind of thing: it stops *this program* from sending.
 Three things "stop" can mean, which are worth keeping apart because each leaves a different position:
 *quiesce* (no new orders, positions held, working orders still resting — this is what `halt()` does),
 *withdraw* (quiesce, then cancel the working orders), and *flatten* (withdraw, then close the
-positions). Flattening is a strategy's decision — `vanilla::TimedLiquidation` makes it on a session
+positions). Flattening is a strategy's decision — a zero target stated from `on_phase` on a session
 boundary — or an operator's: `flatten` through the loop's control file (`runner::StopIntent::FLATTEN`),
 or the broker's own tools.
 
 **It does not withdraw anything.** An order the broker already accepted stays live on the exchange,
 which knows nothing about a process that died. Killing a program is not a kill switch in the
-exchange's sense, and `halt()` is not a flatten. Flattening is a decision — `vanilla::TimedLiquidation`
-makes it on a session boundary, or an operator makes it, with `flatten` in the loop's control file or
+exchange's sense, and `halt()` is not a flatten. Flattening is a decision — a strategy makes it on a
+session boundary, or an operator makes it, with `flatten` in the loop's control file or
 through the broker's own tools.
 
 **And the reconciliation obligation is lost with it.** `IndeterminacyLedger` lives in memory. Two

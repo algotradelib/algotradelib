@@ -200,7 +200,7 @@ particular thing — quiesce, withdraw or flatten — and the loop sizes its clo
 it can prove is outstanding. An order added by the strategy at that moment goes through none of that
 reasoning and can close the same position twice. Use `on_stop` to write state, flush a log, or
 record where you were; use `on_bar` or `on_phase` to decide what to trade, including on a session
-boundary, where `vanilla::TimedLiquidation` flattens from `on_phase`.
+boundary: a flatten at the close is a zero target stated from `on_phase` (`example-strategy-dryrun`).
 
 A runner driven directly, without the loop, gets different behaviour from `Runner::stop()`:
 `on_stop` runs and what it asks for is settled. The difference is the loop, because the loop is
@@ -301,10 +301,9 @@ struct PairSpread {
 
 ## Emit a target, not an order
 
-Every strategy this library ships states a position: `TargetPosition`, or — for
-`EqualWeightRebalance` — an `OrderIntent` sized by `SizeSpec::target_weight`, which the runner plans
-as the position the weight states. Do the same unless you have a reason not to, and the reason is
-this:
+State a position: a `TargetPosition`, or an `OrderIntent` sized by `SizeSpec::target_weight`, which the
+runner plans as the position the weight states. Do that unless you have a reason not to, and the
+reason is this:
 
 A strategy that emits orders has to remember whether it already entered. After a restart it does
 not know, so it either misses an exit or re-enters a position it already holds. Worse, it
@@ -313,8 +312,9 @@ still working, and sizing against the position alone asks for sixty more on top 
 in the market.
 
 Stating the position you want leaves that arithmetic to reconciliation, which can see the portfolio
-*and* the orders already working. `BuyAndHold` never trades twice while remembering nothing at all,
-because once the position matches, reconciliation produces nothing.
+*and* the orders already working. A strategy that restates one fixed target on every bar
+(`HoldsShares` in the examples) never trades twice while remembering nothing at all, because once the
+position matches, reconciliation produces nothing.
 
 Use `OrderIntent` when you genuinely mean "trade this much" rather than "hold this much" — and
 accept that the sizing is then yours. The one exception is a weight: `SizeSpec::target_weight` means
@@ -374,7 +374,7 @@ down, a sell rounds up — so rounding never makes a limit more aggressive than 
 ladder is unknown, which is the honest answer: a guessed tick is an order the exchange rejects at
 best.
 
-Computing a price from an indicator? Cross the boundary once, through
+Computing a price from a statistic? Cross the boundary once, through
 `analytics::round_scalar_to_tick`, and hand the exact result to `Price::checked`.
 
 ## Warm-up
@@ -390,7 +390,7 @@ std::size_t warmup_bars() const { return params_.window_ + 1; }
 ```
 
 Then check before acting. `ctx.bars(...)` may be `nullptr`, a series may be shorter than the window,
-and an indicator's warm-up region is `missing()`:
+and a bar may carry no close (`missing()`):
 
 ```cpp
 const auto* series = ctx.bars(bar.instrument_, bar.interval_);
@@ -398,22 +398,22 @@ if (series == nullptr) {
   return;
 }
 const auto closes = series->column(analytics::BarField::CLOSE);
-const auto window = strategy::vanilla::trailing(closes, params_.window_);
-if (!window) {
+const auto window_rows = static_cast<math::Index>(params_.window_);
+if (closes.size() < window_rows) {
   return;
 }
-const auto line = analytics::sma(*window, params_.window_);
-const auto value = line[line.size() - 1];
-if (!math::observed(value)) {
-  return;
+const auto window = closes.tail(window_rows);
+if (!(window.array() == window.array()).all()) {
+  return; // a close in the window is absent: no mean over fewer closes than the window
 }
+const auto value = window.mean();
 ```
 
-Two habits in that snippet are worth copying. **Slice before computing**: an indicator over the
-whole cache is `O(rows × window)` per bar, and you need only the last value or two, so
-`trailing(...)` keeps the per-bar cost from growing with the cache. And **test observability rather
-than a value**: `math::observed()` is false for the warm-up (`missing()`) *and* for a window with no
-dispersion (`undefined()`), where a z-score genuinely does not exist.
+Two habits in that snippet are worth copying. **Slice before computing**: a statistic over the
+whole cache costs more with every bar, and you need only the last window, so `tail(...)` keeps the
+per-bar cost from growing with the cache. And **test observability rather than a value**:
+`math::observed()` is false for an absent value (`missing()`) *and* for a statistic that does not
+exist for its data (`undefined()`), such as a Sharpe ratio over returns that never varied.
 `math::is_undefined()` separates those two if you care.
 
 ## Reaching a broker-specific feature

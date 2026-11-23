@@ -9,14 +9,13 @@ See @ref writing-a-strategy for the strategy side and @ref binding-a-broker for 
 
 ```cpp
 #include <algotradelib/backtest>
-#include <algotradelib/vanilla>
 
 backtest::ReplayConfig config;
 config.cash_ = atl::Decimal64::parse("100000000");
 config.instruments_ = {reference}; // reference data, with its PriceRule
 
-backtest::Backtester<vanilla::SmaCrossover> engine(
-  vanilla::SmaCrossover{params},
+backtest::Backtester<MyStrategy> engine(
+  MyStrategy{},
   std::move(config),
   backtest::NextBarFillModel(
     backtest::CommissionModel::of(atl::Decimal64::parse("0.00015")),
@@ -275,8 +274,7 @@ strategy live"), and `std::nullopt` there sends every decision at midnight.
 
 For the same reason `on_phase` fires on a daily replay only when the phase at one bar end differs from
 the last — in practice once — not once a session as it does live. A strategy that acts in `on_phase`
-(`vanilla::EqualWeightRebalance`, `vanilla::TimedLiquidation`) needs intraday bars to be replayed
-faithfully.
+(a rebalance at the open, a flatten at the close) needs intraday bars to be replayed faithfully.
 
 ## What a replay says an account can do
 

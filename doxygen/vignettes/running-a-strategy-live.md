@@ -361,8 +361,8 @@ and it misses the KIS, Toss and Kiwoom refusals counted as unknown outcomes (mos
 **`last_unbuildable_` does the same for `orders_unbuildable_`**: the reconciliation's reason
 (`RejectReason`), the instrument and your tag, for the last instruction this run's polling could not
 build, and empty when it built them all. `live_program` prints it as `last unbuildable`. A common live
-answer is `no_portfolio_value`: a weight-sized instruction (`SizeSpec::target_weight`, which
-`EqualWeightRebalance` states) needs a portfolio value, which a replay supplies and a live runner does
+answer is `no_portfolio_value`: a weight-sized instruction (`SizeSpec::target_weight`, which a
+rebalancing strategy states) needs a portfolio value, which a replay supplies and a live runner does
 not unless you set `Runner::set_portfolio_value`, so it is refused on every pass.
 
 **An unknown buying power blocks buying.** Only if you asked for the check: set
@@ -534,7 +534,7 @@ library's — which is the better answer, since it is the venue's own, and recor
 beside it. Whether a recorded answer then outlives the process is a property of the journal you handed
 in — a `MemoryJournal` is gone when the process is.
 `LoopReport::sends_outside_permitted_phase_` counts how often that happened. When that request came
-from a strategy's `TargetPosition` — `vanilla::TimedLiquidation`'s `POST_CLOSE` flatten is one — and the
+from a strategy's `TargetPosition` — a flatten stated on `POST_CLOSE` is one — and the
 broker rejected it, the target is kept and the exit is sent again at the next session's open (below).
 The operator's own `flatten` is an order, not a target, and ends with the rejection.
 
@@ -633,10 +633,10 @@ run's report; only the newest bar's decision can be sent, or kept for the phase.
 backlog after an outage: two missed daily bars are both shown, and only the newer one acts.
 
 Why it matters: otherwise a restarted process would act on every signal in its history, at today's
-price. An event-triggered strategy — `vanilla::RsiThreshold` enters on "not holding and oversold" —
-would meet an oversold bar months back against a flat book and buy again a minute after the previous
-process had sold. A level strategy (`SmaCrossover`) would be right only by accident, because only its
-last target survives.
+price. An event-triggered strategy — one that enters on "not holding and oversold" — would meet an
+oversold bar months back against a flat book and buy again a minute after the previous process had
+sold. A level strategy (a moving-average crossover stating its target every bar) would be right only
+by accident, because only its last target survives.
 So a process started overnight and one started during the session take the same decision: the
 newest bar's. Four consequences to design for:
 
@@ -675,7 +675,7 @@ The loop derives the phase each iteration from two things:
   answers a covered date without a request, so four polls a day cost one request a day.
 
 `on_phase` fires on a change, once, with this iteration's prices and portfolio already installed. A
-strategy written on it — `vanilla::TimedLiquidation` is the shipped one — behaves the same live as in a
+strategy written on it — a flatten at the close, as in `example-strategy-dryrun` — behaves the same live as in a
 replay **of intraday bars**. A daily replay's clock visits only bar ends, so there it fires about once
 in the whole run (see "Reading a backtest honestly").
 

@@ -20,8 +20,8 @@ not fit in a `\brief`, and because the reasoning is the part that is expensive t
 
 ## Before you trust a number, or an account
 
-- \subpage analytics-conventions — two numeric worlds, four conventions, and the smoothing constants
-  that packages disagree about.
+- \subpage analytics-conventions — two numeric worlds, the conventions that keep them apart, and
+  what the layer leaves to your strategy.
 - \subpage reading-a-backtest — what the fill model assumes, what it does not model at all, and which
   figures to distrust first.
 - \subpage running-a-strategy-live — the three stops, the two gates that deliberately refuse to trade,
