@@ -950,7 +950,7 @@ public:
    *
    * This only stops sending ("quiesce"): working orders and positions are left as they are. To
    * also cancel working orders or close positions, use `runner::StopIntent` with
-   * `runner::PollingLoop`, or a strategy such as `vanilla::TimedLiquidation`. The hold is in memory;
+   * `runner::PollingLoop`, or a strategy that flattens from `on_phase`. The hold is in memory;
    * `runner::FileStopChannel` and `runner::SignalStop` stop a running process from outside.
    */
   void halt() noexcept {

@@ -26,11 +26,6 @@
  */
 
 /**
- * @namespace algotradelib::strategy::vanilla
- * @brief The strategies this library ships (buy and hold, crossovers, mean reversion, sizing, liquidation).
- */
-
-/**
  * @namespace algotradelib::backtest
  * @brief Replays a strategy over stored bars: fill and cost models, the replay ledger, and the report.
  */

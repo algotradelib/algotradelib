@@ -14,7 +14,6 @@ void equity(const Equity& running, const Equity& summed);
 
 #include <algotradelib/backtest>
 #include <algotradelib/krx>
-#include <algotradelib/vanilla>
 
 #include "phase_strategies.hpp"
 
@@ -137,7 +136,6 @@ using namespace algotradelib;
 
 namespace strategy = algotradelib::strategy;
 namespace backtest = algotradelib::backtest;
-namespace vanilla = algotradelib::strategy::vanilla;
 
 namespace {
 
@@ -1042,7 +1040,7 @@ TEST_CASE("an annualized figure is unobserved unless a period count was supplied
 #endif
 
 // ---------------------------------------------------------------------------
-// Every vanilla strategy, replayed at both intervals
+// A price path, and a flatten composed with a signal
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -1095,31 +1093,6 @@ const std::vector<int>& path() {
   return closes;
 }
 
-/**
- * Replays `path()` through `strategy` at `interval` and returns the finished engine.
- *
- * The same function serves both intervals, which is what makes the pair of assertions below a test of
- * the engine rather than of two code paths.
- */
-template <typename Strategy>
-backtest::Backtester<Strategy> replay(Strategy strategy, BarInterval interval) {
-  auto config = replay_config();
-  config.series_capacity_ = 64;
-  backtest::Backtester<Strategy> engine(std::move(strategy), std::move(config));
-
-  // Minute bars start inside the session and step by a minute; daily bars step by a day. Nothing else
-  // differs, and the engine is told nothing about which it is getting.
-  const auto start = interval == BarInterval::ONE_MINUTE ? utc(2026, 3, 10, 0, 1) : utc(2026, 3, 10, 6, 30);
-  for (std::size_t at = 0; at < path().size(); ++at) {
-    const auto step = interval == BarInterval::ONE_MINUTE ?
-      std::chrono::minutes(static_cast<int>(at)) :
-      std::chrono::duration_cast<std::chrono::minutes>(std::chrono::hours(24 * static_cast<int>(at)));
-    const auto close = std::to_string(path()[at]);
-    engine.feed(moving_bar(start + step, interval, close.c_str(), close.c_str()));
-  }
-  engine.finish();
-  return engine;
-}
 #endif
 
 /** Holds `quantity_` of `instrument_`, restating the target on every bar of it. */
@@ -1176,46 +1149,7 @@ struct BuyThenLiquidate {
   }
 };
 
-/** Asserts a strategy behaves identically at both intervals. */
-template <typename Strategy>
-void behaves_the_same_at_both_intervals(Strategy strategy) {
-  const auto daily = replay(strategy, BarInterval::ONE_DAY);
-  const auto minutes = replay(strategy, BarInterval::ONE_MINUTE);
-
-  REQUIRE(daily.result().executions_.size() == minutes.result().executions_.size());
-  REQUIRE(daily.ledger().quantity_of(samsung()) == minutes.ledger().quantity_of(samsung()));
-  REQUIRE(daily.ledger().cash_in(Currency{"KRW"}) == minutes.ledger().cash_in(Currency{"KRW"}));
-  REQUIRE(daily.ledger().realized_in(Currency{"KRW"}) == minutes.ledger().realized_in(Currency{"KRW"}));
-  // And neither ran into an instruction it could not build.
-  REQUIRE(daily.result().rejected_.empty());
-  REQUIRE(minutes.result().rejected_.empty());
-}
-
 } // namespace
-
-#if defined(ATL_HAS_EIGEN)
-
-TEST_CASE("ZScoreReversion replays identically at both intervals") {
-  vanilla::ZScoreReversion reverting;
-  reverting.params_.instrument_ = samsung();
-  reverting.params_.window_ = 8;
-  reverting.params_.entry_ = 1.0;
-  reverting.params_.exit_ = 0.2;
-  reverting.params_.quantity_ = Decimal64::parse("100");
-  behaves_the_same_at_both_intervals(reverting);
-}
-
-TEST_CASE("RsiThreshold replays identically at both intervals") {
-  vanilla::RsiThreshold indexed;
-  indexed.params_.instrument_ = samsung();
-  indexed.params_.period_ = 5;
-  indexed.params_.oversold_ = 35.0;
-  indexed.params_.overbought_ = 65.0;
-  indexed.params_.quantity_ = Decimal64::parse("100");
-  behaves_the_same_at_both_intervals(indexed);
-}
-
-#endif
 
 TEST_CASE("a phase flatten closes a replay under the default limits") {
   // **The first place in this repository that runs the default `permitted_phases_` where the phase is real.** Every other replay either
