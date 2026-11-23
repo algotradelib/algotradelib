@@ -516,7 +516,10 @@ math::Vector series(std::initializer_list<Scalar> values) {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("a drawdown over nothing observable reports nothing rather than zero") {
-  const math::Vector levels = series({missing(), missing()});
+  const math::Vector levels = math::unobserved(2);
+  REQUIRE(levels.size() == 2);
+  REQUIRE_FALSE(observed(levels[0]));
+  REQUIRE_FALSE(observed(levels[1]));
   const auto worst = analytics::max_drawdown(levels);
 
   REQUIRE_FALSE(observed(worst.magnitude_));
