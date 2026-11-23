@@ -3,7 +3,6 @@
 #include <algotradelib/krx>
 #include <algotradelib/live>
 #include <algotradelib/tossinvest>
-#include <algotradelib/vanilla>
 
 #include "live_program.hpp"
 
@@ -4637,18 +4636,35 @@ void write_text(const std::string& path, const std::string& text) {
   std::fclose(handle);
 }
 
+/** Holds a fixed quantity of Samsung: states the same target on every bar of it. */
+struct HoldsShares {
+  /** The shares to hold. */
+  Decimal64 quantity_;
+
+  static constexpr std::size_t warmup_bars = 1;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (!(bar.instrument_ == samsung())) {
+      return;
+    }
+    strategy::TargetPosition target;
+    target.instrument_ = samsung();
+    target.target_quantity_ = quantity_;
+    target.tag_ = "buy-and-hold";
+    ctx.submit(target);
+  }
+};
+
 /** A strategy that wants one share, as the program's does. */
-strategy::vanilla::BuyAndHold one_share() {
-  strategy::vanilla::BuyAndHold holding;
-  holding.params_.instrument_ = samsung();
-  holding.params_.quantity_ = Decimal64::parse("1");
-  return holding;
+HoldsShares one_share() {
+  return HoldsShares{Decimal64::parse("1")};
 }
 
 /**
  * A session that answers everything a trading run needs, stamped at `program_start()`.
  *
- * Holdings are empty but current, so the portfolio gate opens and BuyAndHold wants its share. The
+ * Holdings are empty but current, so the portfolio gate opens and the strategy wants its share. The
  * loop reads the account before the bars, so the bars read at start are the ones that trade.
  *
  * The fake never lists or holds an order it accepted, so a *later* bar would buy again against a
@@ -5073,7 +5089,7 @@ struct WantsHalf {
 } // namespace
 
 TEST_CASE("a live run's report says why reconciliation could not build an instruction") {
-  // `EqualWeightRebalance` through `live_program` once reported "not buildable: 80" and nothing else,
+  // A weight-sized strategy through `live_program` once reported "not buildable: 80" and nothing else,
   // because the source discards each pass's report and its reasons with it. The run now carries the
   // last one, as it carries the broker's last refusal.
   using LoopRunner = runner::Runner<WantsHalf, WithKey, FakeBroker, live::SessionExecutor<FakeSession<WithKey>>>;
@@ -7361,10 +7377,8 @@ live_program::Settings slow_account_settings(const TempPath& journal, const Temp
 }
 
 /** Holds `quantity` shares: one to buy from flat, none to sell what is held. */
-strategy::vanilla::BuyAndHold holds(const char* quantity) {
-  auto holding = one_share();
-  holding.params_.quantity_ = Decimal64::parse(quantity);
-  return holding;
+HoldsShares holds(const char* quantity) {
+  return HoldsShares{Decimal64::parse(quantity)};
 }
 
 } // namespace

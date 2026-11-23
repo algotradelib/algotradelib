@@ -1,6 +1,5 @@
 #include <algotradelib/krx>
 #include <algotradelib/runner>
-#include <algotradelib/vanilla>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -1832,7 +1831,7 @@ TEST_CASE("a withdraw places nothing, whatever the strategy asks on the way out"
 // --- The market phase, live ---------------------------------------------------------------
 //
 // Everything below this line is about one defect: nothing outside `backtest/` once called `Context::set_phase`, so a live run held whatever the caller set at
-// startup. `on_phase` never fired, `vanilla::TimedLiquidation` was inert live, and a caller who set
+// startup. `on_phase` never fired, a strategy that flattens from it was inert live, and a caller who set
 // nothing was refused every order. The tests above used to *conceal* that by setting `OPEN` by hand;
 // they now install a calendar, so they exercise the mechanism instead.
 

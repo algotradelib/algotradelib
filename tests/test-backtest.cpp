@@ -16,10 +16,13 @@ void equity(const Equity& running, const Equity& summed);
 #include <algotradelib/krx>
 #include <algotradelib/vanilla>
 
+#include "phase_strategies.hpp"
+
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -641,8 +644,8 @@ backtest::ReplayConfig short_replay_config() {
  *
  * Separate from `replay_config` because that one switches the limit off and every other test here
  * wants it off -- the point of those tests is fill timing, not the guard. The two tests using this
- * one are about the default itself, which no replay could once run: the flatten a shipped vanilla
- * produces was refused by it.
+ * one are about the default itself, which no replay could once run: a strategy's flatten on leaving the
+ * session was refused by it.
  */
 backtest::ReplayConfig replay_config_with_default_phases() {
   backtest::ReplayConfig config;
@@ -1119,21 +1122,38 @@ backtest::Backtester<Strategy> replay(Strategy strategy, BarInterval interval) {
 }
 #endif
 
+/** Holds `quantity_` of `instrument_`, restating the target on every bar of it. */
+struct HoldsQuantity {
+  InstrumentId instrument_;
+  Decimal64 quantity_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (!(bar.instrument_ == instrument_)) {
+      return;
+    }
+    strategy::TargetPosition target;
+    target.instrument_ = instrument_;
+    target.target_quantity_ = quantity_;
+    ctx.submit(target);
+  }
+};
+
 /**
- * A signal strategy and a liquidation policy composed, which is how the plan intended them to be used.
+ * A signal strategy and a liquidation policy composed.
  *
  * At namespace scope because a local class cannot hold a template member -- a trap this file has now
  * hit five times, which is why the vignette records it.
  */
 struct BuyThenLiquidate {
-  vanilla::BuyAndHold buying_;
-  vanilla::TimedLiquidation flattening_;
+  HoldsQuantity buying_;
+  fixture::FlattensOnPhase flattening_;
   bool flattened_{false};
 
   template <class Ctx>
   void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
     // **`flattened_` is load-bearing, and composing these two without it does not work.**
-    // `BuyAndHold::on_bar` restates a target of 100 on every bar, and `on_bar` runs after
+    // `HoldsQuantity::on_bar` restates a target of 100 on every bar, and `on_bar` runs after
     // `on_phase` within one `feed`. So the bar that liquidates is also a bar that restates the
     // buy, and reconciliation withdraws the flatten as an order opposing the target -- correctly,
     // because that is what the composed strategy asked for.
@@ -1150,12 +1170,9 @@ struct BuyThenLiquidate {
   template <class Ctx>
   void on_phase(Ctx& ctx, strategy::MarketPhase phase) {
     flattening_.on_phase(ctx, phase);
-    for (const auto allowed : flattening_.params_.hold_through_) {
-      if (allowed == phase) {
-        return;
-      }
+    if (!flattening_.holds_through(phase)) {
+      flattened_ = true;
     }
-    flattened_ = true;
   }
 };
 
@@ -1200,11 +1217,11 @@ TEST_CASE("RsiThreshold replays identically at both intervals") {
 
 #endif
 
-TEST_CASE("TimedLiquidation flattens a replay under the default limits") {
+TEST_CASE("a phase flatten closes a replay under the default limits") {
   // **The first place in this repository that runs the default `permitted_phases_` where the phase is real.** Every other replay either
-  // switches the limit off or widens it -- including the test above, which has to add `POST_CLOSE`
-  // for this same vanilla to place anything at all. That was the evidence the default was not
-  // usable: a shipped strategy could not do its job without the operator disabling a risk limit.
+  // switches the limit off or widens it. A strategy that flattens on leaving the session once could
+  // not do its job without the operator disabling a risk limit, which was the evidence the default was
+  // not usable.
   //
   // Nothing here sets `permitted_phases_`. The flatten is a sell of the whole holding, so it closes
   // a position and the phase limit does not stand in front of it; the buy inside the session is
@@ -1216,8 +1233,8 @@ TEST_CASE("TimedLiquidation flattens a replay under the default limits") {
   REQUIRE(config.limits_.permitted_phases_->front() == strategy::MarketPhase::OPEN);
 
   BuyThenLiquidate combined;
-  combined.buying_.params_.instrument_ = samsung();
-  combined.buying_.params_.quantity_ = Decimal64::parse("100");
+  combined.buying_.instrument_ = samsung();
+  combined.buying_.quantity_ = Decimal64::parse("100");
 
   backtest::Backtester<BuyThenLiquidate> engine(combined, std::move(config));
   engine.feed(moving_bar(utc(2026, 3, 10, 3, 0), BarInterval::ONE_MINUTE, "70000", "70000"));
@@ -5357,11 +5374,54 @@ TEST_CASE("chained test replays compound their returns and keep each boundary wi
 #endif
 
 #if defined(ATL_HAS_EIGEN)
+namespace {
+
+/**
+ * Holds 100 shares after a close above the highest of the five closes before it, and none after a close below
+ * their lowest. Reads its window from the runner's bar history, which is what the threads below share.
+ */
+struct BreaksOut {
+  static constexpr std::size_t lookback = 5;
+
+  std::size_t warmup_bars() const {
+    return lookback + 1;
+  }
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    const auto* series = ctx.bars(bar.instrument_, bar.interval_);
+    if (series == nullptr) {
+      return;
+    }
+    const auto closes = series->column(analytics::BarField::CLOSE);
+    const auto rows = static_cast<std::size_t>(closes.size());
+    if (rows < lookback + 1) {
+      return;
+    }
+    double highest = closes[static_cast<math::Index>(rows - 1 - lookback)];
+    double lowest = highest;
+    for (std::size_t row = rows - lookback; row < rows - 1; ++row) {
+      highest = std::max(highest, closes[static_cast<math::Index>(row)]);
+      lowest = std::min(lowest, closes[static_cast<math::Index>(row)]);
+    }
+    const double close = closes[static_cast<math::Index>(rows - 1)];
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    if (highest < close) {
+      target.target_quantity_ = Decimal64::parse("100");
+    } else if (close < lowest) {
+      target.target_quantity_ = Decimal64::parse("0");
+    } else {
+      return;
+    }
+    ctx.submit(target);
+  }
+};
+
+} // namespace
+
 TEST_CASE("two replays on two threads over shared bars match a replay on one") {
-  vanilla::DonchianBreakout breaking;
-  breaking.params_.instrument_ = samsung();
-  breaking.params_.lookback_ = 5;
-  breaking.params_.quantity_ = Decimal64::parse("100");
+  const BreaksOut breaking;
   std::vector<strategy::BarEvent> bars;
   for (std::size_t at = 0; at < path().size(); ++at) {
     const auto close = std::to_string(path()[at]);
@@ -5373,7 +5433,7 @@ TEST_CASE("two replays on two threads over shared bars match a replay on one") {
   config.trade_from_ = bars[6].period_end_;
   const auto& shared = bars;
   const auto run = [&](backtest::ReplayResult& out) {
-    backtest::Backtester<vanilla::DonchianBreakout> engine(breaking, config);
+    backtest::Backtester<BreaksOut> engine(breaking, config);
     for (const auto& bar : shared) {
       engine.feed(bar);
     }
@@ -5616,5 +5676,56 @@ TEST_CASE("a bootstrap path rebuilds whole bars on the grid with their order kep
   REQUIRE(flat_path.size() == 3);
   for (std::size_t k = 0; k < 3; ++k) {
     CHECK(prices(flat_path[k]) == Four(4, flat_closes[k]));
+  }
+}
+
+TEST_CASE("a replay sizes a weight against its own equity", "[weights]") {
+  // No caller could: `Backtester` keeps its runner private and nothing set the portfolio value, so
+  // every weight was refused `no_portfolio_value` and a weight-sized strategy never traded in a replay.
+  const fixture::HoldsEqualWeights weighted{{samsung(), hynix()}, Decimal64::parse("0.5")};
+
+  backtest::ReplayConfig config;
+  config.cash_ = Decimal64::parse("100000000");
+  config.instruments_ = {samsung_reference(), hynix_reference()};
+  config.limits_.permitted_phases_ = std::nullopt;
+  config.calendar_.country_ = Country::KR;
+  const auto day0 = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 20000);
+  for (int day = -1; day < 5; ++day) {
+    config.calendar_.days_.push_back(
+      TradingDay{strategy::SessionWindow::krx().local_date(day0 + std::chrono::hours(24 * day)), true}
+    );
+  }
+  backtest::Backtester<fixture::HoldsEqualWeights> engine(weighted, config);
+
+  // Two close-stamped bars a session, 08:00 and 10:00 KST (23:00 the day before and 01:00 UTC), so
+  // the clock passes from PRE_OPEN to OPEN every day and on_phase fires once a day with both priced.
+  // A post-close bar the evening before the first day gives both instruments a price.
+  std::vector<std::chrono::system_clock::time_point> stamps{day0 - std::chrono::hours(24) + std::chrono::hours(8)};
+  for (int day = 0; day < 3; ++day) {
+    stamps.push_back(day0 + std::chrono::hours(24 * day) - std::chrono::hours(1));
+    stamps.push_back(day0 + std::chrono::hours(24 * day + 1));
+  }
+  for (const auto& at : stamps) {
+    for (const auto& id : {samsung(), hynix()}) {
+      Bar value;
+      value.timestamp_ = at;
+      value.open_ = Decimal64::parse("70000");
+      value.high_ = Decimal64::parse("70000");
+      value.low_ = Decimal64::parse("70000");
+      value.close_ = Decimal64::parse("70000");
+      value.volume_ = Decimal64::parse("1000000");
+      engine.feed(strategy::make_bar_event(id, BarInterval::ONE_DAY, BarStamp::CLOSE, value));
+    }
+  }
+  engine.finish();
+
+  // Three rebalances, one a day: the first buys each weight, and the next two find it held and place
+  // nothing, where a weight reconciled as a trade bought the full allocation again each day.
+  const auto& result = engine.result();
+  CHECK(result.rejected_.empty());
+  REQUIRE(result.executions_.size() == 2);
+  for (const auto& execution : result.executions_) {
+    CHECK(execution.fill_.side_ == OrderSide::BUY);
+    CHECK(execution.fill_.quantity_ == Decimal64::parse("714"));
   }
 }
