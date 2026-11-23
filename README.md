@@ -75,7 +75,7 @@ struct MyStrategy {
 };
 ```
 
-[`examples/example-backtest-compare.cpp`](examples/example-backtest-compare.cpp) replays a strategy against history, offline.
+[`examples/example-backtest-offline.cpp`](examples/example-backtest-offline.cpp) replays a strategy against history, offline.
 To run one live, copy [`examples/example-live-program.cpp`](examples/example-live-program.cpp)
 with the three headers it includes ([`live_program.hpp`](examples/live_program.hpp), [`kis_credentials.hpp`](examples/kis_credentials.hpp) and [`kiwoom_credentials.hpp`](examples/kiwoom_credentials.hpp)) and replace the strategy with yours.
 The examples build in a checkout of this repository:
@@ -83,7 +83,7 @@ The examples build in a checkout of this repository:
 ```sh
 cmake -S . -B build -DATL_BUILD_EXAMPLES=ON
 cmake --build build
-./build/bin/example-backtest-compare # offline: no credentials, no network
+./build/bin/example-backtest-offline # offline: no credentials, no network
 export KIS_APP_KEY=... KIS_APP_SECRET=... KIS_CANO=... KIS_DEMO=1
 ./build/bin/example-live-program kis 005930 # observe: real data, nothing can be sent
 ./build/bin/example-live-program kis 005930 --live # trade, through a journal

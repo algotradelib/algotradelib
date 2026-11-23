@@ -52,7 +52,7 @@
  *
  * The broker-free part -- the order of journal, recovery, loop and report -- is `live_program.hpp`,
  * which the test suite drives against an in-memory session. This file only chooses a broker and a
- * strategy. The strategy is deliberately trivial: `BuyAndHold` of one share. Replace it with yours,
+ * strategy. The strategy is deliberately trivial: `HoldsShares`, one share held. Replace it with yours,
  * and its limits in `settings_for`; on KIS and Toss nothing else has to change. On Kiwoom two
  * statements are yours to make before it can place (see `run_kiwoom`).
  */
@@ -65,7 +65,6 @@
 #include <algotradelib/kiwoom>
 #include <algotradelib/network>
 #include <algotradelib/tossinvest>
-#include <algotradelib/vanilla>
 
 #include <boost/asio/ssl/context.hpp>
 
@@ -86,7 +85,7 @@ namespace {
 namespace ssl = boost::asio::ssl;
 namespace atl = algotradelib;
 namespace runner = algotradelib::runner;
-namespace vanilla = algotradelib::strategy::vanilla;
+namespace strategy = algotradelib::strategy;
 
 /** @brief What the command line said. */
 struct Arguments {
@@ -103,12 +102,37 @@ struct Arguments {
   std::optional<std::string> tokens_;
 };
 
-/** @brief The strategy this program runs: one share, held. The line a consumer replaces. */
-vanilla::BuyAndHold strategy_for(const atl::InstrumentId& instrument) {
-  vanilla::BuyAndHold holding;
-  holding.params_.instrument_ = instrument;
-  holding.params_.quantity_ = atl::Decimal64::parse("1");
-  return holding;
+/**
+ * @brief The strategy this program runs: one share, held. The struct a consumer replaces.
+ *
+ * It states the same target on every bar of its instrument, so it buys once and then sends nothing while the
+ * holding matches, including after a restart.
+ */
+struct HoldsShares {
+  /** @brief The instrument to hold; bars of any other are ignored. */
+  atl::InstrumentId instrument_;
+  /** @brief The shares to hold. */
+  atl::Decimal64 quantity_;
+
+  /** @brief One bar of history is enough. */
+  static constexpr std::size_t warmup_bars = 1;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (!(bar.instrument_ == instrument_)) {
+      return;
+    }
+    strategy::TargetPosition target;
+    target.instrument_ = instrument_;
+    target.target_quantity_ = quantity_;
+    target.tag_ = "hold";
+    ctx.submit(target);
+  }
+};
+
+/** @brief The strategy this program runs, for `instrument`. */
+HoldsShares strategy_for(const atl::InstrumentId& instrument) {
+  return HoldsShares{instrument, atl::Decimal64::parse("1")};
 }
 
 /**

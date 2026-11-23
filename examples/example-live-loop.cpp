@@ -18,7 +18,6 @@
 
 #include <algotradelib/krx>
 #include <algotradelib/runner>
-#include <algotradelib/vanilla>
 
 #include <chrono>
 #include <iostream>

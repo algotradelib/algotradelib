@@ -5,9 +5,13 @@
 // figures because a reader who has to remember which assumptions applied to their run eventually will
 // not remember.
 //
-// The same strategies are replayed at daily and at minute granularity, and the engine is told nothing
-// about which it is getting. Neither KIS nor Toss makes intraday history easy, but that is a
+// `MyStrategy` below is the part to replace with your own. It is replayed at daily and at minute
+// granularity, and the engine is told nothing about which it is getting; then once more at no cost, to
+// show what the costs were doing. Neither KIS nor Toss makes intraday history easy, but that is a
 // limitation of those adapters rather than of backtesting.
+//
+// The replays run in every build. Scoring them (`backtest::Report`) needs a linear algebra backend
+// (`ATL_USE_EIGEN=ON`); without one the program prints what each replay filled.
 //
 // Run it as:
 //
@@ -15,7 +19,6 @@
 
 #include <algotradelib/backtest>
 #include <algotradelib/krx>
-#include <algotradelib/vanilla>
 
 #include <chrono>
 #include <cstddef>
@@ -30,9 +33,9 @@ namespace {
 
 namespace strategy = algotradelib::strategy;
 namespace backtest = algotradelib::backtest;
-namespace vanilla = algotradelib::strategy::vanilla;
 namespace math = algotradelib::math;
 
+#if defined(ATL_HAS_EIGEN)
 /**
  * @brief Returns a monetary figure, or why there is none.
  *
@@ -42,6 +45,7 @@ namespace math = algotradelib::math;
 std::string money_or_absent(const std::optional<algotradelib::Decimal64>& amount) {
   return amount ? amount->str() : std::string("(absent: see the caveats)");
 }
+#endif
 
 using algotradelib::Bar;
 using algotradelib::BarInterval;
@@ -68,6 +72,72 @@ Instrument samsung_reference() {
   reference.price_rule_ = algotradelib::krx::equity_price_rule();
   return reference;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Your strategy.
+//
+// A strategy is a plain struct with **template** member functions. It is not templated on a broker,
+// holds no session, and performs no I/O, which is exactly why this same source runs in a dry run and
+// in a live session without being rewritten. The template is load-bearing rather than stylistic: it
+// is what lets one strategy be handed three different runner contexts. `ATL_ASSERT_STRATEGY` below
+// compiles every handler against two stub contexts, so a handler accidentally written against one
+// concrete context, or one the runner's call does not fit, fails here rather than when somebody first
+// runs it live.
+//
+// Emit a **target position**, not an order. A strategy that emits orders has to remember whether it
+// already entered, and after a restart it does not know -- so it either misses an exit or re-enters a
+// position it already holds. Stating the position you want leaves that to reconciliation, which can
+// see the portfolio and the working orders; you cannot.
+// ---------------------------------------------------------------------------------------------
+struct MyStrategy {
+  /** @brief How many closes the average is taken over. */
+  std::size_t lookback_{5};
+  /** @brief How many shares to hold when the signal is on. */
+  Decimal64 quantity_{Decimal64::parse("1000")};
+
+  std::vector<Decimal64> history_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    history_.push_back(bar.bar_.close_);
+    if (history_.size() < lookback_) {
+      return;
+    }
+
+    // Kept in `Decimal64` rather than converted to `math::Scalar`, for two reasons worth knowing
+    // before you write the real thing.
+    //
+    // The first is that this strategy then needs no linear-algebra backend, so it compiles and runs in
+    // a build configured with `ATL_USE_EIGEN=OFF`.
+    //
+    // The second is the comparison itself. Rather than divide the sum to get a mean -- which is the
+    // one operation on an exact decimal that has to choose a scale and therefore round -- multiply
+    // the other side. `close * n < sum` is the same question as `close < sum / n`, and it is exact.
+    // Every arithmetic function returns `std::optional` because it checks for overflow, so a
+    // strategy that cannot compute its own signal emits nothing instead of guessing.
+    //
+    // For real indicator work, cross into `math::Scalar` through `analytics::to_scalar` and come
+    // back through `PriceRule::round_to_tick`. That gate is not decoration: it is what stops an
+    // indicator's value reaching the wire as an off-tick limit price.
+    std::optional<Decimal64> sum = Decimal64::parse("0");
+    for (std::size_t at = history_.size() - lookback_; sum && at < history_.size(); ++at) {
+      sum = algotradelib::decimal_add(*sum, history_[at]);
+    }
+    const auto scaled = algotradelib::decimal_multiply(history_.back(), Decimal64::parse(std::to_string(lookback_)));
+    if (!sum || !scaled) {
+      return;
+    }
+
+    // Buy what has fallen below its own recent average, hold nothing otherwise. It is a toy: the
+    // point of the runs below is what a replay reports, not this signal.
+    const bool cheap = algotradelib::decimal_less(*scaled, *sum);
+
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = cheap ? quantity_ : Decimal64::parse("0");
+    ctx.submit(target);
+  }
+};
 
 /** @brief A path that rises, stalls, falls and recovers, so a trend strategy has both sides to trade. */
 const std::vector<int>& closes() {
@@ -135,10 +205,12 @@ backtest::ReplayConfig config_for() {
   return config;
 }
 
-/** @brief Replays `closes()` through `strategy` at `interval`. */
+/** @brief Replays `closes()` through `strategy` at `interval`, under `fills` (the realistic costs by default). */
 template <typename Strategy>
-backtest::Backtester<Strategy> replay(Strategy instance, BarInterval interval) {
-  backtest::Backtester<Strategy> engine(std::move(instance), config_for(), realistic_costs());
+backtest::Backtester<Strategy> replay(
+  Strategy instance, BarInterval interval, const backtest::NextBarFillModel& fills = realistic_costs()
+) {
+  backtest::Backtester<Strategy> engine(std::move(instance), config_for(), fills);
   const auto start = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 20000);
   for (std::size_t at = 0; at < closes().size(); ++at) {
     const auto step = interval == BarInterval::ONE_MINUTE ?
@@ -157,6 +229,7 @@ backtest::Backtester<Strategy> replay(Strategy instance, BarInterval interval) {
   return engine;
 }
 
+#if defined(ATL_HAS_EIGEN)
 /** @brief Prints a scalar as a percentage, or a dash where the figure does not exist. */
 std::string percent(math::Scalar value) {
   if (!math::observed(value)) {
@@ -177,7 +250,6 @@ std::string plain(math::Scalar value) {
   return text.str();
 }
 
-#if defined(ATL_HAS_EIGEN)
 /** @brief Prints one report, figures first and then what they do not account for. */
 void print(const std::string& title, const backtest::Report& report) {
   std::cout
@@ -238,8 +310,18 @@ void print(const std::string& title, const backtest::Report& report) {
 
 } // namespace
 
+// Compiles every handler against a stub with no capability and one with every capability, so both
+// branches of each capability gate are checked. Each runner checks it again with its own context.
+ATL_ASSERT_STRATEGY(MyStrategy, algotradelib::strategy::MinimalContext);
+ATL_ASSERT_STRATEGY(MyStrategy, algotradelib::strategy::FullContext);
+
 int main() {
   std::cout << "005930, " << closes().size() << " bars built in code -- no credentials, no network\n\n";
+
+  // The same strategy over the same path: daily, then as minute bars, then daily at no cost at all.
+  const auto daily = replay(MyStrategy{}, BarInterval::ONE_DAY);
+  const auto minutes = replay(MyStrategy{}, BarInterval::ONE_MINUTE);
+  const auto costless = replay(MyStrategy{}, BarInterval::ONE_DAY, backtest::NextBarFillModel{});
 
 #if defined(ATL_HAS_EIGEN)
   const auto daily_periods = backtest::periods_per_year(BarInterval::ONE_DAY, strategy::SessionWindow::krx(), 245.0);
@@ -249,84 +331,45 @@ int main() {
     << "periods per year: " << *daily_periods << " daily, " << *minute_periods
     << " minute -- which is why annualizing takes the count rather than assuming it\n\n";
 
-  vanilla::BuyAndHold holding;
-  holding.params_.instrument_ = samsung();
-  holding.params_.quantity_ = Decimal64::parse("1000");
-  {
-    const auto engine = replay(holding, BarInterval::ONE_DAY);
-    print("BuyAndHold, daily", backtest::summarize(engine.result(), engine.fills(), *daily_periods));
-  }
+  print("MyStrategy(5), daily", backtest::summarize(daily.result(), daily.fills(), *daily_periods));
 
-  vanilla::MovingAverageCrossover::Params crossing;
-  crossing.instrument_ = samsung();
-  crossing.fast_ = 3;
-  crossing.slow_ = 8;
-  crossing.quantity_ = Decimal64::parse("1000");
-  {
-    const auto engine = replay(vanilla::SmaCrossover{crossing}, BarInterval::ONE_DAY);
-    print("SmaCrossover(3, 8), daily", backtest::summarize(engine.result(), engine.fills(), *daily_periods));
-  }
+  // The engine is told nothing about which granularity it is getting; only the annualizing constant
+  // differs, and it differs because the caller says so rather than because the engine guessed.
+  print(
+    "MyStrategy(5), minute bars -- identical decisions, different annualizing",
+    backtest::summarize(minutes.result(), minutes.fills(), *minute_periods)
+  );
+  std::cout
+    << "  ^ Note the annualized Sharpe against the daily run above. The per-bar figure is\n"
+    << "    identical -- the decisions were identical -- and only the constant differs, because\n"
+    << "    sqrt(95550) is about twenty times sqrt(245). The larger number is arithmetically\n"
+    << "    right and practically meaningless here: this path moves like daily data, so calling\n"
+    << "    its bars minutes claims a frequency the returns do not have. Two lessons. Mislabel\n"
+    << "    your bar frequency and the annualized figure is wrong by the square root of the\n"
+    << "    ratio. And annualizing assumes returns are serially uncorrelated, which a trading\n"
+    << "    rule can violate by construction.\n\n";
 
-  // The same strategy over the same path, at a different granularity. The engine is told nothing about
-  // which it is getting; only the annualizing constant differs, and it differs because the caller says
-  // so rather than because the engine guessed.
-  {
-    const auto engine = replay(vanilla::SmaCrossover{crossing}, BarInterval::ONE_MINUTE);
-    print(
-      "SmaCrossover(3, 8), minute bars -- identical decisions, different annualizing",
-      backtest::summarize(engine.result(), engine.fills(), *minute_periods)
-    );
-    std::cout
-      << "  ^ Note the annualized Sharpe against the daily run above. The per-bar figure is\n"
-      << "    identical -- the decisions were identical -- and only the constant differs, because\n"
-      << "    sqrt(95550) is about twenty times sqrt(245). The larger number is arithmetically\n"
-      << "    right and practically meaningless here: this path moves like daily data, so calling\n"
-      << "    its bars minutes claims a frequency the returns do not have. Two lessons. Mislabel\n"
-      << "    your bar frequency and the annualized figure is wrong by the square root of the\n"
-      << "    ratio. And annualizing assumes returns are serially uncorrelated, which a trending\n"
-      << "    strategy violates by construction.\n\n";
-  }
-
-  vanilla::DonchianBreakout breaking;
-  breaking.params_.instrument_ = samsung();
-  breaking.params_.lookback_ = 5;
-  breaking.params_.quantity_ = Decimal64::parse("1000");
-  {
-    const auto engine = replay(breaking, BarInterval::ONE_DAY);
-    print("DonchianBreakout(5), daily", backtest::summarize(engine.result(), engine.fills(), *daily_periods));
-  }
-
-  // And the same strategy at no cost at all, to show what costs were doing.
-  {
-    backtest::Backtester<vanilla::SmaCrossover> engine(
-      vanilla::SmaCrossover{crossing}, config_for(), backtest::NextBarFillModel{}
-    );
-    const auto start = std::chrono::system_clock::time_point{} + std::chrono::hours(24 * 20000);
-    for (std::size_t at = 0; at < closes().size(); ++at) {
-      Bar bar;
-      bar.timestamp_ = start + std::chrono::hours(24 * static_cast<int>(at));
-      bar.open_ = Decimal64::parse(std::to_string(closes()[at]));
-      bar.high_ = *bar.open_;
-      bar.low_ = *bar.open_;
-      bar.close_ = *bar.open_;
-      bar.volume_ = Decimal64::parse("1200000");
-      engine.feed(strategy::make_bar_event(samsung(), BarInterval::ONE_DAY, BarStamp::CLOSE, bar));
-    }
-    engine.finish();
-    print(
-      "SmaCrossover(3, 8), daily, at zero cost -- the difference is what costs cost",
-      backtest::summarize(engine.result(), engine.fills(), *daily_periods)
-    );
-  }
+  print(
+    "MyStrategy(5), daily, at zero cost -- the difference is what costs cost",
+    backtest::summarize(costless.result(), costless.fills(), *daily_periods)
+  );
 
   std::cout
     << "Read the caveats, not only the figures. A backtest is the easiest place to produce a\n"
     << "confident wrong number, and the ones above assume every fill was available in full at\n"
     << "the price shown, which no bar can actually tell us.\n";
 #else
+  const auto filled = [](const char* title, const auto& engine) {
+    std::cout
+      << title << ": replayed " << engine.result().bars_ << " bars and filled " << engine.result().executions_.size()
+      << " orders\n";
+  };
+  filled("MyStrategy(5), daily", daily);
+  filled("MyStrategy(5), minute bars", minutes);
+  filled("MyStrategy(5), daily, at zero cost", costless);
   std::cout
-    << "The report needs a linear algebra backend and this build has none.\n"
-    << "Configure with -DATL_USE_EIGEN=ON to see the metrics. The engine itself runs either way.\n";
+    << "\nScoring those fills needs a linear algebra backend and this build has none.\n"
+    << "Configure with -DATL_USE_EIGEN=ON for the report and its caveats.\n";
 #endif
 
   return 0;

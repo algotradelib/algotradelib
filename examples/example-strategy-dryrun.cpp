@@ -11,7 +11,6 @@
 
 #include <algotradelib/krx>
 #include <algotradelib/runner>
-#include <algotradelib/vanilla>
 
 #include <chrono>
 #include <cstddef>
@@ -26,7 +25,6 @@ namespace {
 
 namespace strategy = algotradelib::strategy;
 namespace runner = algotradelib::runner;
-namespace vanilla = algotradelib::strategy::vanilla;
 
 using algotradelib::Bar;
 using algotradelib::BarInterval;
@@ -99,6 +97,100 @@ const std::vector<const char*>& closes() {
   return series;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Two strategies, written here as you would write your own.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * @brief Holds a fixed quantity: states the same target on every bar.
+ *
+ * It buys once and then sends nothing while the holding matches, including after a restart, because
+ * reconciliation compares the target with the portfolio and the working orders.
+ */
+struct HoldsShares {
+  /** @brief The shares to hold. */
+  Decimal64 quantity_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = quantity_;
+    target.tag_ = "hold";
+    ctx.submit(target);
+  }
+};
+
+/**
+ * @brief Buys on a close above the highest of the five before it, and leaves the position only when the
+ *   session ends.
+ *
+ * The signal and the flatten are two handlers of one strategy. On a phase it may not hold through it
+ * states a target of zero, once per instrument however many rows the holding spans. `flattened_` is
+ * load-bearing: in a replay `on_bar` runs right after `on_phase`, and live the next bar follows it, so
+ * a signal that restates its target would replace the flatten with a buy.
+ */
+struct BreakoutThenFlatten {
+  /** @brief The shares to hold after a breakout. */
+  Decimal64 quantity_;
+  /** @brief The closes seen, newest last. */
+  std::vector<Decimal64> closes_;
+  /** @brief Whether the session's end has flattened the position. */
+  bool flattened_{false};
+
+  static constexpr std::size_t lookback = 5;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    closes_.push_back(bar.bar_.close_);
+    if (flattened_ || closes_.size() <= lookback) {
+      return;
+    }
+    // Exact decimals, so this needs no linear algebra backend.
+    Decimal64 highest = closes_[closes_.size() - 1 - lookback];
+    for (std::size_t at = closes_.size() - lookback; at + 1 < closes_.size(); ++at) {
+      if (algotradelib::decimal_less(highest, closes_[at])) {
+        highest = closes_[at];
+      }
+    }
+    if (!algotradelib::decimal_less(highest, closes_.back())) {
+      return;
+    }
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = quantity_;
+    target.tag_ = "breakout";
+    ctx.submit(target);
+  }
+
+  template <class Ctx>
+  void on_phase(Ctx& ctx, strategy::MarketPhase phase) {
+    if (phase == strategy::MarketPhase::OPEN || phase == strategy::MarketPhase::PRE_OPEN) {
+      return;
+    }
+    std::vector<InstrumentId> targeted;
+    for (const auto& position : ctx.portfolio().positions_) {
+      bool seen = false;
+      for (const auto& already : targeted) {
+        seen = seen || already == position.instrument_;
+      }
+      if (seen || position.quantity_.coefficient() == 0) {
+        continue;
+      }
+      targeted.push_back(position.instrument_);
+      strategy::TargetPosition target;
+      target.instrument_ = position.instrument_;
+      target.target_quantity_ = Decimal64::parse("0");
+      target.tag_ = "session-end";
+      ctx.submit(target);
+    }
+    flattened_ = true;
+  }
+};
+
+ATL_ASSERT_STRATEGY(HoldsShares, algotradelib::strategy::MinimalContext);
+ATL_ASSERT_STRATEGY(BreakoutThenFlatten, algotradelib::strategy::MinimalContext);
+
 /** @brief Builds the bar for day `index`, stamped at its close. */
 strategy::BarEvent bar(std::size_t index) {
   Bar value;
@@ -161,8 +253,39 @@ void tally(std::size_t day, const Report& report, RefusalTally& counts) {
  * consequences of its own decisions. Without that, a target-stating strategy would repeat the same
  * target every bar and the output would say nothing about when it changed its mind.
  */
+/** @brief The portfolio a broker would report: `held` shares of Samsung, all of them sellable. */
+strategy::Portfolio<runner::DryTag> portfolio_of(const Decimal64& held) {
+  strategy::Portfolio<runner::DryTag> portfolio;
+  HoldingPosition position;
+  position.instrument_ = samsung();
+  position.quantity_ = held;
+  // What the account may sell, which a broker's holdings state and the guard checks a sell against by
+  // default: here the whole holding. Without it a dry run refuses every sell (`quantity_not_sellable`).
+  position.sellable_quantity_ = held;
+  portfolio.positions_.push_back(position);
+  portfolio.sellable_basis_ = algotradelib::SellableBasis{
+    algotradelib::SellableBasis::Coverage::WHOLE_HOLDING,
+    algotradelib::SellableBasis::RestingTreatment::DEDUCT,
+    false,
+  };
+  return portfolio;
+}
+
+/** @brief Moves `held` by what a report would have placed. */
+template <typename Report>
+void apply(const Report& report, Decimal64& held) {
+  for (const auto& order : report.would_place_) {
+    const auto signed_quantity = order.side_ == OrderSide::BUY ?
+      algotradelib::decimal_add(held, order.quantity_) :
+      algotradelib::decimal_subtract(held, order.quantity_);
+    if (signed_quantity) {
+      held = *signed_quantity;
+    }
+  }
+}
+
 template <typename Strategy>
-void run(const char* title, Strategy instance, const strategy::RiskLimits& limits = {}) {
+void run(const char* title, Strategy instance, const strategy::RiskLimits& limits = {}, bool end_session = false) {
   std::cout << title << '\n';
 
   runner::DryRunner<Strategy> dry(std::move(instance), limits);
@@ -177,33 +300,21 @@ void run(const char* title, Strategy instance, const strategy::RiskLimits& limit
   for (std::size_t day = 0; day < closes().size(); ++day) {
     dry.context().set_last_price(samsung(), Decimal64::parse(closes()[day]));
 
-    strategy::Portfolio<runner::DryTag> portfolio;
-    HoldingPosition position;
-    position.instrument_ = samsung();
-    position.quantity_ = held;
-    // What the account may sell, which a broker's holdings state and the guard checks a sell against by
-    // default: here the whole holding. Without it a dry run refuses every sell (`quantity_not_sellable`).
-    position.sellable_quantity_ = held;
-    portfolio.positions_.push_back(position);
-    portfolio.sellable_basis_ = algotradelib::SellableBasis{
-      algotradelib::SellableBasis::Coverage::WHOLE_HOLDING,
-      algotradelib::SellableBasis::RestingTreatment::DEDUCT,
-      false,
-    };
-    dry.context().set_portfolio(portfolio);
+    dry.context().set_portfolio(portfolio_of(held));
 
     const auto report = dry.feed(bar(day));
     print(day, report);
     tally(day, report, refusals);
-
-    for (const auto& order : report.would_place_) {
-      const auto signed_quantity = order.side_ == OrderSide::BUY ?
-        algotradelib::decimal_add(held, order.quantity_) :
-        algotradelib::decimal_subtract(held, order.quantity_);
-      if (signed_quantity) {
-        held = *signed_quantity;
-      }
-    }
+    apply(report, held);
+  }
+  if (end_session) {
+    // The session ends after the last bar. The runner sees the holding the last bar left, then the phase.
+    std::cout << "  holding " << held.str() << " shares when the session closes\n";
+    dry.context().set_portfolio(portfolio_of(held));
+    const auto report = dry.feed(strategy::MarketPhase::POST_CLOSE);
+    print(closes().size(), report);
+    tally(closes().size(), report, refusals);
+    apply(report, held);
   }
   for (const auto& entry : refusals) {
     std::cout
@@ -218,46 +329,20 @@ void run(const char* title, Strategy instance, const strategy::RiskLimits& limit
 int main() {
   std::cout << "005930, " << closes().size() << " daily bars built in code -- no credentials, no network\n\n";
 
-  vanilla::BuyAndHold holding;
-  holding.params_.instrument_ = samsung();
-  holding.params_.quantity_ = Decimal64::parse("100");
-  run("BuyAndHold: one target, then nothing, and it remembers nothing to do it", holding);
+  run("HoldsShares: one target, then nothing, and it remembers nothing to do it", HoldsShares{Decimal64::parse("100")});
 
-#if defined(ATL_HAS_EIGEN)
-  vanilla::MovingAverageCrossover::Params crossing;
-  crossing.instrument_ = samsung();
-  crossing.fast_ = 3;
-  crossing.slow_ = 8;
-  crossing.quantity_ = Decimal64::parse("100");
-  run("SmaCrossover(3, 8): long while the fast average leads, flat while it lags", vanilla::SmaCrossover{crossing});
-
-  vanilla::DonchianBreakout breaking;
-  breaking.params_.instrument_ = samsung();
-  breaking.params_.lookback_ = 5;
-  breaking.params_.quantity_ = Decimal64::parse("100");
-  run("DonchianBreakout(5): the channel excludes today, so a break is measurable", breaking);
-
-  vanilla::RsiThreshold indexed;
-  indexed.params_.instrument_ = samsung();
-  indexed.params_.period_ = 5;
-  indexed.params_.oversold_ = 35.0;
-  indexed.params_.overbought_ = 65.0;
-  indexed.params_.quantity_ = Decimal64::parse("100");
-  run("RsiThreshold(5, 35/65): Wilder's smoothing and Wilder's seed", indexed);
-#else
-  std::cout
-    << "The indicator strategies need a linear algebra backend and this build has none.\n"
-    << "Configure with -DATL_USE_EIGEN=ON to see SmaCrossover, DonchianBreakout and RsiThreshold.\n"
-    << "BuyAndHold and TimedLiquidation read no series and run either way.\n\n";
-#endif
+  run(
+    "BreakoutThenFlatten: in on a breakout, out when the session closes", BreakoutThenFlatten{Decimal64::parse("100")},
+    {}, true
+  );
 
   // A guard refusing an order is part of the pipeline, not an error, so it belongs in the output.
   strategy::RiskLimits tight;
   tight.max_order_notional_ = Decimal64::parse("1000000");
-  vanilla::BuyAndHold oversized;
-  oversized.params_.instrument_ = samsung();
-  oversized.params_.quantity_ = Decimal64::parse("100");
-  run("BuyAndHold with a 1,000,000 KRW per-order ceiling: refused, never resized", oversized, tight);
+  run(
+    "HoldsShares with a 1,000,000 KRW per-order ceiling: refused, never resized", HoldsShares{Decimal64::parse("100")},
+    tight
+  );
 
   return 0;
 }

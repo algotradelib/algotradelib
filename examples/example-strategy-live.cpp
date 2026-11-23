@@ -37,7 +37,6 @@
 #include <algotradelib/krx>
 #include <algotradelib/live>
 #include <algotradelib/tossinvest>
-#include <algotradelib/vanilla>
 
 #include <boost/asio/ssl/context.hpp>
 
@@ -59,7 +58,6 @@ namespace {
 namespace strategy = algotradelib::strategy;
 namespace runner = algotradelib::runner;
 namespace live = algotradelib::live;
-namespace vanilla = algotradelib::strategy::vanilla;
 
 using algotradelib::BarInterval;
 using algotradelib::BarQuery;
@@ -82,12 +80,37 @@ enum class Mode {
   TRADE,
 };
 
-/** @brief The strategy this example runs, chosen because it needs no series and so builds everywhere. */
-vanilla::BuyAndHold strategy_for(const InstrumentId& instrument) {
-  vanilla::BuyAndHold holding;
-  holding.params_.instrument_ = instrument;
-  holding.params_.quantity_ = Decimal64::parse("1");
-  return holding;
+/**
+ * @brief The strategy this example runs: one share, held. It needs no series and so builds everywhere.
+ *
+ * It states the same target on every bar of its instrument, so it buys once and then sends nothing while the
+ * holding matches, including after a restart.
+ */
+struct HoldsShares {
+  /** @brief The instrument to hold; bars of any other are ignored. */
+  InstrumentId instrument_;
+  /** @brief The shares to hold. */
+  Decimal64 quantity_;
+
+  /** @brief One bar of history is enough. */
+  static constexpr std::size_t warmup_bars = 1;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    if (!(bar.instrument_ == instrument_)) {
+      return;
+    }
+    strategy::TargetPosition target;
+    target.instrument_ = instrument_;
+    target.target_quantity_ = quantity_;
+    target.tag_ = "hold";
+    ctx.submit(target);
+  }
+};
+
+/** @brief The strategy this example runs. */
+HoldsShares strategy_for(const InstrumentId& instrument) {
+  return HoldsShares{instrument, Decimal64::parse("1")};
 }
 
 /** @brief Limits an example should not run without. Small on purpose. */
@@ -338,7 +361,7 @@ int trade_dry(const std::string& symbol) {
   const InstrumentId instrument{Country::KR, Venue::COMBINED, symbol};
   std::cout << "no broker bound: nothing in this path can reach a market\n\n";
 
-  runner::DryRunner<vanilla::BuyAndHold> dry(strategy_for(instrument), example_limits());
+  runner::DryRunner<HoldsShares> dry(strategy_for(instrument), example_limits());
   algotradelib::Instrument reference;
   reference.id_ = instrument;
   reference.type_ = algotradelib::SecurityType::STOCK;

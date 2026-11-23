@@ -23,7 +23,6 @@
 #include <algotradelib/backtest>
 #include <algotradelib/kis>
 #include <algotradelib/tossinvest>
-#include <algotradelib/vanilla>
 
 #include <boost/asio/ssl/context.hpp>
 
@@ -38,6 +37,7 @@
 #include <sstream>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace ssl = boost::asio::ssl;
 
@@ -45,7 +45,6 @@ namespace {
 
 namespace strategy = algotradelib::strategy;
 namespace backtest = algotradelib::backtest;
-namespace vanilla = algotradelib::strategy::vanilla;
 namespace math = algotradelib::math;
 
 /**
@@ -112,6 +111,73 @@ std::optional<FetchedHistory> read_history(Session& session, const InstrumentId&
   history.bars_ = std::move(bars.value());
   return history;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Two strategies, written here as you would write your own.
+// ---------------------------------------------------------------------------------------------
+
+/** @brief Holds a fixed quantity: states the same target on every bar. The benchmark. */
+struct HoldsShares {
+  /** @brief The shares to hold. */
+  Decimal64 quantity_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = quantity_;
+    ctx.submit(target);
+  }
+};
+
+/**
+ * @brief Holds `quantity_` while the mean of the last `fast_` closes is above the mean of the last `slow_`,
+ *   and nothing otherwise; it keeps its own closes.
+ *
+ * The means are compared exactly in decimals, `fast_sum * slow > slow_sum * fast`, so nothing rounds.
+ */
+struct MovingAverageCross {
+  /** @brief The fast window; nonzero and below `slow_`. */
+  std::size_t fast_{20};
+  /** @brief The slow window. */
+  std::size_t slow_{50};
+  /** @brief The shares to hold while the fast mean leads. */
+  Decimal64 quantity_;
+  /** @brief The closes seen, newest last. */
+  std::vector<Decimal64> closes_;
+
+  template <class Ctx>
+  void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
+    closes_.push_back(bar.bar_.close_);
+    if (fast_ == 0 || slow_ <= fast_ || closes_.size() < slow_) {
+      return;
+    }
+    const auto fast_sum = sum_of_last(fast_);
+    const auto slow_sum = sum_of_last(slow_);
+    if (!fast_sum || !slow_sum) {
+      return;
+    }
+    const auto left = algotradelib::decimal_multiply(*fast_sum, Decimal64(static_cast<std::int64_t>(slow_), 0));
+    const auto right = algotradelib::decimal_multiply(*slow_sum, Decimal64(static_cast<std::int64_t>(fast_), 0));
+    if (!left || !right) {
+      return;
+    }
+    strategy::TargetPosition target;
+    target.instrument_ = bar.instrument_;
+    target.target_quantity_ = algotradelib::decimal_less(*right, *left) ? quantity_ : Decimal64::parse("0");
+    ctx.submit(target);
+  }
+
+private:
+  // The sum of the last `count` closes, or nothing if an addition overflowed.
+  std::optional<Decimal64> sum_of_last(std::size_t count) const {
+    std::optional<Decimal64> sum = Decimal64::parse("0");
+    for (std::size_t at = closes_.size() - count; sum && at < closes_.size(); ++at) {
+      sum = algotradelib::decimal_add(*sum, closes_[at]);
+    }
+    return sum;
+  }
+};
 
 #if defined(ATL_HAS_EIGEN)
 /** @brief Replays `history` through one strategy and prints the report. */
@@ -194,23 +260,13 @@ int backtest_with(Session& session, const std::string& symbol) {
     << "the session is now finished with: nothing below reads it\n\n";
 
 #if defined(ATL_HAS_EIGEN)
-  vanilla::BuyAndHold holding;
-  holding.params_.instrument_ = instrument;
-  holding.params_.quantity_ = Decimal64::parse("100");
-  replay_and_report("BuyAndHold -- the benchmark every strategy is measured against", holding, *history);
+  replay_and_report(
+    "HoldsShares -- the benchmark every strategy is measured against", HoldsShares{Decimal64::parse("100")}, *history
+  );
 
-  vanilla::MovingAverageCrossover::Params crossing;
-  crossing.instrument_ = instrument;
-  crossing.fast_ = 20;
-  crossing.slow_ = 50;
+  MovingAverageCross crossing;
   crossing.quantity_ = Decimal64::parse("100");
-  replay_and_report("SmaCrossover(20, 50)", vanilla::SmaCrossover{crossing}, *history);
-
-  vanilla::DonchianBreakout breaking;
-  breaking.params_.instrument_ = instrument;
-  breaking.params_.lookback_ = 20;
-  breaking.params_.quantity_ = Decimal64::parse("100");
-  replay_and_report("DonchianBreakout(20)", breaking, *history);
+  replay_and_report("MovingAverageCross(20, 50)", crossing, *history);
 
   std::cout
     << "These are real prices and a simulated fill model. Every figure assumes the whole order was\n"

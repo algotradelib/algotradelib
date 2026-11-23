@@ -186,24 +186,14 @@ engine.finish();
 const auto report = backtest::summarize(engine.result(), engine.fills(), periods_per_year);
 ```
 
-[`examples/example-backtest-compare.cpp`](https://github.com/algotradelib/algotradelib/blob/main/examples/example-backtest-compare.cpp) does this offline
-for a strategy of its own beside `BuyAndHold`, `SmaCrossover` and `DonchianBreakout`, on identical
-bars, and prints:
-
-```
-  strategy                return     Sharpe     max dd  fills
-  -----------------------------------------------------------
-  MyStrategy(5)         -10.22 %     -0.375    13.11 %      2
-  BuyAndHold             10.89 %      0.250    13.35 %      1
-  SmaCrossover(3,8)       9.67 %      0.308     4.93 %      3
-  DonchianBreakout(5)    12.17 %      0.383     4.82 %      3
-```
+[`examples/example-backtest-offline.cpp`](https://github.com/algotradelib/algotradelib/blob/main/examples/example-backtest-offline.cpp) does this offline
+for a strategy of its own, at two bar granularities and at no cost, and prints each report with its caveats.
 
 **Run it live.** Copy [`examples/example-live-program.cpp`](https://github.com/algotradelib/algotradelib/blob/main/examples/example-live-program.cpp) with
 the three headers it includes ([`live_program.hpp`](https://github.com/algotradelib/algotradelib/blob/main/examples/live_program.hpp),
 [`kis_credentials.hpp`](https://github.com/algotradelib/algotradelib/blob/main/examples/kis_credentials.hpp) and
-[`kiwoom_credentials.hpp`](https://github.com/algotradelib/algotradelib/blob/main/examples/kiwoom_credentials.hpp)), and replace the strategy — `BuyAndHold` of one
-share — with yours. It is the production path, for KIS and Toss (on Kiwoom it observes, and places
+[`kiwoom_credentials.hpp`](https://github.com/algotradelib/algotradelib/blob/main/examples/kiwoom_credentials.hpp)), and replace the strategy — `HoldsShares`, one
+share held — with yours. It is the production path, for KIS and Toss (on Kiwoom it observes, and places
 nothing until you state what its holdings inquiry covers and give the runner a trading calendar, since
 Kiwoom publishes none; lifting the market-phase limit instead would send a daily strategy's decisions
 at midnight, where brokers reject them):
@@ -277,9 +267,9 @@ first, or through Toss) or from `Bar` values you construct yourself. This librar
 somebody's CSV is not a thing it can do honestly for everyone, and it belongs in your project where
 its assumptions are yours.
 
-Eight of the programs in `examples/` need no credentials, no network and no broker at all, and are
+Seven of the programs in `examples/` need no credentials, no network and no broker at all, and are
 the fastest way to see each layer work: `example-strategy-dryrun`, `example-backtest-offline`,
-`example-backtest-compare`, `example-inverse-fund`, `example-live-loop`, `example-order-journal`,
+`example-inverse-fund`, `example-live-loop`, `example-order-journal`,
 `example-analytics-offline` and `example-rate-limit-stats`. `example-kis-place-order` is offline too
 — it constructs and prints an `OrderRequest` and can send nothing. The rest read credentials from
 the environment, and the KIS and Kiwoom ones also from a credentials directory, except
