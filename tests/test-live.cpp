@@ -4641,8 +4641,6 @@ struct HoldsShares {
   /** The shares to hold. */
   Decimal64 quantity_;
 
-  static constexpr std::size_t warmup_bars = 1;
-
   template <class Ctx>
   void on_bar(Ctx& ctx, const strategy::BarEvent& bar) {
     if (!(bar.instrument_ == samsung())) {

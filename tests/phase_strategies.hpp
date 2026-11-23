@@ -21,8 +21,6 @@ struct FlattensOnPhase {
     algotradelib::strategy::MarketPhase::PRE_OPEN,
   };
 
-  static constexpr std::size_t warmup_bars = 0;
-
   /** Whether `phase` is one positions may be held through. */
   bool holds_through(algotradelib::strategy::MarketPhase phase) const {
     for (const auto allowed : hold_through_) {
@@ -69,8 +67,6 @@ struct HoldsEqualWeights {
   std::vector<algotradelib::InstrumentId> universe_;
   /** Each instrument's fraction of the portfolio value. */
   algotradelib::Decimal64 weight_;
-
-  static constexpr std::size_t warmup_bars = 0;
 
   template <class Ctx>
   void on_phase(Ctx& ctx, algotradelib::strategy::MarketPhase phase) {

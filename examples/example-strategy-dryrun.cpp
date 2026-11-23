@@ -332,8 +332,8 @@ int main() {
   run("HoldsShares: one target, then nothing, and it remembers nothing to do it", HoldsShares{Decimal64::parse("100")});
 
   run(
-    "BreakoutThenFlatten: in on a breakout, out when the session closes", BreakoutThenFlatten{Decimal64::parse("100")},
-    {}, true
+    "BreakoutThenFlatten: in on a breakout, out when the session closes",
+    BreakoutThenFlatten{Decimal64::parse("100"), {}, false}, {}, true
   );
 
   // A guard refusing an order is part of the pipeline, not an error, so it belongs in the output.

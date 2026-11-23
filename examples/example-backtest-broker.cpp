@@ -47,6 +47,7 @@ namespace strategy = algotradelib::strategy;
 namespace backtest = algotradelib::backtest;
 namespace math = algotradelib::math;
 
+#if defined(ATL_HAS_EIGEN)
 /**
  * @brief Returns a monetary figure, or why there is none.
  *
@@ -56,6 +57,7 @@ namespace math = algotradelib::math;
 std::string money_or_absent(const std::optional<algotradelib::Decimal64>& amount) {
   return amount ? amount->str() : std::string("(absent: see the caveats)");
 }
+#endif
 
 using algotradelib::BarInterval;
 using algotradelib::BarQuery;
