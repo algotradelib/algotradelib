@@ -129,6 +129,9 @@ struct HoldsShares {
  * states a target of zero, once per instrument however many rows the holding spans. `flattened_` is
  * load-bearing: in a replay `on_bar` runs right after `on_phase`, and live the next bar follows it, so
  * a signal that restates its target would replace the flatten with a buy.
+ *
+ * A single-session example: once set, `flattened_` stays set, so it trades no later session. A strategy
+ * that runs for many sessions clears the latch when the market opens again.
  */
 struct BreakoutThenFlatten {
   /** @brief The shares to hold after a breakout. */
@@ -246,13 +249,6 @@ void tally(std::size_t day, const Report& report, RefusalTally& counts) {
   }
 }
 
-/**
- * @brief Runs one strategy over the fixture and prints what it decided.
- *
- * The portfolio is advanced from the orders the runner would have sent, so the strategy sees the
- * consequences of its own decisions. Without that, a target-stating strategy would repeat the same
- * target every bar and the output would say nothing about when it changed its mind.
- */
 /** @brief The portfolio a broker would report: `held` shares of Samsung, all of them sellable. */
 strategy::Portfolio<runner::DryTag> portfolio_of(const Decimal64& held) {
   strategy::Portfolio<runner::DryTag> portfolio;
@@ -284,6 +280,13 @@ void apply(const Report& report, Decimal64& held) {
   }
 }
 
+/**
+ * @brief Runs one strategy over the fixture and prints what it decided.
+ *
+ * The portfolio is advanced from the orders the runner would have sent, so the strategy sees the
+ * consequences of its own decisions. Without that, a target-stating strategy would repeat the same
+ * target every bar and the output would say nothing about when it changed its mind.
+ */
 template <typename Strategy>
 void run(const char* title, Strategy instance, const strategy::RiskLimits& limits = {}, bool end_session = false) {
   std::cout << title << '\n';
