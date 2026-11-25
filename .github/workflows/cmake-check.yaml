@@ -43,7 +43,7 @@ jobs:
           # - {os: macos-latest, cxx_std: 17, compiler: 'gcc'}
 
           - {os: windows-latest, cxx_std: 17, compiler: 'msvc'}
-          - {os: windows-latest, cxx_std: 17, compiler: 'llvm-22'}
+          - {os: windows-latest, cxx_std: 17, compiler: 'llvm'}
 
     name: ${{ matrix.config.os }} (${{ matrix.config.compiler }}-C++${{ matrix.config.cxx_std }})
 
